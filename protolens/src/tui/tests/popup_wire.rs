@@ -125,6 +125,7 @@ fn lines_at(app: &App, line: usize, col: usize, avail: usize) -> Vec<BoxLine> {
     let popup = Popup {
         body: PopupBody::Wire(app.wire_box(&hit)),
         anchor: (0, 0),
+        doc_title: None,
     };
     App::popup_lines(&popup, avail)
 }

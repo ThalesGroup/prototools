@@ -59,32 +59,31 @@ fn a_modifier_is_explained_with_its_value() {
     assert_eq!(
         lines,
         [
-            "val_ohb: 3",
             "non-canonical: legal, but no writer should emit it",
             "this varint is padded, not minimal",
         ],
-        "the token leads, so the 3 is shown without a format string"
+        "token is in the border title; the 3 is visible there"
     );
 
     // Pointing at the value half of the modifier is pointing at the
     // modifier: one token, one target.
     let value = column_of(&app, 0, "val_ohb") + "val_ohb: ".len() as u16;
     let hit = app.doc_element_at_point(value, 0).expect("still the token");
-    assert_eq!(doc_lines(&hit, HEAT_ANCHOR_DEFAULT)[0].text, "val_ohb: 3");
+    assert_eq!(
+        doc_lines(&hit, HEAT_ANCHOR_DEFAULT)[0].text,
+        "non-canonical: legal, but no writer should emit it"
+    );
 
     // An invalid keyword carries the other tier, and `pack_size` — a
     // landmark rather than a fault — carries neither.
     let mut app = doc_app(&["y: 2  #@ bytes; INVALID_STRING", "z: 3  #@ pack_size: 5"]);
     assert_eq!(
-        box_at(&mut app, 0, "INVALID_STRING")[1],
+        box_at(&mut app, 0, "INVALID_STRING")[0],
         "invalid: the blob is malformed, or this is not the schema"
     );
     assert_eq!(
         box_at(&mut app, 1, "pack_size"),
-        [
-            "pack_size: 5",
-            "how many elements this one packed wire record holds"
-        ]
+        ["how many elements this one packed wire record holds"]
     );
 }
 
@@ -105,7 +104,6 @@ fn hovering_a_leaf_diamond_names_the_tier() {
             .map(|l| l.text)
             .collect::<Vec<_>>(),
         [
-            render::ANOMALY_GLYPH.to_string(),
             "non-canonical: legal, but no writer should emit it".to_string(),
             "this row's own annotation says which".to_string(),
         ]
@@ -127,33 +125,31 @@ fn the_annotation_declaration_is_explained() {
     assert_eq!(
         box_at(&mut app, 0, "repeated"),
         [
-            "repeated",
             "this field may occur more than once",
             "optional is the default and is never printed",
         ]
     );
     assert_eq!(
         box_at(&mut app, 0, "[packed=true]"),
-        [
-            "[packed=true]",
-            "these elements share one length-prefixed record",
-        ]
+        ["these elements share one length-prefixed record"],
     );
     assert_eq!(
         box_at(&mut app, 0, "= 85"),
         [
-            "= 85",
             "the field's number in its .proto message",
             "the number is on the wire; the name is not",
         ],
         "the sign and the digits are one target, so one answer"
     );
-    assert_eq!(box_at(&mut app, 0, "#@")[0], "#@");
+    assert_eq!(
+        box_at(&mut app, 0, "#@")[0],
+        "opens a prototext annotation: the rest of this line"
+    );
 
     // `required` is the other label, and says which dialect it is from.
     let mut app = doc_app(&["q: 1  #@ required int32 = 1"]);
     assert_eq!(
-        box_at(&mut app, 0, "required")[1],
+        box_at(&mut app, 0, "required")[0],
         "proto2: this field must be present"
     );
 }
@@ -167,10 +163,7 @@ fn a_wire_type_token_is_not_read_as_a_scalar_type() {
 
     assert_eq!(
         box_at(&mut app, 0, "bytes"),
-        [
-            "bytes",
-            "wire type 2 — a length prefix, then that many bytes"
-        ],
+        ["wire type 2 — a length prefix, then that many bytes"],
         "no schema declared this field, so `bytes` is the wire type"
     );
     assert!(
@@ -191,18 +184,15 @@ fn the_field_key_says_which_kind_it_is() {
 
     assert_eq!(
         box_at(&mut app, 0, "name"),
-        ["name", "the field's name, from the schema"]
+        ["the field's name, from the schema"]
     );
     assert_eq!(
         box_at(&mut app, 1, "999"),
-        ["999", "a field number: no schema declared this field"]
+        ["a field number: no schema declared this field"]
     );
     assert_eq!(
         box_at(&mut app, 2, "[acme.blades]"),
-        [
-            "[acme.blades]",
-            "an extension field, named by its full path"
-        ]
+        ["an extension field, named by its full path"]
     );
 }
 
@@ -219,20 +209,19 @@ fn the_value_says_why_it_is_spelled_that_way() {
 
     assert_eq!(
         box_at(&mut app, 0, "1  #@"),
-        ["1", "the field's value, as protoc --decode prints it"],
+        ["the field's value, as protoc --decode prints it"],
         "the value is the token; the annotation behind it is not part \
          of it, and nothing is decoded"
     );
     assert_eq!(
         box_at(&mut app, 1, "GREEN"),
         [
-            "GREEN",
             "the field's value, as protoc --decode prints it",
             "the schema's name for the 2 on the wire",
         ]
     );
     assert_eq!(
-        box_at(&mut app, 2, "0x4005bf0a")[2],
+        box_at(&mut app, 2, "0x4005bf0a")[1],
         "raw bits: no schema said how to read them"
     );
 }
@@ -394,7 +383,6 @@ fn a_keyword_with_no_clause_is_not_a_target() {
     assert_eq!(
         box_at(&mut app, 0, "#@"),
         [
-            "#@",
             "opens a prototext annotation: the rest of this line",
             "is how the bytes were encoded, not part of the message",
             "prototext is textproto, plus these annotations",
@@ -503,11 +491,9 @@ fn the_heat_glyph_explains_its_color() {
     assert_eq!(
         glyph_box(&mut app),
         [
-            heat_cue::HEAT_GLYPH,
-            "another type scores higher on these bytes",
-            "brighter means a bigger difference",
+            "the current typing (10) does not max the score (50)",
+            "see the heat cue on the right",
             "brightest at score 144 and above",
-            "the [...] at the end of the row has the numbers",
         ]
     );
 
@@ -516,11 +502,9 @@ fn the_heat_glyph_explains_its_color() {
     assert_eq!(
         glyph_box(&mut app),
         [
-            heat_cue::HEAT_GLYPH,
-            "another type scores exactly as well as this one",
-            "brighter means a higher score",
+            "current typing maxes the score (50) but there are ties",
+            "see the heat cue on the right",
             "brightest at score 144 and above",
-            "the [...] at the end of the row has the numbers",
         ]
     );
 }
@@ -529,51 +513,58 @@ fn the_heat_glyph_explains_its_color() {
 /// its own words, and the token line is the suffix as drawn.
 #[test]
 fn the_heat_suffix_explains_its_numbers() {
-    let shapes = |app: &mut App| {
+    // lines[0] is always "Best scorers:" — the token moved to the border
+    // title. lines[1] is the first top-scoring FQDN from the cache
+    // (seeded as "protolens_internal.dummy"), or a fallback sentence.
+    let lines = |app: &mut App| {
         let lines = suffix_box(app);
         (lines[0].clone(), lines[1].clone())
     };
 
     let mut app = cue_app(Some((50, 1)), Some(Some(10)));
     assert_eq!(
-        shapes(&mut app),
+        lines(&mut app),
         (
-            "[10/50]".to_string(),
-            "left: what this node's type scores here".to_string()
+            "Best scorers:".to_string(),
+            "protolens_internal.dummy".to_string()
         )
     );
 
     let mut app = cue_app(Some((50, 1)), Some(None));
     assert_eq!(
-        shapes(&mut app),
+        lines(&mut app),
         (
-            "[-/50]".to_string(),
-            "the - is: this node's type does not fit at all".to_string()
+            "Best scorers:".to_string(),
+            "protolens_internal.dummy".to_string()
         )
     );
 
     let mut app = cue_app(Some((50, 3)), Some(Some(50)));
     assert_eq!(
-        shapes(&mut app),
+        lines(&mut app),
         (
-            "[3@50]".to_string(),
-            "n types score s here - the best, but not the".to_string()
+            "Best scorers:".to_string(),
+            "protolens_internal.dummy".to_string()
         )
     );
 
     let mut app = cue_app(Some((50, 1)), None);
     assert_eq!(
-        shapes(&mut app),
+        lines(&mut app),
         (
-            "[?/50]".to_string(),
-            "the best is known; this node's own score is".to_string()
+            "Best scorers:".to_string(),
+            "protolens_internal.dummy".to_string()
         )
     );
 
+    // No stats at all: the cache has no entry, so heat_top is empty.
     let mut app = cue_app(None, None);
     assert_eq!(
-        shapes(&mut app),
-        ("[?]".to_string(), "still scoring these bytes".to_string())
+        lines(&mut app),
+        (
+            "Best scorers:".to_string(),
+            "still scoring these bytes".to_string()
+        )
     );
 }
 
@@ -617,8 +608,10 @@ fn the_new_cues_have_boxes() {
         DocElement::HeatSuffix(SuffixShape::Agree)
     );
     let lines = suffix_box(&mut app);
-    assert_eq!(lines[0], "[50]");
-    assert!(lines[1].contains("best fit"), "{lines:?}");
+    // Token moved to border title; first content line is "Best scorers:".
+    assert_eq!(lines[0], "Best scorers:");
+    // The top-scoring FQDN is shown, seeded as "protolens_internal.dummy".
+    assert_eq!(lines[1], "protolens_internal.dummy", "{lines:?}");
     assert_eq!(
         lines.last().map(String::as_str),
         Some("double-click to choose a type for this node")
@@ -643,7 +636,8 @@ fn the_new_cues_have_boxes() {
         DocElement::HeatSuffix(SuffixShape::Unmatched)
     );
     let lines = suffix_box(&mut app);
-    assert_eq!(lines[0], "[unmatched]");
+    // Token moved to border title; first content line is "Best scorers:".
+    assert_eq!(lines[0], "Best scorers:");
     assert!(lines[1].contains("no type known here fits"), "{lines:?}");
 }
 
@@ -669,7 +663,6 @@ fn the_unmatched_square_has_a_box() {
     assert_eq!(
         glyph_box(&mut app),
         [
-            heat_cue::HEAT_GLYPH,
             "no type known here fits these bytes",
             "this one is not graded - there is no score",
         ],
@@ -721,15 +714,13 @@ fn the_fold_marker_explains_which_way_it_is() {
 
     assert!(!app.is_folded(inner));
     let open = read(&mut app);
-    assert_eq!(open[0], render::FOLD_GLYPH_OPEN.to_string());
-    assert_eq!(open[1], "this node is unfolded");
-    assert_eq!(open[2], "click to fold it");
+    assert_eq!(open[0], "this node is unfolded");
+    assert_eq!(open[1], "click to fold it");
 
     app.toggle_fold(inner);
     let closed = read(&mut app);
-    assert_eq!(closed[0], render::FOLD_GLYPH_CLOSED.to_string());
-    assert_eq!(closed[1], "this node is folded");
-    assert_eq!(closed[2], "click to unfold it");
+    assert_eq!(closed[0], "this node is folded");
+    assert_eq!(closed[1], "click to unfold it");
 
     // Spec 0247 S10: this fixture's subtree holds an unknown field, so
     // the glyph wears a status color and the box says what it means.
@@ -785,7 +776,6 @@ fn a_folded_node_explains_its_summary() {
     let first = render::HEAT_FIELD_WIDTH as u16 + content[..brace].chars().count() as u16;
 
     let expected = [
-        "{ ... }",
         "this node is folded: its fields are not shown",
         "click the marker in the left margin to unfold it",
     ];
@@ -824,10 +814,7 @@ fn an_unbaked_summary_says_nobody_has_looked() {
         .into_iter()
         .map(|l| l.text)
         .collect();
-    assert_eq!(
-        lines,
-        ["{ ... }", "nobody has looked inside this region yet"]
-    );
+    assert_eq!(lines, ["nobody has looked inside this region yet"]);
 }
 
 /// Spec 0287 test plan 9 / S3: the chrome takes only columns no token
@@ -836,5 +823,8 @@ fn an_unbaked_summary_says_nobody_has_looked() {
 #[test]
 fn chrome_does_not_steal_a_token() {
     let mut app = doc_app(&["x: 1  #@ varint"]);
-    assert_eq!(box_at(&mut app, 0, "x")[0], "x");
+    assert_eq!(
+        box_at(&mut app, 0, "x")[0],
+        "the field's name, from the schema"
+    );
 }

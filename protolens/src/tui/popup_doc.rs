@@ -84,8 +84,17 @@ pub(super) enum DocElement {
 /// to say a different thing about what brightness means.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum HeatGlyphKind {
-    Mismatch,
-    Tie,
+    /// Current type scores lower than the best candidate.
+    /// `current`: this type's score (`None` = vetoed / no fit).
+    /// `best`: the highest score any candidate reached.
+    Mismatch {
+        current: Option<i64>,
+        best: i64,
+    },
+    /// Current type ties with at least one other at the top score.
+    Tie {
+        score: i64,
+    },
     Unmatched,
 }
 
@@ -155,6 +164,11 @@ pub(super) struct DocHit {
     /// including a packed `Color([1, 2])`, where no single number is
     /// this line's.
     enum_number: Option<String>,
+    /// For a `HeatSuffix` hit: the FQDNs that share the top score for
+    /// this range, read from `by_range`'s `top_n` at hit time. Empty
+    /// when the cache has not yet settled or when the hit is not a
+    /// suffix.
+    heat_top: Vec<String>,
 }
 
 impl DocHit {
@@ -359,7 +373,7 @@ impl App {
         let display = self.heat_cue_at(pos);
         let (glyph, suffix) = self.heat_chrome(&display);
 
-        let (element, token) = if on_glyph {
+        let (element, token, heat_top) = if on_glyph {
             // N3: the reserved blank is not a target. `heat_chrome`
             // draws one for a settled node, for a pending one, and for
             // a cue the ANSI-16 palette cannot color — so what decides
@@ -369,19 +383,43 @@ impl App {
             }
             let kind = match display {
                 heat_cue::HeatDisplay::Cue(cue) => match cue.kind {
-                    heat_cue::HeatCueKind::Tie { .. } => HeatGlyphKind::Tie,
-                    heat_cue::HeatCueKind::Mismatch { .. } => HeatGlyphKind::Mismatch,
+                    heat_cue::HeatCueKind::Tie { score, .. } => HeatGlyphKind::Tie { score },
+                    heat_cue::HeatCueKind::Mismatch { current, best } => {
+                        HeatGlyphKind::Mismatch { current, best }
+                    }
                 },
                 // Spec 0335 S4's sentinel square.
                 heat_cue::HeatDisplay::Settled { score: None } => HeatGlyphKind::Unmatched,
                 _ => return None,
             };
-            (DocElement::HeatGlyph(kind), glyph.content.into_owned())
+            (
+                DocElement::HeatGlyph(kind),
+                glyph.content.into_owned(),
+                vec![],
+            )
         } else {
             let suffix = suffix?;
+            // Read the top-scoring FQDNs from the cache: the first
+            // `best_count` entries of `top_n` all share the top score.
+            let start = self.heat_scored_range(pos.node).start;
+            let tops = {
+                let mut caches = self.heat_caches.lock().unwrap_or_else(|e| e.into_inner());
+                caches
+                    .by_range
+                    .peek_with(&start, tiered::Tier::Visible, |entry| {
+                        entry
+                            .top_n
+                            .iter()
+                            .take(entry.best_count)
+                            .map(|(name, _)| name.clone())
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            };
             (
                 DocElement::HeatSuffix(SuffixShape::of(&display)?),
                 suffix.content.trim().to_string(),
+                tops,
             )
         };
         Some(DocHit {
@@ -390,6 +428,7 @@ impl App {
             element,
             token,
             enum_number: None,
+            heat_top,
         })
     }
 
@@ -415,6 +454,7 @@ impl App {
             }
             .to_string(),
             enum_number: None,
+            heat_top: vec![],
         })
     }
 
@@ -445,6 +485,7 @@ impl App {
             element: DocElement::AnomalyMark { tier },
             token: render::ANOMALY_GLYPH.to_string(),
             enum_number: None,
+            heat_top: vec![],
         })
     }
 
@@ -486,6 +527,7 @@ impl App {
             },
             token: content.get(span)?.to_string(),
             enum_number: None,
+            heat_top: vec![],
         })
     }
 
@@ -554,6 +596,7 @@ impl App {
             element,
             token,
             enum_number,
+            heat_top: vec![],
         })
     }
 
@@ -565,24 +608,34 @@ impl App {
         if self.menu.is_some() {
             return;
         }
+        // For a heat suffix, promote the token ("[3/47]" etc.) to the
+        // border title so the first content line can be "Best scorers:".
+        let doc_title = Some(format!(" {} ", hit.token));
+
         self.popup = Some(Popup {
             body: PopupBody::Doc(doc_lines(hit, self.heat_anchor)),
             anchor,
+            doc_title,
         });
     }
 }
 
-/// The box: the token as drawn, then what it means (spec 0285 S4, S6).
+/// The box content for `hit` (spec 0285 S4, S6).
 ///
-/// The token leads every one of them, so that a reader who pointed at
-/// `tag_ohb: 3` sees the 3 without any clause having to be a format
-/// string with one caller.
+/// The token itself is in the border title; content starts with the
+/// explanation. For a heat suffix, "Best scorers:" precedes the list.
 ///
 /// `heat_anchor` is the log-space scale top (spec 0337 S5/S6), used
 /// only for the graded glyph kinds — passed in rather than re-derived
 /// here so the box and the square use the same value.
 pub(super) fn doc_lines(hit: &DocHit, heat_anchor: f32) -> Vec<BoxLine> {
-    let mut lines = vec![hit.token.clone()];
+    // The token is always in the border title; the content starts with
+    // the explanation. For a heat suffix, name what the list below is.
+    let first = match hit.element {
+        DocElement::HeatSuffix(_) => Some("Best scorers:".to_string()),
+        _ => None,
+    };
+    let mut lines: Vec<String> = first.into_iter().collect();
     match hit.element {
         DocElement::Key => lines.push(key_clause(&hit.token).to_string()),
         DocElement::Value => {
@@ -635,60 +688,53 @@ pub(super) fn doc_lines(hit: &DocHit, heat_anchor: f32) -> Vec<BoxLine> {
         // already have on screen: where one is wanted, the box says
         // where it is.
         DocElement::HeatGlyph(kind) => {
-            lines.push(
-                match kind {
-                    HeatGlyphKind::Tie => "another type scores exactly as well as this one",
-                    HeatGlyphKind::Mismatch => "another type scores higher on these bytes",
-                    HeatGlyphKind::Unmatched => "no type known here fits these bytes",
+            match kind {
+                HeatGlyphKind::Tie { score } => {
+                    lines.push(format!(
+                        "current typing maxes the score ({score}) but there are ties"
+                    ));
+                    lines.push("see the heat cue on the right".to_string());
                 }
-                .to_string(),
-            );
-            lines.push(
-                match kind {
-                    HeatGlyphKind::Tie => "brighter means a higher score",
-                    HeatGlyphKind::Mismatch => "brighter means a bigger difference",
-                    // Spec 0335 S5: a reader who has learned "brighter
-                    // means bigger" from the other two has to be told
-                    // this one is not on that scale.
-                    HeatGlyphKind::Unmatched => "this one is not graded - there is no score",
+                HeatGlyphKind::Mismatch {
+                    current: Some(current),
+                    best,
+                } => {
+                    lines.push(format!(
+                        "the current typing ({current}) does not max the score ({best})"
+                    ));
+                    lines.push("see the heat cue on the right".to_string());
                 }
-                .to_string(),
-            );
-            // Spec 0337 S6: state the anchor so the reader knows what
-            // "at the top" means for this document. The color is
-            // document-relative and cannot be read without this.
-            if kind != HeatGlyphKind::Unmatched {
+                HeatGlyphKind::Mismatch {
+                    current: None,
+                    best,
+                } => {
+                    lines.push("the current typing does not fit these bytes at all".to_string());
+                    lines.push(format!("best score any candidate reached: {best}"));
+                    lines.push("see the heat cue on the right".to_string());
+                }
+                HeatGlyphKind::Unmatched => {
+                    lines.push("no type known here fits these bytes".to_string());
+                    // Spec 0335 S5.
+                    lines.push("this one is not graded - there is no score".to_string());
+                }
+            }
+            // Spec 0337 S6: state the anchor for the graded kinds.
+            if !matches!(kind, HeatGlyphKind::Unmatched) {
                 let brightest_at = heat_anchor.exp().round() as u64;
                 lines.push(format!("brightest at score {brightest_at} and above"));
-                lines.push("the [...] at the end of the row has the numbers".to_string());
             }
         }
         DocElement::HeatSuffix(shape) => {
+            // List the FQDNs that share the top score for this range.
             match shape {
-                SuffixShape::Mismatch => {
-                    lines.push("left: what this node's type scores here".to_string());
-                    lines.push("right: the best score any candidate reached".to_string());
-                }
-                SuffixShape::NoFit => {
-                    lines.push("the - is: this node's type does not fit at all".to_string());
-                    lines.push("right: the best score any candidate reached".to_string());
-                }
-                SuffixShape::Tie => {
-                    lines.push("n types score s here - the best, but not the".to_string());
-                    lines.push("only best".to_string());
-                }
-                SuffixShape::Pending => {
-                    lines.push("the best is known; this node's own score is".to_string());
-                    lines.push("still being computed".to_string());
-                }
-                SuffixShape::Unknown => lines.push("still scoring these bytes".to_string()),
-                SuffixShape::Agree => {
-                    lines.push("this node's type is the best fit for these".to_string());
-                    lines.push("bytes, and nothing else ties it".to_string());
-                }
                 SuffixShape::Unmatched => {
-                    lines.push("no type known here fits these bytes, this".to_string());
-                    lines.push("node's own included".to_string());
+                    lines.push("no type known here fits these bytes".to_string());
+                }
+                _ if hit.heat_top.is_empty() => {
+                    lines.push("still scoring these bytes".to_string());
+                }
+                _ => {
+                    lines.extend(hit.heat_top.iter().cloned());
                 }
             }
             // G3: the one thing about this mark a reader cannot

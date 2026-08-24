@@ -256,6 +256,7 @@ fn a_vetoed_type_reports_only_that() {
             candidate: None,
         },
         anchor: (0, 0),
+        doc_title: None,
     };
     let lines = App::popup_lines(&popup, 22);
     assert_eq!(lines.len(), 2, "the type key and the verdict, nothing else");
@@ -368,6 +369,7 @@ fn only_the_non_zero_terms_are_printed() {
             candidate: None,
         },
         anchor: (0, 0),
+        doc_title: None,
     };
     let lines = App::popup_lines(&popup, 22);
     assert_eq!(
@@ -401,6 +403,7 @@ fn a_cut_range_says_so_and_still_shows_its_terms() {
             candidate: None,
         },
         anchor: (0, 0),
+        doc_title: None,
     };
     let lines = App::popup_lines(&popup, 22);
     assert!(lines[2].text.contains("fields matched"), "{lines:?}");
@@ -458,8 +461,9 @@ fn untyped_app(seed: Option<usize>) -> App {
     app
 }
 
-/// Spec 0326 test plan 4 / S3-S4: a node with no type of its own is
-/// answered for by the best-scoring candidate, named and broken down.
+/// A raw `message` node (no named FQDN) scores as "message" directly —
+/// the candidate info is already on the RHS heat cue and not repeated
+/// in the box.
 #[test]
 fn an_untyped_node_shows_its_best_candidate() {
     let mut app = untyped_app(Some(3));
@@ -468,56 +472,32 @@ fn an_untyped_node_shows_its_best_candidate() {
 
     let PopupBody::Score {
         type_key,
-        breakdown,
         candidate,
+        ..
     } = body
     else {
         panic!("a score box: {body:?}");
     };
-    assert_eq!(type_key, "Msg0", "the cache's own top_n[0]");
-    assert_eq!(candidate, Some(2), "three tied, and it is one of them");
-    assert_ne!(
-        breakdown,
-        Breakdown::Pending,
-        "the name was found, so it was scored"
-    );
-
-    // Spec 0326 S5: the label goes on the border, where it cannot be
-    // read as one of the terms below it.
-    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
-    terminal.draw(|frame| app.render(frame)).unwrap();
-    let screen: String = terminal
-        .backend()
-        .buffer()
-        .content()
-        .iter()
-        .map(|c| c.symbol())
-        .collect();
-    assert!(
-        screen.contains(CANDIDATE_TITLE.trim()),
-        "the box must say it is a guess"
-    );
+    assert_eq!(type_key, "message", "scored as the raw message type");
+    assert_eq!(candidate, None, "no candidate info for message nodes");
 }
 
-/// Spec 0326 S4: with nothing cached the box says the sweep has not
-/// come back — not that the type is unscorable, which is a verdict
-/// this node has not earned.
+/// Same with no cache entry: still scores as "message", not pending.
 #[test]
 fn an_unscored_range_is_pending_not_unranked() {
     let mut app = untyped_app(None);
     app.open_score_popup(0, (0, 0));
-    let popup = app.popup.clone().expect("the box still opens");
-    assert!(matches!(
-        popup.body,
-        PopupBody::Score {
-            breakdown: Breakdown::Pending,
-            ..
-        }
-    ));
-    assert_eq!(
-        App::popup_lines(&popup, 22)[1].text,
-        "still scoring these bytes",
-        "the same words the [?] beside the row is already saying"
+    let body = app.popup.clone().expect("the box still opens").body;
+    assert!(
+        matches!(
+            body,
+            PopupBody::Score {
+                type_key: ref k,
+                candidate: None,
+                ..
+            } if k == "message"
+        ),
+        "raw message node: scored as \"message\", no candidate: {body:?}"
     );
 }
 
@@ -538,6 +518,7 @@ fn only_a_candidate_box_counts_the_ties() {
                 candidate,
             },
             anchor: (0, 0),
+            doc_title: None,
         };
         App::popup_lines(&popup, 22)
             .into_iter()

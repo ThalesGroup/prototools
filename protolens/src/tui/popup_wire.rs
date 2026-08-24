@@ -115,6 +115,7 @@ impl App {
         self.popup = Some(Popup {
             body: PopupBody::Wire(body),
             anchor,
+            doc_title: None,
         });
     }
 
