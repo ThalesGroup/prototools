@@ -243,6 +243,33 @@ export -f header
 blue() { printf '\e[1;94m%s\e[0m\n' "$*"; }
 export -f blue
 
+view() {
+    if [[ $# -eq 0 ]]; then
+        nvim -R -
+    else
+        nvim -R "$@"
+    fi
+}
+export -f view
+
+view_textproto() {
+    if [[ $# -eq 0 ]]; then
+        nvim -R -c "set ft=textproto" -
+    else
+        nvim -R -c "set ft=textproto" "$@"
+    fi
+}
+export -f view_textproto
+
+view_proto() {
+    if [[ $# -eq 0 ]]; then
+        nvim -R -c "set ft=proto" -
+    else
+        nvim -R -c "set ft=proto" "$@"
+    fi
+}
+export -f view_proto
+
 # ---------------------------------------------------------------------------
 # Startup
 # ---------------------------------------------------------------------------
