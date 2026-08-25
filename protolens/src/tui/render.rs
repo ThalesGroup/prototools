@@ -1682,9 +1682,6 @@ impl App {
                     }
                     heat_cue::HeatCueKind::Tie { .. } => theme::HeatHue::Blue,
                 };
-                let Some(style) = theme::heat_style(c.t, hue, self.theme) else {
-                    return (blank(), None);
-                };
                 // Spec 0336 S5: the word is always the hue's flat top
                 // (`heat_label_style`), never the graded ramp.
                 let label_style = theme::heat_label_style(hue, self.theme);
@@ -1699,7 +1696,14 @@ impl App {
                         Span::styled(format!(" [{tie_count}@{score}]"), label_style)
                     }
                 };
-                (Span::styled(heat_cue::HEAT_GLYPH, style), Some(suffix))
+                // When t < 0.25 on a non-RGB terminal, the square is too
+                // cold to colour — show a blank glyph but keep the suffix
+                // so the scores are still readable in any environment.
+                let glyph = match theme::heat_style(c.t, hue, self.theme) {
+                    Some(style) => Span::styled(heat_cue::HEAT_GLYPH, style),
+                    None => blank(),
+                };
+                (glyph, Some(suffix))
             }
             heat_cue::HeatDisplay::PendingCurrent { best } => (
                 blank(),

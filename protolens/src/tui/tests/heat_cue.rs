@@ -1882,18 +1882,19 @@ fn a_negative_best_mismatch_is_amber() {
 
     let amber_label = theme::heat_label_style(theme::HeatHue::Amber, app.theme).fg;
     let green_label = theme::heat_label_style(theme::HeatHue::Green, app.theme).fg;
-    // Square is at t=0 (floor), so its color is heat_color(0.0, hue, theme).
-    let amber_floor = Some(theme::heat_color(0.0, theme::HeatHue::Amber, app.theme));
-    let green_floor = Some(theme::heat_color(0.0, theme::HeatHue::Green, app.theme));
     assert_ne!(amber_label, green_label, "amber and green must be distinct");
-    assert_ne!(
-        amber_floor, green_floor,
-        "floor colors must also be distinct"
-    );
     assert_eq!(
         drawn_suffix_style(&cells, "[-100/-35]").map(|s| s.fg),
         Some(amber_label),
         "negative best: suffix must be flat amber, not green: {row:?}"
+    );
+    // Square is at t=0 (floor), so its color is heat_color(0.0, hue, theme).
+    // RGB is guaranteed by COLORTERM=truecolor in the Nix sandbox (rust.nix).
+    let amber_floor = Some(theme::heat_color(0.0, theme::HeatHue::Amber, app.theme));
+    let green_floor = Some(theme::heat_color(0.0, theme::HeatHue::Green, app.theme));
+    assert_ne!(
+        amber_floor, green_floor,
+        "floor colors must also be distinct"
     );
     assert_eq!(
         cells[0].1.fg, amber_floor,

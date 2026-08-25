@@ -151,6 +151,9 @@ let
     pname          = "prototools-tests";
     cargoArtifacts = depsCache;
     cargoExtraArgs = bootstrapArgs;
+    # Tell supports_rgb() that RGB is available so color-sensitive tests
+    # exercise the RGB code path in the sandbox (no real terminal there).
+    COLORTERM      = "truecolor";
   });
 
   # Common postInstall for both prototext variants.
