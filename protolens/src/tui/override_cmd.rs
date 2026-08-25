@@ -142,6 +142,20 @@ fn cardinality_str(c: prost_reflect::Cardinality) -> &'static str {
     }
 }
 
+/// Extract the value of `--as` or `--as-new` from a whitespace-split
+/// command token sequence, returning the FQDN token that follows it, or
+/// `None` if neither flag is present. Used by `complete_field_name` to
+/// derive the type-based name candidate (spec 0360 S5).
+fn extract_as_flag(tokens: &str) -> Option<&str> {
+    let mut iter = tokens.split_whitespace();
+    while let Some(tok) = iter.next() {
+        if tok == "--as" || tok == "--as-new" {
+            return iter.next();
+        }
+    }
+    None
+}
+
 /// `<origin>` parses by shape — the inverse of `OverrideOrigin::label`
 /// (spec 0236 S5). The `:` split is on the *last* colon, so an FQDN
 /// containing none is unambiguous and a path never is.
@@ -293,8 +307,15 @@ impl App {
             buf.push_str(" --card ");
             buf.push_str(cardinality_str(card));
         }
+        // Spec 0360 S5: when a type is highlighted, prepend its
+        // snake-case last leg as derivation (0).
+        let type_derived = if from_manage {
+            None
+        } else {
+            r#type.as_deref().map(Self::fqdn_last_leg_to_snake)
+        };
         buf.push_str(" --field-name ");
-        buf.push_str(&self.display_name_for(node, entry_name));
+        buf.push_str(&self.display_name_for(node, entry_name, type_derived));
         self.open_command_line(CommandLineKind::Command, buf);
     }
 
@@ -326,26 +347,42 @@ impl App {
         }
     }
 
-    /// `--field-name`'s pre-filled value (spec 0237 S5): the first of
-    /// the four derivations that is available.
-    fn display_name_for(&self, idx: usize, entry_name: Option<String>) -> String {
-        // Never empty: derivation (4) always applies.
-        self.field_name_candidates(idx, entry_name).swap_remove(0)
+    /// `--field-name`'s pre-filled value: the first of the derivations
+    /// that is available. `type_derived` is prepended as derivation (0)
+    /// when present — spec 0360 S5.
+    fn display_name_for(
+        &self,
+        idx: usize,
+        entry_name: Option<String>,
+        type_derived: Option<String>,
+    ) -> String {
+        // Never empty: the final derivation always applies.
+        self.field_name_candidates(idx, entry_name, type_derived)
+            .swap_remove(0)
     }
 
-    /// The four ways protolens can name a field (spec 0237 S7), in
-    /// order, with duplicates dropped keeping the first occurrence.
+    /// The candidate field names for a node, in priority order, with
+    /// duplicates dropped keeping the first occurrence (spec 0237 S7).
+    ///
+    /// `type_derived` is derivation (0) — the snake-case last leg of the
+    /// selected FQDN (spec 0360 S5) — prepended when the caller has a
+    /// highlighted type. The remaining derivations are: (1) stored entry
+    /// name, (2) schema-declared name, (3) `f<N>`, (4) `p<P>`.
     ///
     /// (1) and (2) coincide whenever the stored name came from the
     /// schema, which is exactly the case spec 0236 S8 normalizes away —
-    /// without the dedup, Tab there would appear to do nothing. (3) and
-    /// (4) were one candidate in spec 0236, spelled `f<position>`, which
-    /// read as a field number and was not one.
-    fn field_name_candidates(&self, idx: usize, entry_name: Option<String>) -> Vec<String> {
+    /// without the dedup, Tab there would appear to do nothing.
+    fn field_name_candidates(
+        &self,
+        idx: usize,
+        entry_name: Option<String>,
+        type_derived: Option<String>,
+    ) -> Vec<String> {
         // `field_number == 0` is the virtual-wrapper/root sentinel, not
         // a field number, so (3) has nothing to offer there.
         let field_number = self.tree[idx].span.field_number;
         let derivations = [
+            type_derived,
             entry_name,
             self.schema_field_name(idx),
             (field_number != 0).then(|| format!("f{field_number}")),
@@ -358,6 +395,74 @@ impl App {
             }
         }
         out
+    }
+
+    /// Convert the last `.`-separated leg of an FQDN to snake_case,
+    /// using Google's acronym rule: a run of consecutive uppercase
+    /// letters is one word (spec 0360 S4).
+    pub(super) fn fqdn_last_leg_to_snake(fqdn: &str) -> String {
+        let last = fqdn.rsplit('.').next().unwrap_or(fqdn);
+        let bytes = last.as_bytes();
+        let mut out = String::with_capacity(last.len() + 4);
+        for (i, &b) in bytes.iter().enumerate() {
+            if b.is_ascii_uppercase() && i > 0 {
+                let prev_lower = bytes[i - 1].is_ascii_lowercase() || bytes[i - 1].is_ascii_digit();
+                let next_lower = bytes.get(i + 1).map_or(false, |nb| nb.is_ascii_lowercase());
+                let prev_upper = bytes[i - 1].is_ascii_uppercase();
+                if prev_lower || (prev_upper && next_lower) {
+                    out.push('_');
+                }
+            }
+            out.push(b.to_ascii_lowercase() as char);
+        }
+        out
+    }
+
+    /// Derive a field name from `fqdn` for `idx` (spec 0360 S1):
+    /// snake-case last leg → `f<N>` → `None`, skipping any candidate
+    /// already used by an active sibling.
+    ///
+    /// Returns `None` when the schema already provides a name for `idx`
+    /// (mirroring spec 0236 S8: storing a name when the schema has one
+    /// is redundant and would override the schema name in rendering).
+    pub(super) fn derive_field_name(&self, fqdn: &str, idx: usize) -> Option<String> {
+        // No need to derive a name when the schema already provides one.
+        if self.schema_field_name(idx).is_some() {
+            return None;
+        }
+        let in_use = self.sibling_field_names(idx);
+        let snake = Self::fqdn_last_leg_to_snake(fqdn);
+        if !snake.is_empty() && !in_use.contains(&snake) {
+            return Some(snake);
+        }
+        let field_number = self.tree[idx].span.field_number;
+        if field_number != 0 {
+            let fallback = format!("f{field_number}");
+            if !in_use.contains(&fallback) {
+                return Some(fallback);
+            }
+        }
+        None
+    }
+
+    /// The set of field names already claimed by active entries whose
+    /// first affected node shares `idx`'s parent — used by
+    /// `derive_field_name` to avoid duplicates.
+    fn sibling_field_names(&self, idx: usize) -> Vec<String> {
+        let parent = self.parent(idx);
+        let mut names = Vec::new();
+        for entry in self.overrides.entries() {
+            if !entry.active {
+                continue;
+            }
+            let first = self.manage_affected_nodes(&entry.origin).into_iter().next();
+            if let Some(sibling) = first {
+                if sibling != idx && self.parent(sibling) == parent {
+                    names.push(self.field_name_for(sibling));
+                }
+            }
+        }
+        names
     }
 
     /// The field name `idx` gets from its parent's schema, or `None`
@@ -619,7 +724,10 @@ impl App {
         let entry_name = self
             .resolve_active_override_entry(subject)
             .and_then(|e| e.name.clone());
-        let candidates = self.field_name_candidates(subject, entry_name);
+        // Spec 0360 S5: if `--as <fqdn>` appears in the line, prepend
+        // its snake-case last leg as derivation (0).
+        let type_derived = extract_as_flag(before).map(Self::fqdn_last_leg_to_snake);
+        let candidates = self.field_name_candidates(subject, entry_name, type_derived);
         self.apply_rotation(token_start, prefix, candidates);
     }
 

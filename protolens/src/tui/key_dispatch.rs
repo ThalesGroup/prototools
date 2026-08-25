@@ -292,7 +292,18 @@ impl App {
                 // Spec 0118 §6: any kind's activation triggers the
                 // recursive render pass — `path`/`path-field`/
                 // `fqdn-field` alike.
-                self.overrides.activate(origin.clone(), new_fqdn.clone());
+                //
+                // Spec 0360 S1/S2: derive a field name from the selected
+                // FQDN and pass it to `activate_with_name`. For the
+                // `None` sentinel (raw) no name is derived (G3).
+                let target = self.override_target.unwrap_or(self.cursor);
+                let derived_name = new_fqdn
+                    .as_deref()
+                    .filter(|f| *f != crate::decode::NONE_KEYWORD)
+                    .map(|f| self.derive_field_name(f, target))
+                    .unwrap_or(None);
+                self.overrides
+                    .activate_with_name(origin.clone(), new_fqdn.clone(), derived_name);
                 // Spec 0185 S6: the overlay must not be alive while a
                 // splice runs — its anchor is a row position the splice
                 // is about to invalidate.

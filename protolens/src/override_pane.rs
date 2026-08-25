@@ -407,7 +407,20 @@ impl OverrideCollection {
     /// this path is the user endorsing it. Internal auto-expansion
     /// seeding uses `activate_auto` instead.
     pub fn activate(&mut self, origin: OverrideOrigin, r#type: Option<String>) {
-        self.activate_impl(origin, r#type, false);
+        self.activate_impl(origin, r#type, None, false);
+    }
+
+    /// Like `activate`, but stores `name` on a new entry and fills a
+    /// `None` name on an existing reactivated entry (spec 0360 S2).
+    /// A stored `Some` name is never overwritten — only the caller who
+    /// first set it may change it.
+    pub fn activate_with_name(
+        &mut self,
+        origin: OverrideOrigin,
+        r#type: Option<String>,
+        name: Option<String>,
+    ) {
+        self.activate_impl(origin, r#type, name, false);
     }
 
     /// Like `activate`, but for `render_overrides`'s internal Any/
@@ -415,7 +428,7 @@ impl OverrideCollection {
     /// entry `auto: true`, purely as provenance (see `OverrideEntry::auto`)
     /// — it applies exactly like a manually-activated entry.
     pub fn activate_auto(&mut self, origin: OverrideOrigin, r#type: Option<String>) {
-        self.activate_impl(origin, r#type, true);
+        self.activate_impl(origin, r#type, None, true);
     }
 
     /// Clears `active` on every entry with exactly `origin` — spec 0117
@@ -434,7 +447,13 @@ impl OverrideCollection {
         }
     }
 
-    fn activate_impl(&mut self, origin: OverrideOrigin, r#type: Option<String>, auto: bool) {
+    fn activate_impl(
+        &mut self,
+        origin: OverrideOrigin,
+        r#type: Option<String>,
+        name: Option<String>,
+        auto: bool,
+    ) {
         self.deactivate_origin(&origin);
         if let Some(e) = self
             .entries
@@ -443,12 +462,17 @@ impl OverrideCollection {
         {
             e.active = true;
             e.auto = auto;
+            // Spec 0360 S2: fill a missing name but never overwrite a
+            // stored one — the user may have renamed it via `o`.
+            if e.name.is_none() {
+                e.name = name;
+            }
         } else {
             self.entries.push(OverrideEntry {
                 origin,
                 r#type,
                 active: true,
-                name: None,
+                name,
                 auto,
                 cardinality: None,
             });
