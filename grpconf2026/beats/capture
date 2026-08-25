@@ -1,0 +1,78 @@
+# SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+#
+# SPDX-License-Identifier: MIT
+
+# Standalone guided walk through bob/capture — a SearchTextRequest whose
+# type was inferred, whose score is not perfect, and whose first text_query
+# is shadowed by a second.
+#
+# Invocation:
+#   protolens --descriptor-set alice/app.desc \
+#       --script grpconf2026/beats/capture.script bob/capture
+#
+# Positional paths:
+#   /    SearchTextRequest root (inferred, score −8)
+#   /1   text_query: "<binary blob>"  — the shadowed first instance
+#   /2   text_query: "coffee in Grenoble"  #@ repeated_singular
+#   /3   language_code: "en-US"
+#
+# Re-pin (must print nothing):
+#   protolens --descriptor-set alice/app.desc \
+#       --script grpconf2026/beats/capture.script bob/capture script \
+#     | grep 'error:'
+
+title: What is bob/capture?
+
+steps:
+  - text: |
+      protolens opened without a type name and found one anyway:
+
+        👉 SearchTextRequest.
+
+      Press space to step.
+
+    node: /
+    select: true
+
+  - text: |
+      Hover over the "SearchTextRequest" type name.
+
+      A score breakdown tooltip appears.
+      Note the penalty for "non-canonical encoding".
+
+      Press space to step.
+
+    node: /
+    select: true
+    search: SearchTextRequest
+
+  - text: |
+      Here is the issue.  text_query appears twice.
+
+      The schema declares it singular — one value per message.  The
+      wire carries two.  Last one wins: protoc shows you
+      "coffee in Grenoble" and silently drops everything above it.
+
+      Press space to step.
+
+    node: /2
+    select: true
+    search: repeated_singular
+
+  - text: |
+      The first text_query gets shadowed.
+
+      Press `$` to see the `#@ shadowed_scalar` annotation at the right edge of the line.
+
+      Press space to step.
+
+    node: /1
+    select: true
+
+  - text: |
+      Press Enter to quit.
+
+    node: /1
+    select: true
+    search: shadowed_scalar
+    command: quit

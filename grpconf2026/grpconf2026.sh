@@ -89,13 +89,22 @@ protoc --descriptor_set_in=alice/app.desc \
 
 # Compare again with the prototext output.
 # This time, let's use protolens, the interactive version of prototext:
-protolens --descriptor-set alice/app.desc bob/capture   --script beats/capture.script
+protolens --descriptor-set alice/app.desc bob/capture   --script beats/capture
 # Notice that protolens adds annotations as comments
 # There is more to capture than met the protoc eye 🕵
 
 
 # Let's try with the logfile:
-protolens --descriptor-set alice/app.desc bob/logfile
+protolens --descriptor-set alice/app.desc bob/logfile   --script beats/app.desc
+
+\
+protolens --descriptor-set $PROTOTEXT_GOOGLEAPIS_DESC bob/logfile \
+  --load-overrides alice/overrides \
+  --script beats/googleapis.desc
+
+view_textproto alice/export
+cmp bob/logfile <(prototext encode alice/export) && echo Identical 🙂
+
 
 
 # \
