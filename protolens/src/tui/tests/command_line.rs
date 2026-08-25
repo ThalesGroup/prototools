@@ -32,11 +32,18 @@ fn resolve_command_no_longer_knows_type_as_or_override_as() {
 /// including unambiguous prefixes.
 #[test]
 fn resolve_command_reflects_the_0156_renames() {
+    // `extract` is gone entirely.
     assert!(resolve_command("extract").is_err());
-    assert!(resolve_command("save-overrides").is_err());
-    assert!(resolve_command("restore-overrides").is_err());
-    assert_eq!(resolve_command("save"), Ok("save"));
-    assert_eq!(resolve_command("restore"), Ok("restore"));
+    // `save`/`restore` are not COMMANDS entries, but they are unambiguous
+    // prefixes of `save-overrides`/`restore-overrides` and therefore still
+    // prefix-resolve (spec 0354 G1 removes the commands, not their prefixes).
+    assert_eq!(resolve_command("save"), Ok("save-overrides"));
+    assert_eq!(resolve_command("restore"), Ok("restore-overrides"));
+    assert_eq!(resolve_command("save-overrides"), Ok("save-overrides"));
+    assert_eq!(
+        resolve_command("restore-overrides"),
+        Ok("restore-overrides")
+    );
 }
 
 /// Item 9 (2026-07-17 feedback): `:quit`, and its unambiguous prefix
@@ -834,7 +841,7 @@ fn save_and_restore_overrides_round_trips_and_drops_unresolvable_entries() {
     app.run_restore_overrides(vec![file.as_str()]);
 
     assert!(
-        app.message.starts_with("restored overrides from"),
+        app.message.starts_with("loaded overrides from"),
         "unexpected message: {}",
         app.message
     );

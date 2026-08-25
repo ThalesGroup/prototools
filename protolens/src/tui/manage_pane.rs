@@ -621,11 +621,11 @@ impl App {
                 }
             }
             KeyCode::Char('s') => {
-                let buf = format!("save {}", self.default_save_overrides_path());
+                let buf = format!("save-overrides {}", self.default_save_overrides_path());
                 self.open_command_line(CommandLineKind::Command, buf);
             }
             KeyCode::Char('r') => {
-                self.open_command_line(CommandLineKind::Command, "restore ".to_string());
+                self.open_command_line(CommandLineKind::Command, "restore-overrides ".to_string());
             }
             _ => {}
         }

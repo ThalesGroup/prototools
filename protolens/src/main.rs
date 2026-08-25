@@ -141,6 +141,19 @@ struct Cli {
     )]
     override_preview_byte_budget: usize,
 
+    /// Previously-saved override collection (spec 0117 §4 YAML, the same
+    /// file `:save-overrides` writes) to apply when the TUI opens. A
+    /// target-hash mismatch is a warning (to stderr), not a hard error
+    /// (spec 0354 S3). A missing file or malformed YAML is a hard error.
+    ///
+    /// Only applicable to the interactive TUI (no subcommand). For batch
+    /// override loading, see `export --load-overrides`.
+    #[arg(
+        long = "load-overrides",
+        add = ArgValueCompleter::new(complete::complete_any_path),
+    )]
+    load_overrides: Option<PathBuf>,
+
     /// Take the blob for wire bytes without looking (spec 0216 S29).
     ///
     /// A file whose first 13 bytes are `#@ prototext:` is normally
@@ -203,13 +216,12 @@ enum Command {
         path: String,
 
         /// Previously-saved override collection (spec 0117 §4 YAML, the
-        /// same file `:save` writes) to apply before exporting. A
-        /// target-hash mismatch against the loaded blob/descriptor-set
-        /// is a warning (to stderr), not a hard error — same policy as
-        /// the `:restore` TUI command. A missing file or malformed
-        /// YAML, unlike the TUI, is a hard error. Required when
-        /// `--format` is `descriptor-binary`/`descriptor-prototext`
-        /// (spec 0156 G9).
+        /// same file `:save-overrides` writes) to apply before
+        /// exporting. A target-hash mismatch is a warning (to stderr),
+        /// not a hard error — same policy as `:restore-overrides`
+        /// (spec 0354 S3). A missing file or malformed YAML, unlike the
+        /// TUI, is a hard error. Required when `--format` is
+        /// `descriptor-binary`/`descriptor-prototext` (spec 0156 G9).
         #[arg(long = "load-overrides")]
         load_overrides: Option<PathBuf>,
 
@@ -706,6 +718,27 @@ fn main() -> ExitCode {
             output.as_deref(),
         ),
         None => {
+            // Spec 0354 S3: `--load-overrides` at TUI startup. Applied
+            // before the refusals check so that any refusals from the
+            // loaded collection are included. A missing or unparseable
+            // file is a hard error (same as batch mode); a hash mismatch
+            // is a warning only.
+            if let Some(overrides_path) = &cli.load_overrides {
+                match app.load_overrides(&overrides_path.to_string_lossy()) {
+                    Ok(load) => {
+                        for w in &load.warnings {
+                            eprintln!("warning: --load-overrides: {w}");
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "error: --load-overrides '{}': {e}",
+                            overrides_path.display()
+                        );
+                        return ExitCode::FAILURE;
+                    }
+                }
+            }
             // Spec 0221 S4: `App::new`'s own override pass may have
             // refused, and the status line it set for them is about to
             // be unreadable — `warm_up_heat_cues` overwrites it with a
@@ -825,22 +858,18 @@ fn run_export(
     // true — that pairing is checked before startup.
     let is_descriptor = format.is_some_and(ExtractFormatArg::is_descriptor);
 
-    // A hash mismatch is a warning everywhere else, and stays one for the
-    // two document formats: those export the document's own bytes, which
-    // are what they are whatever the overrides file was written against.
-    // The descriptor formats export a *schema* instead, assembled from
-    // exactly those overrides — so a collection written against a
-    // different blob or a different descriptor set produces a schema that
-    // describes neither, and hands it to a tool with no way to notice.
-    // Same reasoning, and same exit code, as the refusal check above: no
-    // output file is produced.
+    // Spec 0354 S3: a hash mismatch is a warning on every path, including
+    // the descriptor formats. Previously a hard error for descriptor
+    // exports (a mismatched collection producing a schema for the wrong
+    // blob/set); now only a warning, consistent with the TUI
+    // `:restore-overrides` behaviour. The caller can still see the
+    // mismatch on stderr and decide what to do.
     if is_descriptor && hash_mismatch {
         eprintln!(
-            "error: --load-overrides: the overrides file was written against a \
+            "warning: --load-overrides: the overrides file was written against a \
              different blob or descriptor set, and --format=descriptor-binary/\
              descriptor-prototext exports a schema built from it"
         );
-        return ExitCode::FAILURE;
     }
 
     let Some(idx) = app.resolve_path(path) else {

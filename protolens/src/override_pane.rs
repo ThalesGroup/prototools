@@ -708,7 +708,12 @@ const YAML_FORMAT_VERSION: u32 = 1;
 #[derive(Serialize, Deserialize)]
 struct YamlFile<E> {
     version: u32,
-    target: YamlTarget,
+    /// Spec 0354 S4: optional on read. When absent the caller receives the
+    /// empty-string sentinel (`YamlTarget { blob_sha256: "", … }`) and
+    /// skips all hash comparisons — a targetless file is unconditionally
+    /// portable.
+    #[serde(default)]
+    target: Option<YamlTarget>,
     /// The FQDNs `:override --as-new` declared (spec 0315 S10), which
     /// `:restore` must re-declare before it applies the entries naming
     /// them — otherwise every one of those entries restores into
@@ -859,10 +864,10 @@ impl OverrideCollection {
             .collect();
         let file = YamlFile {
             version: YAML_FORMAT_VERSION,
-            target: YamlTarget {
+            target: Some(YamlTarget {
                 blob_sha256,
                 descriptor_set_sha256,
-            },
+            }),
             created_types,
             overrides,
         };
@@ -886,7 +891,7 @@ impl OverrideCollection {
     pub fn from_yaml(text: &str) -> Result<(Self, YamlTarget, Vec<String>), String> {
         let file: YamlFile<serde_norway::Value> = serde_norway::from_str(text).map_err(|e| {
             format!(
-                "malformed overrides file (expected `version`, `target` and a \
+                "malformed overrides file (expected `version` and a \
                  list of `overrides`): {e}"
             )
         })?;
@@ -955,7 +960,13 @@ impl OverrideCollection {
         }
         let mut collection = OverrideCollection { entries };
         collection.sort();
-        Ok((collection, file.target, file.created_types))
+        // Spec 0354 S4: absent `target` → empty-string sentinel so that
+        // `load_overrides` can detect "no target" and skip hash comparisons.
+        let target = file.target.unwrap_or(YamlTarget {
+            blob_sha256: String::new(),
+            descriptor_set_sha256: String::new(),
+        });
+        Ok((collection, target, file.created_types))
     }
 }
 

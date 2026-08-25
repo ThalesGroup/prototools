@@ -403,10 +403,9 @@ fn export_load_overrides_malformed_yaml_is_a_hard_error() {
     );
 }
 
-/// By contrast (spec 0123 Test plan item 4a's clarifying note): a
-/// hash-mismatched but otherwise-valid overrides collection is a
-/// stderr-only warning, not a hard error — same policy as the TUI's own
-/// `:restore`.
+/// Spec 0123 Test plan item 4a: a hash-mismatched but otherwise-valid
+/// overrides collection is a stderr-only warning, not a hard error —
+/// same policy as the TUI's own `:restore-overrides` (spec 0354 G2).
 #[test]
 fn export_load_overrides_hash_mismatch_warns_but_still_succeeds() {
     let (descriptor, blob) = outer_inner_fixture();
@@ -439,13 +438,11 @@ fn export_load_overrides_hash_mismatch_warns_but_still_succeeds() {
     );
 }
 
-/// ...but not for the descriptor formats (quality audit E6). Those
-/// export a *schema* assembled from the overrides themselves, so a
-/// collection written against a different blob or descriptor set makes
-/// the output wrong rather than merely stale — and the consumer of a
-/// descriptor set has no way to notice. Fails, and writes nothing.
+/// Spec 0354 G2/S3: the descriptor formats also warn on hash mismatch
+/// rather than failing — the consumer sees the warning on stderr and can
+/// decide what to do. The export succeeds and produces bytes.
 #[test]
-fn export_descriptor_binary_with_a_hash_mismatch_is_a_hard_error() {
+fn export_descriptor_binary_with_a_hash_mismatch_warns_but_still_succeeds() {
     let (descriptor, blob) = outer_inner_fixture();
     let yaml = format!(
         "version: 1\ntarget:\n  blob_sha256: \"{}\"\n  descriptor_set_sha256: \"{}\"\noverrides: []\n",
@@ -466,11 +463,15 @@ fn export_descriptor_binary_with_a_hash_mismatch_is_a_hard_error() {
         "--load-overrides",
         overrides.path(),
     ]);
-    assert_refused(&out, "a hash mismatch must be fatal for a schema export");
+    assert!(
+        out.status.success(),
+        "a hash mismatch must warn, not fail for descriptor-binary: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("error") && stderr.contains("different blob or descriptor set"),
-        "expected a fatal hash-mismatch diagnostic, got: {stderr}"
+        stderr.contains("warning") && stderr.contains("different blob or descriptor set"),
+        "expected a hash-mismatch warning, got: {stderr}"
     );
 }
 

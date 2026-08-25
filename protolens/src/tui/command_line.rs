@@ -468,8 +468,9 @@ impl App {
     /// (the command name, before any space) always; a token beginning
     /// with `-` against the command's own flags (spec 0236 S22); and
     /// otherwise whatever that command's arguments are — an
-    /// `:override` origin, type or field name, a `:save`/`:restore` path, a
-    /// `:proto-root` directory. Anywhere else is a silent no-op.
+    /// `:override` origin, type or field name, a `:save-overrides`/
+    /// `:restore-overrides` path, a `:proto-root` directory.
+    /// Anywhere else is a silent no-op.
     ///
     /// The flag check comes first and is command-independent, so a `-`
     /// never reaches a value completer that would try to read it as a
@@ -494,7 +495,7 @@ impl App {
         }
         match resolved {
             "override" => self.complete_override_cmd(cmd, rest),
-            "save" | "restore" => self.complete_fs_path(cmd, rest),
+            "save-overrides" | "restore-overrides" => self.complete_fs_path(cmd, rest),
             "proto-root" => self.complete_dir_path(cmd, rest),
             _ => {}
         }
@@ -576,7 +577,7 @@ impl App {
         self.apply_completion(token_start, arg_prefix.chars().count(), matches);
     }
 
-    /// `:save`/`:restore`'s argument completion (spec
+    /// `:save-overrides`/`:restore-overrides` argument completion (spec
     /// 0117 §4) — candidates are `std::fs::read_dir`'s entries for the
     /// argument's directory portion (everything up to and including its
     /// last `/`, or the current directory if there is none), filtered by
@@ -806,8 +807,8 @@ impl App {
             // that lists the others.
             Ok("help") => self.help_open = true,
             Ok("override") => self.run_override_cmd(tokens.collect()),
-            Ok("save") => self.run_save_overrides(tokens.collect()),
-            Ok("restore") => self.run_restore_overrides(tokens.collect()),
+            Ok("save-overrides") => self.run_save_overrides(tokens.collect()),
+            Ok("restore-overrides") => self.run_restore_overrides(tokens.collect()),
             Ok("proto-root") => self.run_proto_root(tokens.collect()),
             // Reachable, notwithstanding that `COMMANDS` and the arms
             // above currently agree: a name added to the registry gets
@@ -987,7 +988,7 @@ impl App {
         extract::extract_bytes(format, &self.blob, &lines, &self.tree[idx], 0..lines.len())
     }
 
-    /// Propose a default `:save` path — same directory/stem as
+    /// Propose a default `:save-overrides` path — same directory/stem as
     /// the target blob, `.yaml` extension (spec 0117 §4, mirroring
     /// `default_extract_path`).
     pub(super) fn default_save_overrides_path(&self) -> String {
@@ -1076,13 +1077,13 @@ impl App {
     /// (`write_atomically`), since the collection being saved has no
     /// other copy.
     pub(super) fn run_save_overrides(&mut self, args: Vec<&str>) {
-        let Some(path) = self.require_arg(&args, "save: missing path") else {
+        let Some(path) = self.require_arg(&args, "save-overrides: missing path") else {
             return;
         };
         let (blob_sha256, descriptor_set_sha256) = match self.target_hashes() {
             Ok(hashes) => hashes,
             Err(e) => {
-                self.message = format!("save error: {e}");
+                self.message = format!("save-overrides error: {e}");
                 return;
             }
         };
@@ -1093,7 +1094,7 @@ impl App {
         );
         match write_atomically(Path::new(&path), yaml.as_bytes()) {
             Ok(()) => self.message = format!("saved overrides to {path}"),
-            Err(e) => self.message = format!("save error: {e}"),
+            Err(e) => self.message = format!("save-overrides error: {e}"),
         }
     }
 
@@ -1113,7 +1114,7 @@ impl App {
         self.proto_root = Some(dir);
     }
 
-    /// Shared core of `restore`/batch `--load-overrides` (spec
+    /// Shared core of `:restore-overrides`/batch `--load-overrides` (spec
     /// 0117 §4, spec 0123 G4): loads and parses the YAML override
     /// collection at `path`, silently drops any entry that doesn't
     /// resolve against the current tree/descriptor pool, then replaces
@@ -1140,16 +1141,20 @@ impl App {
             let _ = self.ctx.declare_type(fqdn);
         }
         let dropped = collection.retain_resolvable(|origin| self.origin_resolves(origin));
-        let (blob_sha256, descriptor_set_sha256) = self.target_hashes()?;
         let mut warnings = Vec::new();
         let mut hash_mismatch = false;
-        if target.blob_sha256 != blob_sha256 {
-            warnings.push("blob hash mismatch".to_string());
-            hash_mismatch = true;
-        }
-        if target.descriptor_set_sha256 != descriptor_set_sha256 {
-            warnings.push("descriptor-set hash mismatch".to_string());
-            hash_mismatch = true;
+        // Spec 0354 S4: a targetless file (both hashes empty) is explicitly
+        // portable — skip all hash comparisons, no warnings emitted.
+        if !target.blob_sha256.is_empty() || !target.descriptor_set_sha256.is_empty() {
+            let (blob_sha256, descriptor_set_sha256) = self.target_hashes()?;
+            if target.blob_sha256 != blob_sha256 {
+                warnings.push("blob hash mismatch".to_string());
+                hash_mismatch = true;
+            }
+            if target.descriptor_set_sha256 != descriptor_set_sha256 {
+                warnings.push("descriptor-set hash mismatch".to_string());
+                hash_mismatch = true;
+            }
         }
         // Spec 0221 S6: dropped entries used to vanish without a word,
         // which reads exactly like a file that was applied. Reported
@@ -1211,19 +1216,19 @@ impl App {
         })
     }
 
-    /// `restore <path>` (spec 0117 §4): replaces the collection wholesale
-    /// with `<path>`'s contents — see `load_overrides`.
+    /// `:restore-overrides <path>` (spec 0117 §4, spec 0354 S1): replaces
+    /// the collection wholesale with `<path>`'s contents — see `load_overrides`.
     pub(super) fn run_restore_overrides(&mut self, args: Vec<&str>) {
-        let Some(path) = self.require_arg(&args, "restore: missing path") else {
+        let Some(path) = self.require_arg(&args, "restore-overrides: missing path") else {
             return;
         };
         self.message = match self.load_overrides(&path) {
-            Ok(load) if load.warnings.is_empty() => format!("restored overrides from {path}"),
+            Ok(load) if load.warnings.is_empty() => format!("loaded overrides from {path}"),
             Ok(load) => format!(
-                "restored overrides from {path} (warning: {})",
+                "loaded overrides from {path} (warning: {})",
                 load.warnings.join(", ")
             ),
-            Err(e) => format!("restore error: {e}"),
+            Err(e) => format!("restore-overrides error: {e}"),
         };
     }
 }

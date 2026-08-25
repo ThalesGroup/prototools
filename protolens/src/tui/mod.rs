@@ -188,8 +188,8 @@ const COMMANDS: &[&str] = &[
     "quit",
     "help",
     "override",
-    "save",
-    "restore",
+    "save-overrides",
+    "restore-overrides",
     "proto-root",
 ];
 
