@@ -409,22 +409,6 @@ impl App {
         });
     }
 
-    /// `s` (spec 0280 S18): the same box for the node the caret is on,
-    /// at the caret, for the terminals that keep the right button and
-    /// for anyone who never reaches for the mouse.
-    ///
-    /// Anchored through C9's `menu_anchor`, which derives the caret's
-    /// cell rather than remembering it — so this is right on the first
-    /// keystroke after a resize, before any frame has been drawn.
-    pub(super) fn open_score_popup_at_caret(&mut self) {
-        if self.override_target.is_some() && !self.manage_focus {
-            self.message = OVERRIDE_FOCUS_LOCK_MESSAGE.to_string();
-            return;
-        }
-        let anchor = self.menu_anchor();
-        self.open_score_popup(self.cursor, anchor);
-    }
-
     /// The node whose type name is drawn at this point, if any (spec
     /// 0280 S10).
     ///

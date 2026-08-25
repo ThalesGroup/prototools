@@ -976,12 +976,13 @@ impl App {
             KeyCode::Char('i') => self.heat_cues = self.heat_cues.next(),
             KeyCode::Char('I') => self.heat_cues = self.heat_cues.prev(),
 
-            // Spec 0280 S18: what the cue's number is made of, for the
-            // node the caret is on. The same box the pointer earns by
-            // resting on the cue — a key as well, because motion
-            // reporting is not universal and `Shift` bypasses it
-            // everywhere.
-            KeyCode::Char('s') => self.open_score_popup_at_caret(),
+            KeyCode::Char('s') => {
+                let buf = format!("save-overrides {}", self.default_save_overrides_path());
+                self.open_command_line(CommandLineKind::Command, buf);
+            }
+            KeyCode::Char('r') => {
+                self.open_command_line(CommandLineKind::Command, "restore-overrides ".to_string());
+            }
 
             // In-pane search (spec 0114 §4, extended to the main pane):
             // reuses the command-line row as the search prompt. Only

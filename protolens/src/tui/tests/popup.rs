@@ -6,7 +6,7 @@
 
 use super::super::heat_cue::HeatCueMode;
 use super::super::heat_worker::RangeHeatEntry;
-use super::super::popup::{Breakdown, HoverTarget, CANDIDATE_TITLE, HOVER_DWELL};
+use super::super::popup::{Breakdown, HoverTarget, HOVER_DWELL};
 use super::super::tiered::Tier;
 use super::super::*;
 use super::heat_cue::seed_range_heat_entry;
@@ -299,41 +299,6 @@ fn the_memo_is_one_entry_keyed_on_the_range_and_the_type() {
         Breakdown::Unranked,
     ));
     assert_eq!(app.score_breakdown(0), Breakdown::NoGraph);
-}
-
-/// Spec 0280 test plan 7 / S18-S19: `s` opens the same box at the caret,
-/// and the row is offered in the context menu of a node showing a cue.
-#[test]
-fn s_opens_the_same_box_at_the_caret() {
-    let mut app = cue_app();
-    app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
-    let popup = app.popup.clone().expect("`s` opens the box");
-    assert_eq!(popup.anchor, app.menu_anchor());
-    assert_eq!(
-        popup.body,
-        PopupBody::Score {
-            type_key: app.current_type_key(app.cursor).expect("a typed node"),
-            breakdown: app.score_breakdown(app.cursor),
-            candidate: None,
-        }
-    );
-
-    // Any key at all takes it down again (S16) — there is no dismiss
-    // binding to learn.
-    app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
-    assert!(app.popup.is_none());
-
-    let rows = app.main_menu_items();
-    assert!(
-        rows.iter().any(|i| i.key.code == KeyCode::Char('s')),
-        "a node showing a cue offers the row"
-    );
-
-    // With the cues hidden there is no number on screen to explain, so
-    // the row goes with them.
-    app.heat_cues = HeatCueMode::Off;
-    let rows = app.main_menu_items();
-    assert!(!rows.iter().any(|i| i.key.code == KeyCode::Char('s')));
 }
 
 /// Spec 0280 test plan 8 / S17: the menu is the innermost modal and
