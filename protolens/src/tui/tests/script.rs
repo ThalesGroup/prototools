@@ -55,8 +55,7 @@ steps:
   - text: the first item
     node: /1
   - text: the second item, alone
-    fold: all
-    unfold: [/2]
+    fold: [\"/ 0\", \"/2 Z\"]
     node: /2/1
     wire-line: /2/1
   - text: and a command to run

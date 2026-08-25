@@ -25,7 +25,7 @@
 #         Did we change any of it?
 #
 #         Press Enter to write the document out as plain text.
-#       fold: all
+#       fold: ["/ 0"]
 #       unfold: [/]
 #       node: /
 #       override: export $STAGE/boblog.prototext
@@ -40,7 +40,7 @@
 #         protoc --decode.
 #
 #         :quit, and we close on the shell.
-#       fold: all
+#       fold: ["/ 0"]
 #       unfold: [/]
 #       node: /
 
@@ -55,6 +55,5 @@ steps:
       If you are seeing this, presentation.sh has been updated to invoke
       this file separately.  Move the last two steps of log-v2.script
       here and restore the separate session invocation.
-    fold: all
-    unfold: [/]
+    fold: ["/ 1"]
     node: /

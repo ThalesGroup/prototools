@@ -1390,10 +1390,12 @@ impl App {
     ///
     /// `usize::MAX` is "open everything", which is what `Z` opening
     /// passes.
-    pub(super) fn set_cursor_fold_depth(&mut self, depth: usize) {
-        let root = self.cursor;
+    /// Spec 0359 S3: set the fold depth for an arbitrary node `root`,
+    /// applying the same breadth-first depth logic as the interactive
+    /// `0`–`9`/`Z` keys. Called by `set_cursor_fold_depth` (interactive)
+    /// and `script_apply_folds` (script).
+    pub(super) fn set_fold_depth(&mut self, root: usize, depth: usize) {
         if !self.is_foldable(root) {
-            self.message = "not foldable".to_string();
             return;
         }
 
@@ -1442,10 +1444,20 @@ impl App {
         if changed {
             self.folds_changed();
         }
-        // The cursor is already on the node being reshaped and a digit
-        // only hides or shows rows after its header, so there is nobody
-        // to move — but that header's text has been rewritten underneath
-        // the caret just the same (spec 0194 S11).
+    }
+
+    /// Interactive wrapper: apply `set_fold_depth` to the cursor node,
+    /// then correct the caret position. A digit only hides or shows rows
+    /// after the header, so the cursor row does not move — but the
+    /// header's text has been rewritten underneath the caret (spec 0194
+    /// S11).
+    pub(super) fn set_cursor_fold_depth(&mut self, depth: usize) {
+        let root = self.cursor;
+        if !self.is_foldable(root) {
+            self.message = "not foldable".to_string();
+            return;
+        }
+        self.set_fold_depth(root, depth);
         self.cursor_line_in_node = 0;
         self.clamp_caret_column();
     }

@@ -73,16 +73,16 @@ fn looks_like_path(text: &str) -> bool {
         .all(|seg| !seg.is_empty() && seg.bytes().all(|b| b.is_ascii_digit()))
 }
 
-/// What a step folds before it unfolds (spec 0271 S9).
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub enum Fold {
-    /// The default: the step starts from an unfolded document.
-    #[default]
-    None,
-    /// Every node that has children.
-    All,
-    /// Exactly these.
-    These(Vec<Position>),
+/// One entry in a step's `fold:` list (spec 0359).
+///
+/// Mirrors the interactive `0`–`9` and `Z` keys: `depth` is the value
+/// passed to `set_fold_depth`, where `usize::MAX` means "fully open"
+/// (the `Z` key).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FoldEntry {
+    pub position: Position,
+    /// `0`–`9` or `usize::MAX` for `Z`.
+    pub depth: usize,
 }
 
 /// A step's wire-byte declaration (spec 0271 S10). At most one per step.
@@ -101,8 +101,9 @@ pub enum Wire {
 pub struct Step {
     pub text: String,
     pub node: Option<Position>,
-    pub fold: Fold,
-    pub unfold: Vec<Position>,
+    /// Spec 0359: ordered list of `(position, depth)` fold directives,
+    /// applied after `script_reset_folds`. Empty means start fully unfolded.
+    pub fold: Vec<FoldEntry>,
     pub wire: Option<Wire>,
     /// Command-line text to prefill, without the leading `:`
     /// (spec 0271 S11). Never executed by the script.
@@ -189,10 +190,10 @@ struct RawStep {
     text: String,
     #[serde(default)]
     node: Option<String>,
+    /// Spec 0359: sequence of `"<position> <depth>"` strings.
+    /// A bare scalar (not a sequence) is a load error via serde.
     #[serde(default)]
-    fold: Option<Scalars>,
-    #[serde(default)]
-    unfold: Option<Scalars>,
+    fold: Option<Vec<String>>,
     #[serde(default, rename = "wire-line")]
     wire_line: Option<String>,
     #[serde(default, rename = "wire-lines")]
@@ -205,23 +206,6 @@ struct RawStep {
     select: bool,
     #[serde(default)]
     search: Option<String>,
-}
-
-/// One scalar or a list of them — the shape `fold:` and `unfold:` share.
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum Scalars {
-    One(String),
-    Many(Vec<String>),
-}
-
-impl Scalars {
-    fn into_vec(self) -> Vec<String> {
-        match self {
-            Scalars::One(s) => vec![s],
-            Scalars::Many(v) => v,
-        }
-    }
 }
 
 #[derive(Deserialize)]
@@ -247,35 +231,43 @@ impl RawStep {
                 )
             }
         };
-        let fold = match self.fold {
-            None => Fold::None,
-            Some(Scalars::One(word)) if word == "all" => Fold::All,
-            Some(Scalars::One(word)) if word == "none" => Fold::None,
-            Some(other) => Fold::These(
-                other
-                    .into_vec()
-                    .iter()
-                    .map(|s| Position::parse(s))
-                    .collect(),
-            ),
-        };
+        let fold = self
+            .fold
+            .unwrap_or_default()
+            .into_iter()
+            .map(|s| parse_fold_entry(&s))
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(Step {
             text: self.text,
             node: self.node.as_deref().map(Position::parse),
             fold,
-            unfold: self
-                .unfold
-                .map(Scalars::into_vec)
-                .unwrap_or_default()
-                .iter()
-                .map(|s| Position::parse(s))
-                .collect(),
             wire,
             prefill: self.command,
             select: self.select,
             search: self.search,
         })
     }
+}
+
+/// Parse one `"<position> <depth>"` fold-entry string (spec 0359 S2).
+fn parse_fold_entry(s: &str) -> Result<FoldEntry, String> {
+    let Some(space) = s.rfind(' ') else {
+        return Err(format!(
+            "fold entry {s:?} must be \"<position> <depth>\" (0–9 or Z)"
+        ));
+    };
+    let position = Position::parse(s[..space].trim_end());
+    let depth_str = &s[space + 1..];
+    let depth = match depth_str {
+        "Z" => usize::MAX,
+        d if d.len() == 1 && d.as_bytes()[0].is_ascii_digit() => (d.as_bytes()[0] - b'0') as usize,
+        _ => {
+            return Err(format!(
+                "fold entry {s:?}: depth must be 0–9 or Z, got {depth_str:?}"
+            ))
+        }
+    };
+    Ok(FoldEntry { position, depth })
 }
 
 #[cfg(test)]
@@ -312,8 +304,7 @@ mod tests {
             "steps:\n\
              - text: hello\n  \
                node: /4/2\n  \
-               fold: all\n  \
-               unfold: [/4, google.protobuf.Any]\n  \
+               fold: [\"/4/2 0\", \"/4 Z\"]\n  \
                wire-lines:\n    \
                  from: /4/2/1\n    \
                  to: /4/2/3\n  \
@@ -323,12 +314,17 @@ mod tests {
         let step = &s.steps[0];
         assert_eq!(step.text, "hello");
         assert_eq!(step.node, Some(Position::Path("/4/2".into())));
-        assert_eq!(step.fold, Fold::All);
         assert_eq!(
-            step.unfold,
+            step.fold,
             vec![
-                Position::Path("/4".into()),
-                Position::Search("google.protobuf.Any".into())
+                FoldEntry {
+                    position: Position::Path("/4/2".into()),
+                    depth: 0,
+                },
+                FoldEntry {
+                    position: Position::Path("/4".into()),
+                    depth: usize::MAX,
+                },
             ]
         );
         assert_eq!(
@@ -344,13 +340,49 @@ mod tests {
         );
     }
 
+    /// Spec 0359 S2: each entry parsed into position + depth.
     #[test]
-    fn a_single_scalar_fold_is_a_one_element_list() {
-        let s = parse("steps:\n- text: x\n  fold: /4\n").expect("must parse");
+    fn fold_entries_parse_position_and_depth() {
+        let s = parse("steps:\n- text: x\n  fold: [\"/3 2\", \"/ 0\", \"/1 Z\"]\n")
+            .expect("must parse");
         assert_eq!(
             s.steps[0].fold,
-            Fold::These(vec![Position::Path("/4".into())])
+            vec![
+                FoldEntry {
+                    position: Position::Path("/3".into()),
+                    depth: 2,
+                },
+                FoldEntry {
+                    position: Position::Path("/".into()),
+                    depth: 0,
+                },
+                FoldEntry {
+                    position: Position::Path("/1".into()),
+                    depth: usize::MAX,
+                },
+            ]
         );
+    }
+
+    /// Spec 0359 S2: an unrecognised depth token is a load error.
+    #[test]
+    fn unknown_depth_is_a_load_error() {
+        let err = parse("steps:\n- text: x\n  fold: [\"/3 X\"]\n").expect_err("must fail");
+        assert!(err.contains("depth"), "error must mention depth: {err}");
+    }
+
+    /// Spec 0359 S1: a bare scalar (not a sequence) is a load error.
+    #[test]
+    fn bare_scalar_fold_is_a_load_error() {
+        let err = parse("steps:\n- text: x\n  fold: \"/ 0\"\n").expect_err("must fail");
+        assert!(!err.is_empty(), "{err}");
+    }
+
+    /// Spec 0359: the old `unfold:` key is gone — unknown field error.
+    #[test]
+    fn old_unfold_key_is_a_load_error() {
+        let err = parse("steps:\n- text: x\n  unfold: [\"/3\"]\n").expect_err("must fail");
+        assert!(err.contains("unfold"), "error must name the key: {err}");
     }
 
     #[test]

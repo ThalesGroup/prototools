@@ -38,8 +38,7 @@ steps:
 
       Press space to hand navigation to this pane, then -> to step.
       Press w at any time to show the wire bytes under each line.
-    fold: all
-    unfold: [/]
+    fold: ["/ 1"]
 
   - text: |
       1. Legal, not canonical.
@@ -47,8 +46,7 @@ steps:
       1.a. A varint may carry trailing padding, and a field tag is a
       varint. This tag is written in three bytes where one would do. The
       line under it says the same thing with the tag every writer emits.
-    fold: all
-    unfold: [/2]
+    fold: ["/ 1", "/2 Z"]
     node: /2/1
     wire-lines:
       from: /2/1
@@ -59,8 +57,7 @@ steps:
       way. The four bytes of length below describe a string that needs
       one — and again the next line is the same string, prefixed
       canonically.
-    fold: all
-    unfold: [/4]
+    fold: ["/ 1", "/4 Z"]
     node: /4/1
     wire-lines:
       from: /4/1
@@ -69,16 +66,14 @@ steps:
   - text: |
       1.c. And so can a value. `number: 5` is one byte of information
       written in five: the 05 and four bytes of padding.
-    fold: all
-    unfold: [/6, /6/1, /6/2]
+    fold: ["/ 1", "/6 1", "/6/1 Z", "/6/2 Z"]
     node: /6/1/2
     wire-line: /6/1/2
 
   - text: |
       1.c. The same 5, written the way every producer writes it. Same
       text, same value, one byte.
-    fold: all
-    unfold: [/6, /6/1, /6/2]
+    fold: ["/ 1", "/6 1", "/6/1 Z", "/6/2 Z"]
     node: /6/2/2
     wire-line: /6/2/2
 
@@ -87,8 +82,7 @@ steps:
 
       2.a. -1 as an int32 is specified to occupy ten bytes. This producer
       wrote five. It reads back as -1 everywhere.
-    fold: all
-    unfold: [/8, /8/1, /8/2]
+    fold: ["/ 1", "/8 1", "/8/1 Z", "/8/2 Z"]
     node: /8/1/2
     wire-line: /8/1/2
 
@@ -96,8 +90,7 @@ steps:
       2.a. And this is what a re-encode would write: the same -1, sign
       extended to the specified ten bytes. Two spellings, one value —
       which is why the round trip is lossless only if the bytes are kept.
-    fold: all
-    unfold: [/8, /8/1, /8/2]
+    fold: ["/ 1", "/8 1", "/8/1 Z", "/8/2 Z"]
     node: /8/2/2
     wire-line: /8/2/2
 
@@ -105,16 +98,14 @@ steps:
       2.b. There is one canonical NaN and 2^52 - 1 other ones. This is
       one of the others. Every arithmetic unit agrees it is NaN; no two
       of them agree on which.
-    fold: all
-    unfold: [/10, /10/1, /10/2]
+    fold: ["/ 1", "/10 1", "/10/1 Z", "/10/2 Z"]
     node: /10/1/2
     wire-line: /10/1/2
 
   - text: |
       2.b. The NaN a re-encode would write. It reads identically, and it
       differs in exactly one byte — the one the row above marks.
-    fold: all
-    unfold: [/10, /10/1, /10/2]
+    fold: ["/ 1", "/10 1", "/10/1 Z", "/10/2 Z"]
     node: /10/2/2
     wire-line: /10/2/2
 
@@ -125,8 +116,7 @@ steps:
       opened with has no name for it, so the number is all there is to
       show — 0x63, marked in the bytes below. The line under it holds a
       value the schema does have a name for.
-    fold: all
-    unfold: [/12, /12/1, /12/2]
+    fold: ["/ 1", "/12 1", "/12/1 Z", "/12/2 Z"]
     node: /12/1/2
     wire-line: /12/1/2
 
@@ -134,8 +124,7 @@ steps:
       3.a. A value from the same enum that this schema does have a name
       for. Nothing about the bytes is different in kind: one varint, one
       number. All that changed is whether the schema could name it.
-    fold: all
-    unfold: [/12, /12/1, /12/2]
+    fold: ["/ 1", "/12 1", "/12/1 Z", "/12/2 Z"]
     node: /12/2/2
     wire-line: /12/2/2
 
@@ -145,8 +134,7 @@ steps:
       in the tag, so each one is still read, named by shape rather than
       by name. The tag's own bytes carry the field number, in the color
       the numeric key wears above them.
-    fold: all
-    unfold: [/14]
+    fold: ["/ 1", "/14 Z"]
     node: /14/1
     wire-lines:
       from: /14/1
@@ -160,8 +148,7 @@ steps:
       it. Two of the three are spelled the way sections 1 and 2 were: the
       middle element is a 0 padded to three bytes, and the last is a -1
       truncated to five. Both are marked where they sit in the run.
-    fold: all
-    unfold: [/16, /16/1]
+    fold: ["/ 1", "/16 1", "/16/1 Z"]
     node: /16/1/1
     wire-node: /16/1/1
 
@@ -170,8 +157,7 @@ steps:
       the specification asks: one byte for the 0, and ten for the -1. One
       run against the other, same values — and the canonical one is the
       longer of the two, twelve bytes against nine.
-    fold: all
-    unfold: [/16, /16/1]
+    fold: ["/ 1", "/16 1", "/16/1 Z"]
     node: /16/1/2
     wire-node: /16/1/2
 
@@ -182,8 +168,7 @@ steps:
       The tag wins — it is what the bytes actually are — and the field is
       shown by wire type instead. The three bits that disagree are the
       wire type digit at the front of the tag.
-    fold: all
-    unfold: [/18]
+    fold: ["/ 1", "/18 Z"]
     node: /18/1
     wire-line: /18/1
 
@@ -191,8 +176,7 @@ steps:
       5.b. Declared a string, and it is a LEN record, so the shape is
       right. The payload is not valid UTF-8. The bytes are shown as they
       are, with the ill-formed sequence marked.
-    fold: all
-    unfold: [/20]
+    fold: ["/ 1", "/20 Z"]
     node: /20/1
     wire-line: /20/1
 
@@ -200,8 +184,7 @@ steps:
       5.c. Declared a packed int32 field, and the payload does not decode
       as one. The last byte promises a byte that never comes, so the
       record is kept whole rather than guessed at.
-    fold: all
-    unfold: [/22]
+    fold: ["/ 1", "/22 Z"]
     node: /22/1/1
     wire-line: /22/1/1
 
@@ -214,8 +197,7 @@ steps:
       submessage: the length prefix is what bounds the damage.
 
       6.a. A length prefix claiming more bytes than the record has.
-    fold: all
-    unfold: [/24]
+    fold: ["/ 1", "/24 Z"]
     node: /24/1
     wire-line: /24/1
 
@@ -223,23 +205,20 @@ steps:
       6.b. A varint with no terminating byte. The continuation bit of the
       last byte promises another one; there is none, so there is no way
       to know where the next tag would have started.
-    fold: all
-    unfold: [/26]
+    fold: ["/ 1", "/26 Z"]
     node: /26/1
     wire-line: /26/1
 
   - text: |
       6.c. The same failure in a length prefix. Same reading in the
       bytes: the byte that promised, then the slot it promised.
-    fold: all
-    unfold: [/28]
+    fold: ["/ 1", "/28 Z"]
     node: /28/1
     wire-line: /28/1
 
   - text: |
       6.d. A 64-bit field with only three bytes behind it.
-    fold: all
-    unfold: [/30]
+    fold: ["/ 1", "/30 Z"]
     node: /30/1
     wire-line: /30/1
 
@@ -247,8 +226,7 @@ steps:
       6.e. A 32-bit field with only two. Different fields, one failure:
       the record runs off its own end, and the row counts what is
       missing.
-    fold: all
-    unfold: [/32]
+    fold: ["/ 1", "/32 Z"]
     node: /32/1
     wire-line: /32/1
 
@@ -256,8 +234,7 @@ steps:
       6.f. Wire type 6 does not exist. Only the three type bits are
       wrong, so only they are marked — but a tag that cannot be
       interpreted means nothing after it can be found either.
-    fold: all
-    unfold: [/34]
+    fold: ["/ 1", "/34 Z"]
     node: /34/1
     wire-line: /34/1
 
@@ -265,8 +242,7 @@ steps:
       6.g. Field number 0 is out of range: field numbers start at 1. The
       wire type is fine and is left alone; the field number beside it is
       not.
-    fold: all
-    unfold: [/36]
+    fold: ["/ 1", "/36 Z"]
     node: /36/1
     wire-line: /36/1
 
@@ -277,40 +253,35 @@ steps:
       prefix anywhere. Nothing in this schema declares one, so all of
       these arrive as undeclared fields. This one's closing tag is padded
       — the tag_ohb of section 1, on the other end of the group.
-    fold: all
-    unfold: [/38, /38/1, /38/2]
+    fold: ["/ 1", "/38 1", "/38/1 Z", "/38/2 Z"]
     node: /38/1
     wire-node: /38/1
 
   - text: |
       7.a. The same group, same field number, closed the ordinary way.
       The closing row is one byte where the one above it is two.
-    fold: all
-    unfold: [/38, /38/1, /38/2]
+    fold: ["/ 1", "/38 1", "/38/1 Z", "/38/2 Z"]
     node: /38/2
     wire-node: /38/2
 
   - text: |
       7.b. Opened as field 100 and closed as field 101. A group's two
       ends have to agree, and nothing on the wire enforces it.
-    fold: all
-    unfold: [/40, /40/1]
+    fold: ["/ 1", "/40 1", "/40/1 Z"]
     node: /40/1
     wire-node: /40/1
 
   - text: |
       7.c. Closed with a field number no field may have — 2^29, one past
       the top of the range.
-    fold: all
-    unfold: [/42, /42/1]
+    fold: ["/ 1", "/42 1", "/42/1 Z"]
     node: /42/1
     wire-node: /42/1
 
   - text: |
       7.d. And a group that is never closed at all. The closing row has
       no bytes to show, so it shows the absence instead.
-    fold: all
-    unfold: [/44, /44/1]
+    fold: ["/ 1", "/44 1", "/44/1 Z"]
     node: /44/1
     wire-node: /44/1
 
@@ -321,7 +292,6 @@ steps:
       That is the whole vocabulary. Press space to take navigation back
       and explore on your own — the script does not constrain anything,
       so stepping back to any point picks up exactly where it left off.
-    fold: all
-    unfold: [/46]
+    fold: ["/ 1", "/46 Z"]
     node: /46/1
     wire-line: /46/1

@@ -64,8 +64,7 @@ steps:
       in beat 5 and then deliberately did not explain.
 
       Press space, then -> to step.
-    fold: all
-    unfold: [/]
+    fold: ["/ 1"]
     node: /
 
   # ---------------------------------------------------------------
@@ -82,8 +81,7 @@ steps:
 
       Same bytes, same tool.  The command line is prefilled; press
       Enter.
-    fold: all
-    unfold: [/1]
+    fold: ["/ 1", "/1 Z"]
     node: /1/4
     override: override /1/4 --as google.maps.places.v1.SearchTextRequest
 
@@ -99,8 +97,7 @@ steps:
 
       The reply below went from a three-way tie at -50 to +45.  Enter
       opens it too.
-    fold: all
-    unfold: [/1/4]
+    fold: ["/ 1", "/1 1", "/1/4 Z"]
     node: coffee in Grenoble
     override: override /1/5 --as google.maps.places.v1.SearchTextResponse
 
@@ -112,8 +109,7 @@ steps:
       +45 between SearchTextResponse and SearchNearbyResponse.  The
       method: line two entries up already told us which.  Hold that
       thought — move 3 is built on it.
-    fold: all
-    unfold: [/1/5]
+    fold: ["/ 1", "/1 1", "/1/5 Z"]
     node: Hono Coffee House
 
   # ---------------------------------------------------------------
@@ -129,8 +125,7 @@ steps:
       Grenoble" and drops the other one without a word.
 
       Both are on the wire, so both are here, in wire order.
-    fold: all
-    unfold: [/1/4]
+    fold: ["/ 1", "/1 1", "/1/4 Z"]
     node: coffee in Grenoble
 
   - text: |
@@ -144,8 +139,7 @@ steps:
           google.rpc.Status    +8    (no runner-up)
 
       Press Enter to take it at its word.
-    fold: all
-    unfold: [/1/4]
+    fold: ["/ 1", "/1 1", "/1/4 Z"]
     node: "debug: outbound call authenticated"
     override: override /1/4/1 --as google.rpc.Status
 
@@ -162,8 +156,7 @@ steps:
       This program writes Bob's credential into Bob's own log, in a
       field a normal decoder never prints.  That is the finding, and
       it is the reason this talk exists.
-    fold: all
-    unfold: [/1/4]
+    fold: ["/ 1", "/1 1", "/1/4 Z"]
     node: x-goog-api-key
 
   - text: |
@@ -181,8 +174,7 @@ steps:
       was for.
 
       More schema, more the tool can say.  Not a slogan; a subtraction.
-    fold: all
-    unfold: [/1/4]
+    fold: ["/ 1", "/1 1", "/1/4 Z"]
     node: x-goog-api-key
 
   # ---------------------------------------------------------------
@@ -204,8 +196,7 @@ steps:
       outrank v2; a tie is the ceiling.  The tool is not confused, and
       it did not rank badly.  On these bytes the two published schemas
       genuinely say the same thing.
-    fold: all
-    unfold: [/3]
+    fold: ["/ 1", "/3 Z"]
     node: /3/4
 
   - text: |
@@ -224,8 +215,7 @@ steps:
       beat 9, the type_url inside the Status, and this line — the file
       has told us something the schema could not.  Producers put names
       on the wire.
-    fold: all
-    unfold: [/]
+    fold: ["/ 1"]
     node: routing.v2.Routes/ComputeRoutes
     override: override /3/4 --as google.maps.routing.v2.ComputeRoutesRequest
 
@@ -241,8 +231,7 @@ steps:
       ambiguity about traffic that was never in doubt before.  Bigger
       dictionaries do not monotonically help.  Beat 12 pushes that one
       notch further.
-    fold: all
-    unfold: [/3/4]
+    fold: ["/ 1", "/3 1", "/3/4 Z"]
     node: /3/4
 
   # ---------------------------------------------------------------
@@ -264,8 +253,7 @@ steps:
 
       Binary, to descriptors, to source, and back into the source from
       the payload.  Leave with :q.
-    fold: all
-    unfold: [/3/4]
+    fold: ["/ 1", "/3 1", "/3/4 Z"]
     node: en-US
 
   - text: |
@@ -278,8 +266,7 @@ steps:
           protoc --decode shows you one value.  prototext shows you
           both, because both are on the wire.  And the first one is
           Bob's API key.
-    fold: all
-    unfold: [/1/4]
+    fold: ["/ 1", "/1 1", "/1/4 Z"]
     node: coffee in Grenoble
     wire-line: coffee in Grenoble
 
@@ -297,8 +284,7 @@ steps:
       a color on a byte — and it is the payoff for the small odd thing
       beat 4 noticed in passing, and for one of the two deductions beat
       8 priced.
-    fold: all
-    unfold: [/3/4]
+    fold: ["/ 1", "/3 1", "/3/4 Z"]
     node: val_ohb
     wire-line: val_ohb
 
@@ -314,8 +300,7 @@ steps:
 
       This is the one an ordinary decoder drops on the floor, and it is
       the other deduction from beat 8.
-    fold: all
-    unfold: [/3/4]
+    fold: ["/ 1", "/3 1", "/3/4 Z"]
     node: bobapp/0.9.3-rc2
     wire-line: bobapp/0.9.3-rc2
 
@@ -328,8 +313,7 @@ steps:
 
       Hold this one on screen.  It is the thing the next beat has to
       re-encode.
-    fold: all
-    unfold: [/]
+    fold: ["/ 1"]
     node: /4
 
   # ---------------------------------------------------------------
@@ -346,8 +330,7 @@ steps:
       annotated file that Bob can open in any editor with nothing
       installed.  That is what Alice sends back, and the demo has a
       recipient, which is a better ending than a checksum.
-    fold: all
-    unfold: [/]
+    fold: ["/ 1"]
     node: /
     override: export grpconf/stage/boblog.prototext
 
@@ -364,6 +347,5 @@ steps:
       protoc --decode.
 
       :quit, and we close on the shell.
-    fold: all
-    unfold: [/]
+    fold: ["/ 1"]
     node: /

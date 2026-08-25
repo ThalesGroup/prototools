@@ -43,8 +43,7 @@ steps:
       payload, not with the descriptor set.
 
       Press space, then -> to step.
-    fold: all
-    unfold: [/]
+    fold: ["/ 1"]
     node: /
 
   - text: |
@@ -56,8 +55,7 @@ steps:
       entry, no method, no request.
 
       The shapes are all still there.  Every name is gone.
-    fold: all
-    unfold: [/]
+    fold: ["/ 1"]
     node: /1
 
   - text: |
@@ -71,6 +69,5 @@ steps:
       More schema is not more knowledge.  The right schema is.
 
       Leave the session loaded.  Questions get answered on the tool.
-    fold: all
-    unfold: [/1]
+    fold: ["/ 1", "/1 Z"]
     node: x-goog-api-key

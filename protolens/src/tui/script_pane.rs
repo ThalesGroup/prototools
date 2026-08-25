@@ -28,7 +28,7 @@ use ratatui::Frame;
 use super::pane_scroll::{AnchorLine, WireAnchor, WireSpan};
 use super::search::SearchScope;
 use super::{App, CursorPos, LinePos, SearchDir};
-use crate::script::{Fold, Position, Script, Step, Wire};
+use crate::script::{FoldEntry, Position, Script, Step, Wire};
 use crate::theme;
 
 /// Spec 0271 S4: the script pane's share of the terminal, and the two
@@ -294,55 +294,18 @@ impl App {
     }
 
     fn script_apply_folds(&mut self, step: &Step, errors: &mut Vec<String>) {
-        let mut changed = false;
-        match &step.fold {
-            Fold::None => {}
-            Fold::All => {
-                // Descending slot order for `script_reset_folds`'
-                // reason. `has_children` keeps the count refresh off
-                // leaves, which have no body to collapse.
-                for idx in (0..self.tree.len()).rev() {
-                    if self.has_children(idx) && self.user_folded.insert(idx) {
-                        changed = true;
-                        self.refresh_line_counts(idx);
-                    }
-                }
-            }
-            Fold::These(positions) => {
-                for position in positions {
-                    match self.script_resolve(position) {
-                        Some(idx) if self.has_children(idx) => {
-                            if self.user_folded.insert(idx) {
-                                changed = true;
-                                self.refresh_line_counts(idx);
-                            }
-                        }
-                        Some(_) => {
-                            errors.push(format!("{} is not foldable", position.as_written()))
-                        }
-                        None => errors.push(unresolved(position)),
-                    }
-                }
-            }
+        for entry in &step.fold {
+            self.script_apply_fold_entry(entry, errors);
         }
-        if changed {
-            self.folds_changed();
-        }
-
-        for position in &step.unfold {
-            match self.script_resolve(position) {
-                Some(idx) => {
-                    self.unfold_ancestors(idx);
-                    if self.open(idx) {
-                        self.refresh_line_counts(idx);
-                        self.folds_changed();
-                    }
-                }
-                None => errors.push(unresolved(position)),
-            }
-        }
-
         self.script_settle_cursor();
+    }
+
+    /// Spec 0359 S3: resolve `entry.position` and apply `set_fold_depth`.
+    fn script_apply_fold_entry(&mut self, entry: &FoldEntry, errors: &mut Vec<String>) {
+        match self.script_resolve(&entry.position) {
+            Some(idx) => self.set_fold_depth(idx, entry.depth),
+            None => errors.push(unresolved(&entry.position)),
+        }
     }
 
     /// Move the cursor out of any region the step just folded.

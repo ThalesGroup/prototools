@@ -33,8 +33,7 @@ steps:
       ago.  Every type in it was scored against these bytes.
 
       Press space to hand navigation to this pane, then -> to step.
-    fold: all
-    unfold: [/]
+    fold: ["/ 1"]
     node: /
 
   - text: |
@@ -48,8 +47,7 @@ steps:
       This is the first time protolens has been on screen.  The caret
       is a highlighted row.  j/k or arrow keys move it.  h folds, l
       unfolds, space hands navigation back to you.
-    fold: all
-    unfold: [/]
+    fold: ["/ 1"]
     node: /
 
   - text: |
@@ -61,8 +59,7 @@ steps:
       indistinguishable to it.  That is not a contrivance.  It is what
       a wire-shape score is entitled to conclude.  The ranking says:
       this is the best match I have.  Then it defers.
-    fold: all
-    unfold: [/]
+    fold: ["/ 1"]
     node: /
 
   - text: |
@@ -71,8 +68,7 @@ steps:
 
       Announce the choice out loud.  A flawless instantaneous demo
       reads as a recording; work shown is proof.
-    fold: all
-    unfold: [/]
+    fold: ["/ 1"]
     node: /
     command: override / --as google.maps.routing.v2.ComputeRoutesRequest
 
@@ -84,8 +80,7 @@ steps:
       39 answers we are looking through.
 
       Unfold a submessage with l, fold back with h.
-    fold: all
-    unfold: [/]
+    fold: ["/ 1"]
     node: /
 
   - text: |

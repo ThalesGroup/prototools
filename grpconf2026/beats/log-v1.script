@@ -54,8 +54,7 @@ steps:
       property of the answer.
 
       Press space, then -> to step.
-    fold: all
-    unfold: [/]
+    fold: ["/ 1"]
     node: /
 
   - text: |
@@ -68,8 +67,7 @@ steps:
       The tool does not merely fail — it says how far short the file
       falls.  The length prefix is what makes 1 024 knowable, and it is
       why the damage stops at one entry out of four.
-    fold: all
-    unfold: [/]
+    fold: ["/ 1"]
     node: /4
 
   - text: |
@@ -80,8 +78,7 @@ steps:
       worth saying so.  ComputeRoutesRequest at -16.  The reply beside
       it is 9 868 bytes at +651, which is what an easy answer looks
       like.
-    fold: all
-    unfold: [/3]
+    fold: ["/ 1", "/3 Z"]
     node: /3/4
 
   - text: |
@@ -93,8 +90,7 @@ steps:
       here and I do not have it.
 
       Leave it hanging.  Do not resolve it in this beat.
-    fold: all
-    unfold: [/1]
+    fold: ["/ 1", "/1 Z"]
     node: /1/4
 
   - text: |
@@ -107,6 +103,5 @@ steps:
       binary, ten minutes ago.
 
       :quit, and we open the same file against the newer build.
-    fold: all
-    unfold: [/1]
+    fold: ["/ 1", "/1 Z"]
     node: Places/SearchText
