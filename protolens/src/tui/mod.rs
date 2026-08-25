@@ -2163,6 +2163,11 @@ pub struct App {
     /// how far a step reaches is a fact about the wrapped paragraph and
     /// the width it was wrapped at.
     script_area: Rect,
+    /// Spec 0355 S4: whether a click on the script pane has given it
+    /// focus. While true and navigation is on, `PageDown`/`PageUp` fire
+    /// the script's advance/retreat instead of the document's page move.
+    /// Cleared by any click outside the script pane, and by `Tab`.
+    script_focus: bool,
     pub message: String,
     /// Spec 0278 S1: the pattern a committed search leaves echoed on the
     /// command row, as `(direction, pattern)`.
@@ -2498,6 +2503,7 @@ impl App {
             side_area: Rect::default(),
             cmd_area: None,
             script_area: Rect::default(),
+            script_focus: false,
             message: fallback_warning,
             search_echo: None,
             refusals: Vec::new(),

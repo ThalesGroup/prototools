@@ -1089,8 +1089,8 @@ step, `?`/`.` scroll, and every arrow key belongs to the document
 whether navigation is on or off. The one binding the script really
 takes is `?` (backward search), and `space` hands it straight back.
 
-**The `override:` key is the manual-detour mechanism, already built.**
-It prefills a `:override …` command line and **never executes it**.
+**The `command:` key is the manual-detour mechanism, already built.**
+It prefills a command line and **never executes it**.
 Both override moments — beat 10's naming of the leaked Status, and beat
 10's tie-break — are exactly this: the script sets it up, the presenter
 presses Enter. Nothing new is needed.

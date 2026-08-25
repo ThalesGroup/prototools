@@ -121,7 +121,7 @@ steps:
       Read it as the schema says, and the same bytes say something
       else. Press Enter to apply.
     node: /7
-    override: "override /7 --as google.protobuf.Any"
+    command: "override /7 --as google.protobuf.Any"
 ```
 
 - `title` is optional and unused for now beyond being carried in the
@@ -391,9 +391,9 @@ cleared the wire span, the toggle is always in its off state by the
 time the wire directive runs, but the applier states that dependency
 rather than relying on it silently.
 
-### S11 — Override prefill
+### S11 — Command prefill
 
-`override: "<command text>"` opens the command line with that text
+`command: "<command text>"` opens the command line with that text
 already typed and the cursor at the end, and stops. Enter runs it; Esc
 abandons it. The text is not validated at load — it is command-line
 text, and the command line is what reports its errors.

@@ -193,8 +193,8 @@ struct RawStep {
     wire_lines: Option<RawRange>,
     #[serde(default, rename = "wire-node")]
     wire_node: Option<String>,
-    #[serde(default, rename = "override")]
-    r#override: Option<String>,
+    #[serde(default)]
+    command: Option<String>,
 }
 
 /// One scalar or a list of them — the shape `fold:` and `unfold:` share.
@@ -261,7 +261,7 @@ impl RawStep {
                 .map(|s| Position::parse(s))
                 .collect(),
             wire,
-            prefill: self.r#override,
+            prefill: self.command,
         })
     }
 }
@@ -305,7 +305,7 @@ mod tests {
                wire-lines:\n    \
                  from: /4/2/1\n    \
                  to: /4/2/3\n  \
-               override: override /7 --as google.protobuf.Any\n",
+               command: override /7 --as google.protobuf.Any\n",
         )
         .expect("must parse");
         let step = &s.steps[0];

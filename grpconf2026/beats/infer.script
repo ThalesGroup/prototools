@@ -74,7 +74,7 @@ steps:
     fold: all
     unfold: [/]
     node: /
-    override: override / --as google.maps.routing.v2.ComputeRoutesRequest
+    command: override / --as google.maps.routing.v2.ComputeRoutesRequest
 
   - text: |
       Same bytes.  Now they have names.

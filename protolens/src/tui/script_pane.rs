@@ -71,6 +71,9 @@ impl App {
             scroll: 0,
             diagnostics: Vec::new(),
         });
+        // A script has its own first-frame story to tell; the splash
+        // screen competes with it and is not useful here.
+        self.splash = false;
         self.script_apply();
     }
 
@@ -78,13 +81,14 @@ impl App {
         self.script.as_ref().is_some_and(|s| s.active)
     }
 
-    /// `space` — turn script navigation on or off.
+    /// `Tab` — turn script navigation on or off (spec 0355 S3).
     ///
     /// Turning it *on* re-applies the current step, so the gesture that
     /// puts the session back under the script also puts the view back
     /// where the script left it. Wandering off between steps is free
     /// (spec 0271 G3); coming back is one key.
     pub(super) fn script_toggle(&mut self) {
+        self.script_focus = false;
         let Some(state) = self.script.as_mut() else {
             return;
         };
@@ -94,7 +98,30 @@ impl App {
         }
     }
 
-    /// `Right` / `Left`, while navigation is on.
+    /// `space` / `PageDown` — scroll step text down one page, then
+    /// advance to the next step (spec 0355 S1).
+    pub(super) fn script_space(&mut self) {
+        let max = self.script_max_scroll();
+        let scroll = self.script.as_ref().map_or(0, |s| s.scroll);
+        if scroll < max {
+            self.script_scroll_page(true);
+        } else {
+            self.script_advance(true);
+        }
+    }
+
+    /// `Backspace` / `PageUp` — scroll step text up one page, then go
+    /// to the previous step (spec 0355 S2).
+    pub(super) fn script_backspace(&mut self) {
+        let scroll = self.script.as_ref().map_or(0, |s| s.scroll);
+        if scroll > 0 {
+            self.script_scroll_page(false);
+        } else {
+            self.script_advance(false);
+        }
+    }
+
+    /// Step forward or backward unconditionally.
     pub(super) fn script_advance(&mut self, forward: bool) {
         let Some(state) = self.script.as_mut() else {
             return;
@@ -119,7 +146,22 @@ impl App {
         self.script_apply();
     }
 
-    /// `Down` / `Up` — scroll the pane, not the document.
+    /// Scroll the pane by one pane-height, clamped at both ends.
+    fn script_scroll_page(&mut self, down: bool) {
+        let max = self.script_max_scroll();
+        let pane_height = self.script_area.height;
+        let Some(state) = self.script.as_mut() else {
+            return;
+        };
+        state.scroll = if down {
+            state.scroll.saturating_add(pane_height).min(max)
+        } else {
+            state.scroll.saturating_sub(pane_height)
+        };
+    }
+
+    /// Scroll the pane by one line, clamped at both ends.
+    /// Used by the mouse wheel (spec 0355 S5).
     pub(super) fn script_scroll_by(&mut self, down: bool) {
         let max = self.script_max_scroll();
         let Some(state) = self.script.as_mut() else {
@@ -721,44 +763,25 @@ fn script_paragraph(state: &ScriptState, style: Style) -> Paragraph<'static> {
     Paragraph::new(text).style(style).wrap(Wrap { trim: false })
 }
 
-/// Spec 0271 S5: the micro-help on the separator.
+/// Spec 0355 S7: the micro-help on the separator.
 ///
-/// Three parts, dropped from the right as the terminal narrows. The step
-/// counter goes last because on a narrow terminal it is the only one
-/// worth the space — the key reminder can be learned once, but "where am
-/// I" changes every step.
-///
-/// The toggle is named by what it *does*, in the word the rest of spec
-/// 0271 uses: navigation, not "mode", which protolens spends on other
-/// things. It has a short spelling as well as a long one because
-/// dropping it is much worse than shortening it — the counter and the
-/// scroll keys are legible from the pane itself, while nothing else on
-/// screen says that `space` is what gets the reader in or out. Without
-/// the short form the hint would be gone from 67 columns all the way
-/// down to 35 — an ordinary half-screen terminal — and never mentioned
-/// again.
+/// Two states: navigation on (step counter + advance hint) and off
+/// (toggle hint). The step counter goes last when narrowing because it
+/// is the thing a presenter reads out loud — the key reminder can be
+/// learned once, but "where am I" changes every step.
 fn script_legend(state: &ScriptState, width: usize) -> String {
     if !state.active {
-        for candidate in ["space to enter script navigation", "space to enter"] {
+        for candidate in ["Tab to resume script navigation", "Tab to resume"] {
             if fits(candidate, width) {
                 return candidate.to_string();
             }
         }
         return String::new();
     }
-    let counter = format!(
-        ",/; step {}/{}",
-        state.current + 1,
-        state.script.steps.len()
-    );
-    // Written out rather than folded into two nested loops: shortening
-    // the toggle has to be tried *before* dropping the scroll keys, and
-    // a loop over parts and a loop over spellings cannot express that
-    // without the outer one deciding wrongly.
+    let counter = format!("step {}/{}", state.current + 1, state.script.steps.len());
     let ladder = [
-        format!("{counter}  ?/. scroll  space to quit script navigation"),
-        format!("{counter}  ?/. scroll  space to quit"),
-        format!("{counter}  ?/. scroll"),
+        format!("Tab to pause  space/Backspace step  {counter}"),
+        format!("space/Backspace step  {counter}"),
         counter,
     ];
     for candidate in ladder {
@@ -796,35 +819,26 @@ mod tests {
     #[test]
     fn the_legend_names_what_the_toggle_does_while_navigation_is_off() {
         let state = state(false, 0, 3);
-        assert_eq!(
-            script_legend(&state, 80),
-            "space to enter script navigation"
-        );
+        assert_eq!(script_legend(&state, 80), "Tab to resume script navigation");
         // Too narrow for the sentence: the short spelling, which still
         // says what the key is for.
-        assert_eq!(script_legend(&state, 30), "space to enter");
-        assert_eq!(script_legend(&state, 12), "");
+        assert_eq!(script_legend(&state, 30), "Tab to resume");
+        assert_eq!(script_legend(&state, 18), "");
     }
 
-    /// The toggle is *shortened* before either of the other two parts is
-    /// dropped, and dropped only after that. A ladder that took whole
-    /// parts off the right lost the toggle at 68 columns and did not
-    /// mention it again — 40 below is the width that caught it.
+    /// The three rungs narrow gracefully: toggle first, then keys, then
+    /// just the counter.
     #[test]
-    fn the_legend_shortens_the_toggle_before_it_drops_anything() {
+    fn the_legend_shortens_gracefully() {
         let state = state(true, 2, 23);
         assert_eq!(
             script_legend(&state, 80),
-            ",/; step 3/23  ?/. scroll  space to quit script navigation"
+            "Tab to pause  space/Backspace step  step 3/23"
         );
-        assert_eq!(
-            script_legend(&state, 60),
-            ",/; step 3/23  ?/. scroll  space to quit"
-        );
-        assert_eq!(script_legend(&state, 40), ",/; step 3/23  ?/. scroll");
-        assert_eq!(script_legend(&state, 26), ",/; step 3/23");
+        assert_eq!(script_legend(&state, 42), "space/Backspace step  step 3/23");
+        assert_eq!(script_legend(&state, 20), "step 3/23");
         // Narrower than the counter plus its rule: the rule alone.
-        assert_eq!(script_legend(&state, 8), "");
+        assert_eq!(script_legend(&state, 14), "");
     }
 
     /// Each rung is claimed to need a particular width, and `fits`
@@ -836,16 +850,11 @@ mod tests {
         let on = state(true, 2, 23);
         let off = state(false, 0, 3);
         for (state, legend, width) in [
-            (
-                &on,
-                ",/; step 3/23  ?/. scroll  space to quit script navigation",
-                64,
-            ),
-            (&on, ",/; step 3/23  ?/. scroll  space to quit", 46),
-            (&on, ",/; step 3/23  ?/. scroll", 31),
-            (&on, ",/; step 3/23", 19),
-            (&off, "space to enter script navigation", 38),
-            (&off, "space to enter", 20),
+            (&on, "Tab to pause  space/Backspace step  step 3/23", 51),
+            (&on, "space/Backspace step  step 3/23", 37),
+            (&on, "step 3/23", 15),
+            (&off, "Tab to resume script navigation", 37),
+            (&off, "Tab to resume", 19),
         ] {
             assert_eq!(script_legend(state, width), legend, "at {width} columns");
             assert_ne!(

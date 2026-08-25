@@ -129,6 +129,8 @@ impl App {
         let over_cmd = self
             .cmd_area
             .is_some_and(|area| Self::rect_contains(area, event.column, event.row));
+        let over_script =
+            self.script.is_some() && Self::rect_contains(self.script_area, event.column, event.row);
 
         // Spec 0127 §G2: Shift+wheel and native ScrollLeft/ScrollRight pan
         // whichever pane is under the pointer, instead of the vertical
@@ -177,7 +179,11 @@ impl App {
             event.kind,
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
         ) {
-            if over_side {
+            if over_script {
+                // Spec 0355 S5: wheel over the script pane scrolls the
+                // step's text by one line, clamped at both ends.
+                self.script_scroll_by(event.kind == MouseEventKind::ScrollDown);
+            } else if over_side {
                 if self.manage_open {
                     self.handle_manage_mouse(event);
                 } else {
@@ -253,6 +259,10 @@ impl App {
         }
 
         if let MouseEventKind::Down(MouseButton::Left) = event.kind {
+            // Spec 0355 S4: clicking the script pane gives it focus for
+            // PageDown/PageUp; clicking anywhere else clears that focus.
+            self.script_focus = over_script;
+
             if main_interactive && extend_click {
                 self.shift_click_to(event.column, event.row);
             } else if main_interactive {

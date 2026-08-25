@@ -61,7 +61,7 @@ steps:
     wire-line: /2/1
   - text: and a command to run
     node: /3
-    override: \"override /3 --as test.Item\"
+    command: \"override /3 --as test.Item\"
 ";
 
 /// Spec 0271 test-plan item 3, and the assertion the whole design rests
@@ -98,22 +98,22 @@ fn a_step_is_a_function_of_the_script() {
     assert_eq!(view(&app), want, "step 2 must reproduce step 2's view");
 }
 
-/// Spec 0271 test-plan item 4, re-aimed at the punctuation keys. `space`
-/// toggles in both states; `,`/`;` only belong to the script while
-/// navigation is on. The arrows are never the script's in either state —
+/// Spec 0355: `Tab` toggles navigation; `space` advances and `Backspace`
+/// retreats while on. The arrows are never the script's in either state —
 /// that is the point of moving off them.
 #[test]
-fn space_toggles_and_the_step_keys_are_conditional() {
+fn tab_toggles_and_space_backspace_step() {
     let (mut app, items) = repeated_message_fixture();
     app.set_script(script_of(THREE_STEPS));
     assert!(app.script_active(), "spec 0271 S8: navigation starts on");
 
-    // On: `;` is the script's, and the document does not move on its own.
+    // On: `space` advances the step (text fits in one page, so it goes
+    // straight to the next step without scrolling).
     let before = app.cursor;
-    app.handle_key(key(KeyCode::Char(';'), KeyModifiers::NONE));
+    app.handle_key(key(KeyCode::Char(' '), KeyModifiers::NONE));
     assert_ne!(app.cursor, before, "step 2 moves the cursor itself");
     let step = app.script.as_ref().expect("a script is loaded").current;
-    assert_eq!(step, 1, "`;` advances the step");
+    assert_eq!(step, 1, "`space` advances the step");
 
     // Still on: a bare arrow reaches the document, script or no script.
     app.set_cursor(items[0]);
@@ -125,20 +125,27 @@ fn space_toggles_and_the_step_keys_are_conditional() {
     let step = app.script.as_ref().expect("a script is loaded").current;
     assert_eq!(step, 1, "a presenter's stray Right must not change step");
 
-    app.handle_key(key(KeyCode::Char(' '), KeyModifiers::NONE));
-    assert!(!app.script_active(), "space turns navigation off");
+    app.handle_key(key(KeyCode::Tab, KeyModifiers::NONE));
+    assert!(!app.script_active(), "Tab turns navigation off");
 
-    // Off: `;` is no longer the script's and the step does not change.
+    // Off: `space` is no longer the script's and the step does not change.
     app.set_cursor(items[0]);
-    app.handle_key(key(KeyCode::Char(';'), KeyModifiers::NONE));
+    app.handle_key(key(KeyCode::Char(' '), KeyModifiers::NONE));
     let step = app.script.as_ref().expect("a script is loaded").current;
     assert_eq!(step, 1, "and the step stayed where it was");
 
+    app.handle_key(key(KeyCode::Tab, KeyModifiers::NONE));
+    assert!(app.script_active(), "Tab turns it back on");
     app.handle_key(key(KeyCode::Char(' '), KeyModifiers::NONE));
-    assert!(app.script_active(), "space turns it back on");
-    app.handle_key(key(KeyCode::Char(';'), KeyModifiers::NONE));
     let step = app.script.as_ref().expect("a script is loaded").current;
     assert_eq!(step, 2, "and the script has the step keys back");
+
+    // Backspace retreats. Step 2 (index 2) has a prefill that opens the
+    // command buffer; close it first so Backspace reaches the script block.
+    app.handle_key(key(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(key(KeyCode::Backspace, KeyModifiers::NONE));
+    let step = app.script.as_ref().expect("a script is loaded").current;
+    assert_eq!(step, 1, "`Backspace` retreats the step");
 }
 
 /// Amending spec 0271 S5 (2026-08-12): a step is a paragraph, so
@@ -284,7 +291,7 @@ fn a_step_keeps_the_row_above_its_subtree() {
 fn a_broken_position_still_shows_its_text() {
     let (mut app, _) = repeated_message_fixture();
     app.set_script(script_of(
-        "steps:\n- text: this node is long gone\n  node: /9/9\n  override: \"quit\"\n",
+        "steps:\n- text: this node is long gone\n  node: /9/9\n  command: \"quit\"\n",
     ));
 
     let state = app.script.as_ref().expect("a script is loaded");
@@ -349,14 +356,12 @@ fn the_separator_legend_is_flushed_right() {
     };
     let separator = (0..24u16)
         .map(row)
-        .find(|line| line.contains("space to quit"))
+        .find(|line| line.contains("Tab to pause"))
         .expect("the separator carries the legend");
 
-    // 60 columns is one rung down the ladder: the full sentence needs
-    // 64, so the toggle is spelled short while the step counter and the
-    // scroll keys both stay.
+    // 60 columns is wide enough for the full legend (52 columns needed).
     assert!(
-        separator.ends_with(",/; step 1/3  ?/. scroll  space to quit ──"),
+        separator.ends_with("Tab to pause  space/Backspace step  step 1/3 ──"),
         "the legend must sit at the right edge: {separator:?}"
     );
     assert!(

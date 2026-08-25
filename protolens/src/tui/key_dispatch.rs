@@ -582,54 +582,39 @@ impl App {
             self.open_menu_at_caret();
             return;
         }
-        // Spec 0271 S7: the script keys, in the same tier as `F1`/`:`/`v`
-        // above. Below `command_buffer`'s early return, so `space` is
-        // still a literal space at the `:` prompt; above the two
-        // side-pane dispatches, so they work regardless of focus.
+        // Spec 0355: script navigation keys, in the same tier as
+        // `F1`/`:`/`v`. Below `command_buffer`'s early return (so
+        // `Tab` is still completion at the `:` prompt and `space` is a
+        // literal space there); above the two side-pane dispatches, so
+        // they work regardless of focus.
         //
-        // `space` is stolen for the whole session whenever a script is
-        // loaded, because it is the toggle and so cannot be conditional
-        // on the state it toggles. Paging keeps `f`/`PageDown`, and
-        // `Shift-Space` is a different chord and is left alone.
-        //
-        // Stepping is on `,`/`;` and scrolling the step text on `?`/`.`,
-        // taken only while navigation is on. They are NOT the bare arrows
-        // (the 2026-08-12 amendment, reversed here): a presenter reaches
-        // for an arrow key by reflex, and a reflex must not change slide.
-        // Punctuation is deliberate in a way an arrow is not. `?` is the
-        // one of the four that was already bound — it opens the help —
-        // and it is knowingly shadowed while navigation is on, because
-        // `space` turns navigation off and hands it straight back.
-        //
-        // SHIFT is admitted rather than refused: `?` is a shifted key on
-        // most layouts, so the usual "no modifiers" gate would make it
-        // unreachable. Ctrl and Alt are still refused, so the selection,
-        // the pan and the sibling-level fold all still reach the main
-        // pane, as do all four arrows now.
-        if self.script.is_some() {
-            if key.code == KeyCode::Char(' ')
-                && !ctrl_or_alt(&key)
-                && !key.modifiers.contains(KeyModifiers::SHIFT)
-            {
+        // `Tab` is the toggle (spec 0355 S3). `space` scrolls the step
+        // text down one page, then advances to the next step (S1).
+        // `Backspace` scrolls up one page, then retreats (S2). Both are
+        // only active while navigation is on, unlike the old `space`
+        // toggle which was unconditional. `PageDown`/`PageUp` fire the
+        // same actions when the script pane has focus (S4).
+        if self.script.is_some() && !ctrl_or_alt(&key) {
+            if key.code == KeyCode::Tab {
                 self.script_toggle();
                 return;
             }
-            if self.script_active() && !ctrl_or_alt(&key) {
+            if self.script_active() {
                 match key.code {
-                    KeyCode::Char(',') => {
-                        self.script_advance(false);
+                    KeyCode::Char(' ') if !key.modifiers.contains(KeyModifiers::SHIFT) => {
+                        self.script_space();
                         return;
                     }
-                    KeyCode::Char(';') => {
-                        self.script_advance(true);
+                    KeyCode::Backspace => {
+                        self.script_backspace();
                         return;
                     }
-                    KeyCode::Char('?') => {
-                        self.script_scroll_by(false);
+                    KeyCode::PageDown if self.script_focus => {
+                        self.script_space();
                         return;
                     }
-                    KeyCode::Char('.') => {
-                        self.script_scroll_by(true);
+                    KeyCode::PageUp if self.script_focus => {
+                        self.script_backspace();
                         return;
                     }
                     _ => {}
