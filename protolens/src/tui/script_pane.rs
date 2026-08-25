@@ -26,7 +26,8 @@ use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
 
 use super::pane_scroll::{AnchorLine, WireAnchor, WireSpan};
-use super::App;
+use super::search::SearchScope;
+use super::{App, CursorPos, LinePos, SearchDir};
 use crate::script::{Fold, Position, Script, Step, Wire};
 use crate::theme;
 
@@ -214,6 +215,8 @@ impl App {
         self.script_apply_cursor(&step, &mut errors);
         self.script_apply_wire(&step, &mut errors);
         self.script_focus(&step);
+        self.script_apply_search(&step, &mut errors);
+        self.script_apply_select(&step);
         if let Some(prefill) = &step.prefill {
             // Spec 0271 S11: typed, not run. The command line reports
             // its own errors when the reader presses Enter.
@@ -247,6 +250,11 @@ impl App {
             self.set_wire_span(None, 0);
         }
         self.clear_selection();
+        // `clear_search_highlight` rather than `cancel_search`: the
+        // latter restores a saved scroll position that was set at prompt
+        // open time, which has no meaning here and would fight the step's
+        // `node:` placement.
+        self.clear_search_highlight();
         if self.command_buffer.is_some() {
             self.command_buffer = None;
             self.command_cursor = 0;
@@ -366,6 +374,76 @@ impl App {
                 self.set_cursor(idx);
             }
             None => errors.push(unresolved(position)),
+        }
+    }
+
+    /// Spec 0357: engage the selection background on the caret's current
+    /// line when the step declares `select: true`.
+    ///
+    /// Runs after `script_apply_search`, so if the search moved the
+    /// caret to a match, the selection lands on that line. The anchor is
+    /// fixed at column 0; the caret is moved to the last column
+    /// (including any `; shadowed_scalar` suffix) to make the span cover
+    /// the full line, then immediately restored to wherever the
+    /// node/search directives left it. Because the selection is
+    /// persistent it survives the restore. `show_caret` is called after
+    /// the restore so panning centres on the intended caret position, not
+    /// the line's far end.
+    fn script_apply_select(&mut self, step: &Step) {
+        if !step.select {
+            return;
+        }
+        let saved_column = self.cursor_column;
+        let (_, last) = self.caret_bounds();
+        self.select_anchor = Some(CursorPos {
+            node: self.cursor,
+            line_in_node: self.cursor_line_in_node,
+            column: 0,
+        });
+        // Record the moving end at the last column — this is what makes
+        // the span cover the full line including any `; shadowed_scalar`
+        // suffix. `select_caret` is independent of `cursor_column`, so
+        // the span stays full-line even after the caret is restored.
+        self.select_caret = Some(CursorPos {
+            node: self.cursor,
+            line_in_node: self.cursor_line_in_node,
+            column: last,
+        });
+        self.select_engaged = true;
+        // Restore the caret to where node/search left it. The selection
+        // span is unaffected because it reads `select_caret`, not
+        // `cursor_column`.
+        self.cursor_column = saved_column;
+        self.show_caret();
+    }
+
+    /// Spec 0357: fire the search highlight for the step's `search:`
+    /// pattern, as if `/pattern Enter` had been typed from column 0 of
+    /// the caret node's header line.
+    fn script_apply_search(&mut self, step: &Step, errors: &mut Vec<String>) {
+        let Some(pattern) = step.search.clone() else {
+            return;
+        };
+        // Build the origin from column 0 of the node header, regardless
+        // of where `select:` may have left `cursor_column`.
+        let saved_line = self.cursor_line_in_node;
+        let saved_col = self.cursor_column;
+        self.cursor_line_in_node = 0;
+        self.cursor_column = 0;
+        let origin = self.search_origin_for(SearchScope::Main);
+        self.cursor_line_in_node = saved_line;
+        self.cursor_column = saved_col;
+        self.set_last_search_for(SearchScope::Main, (SearchDir::Forward, pattern.clone()));
+        self.search_origin = Some(origin);
+        self.search_highlight = true;
+        self.commit_search(SearchDir::Forward, &pattern);
+        // If the pattern did not compile, `search_sweep` stays `None`
+        // and `commit_search` sets `self.message`. Demote that to a
+        // diagnostic so the step's own commentary can still appear on
+        // `self.message` (spec 0271 S13).
+        if self.search_sweep.is_none() {
+            self.search_highlight = false;
+            errors.push(format!("search: pattern {pattern:?} did not compile"));
         }
     }
 

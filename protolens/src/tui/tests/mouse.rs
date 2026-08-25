@@ -726,26 +726,18 @@ fn drag_select_upward_still_copies_top_to_bottom() {
     );
 }
 
-/// Spec 0131 §G1/test plan item 2: `Ctrl-C` with no active selection
-/// copies exactly the cursor's current line.
+/// Spec 0358 S3: `Ctrl-C` with no active selection is a no-op.
 #[test]
-fn ctrl_c_with_no_selection_copies_cursor_line() {
+fn ctrl_c_with_no_selection_is_a_noop() {
     let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2"]);
     app.splash = false;
     app.main_area = Rect::new(0, 0, 40, 20);
 
     assert_eq!(app.select_anchor, None, "no selection active yet");
+    let message_before = app.message.clone();
     app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
-    assert_eq!(
-        app.select_anchor, None,
-        "and copying a line does not start one"
-    );
-    assert!(
-        app.message == "1 line(s) copied to clipboard"
-            || app.message == "1 line(s) copied to clipboard (OSC 52 fallback)",
-        "unexpected message: {}",
-        app.message
-    );
+    assert_eq!(app.select_anchor, None, "still no selection");
+    assert_eq!(app.message, message_before, "no message produced");
 }
 
 /// Spec 0131 §G2/test plan item 4: a clipboard-unavailable
@@ -758,23 +750,17 @@ fn clipboard_unavailable_shows_fallback_message_without_panicking() {
     app.splash = false;
     app.main_area = Rect::new(0, 0, 40, 20);
 
-    app.handle_mouse(MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column: 0,
-        row: 0,
-        modifiers: KeyModifiers::NONE,
-    });
-    assert_eq!(
-        app.selection_span(),
-        None,
-        "spec 0242 S10: a click on a character selects nothing"
-    );
+    // Select the whole line so Ctrl-c has something to copy.
+    app.handle_key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::NONE));
+    assert!(app.selection_span().is_some(), "selection is active");
     app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
     // This sandbox has no reachable clipboard provider, so the
     // failure branch is exactly what's exercised here.
     assert!(
-        app.message == "1 line(s) copied to clipboard"
-            || app.message == "1 line(s) copied to clipboard (OSC 52 fallback)",
+        app.message.ends_with("copied to clipboard")
+            || app
+                .message
+                .ends_with("copied to clipboard (OSC 52 fallback)"),
         "unexpected message: {}",
         app.message
     );

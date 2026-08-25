@@ -747,6 +747,9 @@ impl App {
     fn drag_caret_to(&mut self, col: u16, row: u16) {
         self.select_engaged = self.select_anchor.is_some();
         self.caret_to_point(col, row);
+        if self.select_engaged {
+            self.select_caret = Some(self.cursor_pos());
+        }
     }
 
     /// Moves the caret to the character under a point, and does nothing

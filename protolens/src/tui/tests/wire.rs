@@ -537,6 +537,7 @@ fn select_lines(app: &mut App, first: usize, last: usize) {
     app.cursor = end.node;
     app.cursor_line_in_node = end.line_in_node;
     app.caret_to_line_end();
+    app.select_caret = Some(app.cursor_pos());
 }
 
 /// Spec 0268 test plan 1, and G1: with nothing selected, `w` shows the

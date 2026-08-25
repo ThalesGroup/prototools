@@ -413,3 +413,79 @@ fn the_script_pane_is_tinted_across_its_whole_width() {
         );
     }
 }
+
+/// Spec 0357: `select: true` engages the selection on the caret's header
+/// line; advancing to the next step clears it.
+#[test]
+fn select_directive_highlights_the_caret_line() {
+    let (mut app, _) = repeated_message_fixture();
+    app.set_script(script_of(
+        "steps:\n\
+         - text: first\n  node: /1\n  select: true\n\
+         - text: second\n  node: /2\n",
+    ));
+
+    // Step 0: selection must be engaged and cover /1's header line.
+    // `node: /1` has already placed the cursor on /1, so `app.cursor`
+    // is the node index we need.
+    assert!(app.select_engaged, "select: must engage the selection");
+    let span = app.selection_span().expect("a span must be present");
+    let (lo_line, lo_col, _hi_line, _hi_col) = span;
+    assert_eq!(lo_col, 0, "selection starts at column 0");
+    assert_eq!(
+        lo_line,
+        app.absolute_start(app.cursor),
+        "selection starts on /1's header line"
+    );
+
+    // Advance to step 1: selection must be gone.
+    app.script_advance(true);
+    assert!(!app.select_engaged, "selection is cleared at the next step");
+    assert!(app.selection_span().is_none());
+}
+
+/// Spec 0357: `search:` fires the search highlight; advancing clears it.
+#[test]
+fn search_directive_highlights_pattern() {
+    let (mut app, _) = repeated_message_fixture();
+    app.set_script(script_of(
+        "steps:\n\
+         - text: first\n  node: /1\n  search: \"v:\"\n\
+         - text: second\n  node: /2\n",
+    ));
+
+    // Step 0: search highlight must be active with a compiled sweep,
+    // and the pattern must be recorded so `F` can reuse it.
+    assert!(app.search_highlight, "search: must engage the highlight");
+    assert!(
+        app.search_sweep.is_some(),
+        "a sweep must be present for a valid pattern"
+    );
+    use super::super::search::SearchScope;
+    assert!(
+        app.last_search_for(SearchScope::Main).is_some(),
+        "pattern must be recorded for F/n/N reuse"
+    );
+
+    // Advance to step 1: highlight must be gone.
+    app.script_advance(true);
+    assert!(
+        !app.search_highlight,
+        "search highlight is cleared at the next step"
+    );
+    assert!(app.search_sweep.is_none());
+}
+
+/// Spec 0357: `select: true` and `search:` may coexist on one step.
+#[test]
+fn select_and_search_may_coexist() {
+    let (mut app, _) = repeated_message_fixture();
+    app.set_script(script_of(
+        "steps:\n- text: both\n  node: /1\n  select: true\n  search: \"v:\"\n",
+    ));
+
+    let state = app.script.as_ref().expect("a script is loaded");
+    assert!(state.diagnostics.is_empty(), "no errors expected");
+    assert!(app.select_engaged, "selection is engaged");
+    assert!(app.search_highlight, "search is highlighted");
+}

@@ -985,7 +985,7 @@ struct CompletionState {
 /// Search direction for the override pane's in-pane candidate search (spec
 /// 0114 §4), vim-style `/` (forward) / `?` (backward).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SearchDir {
+pub(super) enum SearchDir {
     Forward,
     Backward,
 }
@@ -1489,6 +1489,16 @@ pub struct App {
     /// node-relative line survives a fold, which an absolute line number
     /// would not.
     select_anchor: Option<CursorPos>,
+    /// The selection's moving end — the position that `Shift`-motions,
+    /// drags, and `script_apply_select` write to when they extend or set
+    /// the selection. `selection_span` reads this instead of
+    /// `cursor_column` so that plain caret motions do not silently shrink
+    /// or grow the span.
+    ///
+    /// `None` when no selection is engaged (mirrors `select_anchor`).
+    /// Set to `cursor_pos()` by every gesture that extends the selection,
+    /// and cleared by `clear_selection`.
+    select_caret: Option<CursorPos>,
     /// Spec 0242 S2: whether the user has actually *expressed* a
     /// selection since the anchor was set — a `Shift`-motion, a drag, or
     /// a double-click — as opposed to a bare click, which arms the
@@ -2386,6 +2396,7 @@ impl App {
             caret_suffix_len: 0,
             cursor_moves: 0,
             select_anchor: None,
+            select_caret: None,
             select_engaged: false,
             last_click: None,
             pending_double_click: None,

@@ -2155,6 +2155,7 @@ fn clipboard_copy_strips_annotations_outside_the_viewport() {
     app.cursor = end.node;
     app.cursor_line_in_node = end.line_in_node;
     app.caret_to_line_end();
+    app.select_caret = Some(app.cursor_pos());
     let (count, copied) = app.selected_text().expect("the selection must yield text");
 
     assert_eq!(count, 4);
@@ -2795,6 +2796,7 @@ fn a_selected_row_and_the_caret_row_stay_distinguishable() {
     app.select_engaged = true;
     app.cursor = 0;
     app.reset_caret_column();
+    app.select_caret = Some(app.cursor_pos());
     let terminal = drawn_frame(&mut app, 40, 6);
 
     let area = app.main_area;

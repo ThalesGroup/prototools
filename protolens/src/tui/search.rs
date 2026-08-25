@@ -1585,6 +1585,7 @@ impl App {
             line_in_node: end.line_in_node,
             column: column.saturating_sub(1),
         });
+        self.select_caret = Some(self.cursor_pos());
         self.select_engaged = true;
     }
 

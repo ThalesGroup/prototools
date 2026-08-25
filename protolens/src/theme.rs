@@ -612,7 +612,27 @@ pub fn shadow_sweep_dot_style(theme: ThemeKind) -> Style {
 
 fn status_color_in(status: Status, theme: ThemeKind, rgb: bool) -> Option<Color> {
     Some(match status {
-        Status::Ok => return None,
+        // On the dark theme the default foreground is near-white, which
+        // makes `Ok` triangles read as brighter than their red/amber
+        // siblings. A mid-gray dims them to a comparable level.
+        // On the light theme the default foreground is near-black and
+        // already reads quietly — no color needed.
+        Status::Ok => {
+            // The default foreground is near-white on dark and near-black
+            // on light, making `Ok` triangles much brighter/darker than
+            // the red/amber ones. A gray matched to their luminance keeps
+            // all three comparable:
+            //
+            // Dark: amber `#FFB440` ≈ luma 188, red `#FF5555` ≈ luma 121.
+            //   `#B8B8B8` (luma 184) sits near amber, the middle tier.
+            // Light: amber `#9C6A00` ≈ luma 105, red `#E51400` ≈ luma 65.
+            //   `#606060` (luma 96) sits near the amber/red midpoint.
+            return match (rgb, theme) {
+                (true, ThemeKind::Dark) => Some(Color::Rgb(0xB8, 0xB8, 0xB8)),
+                (true, ThemeKind::Light) => Some(Color::Rgb(0x60, 0x60, 0x60)),
+                _ => None,
+            };
+        }
         // Spec 0249 S12's violet, measured in spec 0260, and a neutral
         // gray since 2026-08-20. Unleveled like the tiers: the margin
         // is its own column, and a fold nobody has read has to be
@@ -694,9 +714,20 @@ pub fn bar_status_color(status: Status, theme: ThemeKind) -> Option<Color> {
     bar_status_color_in(status, theme, supports_rgb())
 }
 
-fn bar_status_color_in(status: Status, _theme: ThemeKind, rgb: bool) -> Option<Color> {
+fn bar_status_color_in(status: Status, theme: ThemeKind, rgb: bool) -> Option<Color> {
     if status == Status::Ok {
-        return None;
+        // On the dark theme the default foreground is near-white, making
+        // `Ok` bars brighter than their red/amber siblings. The same mid-gray
+        // as the `Ok` triangle (`status_color_in`) keeps them consistent —
+        // the tests assert bar color == triangle color for all bars.
+        // Light theme default is near-black and already reads quietly.
+        // Same gray as the `Ok` triangle — bars and triangles share the
+        // same color (the tests assert bar color == triangle color).
+        return match (rgb, theme) {
+            (true, ThemeKind::Dark) => Some(Color::Rgb(0xB8, 0xB8, 0xB8)),
+            (true, ThemeKind::Light) => Some(Color::Rgb(0x60, 0x60, 0x60)),
+            _ => None,
+        };
     }
     if !rgb {
         // ANSI-16 fallbacks: one step darker than the full-color named color.

@@ -88,11 +88,10 @@ fn a_horizontal_selection_wraps_onto_the_neighboring_row() {
     assert_eq!(app.selection_span(), Some((0, 0, 0, 2)));
 }
 
-/// Spec 0242 S3: any key that is not one of the four selection keys —
-/// nor the `Ctrl-C` that copies what they selected — drops the
-/// selection, so a plain motion does not drag it along behind the caret.
+/// Spec 0358 S1: the selection persists across plain motions. Only `Esc`
+/// and a bare click dismiss it explicitly.
 #[test]
-fn a_plain_motion_drops_the_selection_and_ctrl_c_does_not() {
+fn a_plain_motion_no_longer_drops_the_selection() {
     let mut app = sibling_leaves_app(&["alpha: 1", "beta: 2"]);
     app.splash = false;
     app.cursor = 0;
@@ -101,14 +100,23 @@ fn a_plain_motion_drops_the_selection_and_ctrl_c_does_not() {
     app.handle_key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::NONE));
     assert!(app.selection_span().is_some(), "`L` selects");
 
+    // Plain motion: selection survives.
+    app.handle_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE));
+    assert!(
+        app.selection_span().is_some(),
+        "a plain motion no longer drops the selection"
+    );
+
+    // `Ctrl-c` copies without clearing.
     app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
     assert!(
         app.selection_span().is_some(),
         "`Ctrl-C` copies without clearing"
     );
 
-    app.handle_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE));
-    assert_eq!(app.select_anchor, None, "a plain motion clears it");
+    // `Esc` dismisses it.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(app.select_anchor, None, "`Esc` clears the selection");
 }
 
 /// Spec 0242 S6, the user's own correction (2026-08-04): a selection
@@ -167,6 +175,7 @@ fn the_copy_includes_what_a_fold_is_hiding() {
         app.cursor = end.node;
         app.cursor_line_in_node = end.line_in_node;
         app.caret_to_line_end();
+        app.select_caret = Some(app.cursor_pos());
         app.selected_text().expect("a span must yield text").1
     };
     let unfolded = select_all(&mut app);

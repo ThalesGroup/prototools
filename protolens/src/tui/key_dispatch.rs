@@ -38,28 +38,9 @@ fn shift_alt(key: &KeyEvent) -> bool {
         .contains(KeyModifiers::SHIFT | KeyModifiers::ALT)
 }
 
-/// Spec 0242 S3: whether a main-pane key is allowed to leave the
-/// selection standing — the four `Shift`-motions that extend it, the
-/// `Ctrl-c` that copies it, and spec 0268's `w`/`W`, which read it.
-/// Every other key clears it.
-///
-/// The guards mirror the match arms in `handle_main_key` exactly, so
-/// that a key and its "does this select?" answer cannot drift apart:
-/// `Alt` disqualifies an arrow because `Shift-Alt` is the horizontal pan
-/// (S9), and `Control`/`Alt` disqualify a capital because `Ctrl-H` is
-/// not `H` (see [`ctrl_or_alt`]).
-fn keeps_the_selection(key: &KeyEvent) -> bool {
-    match key.code {
-        KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right => {
-            key.modifiers.contains(KeyModifiers::SHIFT)
-                && !key.modifiers.contains(KeyModifiers::ALT)
-        }
-        KeyCode::Char('H' | 'J' | 'K' | 'L') => !ctrl_or_alt(key),
-        KeyCode::Char('c') => key.modifiers.contains(KeyModifiers::CONTROL),
-        KeyCode::Char('w' | 'W') => !ctrl_or_alt(key),
-        _ => false,
-    }
-}
+// Spec 0358 S1: the blanket `keeps_the_selection` / `clear_selection`
+// guard is removed. The selection now persists across all motion keys
+// and is dismissed only by `Esc`, a bare click, or `script_reset`.
 
 /// What a keypress did to the `gg` chord.
 pub(super) enum GChord {
@@ -643,13 +624,6 @@ impl App {
         // Spec 0242 S3: everything that is not one of the four selection
         // keys — nor the `Ctrl-c` that copies what they selected — drops
         // the selection, so a plain motion does not drag it along behind
-        // the caret. One check here rather than a call in each of the
-        // dozens of arms below, which is also what keeps the rule true
-        // of arms added later.
-        if !keeps_the_selection(&key) {
-            self.clear_selection();
-        }
-
         match self.take_g_chord(&key) {
             GChord::Fired => {
                 self.move_home();
@@ -672,7 +646,43 @@ impl App {
             self.pending_x = ExportChord::None;
             let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
             let alt = key.modifiers.contains(KeyModifiers::ALT);
+            let shift = key.modifiers.contains(KeyModifiers::SHIFT);
             match key.code {
+                // Spec 0358 S7: Shift-Ctrl/Shift-Alt selection chords.
+                // Each extends the selection via `extend_selection`.
+                // Placed before the unshifted counterparts so the Shift
+                // guard fires first.
+                //
+                // Character-wise chords use `selection_caret_*`, not
+                // `caret_*`, to avoid fold/unfold side-effects (spec
+                // 0242 S6).
+                KeyCode::Char('n') if ctrl && shift => self.extend_selection(Self::move_down),
+                KeyCode::Char('p') if ctrl && shift => self.extend_selection(Self::move_up),
+                KeyCode::Char('f') if ctrl && shift => {
+                    self.extend_selection(Self::selection_caret_right)
+                }
+                KeyCode::Char('b') if ctrl && shift => {
+                    self.extend_selection(Self::selection_caret_left)
+                }
+                KeyCode::Char('e') if ctrl && shift => {
+                    self.extend_selection(Self::caret_to_line_end)
+                }
+                KeyCode::Char('a') if ctrl && shift => {
+                    self.extend_selection(Self::caret_to_line_start)
+                }
+                KeyCode::Char('f') if shift_alt(&key) => {
+                    self.extend_selection(Self::caret_word_right)
+                }
+                KeyCode::Char('l') if shift_alt(&key) => {
+                    self.extend_selection(Self::caret_word_right)
+                }
+                KeyCode::Char('b') if shift_alt(&key) => {
+                    self.extend_selection(Self::caret_word_left)
+                }
+                KeyCode::Char('h') if shift_alt(&key) => {
+                    self.extend_selection(Self::caret_word_left)
+                }
+
                 // Emacs' next/previous-line, aliasing `j`/`k`.
                 KeyCode::Char('n') if ctrl => self.move_down(),
                 KeyCode::Char('p') if ctrl => self.move_up(),
@@ -731,7 +741,9 @@ impl App {
                 // else the cursor's own current line. Mouse release does
                 // not copy by itself (see the no-op
                 // `Up(MouseButton::Left)` arm in `handle_mouse`).
-                KeyCode::Char('c') if ctrl => self.copy_current_selection_or_line(),
+                // Spec 0358 S3/S6: copy the active selection; no-op when
+                // nothing is selected.
+                KeyCode::Char('c') if ctrl => self.copy_current_selection(),
 
                 // Spec 0268 S8: put the bytes away. `w` and `W` turn a
                 // run off only from a row inside it, and after scrolling

@@ -89,20 +89,26 @@ sibling.
   as `cursor_line_in_node` and `cursor_line()` is derived rather than
   stored.
 
-- **S2.** The selection's **moving** end is the caret itself —
-  `(self.cursor_line(), self.cursor_column)`. There is no field for it,
-  because a second field is a second thing to keep in sync, and G3 is
-  precisely the requirement that the mouse and the keys cannot disagree.
+- **S2.** The selection's **moving** end is stored in `select_caret:
+  Option<CursorPos>` — the same three fields as the anchor. It is set by
+  every gesture that extends the selection (`extend_selection`,
+  `drag_caret_to`, `select_sweep_hit`) and cleared by `clear_selection`.
 
-  The selected span runs between the two ends in `(line, column)`
-  lexicographic order and **includes both endpoint cells** — the caret
-  here is vim's block, resting *on* a character rather than between two
-  of them (`caret_bounds` stops it at `len - 1`), so a span that excluded
-  its cell would describe something the user cannot see, and the
-  document's very last character would be unselectable for want of a
-  column past it. `selection_span` therefore returns the end column one
-  past the caret's, which is what makes the rest of the code half-open
-  and ordinary.
+  **Amended by spec 0358:** `select_caret` is independent of
+  `cursor_column`. Plain caret motions (`j`, `l`, arrow keys…) update
+  `cursor_column` but leave `select_caret` alone, so they do not silently
+  grow or shrink the span. Only selection-extension gestures write to
+  `select_caret`.
+
+  The selected span runs between `select_anchor` and `select_caret` in
+  `(line, column)` lexicographic order and **includes both endpoint
+  cells** — the caret here is vim's block, resting *on* a character
+  rather than between two of them (`caret_bounds` stops it at `len - 1`),
+  so a span that excluded its cell would describe something the user
+  cannot see, and the document's very last character would be unselectable
+  for want of a column past it. `selection_span` therefore returns the end
+  column one past `select_caret.column`, which is what makes the rest of
+  the code half-open and ordinary.
 
   Anchor equal to caret is therefore a **one-character** selection, not
   an empty one — the caret is resting on the anchor's own cell and that
@@ -117,20 +123,18 @@ sibling.
   following `Drag` needs somewhere to start from — without engaging, so a
   click selects nothing at all. A `Shift`-motion, a drag or a
   double-click engages; `clear_selection` disengages along with dropping
-  the anchor.
+  both the anchor and `select_caret`.
 
   The column is a *caret-track* column (spec 0194 S1) — the same
   coordinate `cursor_column` lives in, so column `n` is the `n`th
   character of `row_text` and a column at or past `text_chars` is the
   end of the row's text.
 
-- **S3.** Any main-pane key that is not one of the four selection keys
-  of S4 and not `Ctrl-c` clears `select_anchor` before it runs. Without
-  this a plain `j` after a selection would silently drag the selection
-  along with the caret, which is not what any editor does. `Esc` keeps
-  its explicit clear (spec 0129 §G3) — it clears the search highlight
-  too, and that is worth stating at the key rather than relying on the
-  blanket rule.
+- **S3.** ~~Any main-pane key that is not one of the four selection keys
+  of S4 and not `Ctrl-c` clears `select_anchor` before it runs.~~
+  **Deleted by spec 0358 S1.** The selection now persists across plain
+  caret motions; it is cleared only by `Esc`, a bare click, or
+  `script_reset`. `Esc` keeps its explicit clear (spec 0129 §G3).
 
 ### The keys
 

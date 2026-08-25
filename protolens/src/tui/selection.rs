@@ -38,11 +38,15 @@ impl App {
     /// without engaging, so that a click still selects nothing.
     pub(super) fn selection_span(&self) -> Option<SelectionSpan> {
         let anchor = self.select_anchor.filter(|_| self.select_engaged)?;
+        let caret = self.select_caret?;
         let a = (
             self.absolute_start(anchor.node) + anchor.line_in_node as usize,
             anchor.column,
         );
-        let b = (self.cursor_line(), self.cursor_column);
+        let b = (
+            self.absolute_start(caret.node) + caret.line_in_node as usize,
+            caret.column,
+        );
         let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
         Some((lo.0, lo.1, hi.0, hi.1 + 1))
     }
@@ -75,6 +79,7 @@ impl App {
     /// motion does not drag the selection along behind the caret.
     pub(super) fn clear_selection(&mut self) {
         self.select_anchor = None;
+        self.select_caret = None;
         self.select_engaged = false;
     }
 
@@ -83,7 +88,7 @@ impl App {
     /// move the caret. Either way the motion engages the selection — a
     /// `Shift`-key is the user saying so, unlike the bare click that
     /// arms an anchor and selects nothing.
-    fn anchor_selection(&mut self) {
+    pub(super) fn anchor_selection(&mut self) {
         if self.select_anchor.is_none() {
             self.select_anchor = Some(self.cursor_pos());
         }
@@ -92,9 +97,10 @@ impl App {
 
     /// Spec 0242 S4/S5: extend the selection by running `motion`, then
     /// bring the caret back on screen (S7).
-    fn extend_selection(&mut self, motion: impl FnOnce(&mut Self)) {
+    pub(super) fn extend_selection(&mut self, motion: impl FnOnce(&mut Self)) {
         self.anchor_selection();
         motion(self);
+        self.select_caret = Some(self.cursor_pos());
         self.show_caret();
     }
 
@@ -122,7 +128,7 @@ impl App {
     /// S5). A selection motion changes nothing but the caret (S6): a
     /// fold would hide rows the user has already selected, and an
     /// unfold would reveal rows they had not.
-    fn selection_caret_left(&mut self) {
+    pub(super) fn selection_caret_left(&mut self) {
         self.clamp_caret_column();
         let first = self.caret_bounds().0;
         if self.cursor_column > first {
@@ -137,7 +143,7 @@ impl App {
     /// The mirror of [`Self::selection_caret_left`]. A folded node is
     /// one visible row like any other: the caret steps over it onto the
     /// next visible row rather than opening it (S6).
-    fn selection_caret_right(&mut self) {
+    pub(super) fn selection_caret_right(&mut self) {
         self.clamp_caret_column();
         let last = self.caret_bounds().1;
         if self.cursor_column < last {
@@ -251,28 +257,16 @@ impl App {
         };
     }
 
-    /// Spec 0131 §G1: `Ctrl-C` — copies the active selection if one
-    /// exists, else the cursor's own whole current line.
+    /// Spec 0358 S3/S6: `Ctrl-C` — copies the active selection if one
+    /// is engaged; no-op otherwise.
     ///
-    /// The test is `selection_span`, not `select_anchor`: a bare click
-    /// arms an anchor without engaging a selection (S10), and a click
-    /// followed by `Ctrl-c` copies the clicked line — the same thing
-    /// `Ctrl-c` does when no click happened at all.
-    pub(super) fn copy_current_selection_or_line(&mut self) {
+    /// The line-copy fallback (spec 0131 §G1) is removed: with
+    /// persistent selection a stale highlight could be copied
+    /// unintentionally, and `Ctrl-c` with nothing selected is more
+    /// likely a dismissed-muscle-memory gesture than a deliberate copy.
+    pub(super) fn copy_current_selection(&mut self) {
         if self.selection_span().is_some() {
             self.copy_selection_to_clipboard();
-            return;
         }
-        let line = self.cursor_line();
-        let Some(pos) = self.line_pos(line) else {
-            return;
-        };
-        let mut cursor = None;
-        let offset = self.advance_offset(&mut cursor, pos);
-        let text = self.row_text(DisplayRow::Committed(CommittedRow { line, pos, offset }));
-        self.message = match copy_to_clipboard(&text) {
-            Ok(()) => "1 line(s) copied to clipboard".to_string(),
-            Err(_) => "1 line(s) copied to clipboard (OSC 52 fallback)".to_string(),
-        };
     }
 }

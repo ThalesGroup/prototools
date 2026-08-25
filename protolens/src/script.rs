@@ -107,6 +107,12 @@ pub struct Step {
     /// Command-line text to prefill, without the leading `:`
     /// (spec 0271 S11). Never executed by the script.
     pub prefill: Option<String>,
+    /// Whether to select the caret's header line when the step is applied
+    /// (spec 0357).
+    pub select: bool,
+    /// Regex to highlight via the search machinery when the step is applied
+    /// (spec 0357).
+    pub search: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -195,6 +201,10 @@ struct RawStep {
     wire_node: Option<String>,
     #[serde(default)]
     command: Option<String>,
+    #[serde(default)]
+    select: bool,
+    #[serde(default)]
+    search: Option<String>,
 }
 
 /// One scalar or a list of them — the shape `fold:` and `unfold:` share.
@@ -262,6 +272,8 @@ impl RawStep {
                 .collect(),
             wire,
             prefill: self.command,
+            select: self.select,
+            search: self.search,
         })
     }
 }
