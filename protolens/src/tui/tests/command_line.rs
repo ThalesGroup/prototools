@@ -805,6 +805,41 @@ fn default_save_overrides_path_uses_blob_stem_with_yaml_extension() {
     assert_eq!(app.default_save_overrides_path(), "/tmp/some/target.yaml");
 }
 
+/// `xb`/`xp` on the root node (full protobuf): path uses `all` instead of
+/// the byte range, keeping the short type.
+#[test]
+fn default_extract_path_at_root_uses_all_not_range() {
+    let (mut app, _, _) = type_as_fixture();
+    app.blob_path = PathBuf::from("/tmp/some/target.pb");
+    app.cursor = app.first_node;
+    let path = app.default_extract_path();
+    assert!(
+        path.contains(".all."),
+        "root export path must contain `.all.`: {path}"
+    );
+    assert!(
+        !path.contains("-"),
+        "root export path must not contain a byte range: {path}"
+    );
+}
+
+/// `xb`/`xp` on a non-root node: path uses the byte range as before.
+#[test]
+fn default_extract_path_at_non_root_uses_range() {
+    let (mut app, inner_idx, _) = type_as_fixture();
+    app.blob_path = PathBuf::from("/tmp/some/target.pb");
+    app.cursor = inner_idx;
+    let path = app.default_extract_path();
+    assert!(
+        !path.contains(".all."),
+        "non-root export path must not use `.all.`: {path}"
+    );
+    assert!(
+        path.contains("-"),
+        "non-root export path must contain a byte range: {path}"
+    );
+}
+
 /// Spec 0117 §4: `:save`/`:restore` round-trip the collection through
 /// YAML, and restore drops an entry whose origin no longer resolves
 /// against the current tree — reporting how many it dropped, which is

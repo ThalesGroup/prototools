@@ -406,8 +406,13 @@ impl App {
             .get(self.tree[self.cursor].span.type_fqdn)
             .and_then(|f| f.rsplit('.').next())
             .unwrap_or("node");
-        let range = self.display_range(self.cursor);
-        let filename = format!("{stem}.{}-{}.{short_type}.pb", range.start, range.end);
+        let filename = if self.cursor == self.first_node {
+            // Exporting the full protobuf — use a stable, range-free name.
+            format!("{stem}.all.{short_type}.pb")
+        } else {
+            let range = self.display_range(self.cursor);
+            format!("{stem}.{}-{}.{short_type}.pb", range.start, range.end)
+        };
         match self.blob_path.parent() {
             Some(dir) if !dir.as_os_str().is_empty() => {
                 dir.join(filename).to_string_lossy().into_owned()
