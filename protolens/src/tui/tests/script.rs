@@ -23,6 +23,15 @@ fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
     KeyEvent::new(code, modifiers)
 }
 
+/// Simulate a keypress the way the run loop does: dispatch the key then
+/// evaluate advance_when, mirroring `terminal::dispatch_event`.
+fn press(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
+    app.handle_key(key(code, modifiers));
+    if app.script_advance_when_satisfied() {
+        app.script_advance(true);
+    }
+}
+
 /// Everything a step declares, read back off the session — the value
 /// spec 0271 S6 says must depend on the step alone.
 #[derive(Debug, PartialEq)]
@@ -510,7 +519,7 @@ fn advance_when_wire_advances_on_w() {
 
     assert_eq!(app.script.as_ref().unwrap().current, 0, "starts on step 0");
     // `w` opens the wire span; advance_when must fire.
-    app.handle_key(key(KeyCode::Char('w'), KeyModifiers::NONE));
+    press(&mut app, KeyCode::Char('w'), KeyModifiers::NONE);
     assert_eq!(
         app.script.as_ref().unwrap().current,
         1,
@@ -526,7 +535,7 @@ fn advance_when_not_satisfied_does_not_advance() {
     app.set_script(script_of(WIRE_STEP));
 
     // `j` moves the cursor but does not open wire bytes.
-    app.handle_key(key(KeyCode::Char('j'), KeyModifiers::NONE));
+    press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
     assert_eq!(
         app.script.as_ref().unwrap().current,
         0,
@@ -578,7 +587,7 @@ steps:
     assert_eq!(app.script.as_ref().unwrap().current, 0);
 
     // `j` moves the caret to /1 (items are folded, so /1/1 is invisible).
-    app.handle_key(key(KeyCode::Char('j'), KeyModifiers::NONE));
+    press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
     assert_eq!(
         app.script.as_ref().unwrap().current,
         1,
@@ -604,14 +613,17 @@ steps:
     app.set_script(script_of(script));
     assert_eq!(app.script.as_ref().unwrap().current, 0);
 
-    // Commit an override that re-types /1 as test.Outer.
-    app.run_command("override /1 --as test.Outer");
-    // The advance_when check fires after the next key.
-    app.handle_key(key(KeyCode::Esc, KeyModifiers::NONE));
+    // Open the command line, type the override, then press Enter — the
+    // advance_when check must fire on the Enter key.
+    press(&mut app, KeyCode::Char(':'), KeyModifiers::NONE);
+    for ch in "override /1 --as test.Outer".chars() {
+        press(&mut app, KeyCode::Char(ch), KeyModifiers::NONE);
+    }
+    press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     assert_eq!(
         app.script.as_ref().unwrap().current,
         1,
-        "type: predicate fired after override re-typed /1 as test.Outer"
+        "type: predicate fired on Enter after override re-typed /1 as test.Outer"
     );
 }
 
@@ -632,8 +644,8 @@ steps:
     app.set_script(script_of(folded_script));
     assert_eq!(app.script.as_ref().unwrap().current, 0);
 
-    // `z` on the root folds everything to depth 0 — /1 becomes folded.
-    app.handle_key(key(KeyCode::Char('0'), KeyModifiers::NONE));
+    // `0` on the root folds everything to depth 0 — /1 becomes folded.
+    press(&mut app, KeyCode::Char('0'), KeyModifiers::NONE);
     assert_eq!(
         app.script.as_ref().unwrap().current,
         1,
@@ -657,7 +669,7 @@ steps:
     app.set_script(script_of(script));
 
     // Opening wire satisfies `wire: /1` but not `caret: /2`.
-    app.handle_key(key(KeyCode::Char('w'), KeyModifiers::NONE));
+    press(&mut app, KeyCode::Char('w'), KeyModifiers::NONE);
     assert_eq!(
         app.script.as_ref().unwrap().current,
         0,
@@ -681,7 +693,7 @@ steps:
     assert_eq!(app.script.as_ref().unwrap().current, 0);
 
     // Any key — predicate stays false because /999 does not exist.
-    app.handle_key(key(KeyCode::Char('j'), KeyModifiers::NONE));
+    press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
     assert_eq!(
         app.script.as_ref().unwrap().current,
         0,
@@ -721,7 +733,7 @@ steps:
     assert!(app.wire_rows().is_some(), "wire is open on step 1");
 
     // `w` closes the wire (toggle); not: fires.
-    app.handle_key(key(KeyCode::Char('w'), KeyModifiers::NONE));
+    press(&mut app, KeyCode::Char('w'), KeyModifiers::NONE);
     assert_eq!(
         app.script.as_ref().unwrap().current,
         2,
@@ -756,7 +768,7 @@ steps:
     );
 
     // Moving the caret off /1 breaks `caret: /1` → not: fires.
-    app.handle_key(key(KeyCode::Char('j'), KeyModifiers::NONE));
+    press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
     assert_eq!(
         app.script.as_ref().unwrap().current,
         1,
@@ -782,7 +794,7 @@ steps:
     app.set_script(script_of(script));
     assert_eq!(app.script.as_ref().unwrap().current, 0);
 
-    app.handle_key(key(KeyCode::Char('w'), KeyModifiers::NONE));
+    press(&mut app, KeyCode::Char('w'), KeyModifiers::NONE);
     assert_eq!(
         app.script.as_ref().unwrap().current,
         1,
@@ -842,7 +854,7 @@ steps:
     assert_eq!(app.script.as_ref().unwrap().current, 0);
 
     // `a` toggles annotations off.
-    app.handle_key(key(KeyCode::Char('a'), KeyModifiers::NONE));
+    press(&mut app, KeyCode::Char('a'), KeyModifiers::NONE);
     assert_eq!(
         app.script.as_ref().unwrap().current,
         1,
@@ -867,7 +879,7 @@ steps:
     assert_eq!(app.script.as_ref().unwrap().current, 0);
 
     // `i` cycles heat cues to Findings.
-    app.handle_key(key(KeyCode::Char('i'), KeyModifiers::NONE));
+    press(&mut app, KeyCode::Char('i'), KeyModifiers::NONE);
     assert_eq!(
         app.script.as_ref().unwrap().current,
         1,

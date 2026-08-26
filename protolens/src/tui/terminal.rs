@@ -534,6 +534,11 @@ pub(super) fn dispatch_event(app: &mut App, ev: &event::AppEvent) -> Option<&'st
             if key.kind != KeyEventKind::Release {
                 let dispatched_at = Instant::now();
                 app.handle_key(*key);
+                // Spec 0356 S3: single choke point for advance_when
+                // evaluation after any user input.
+                if app.script_advance_when_satisfied() {
+                    app.script_advance(true);
+                }
                 settle_edge_resistance(app);
                 trace::trace!(
                     "key {:?} us={}",
@@ -546,6 +551,10 @@ pub(super) fn dispatch_event(app: &mut App, ev: &event::AppEvent) -> Option<&'st
         event::AppEvent::Term(Event::Mouse(mouse)) => {
             let dispatched_at = Instant::now();
             app.handle_mouse(*mouse);
+            // Spec 0356 S3: same choke point for mouse events.
+            if app.script_advance_when_satisfied() {
+                app.script_advance(true);
+            }
             settle_edge_resistance(app);
             trace::trace!(
                 "mouse {:?} col={} row={} mods={:?} us={}",
