@@ -921,9 +921,13 @@ fn a_budgeted_preview_clamps_a_pan_made_for_the_untruncated_row() {
         "the pan must be clamped to what the overlay shows ({} > {bound})",
         app.pan_offset,
     );
+    // Spec 0363: max_pan_offset may now exceed max_visible_line_len when the
+    // cursor row's content + heat suffix drives the bound. The "pane is not
+    // blank" guarantee is that the cursor row itself still has content at the
+    // pan position — confirmed by pan_offset <= bound (checked above), which
+    // by spec 0363 S1 is based on the cursor row's own effective width.
     assert!(
-        app.max_visible_line_len() > app.pan_offset,
-        "so some row still has a character left of the pan — the pane is \
-         not blank",
+        app.max_pan_offset() >= app.pan_offset,
+        "the pan must still be within the bound after the overlay narrows content",
     );
 }

@@ -1756,3 +1756,77 @@ fn caret_to_line_start_pans_back() {
     assert_eq!(app.pan_offset, 0);
     assert!(caret_is_visible(&app));
 }
+
+/// Spec 0363 test 1: `$` on a line that has a heat suffix and requires
+/// panning leaves the caret inside the visible columns, i.e. the heat
+/// suffix is visible after the motion.
+#[test]
+fn dollar_on_line_with_heat_suffix_brings_cue_into_view() {
+    // Line wide enough to require panning in a narrow window.
+    let line = "x".repeat(60);
+    let mut app = sibling_leaves_app(&[&line]);
+    app.splash = false;
+    app.main_area = Rect::new(0, 0, 20, 5);
+    let suffix = " [3/9]";
+    app.caret_suffix_len = suffix.chars().count();
+
+    app.caret_to_line_end();
+
+    assert!(app.pan_offset > 0, "the view must have panned");
+    assert!(
+        caret_is_visible(&app),
+        "spec 0363 G1: `$` with a heat suffix keeps the caret on screen; \
+         column {} outside [{}, {})",
+        app.cursor_column,
+        app.pan_offset,
+        app.pan_offset + usable_columns(&app)
+    );
+}
+
+/// Spec 0363 test 2: Ctrl-Right can pan all the way to the heat suffix
+/// on the cursor row — `max_pan_offset` now accounts for it.
+#[test]
+fn pan_right_reaches_heat_suffix_on_cursor_row() {
+    let line = "x".repeat(60);
+    let mut app = sibling_leaves_app(&[&line]);
+    app.splash = false;
+    app.main_area = Rect::new(0, 0, 20, 5);
+    let suffix = " [3/9]";
+    app.caret_suffix_len = suffix.chars().count();
+
+    for _ in 0..100 {
+        app.pan_right();
+    }
+
+    // The caret's rightmost reachable column is line.len()-1 + suffix.len().
+    // The pan must be high enough that this column is visible.
+    let last_col = line.chars().count() - 1 + suffix.chars().count();
+    let usable = usable_columns(&app);
+    assert!(
+        app.pan_offset + usable > last_col,
+        "spec 0363 G2: pan must reach the heat suffix; \
+         pan_offset={} usable={} last_col={last_col}",
+        app.pan_offset,
+        usable
+    );
+}
+
+/// Spec 0363 test 3: when there is no heat suffix, `max_pan_offset` is
+/// unchanged from its pre-spec value (widest visible line minus usable width).
+#[test]
+fn max_pan_offset_unaffected_when_no_heat_suffix() {
+    let line = "x".repeat(60);
+    let mut app = sibling_leaves_app(&[&line]);
+    app.splash = false;
+    app.main_area = Rect::new(0, 0, 20, 5);
+    app.caret_suffix_len = 0;
+
+    let usable = (app.main_area.width as usize).saturating_sub(render::HEAT_FIELD_WIDTH);
+    // FOLD_FIELD_WIDTH is added by row_content's fold_margin_of.
+    let expected = line.len() + render::FOLD_FIELD_WIDTH - usable;
+    assert_eq!(
+        app.max_pan_offset(),
+        expected,
+        "spec 0363 G3: no heat suffix — max_pan_offset equals widest-line - usable"
+    );
+}

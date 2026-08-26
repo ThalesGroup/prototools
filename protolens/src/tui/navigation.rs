@@ -1069,9 +1069,17 @@ impl App {
     /// gutter (spec 0138 N1), reserved but never panned — only the rest
     /// actually shows line text, so the bound must leave room for them
     /// or panning stops short of the line's true end.
+    ///
+    /// Spec 0363: the cursor row's heat suffix extends its effective width
+    /// beyond what `max_visible_line_len` measures (`row_content` excludes
+    /// chrome). The suffix is only navigable on the cursor row (spec 0194
+    /// S1), so `caret_suffix_len` is added for that row alone.
     pub(super) fn max_pan_offset(&mut self) -> usize {
         let width = (self.main_area.width as usize).saturating_sub(render::HEAT_FIELD_WIDTH);
-        self.max_visible_line_len().saturating_sub(width)
+        let content_max = self.max_visible_line_len();
+        let cursor_row_effective =
+            self.row_content(self.cursor_row()).chars().count() + self.caret_suffix_len;
+        content_max.max(cursor_row_effective).saturating_sub(width)
     }
 
     /// Shared horizontal-pan arithmetic behind the main pane's Ctrl-Left/
