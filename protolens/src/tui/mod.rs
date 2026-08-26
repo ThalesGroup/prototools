@@ -2658,7 +2658,6 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
         .split(vertical[1])[1]
 }
 
-
 /// Drop the leading `offset` characters of the rendered line (spec 0113
 /// D24's horizontal pan, composed with spec 0116 §7's syntax
 /// highlighting) — skips `offset` characters across the whole span

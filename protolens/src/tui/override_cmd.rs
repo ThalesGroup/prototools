@@ -98,10 +98,10 @@ pub(super) fn parse_override(args: &[&str]) -> Result<OverrideArgs, String> {
                     .ok_or_else(|| "override: --field-name needs a value".to_string())?;
                 name = Some((*value).to_string());
             }
-            "--card" => {
+            "--cardinality" => {
                 let value = args
                     .next()
-                    .ok_or_else(|| "override: --card needs a value".to_string())?;
+                    .ok_or_else(|| "override: --cardinality needs a value".to_string())?;
                 cardinality = Some(parse_cardinality(value)?);
             }
             other if other.starts_with("--") => {
@@ -123,17 +123,19 @@ pub(super) fn parse_override(args: &[&str]) -> Result<OverrideArgs, String> {
     })
 }
 
-/// Parse a `--card` value (spec 0348 §S2).
+/// Parse a `--cardinality` value (spec 0348 §S2).
 fn parse_cardinality(s: &str) -> Result<prost_reflect::Cardinality, String> {
     match s {
         "optional" => Ok(prost_reflect::Cardinality::Optional),
         "repeated" => Ok(prost_reflect::Cardinality::Repeated),
         "required" => Ok(prost_reflect::Cardinality::Required),
-        _ => Err("override: --card value must be optional, repeated, or required".to_string()),
+        _ => {
+            Err("override: --cardinality value must be optional, repeated, or required".to_string())
+        }
     }
 }
 
-/// Format a `Cardinality` as the `--card` token string.
+/// Format a `Cardinality` as the `--cardinality` token string.
 fn cardinality_str(c: prost_reflect::Cardinality) -> &'static str {
     match c {
         prost_reflect::Cardinality::Optional => "optional",
@@ -298,13 +300,13 @@ impl App {
             buf.push_str(" --as ");
             buf.push_str(r#type);
         }
-        // Spec 0348 §S3: prefill --card only from the selection pane.
-        // The management pane pre-fills a stored entry; adding --card
+        // Spec 0348 §S3: prefill --cardinality only from the selection pane.
+        // The management pane pre-fills a stored entry; adding --cardinality
         // there would silently change entries that were stored without
         // one, breaking the o-then-Enter no-op invariant (spec 0236 S6).
         if !from_manage {
             let card = self.field_cardinality(node);
-            buf.push_str(" --card ");
+            buf.push_str(" --cardinality ");
             buf.push_str(cardinality_str(card));
         }
         // Spec 0360 S5: when a type is highlighted, prepend its
@@ -680,7 +682,7 @@ impl App {
             Some("--as-new") => {}
             // Spec 0348 §S4: unfiltered rotation through the three
             // cardinality literals, narrowest to widest.
-            Some("--card") => self.complete_card(token_start, token),
+            Some("--cardinality") => self.complete_card(token_start, token),
             _ => self.complete_override_origin(token_start, token),
         }
     }
@@ -731,7 +733,7 @@ impl App {
         self.apply_rotation(token_start, prefix, candidates);
     }
 
-    /// `--card`'s completion (spec 0348 §S4):
+    /// `--cardinality`'s completion (spec 0348 §S4):
     ///
     /// - Exact match (`optional`/`repeated`/`required`): rotate immediately
     ///   on the first Tab, Shift-Tab goes the other way — same as `<origin>`

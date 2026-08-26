@@ -28,7 +28,7 @@ steps:
       The root type is unknown — no schema in alice/app.desc
       matches the envelope.  What we see is raw field numbers.
 
-      Press space to step.
+      👋 Press space to step.
 
   - text: |
       Let's fold the top level nodes to get a clearer view.
@@ -37,7 +37,7 @@ steps:
       The process was probably killed in flight and the logfile misses 1024 bytes.
       This explains why protoc was unable to parse it.
 
-      Press space to step.
+      👋 Press space to step.
 
     fold: ["/ 1"]
     node: /
@@ -45,19 +45,19 @@ steps:
     search: TRUNCATED_MESSAGE
 
   - text: |
-      Open to depth 2.
+      Let's unfold to depth 2.
 
       The top-level fields each contain a repeated submessage.  These
       look like log entries — one per RPC call.
 
-      Press space to step.
+      👋 Press space to step.
 
     fold: ["/ 2"]
     node: /
-    search: "[{]  #@ message"
+    search: "1 [{]  #@ message"
 
   - text: |
-      Let's name the structure.  The command below is prefilled.
+      Let's name this structure using the proposed prefilled command below.
 
       It declares a new synthetic type "Entry", marks field 1 as
       repeated and gives it the field name "entries".
@@ -66,19 +66,19 @@ steps:
 
     fold: ["/ 2"]
     node: /
-    search: "[{]  #@ message"
-    command: override /:1 --as-new Entry --card repeated --field-name entries
+    search: "1 [{]  #@ message"
+    command: override /:1 --as-new Entry --cardinality repeated --field-name entries
 
   - text: |
       To go futher, let's enable protolens heat cues.
-      Protolens will tell us where it recognizes nodes with known types.
-      They will be lightened up.
+      Protolens will tell us where it recognizes known types in the subnodes of the protobuf.
+      Heat cues appear as green/amber/blue annotation.
 
-      Press i to enable heat cues.
+      Press `i` to enable heat cues.
 
     fold: ["/ 2"]
     node: /
-    search: "[{]  #@ repeated Entry"
+    # search: "1 [{]  #@ repeated Entry"
 
   - text: |
       /:1:5 is bright green.

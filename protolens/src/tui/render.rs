@@ -1070,7 +1070,7 @@ impl App {
             &NO_STYLES,
             self.first_node,
             fold_closed,
-            None,  // fold_style: irrelevant, text-only path
+            None, // fold_style: irrelevant, text-only path
             shadowed,
             true, // annotation hiding already done by caller
         )
@@ -1291,8 +1291,7 @@ impl App {
         // Spec 0362 S6: pre-compute the amber kw_style for the
         // shadowed-scalar suffix once, outside the piece loop.
         let kw_style = if shadowed && self.annotations {
-            theme::status_color(Status::NonCanonical, self.theme)
-                .map(|c| Style::default().fg(c))
+            theme::status_color(Status::NonCanonical, self.theme).map(|c| Style::default().fg(c))
         } else {
             None
         };

@@ -29,7 +29,7 @@ steps:
 
         👉 SearchTextRequest.
 
-      Press space to step.
+      👋 Press space to step.
 
     node: /
     select: true
@@ -40,7 +40,7 @@ steps:
       A score breakdown tooltip appears.
       Note the penalty for "non-canonical encoding".
 
-      Press space to step.
+      👋 Press space to step.
 
     node: /
     select: true
@@ -53,7 +53,7 @@ steps:
       wire carries two.  Last one wins: protoc shows you
       "coffee in Grenoble" and silently drops everything above it.
 
-      Press space to step.
+      👋 Press space to step.
 
     node: /2
     select: true
@@ -62,7 +62,7 @@ steps:
   - text: |
       protolens annotates the second text_query as repeated_singular.
 
-      Press space to step.
+      👋 Press space to step.
 
     node: /2
     select: true
@@ -73,7 +73,7 @@ steps:
 
       Press `$` to see the `#@ shadowed_scalar` annotation at the right edge of the line.
 
-      Press space to step.
+      👋 Press space to step.
 
     node: /1
     select: true
