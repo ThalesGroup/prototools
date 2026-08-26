@@ -1,0 +1,143 @@
+# SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+#
+# SPDX-License-Identifier: MIT
+
+# Beat: guided walk through bob/logfile against googleapis.desc,
+# with the overrides from alice/app.desc already loaded.
+#
+# Invocation:
+#   protolens --descriptor-set $PROTOTEXT_GOOGLEAPIS_SET bob/logfile \
+#       --load-overrides alice/overrides \
+#       --script beats/googleapis.desc
+#
+# Re-pin (must print nothing):
+#   protolens --descriptor-set $PROTOTEXT_GOOGLEAPIS_SET bob/logfile \
+#       --load-overrides alice/overrides \
+#       --script beats/googleapis.desc script \
+#     | grep 'error:'
+
+title: The logfile, googleapis.desc
+
+steps:
+  - text: |
+      We reopened bob/logfile — this time against the full googleapis.desc
+      descriptor set (25 MB, thousands of types).
+
+      Our earlier overrides are loaded: Entry, Timestamp, rpc,
+      SearchTextRequest, SearchTextResponse are already named.
+
+      And now we have heat cues for fields 6 and 7 of the ComputeRoutes
+      entry — types that were unknown to alice/app.desc.
+
+      👋 Press space to step.
+
+    heat_cues: findings
+    fold: ["/ 2", "/1/1 Z"]
+    node: /3/3
+    select_line: true
+
+  - text: |
+      Field 6 has a bright heat cue: ComputeRoutesRequest.
+      Let's accept it.
+
+      👋 Double-click on the heat cue, then double-click on
+         ComputeRoutesRequest.
+
+    heat_cues: findings
+    fold: ["/ 2", "/1/1 Z"]
+    node: /3/3
+    select_line: true
+    advance_when:
+      - type: /3/3 google.maps.routing.v2.ComputeRoutesRequest
+
+  - text: |
+      👍 And field 7: ComputeRoutesResponse.
+
+      👋 Double-click on the heat cue, then double-click on
+         ComputeRoutesResponse.
+
+    heat_cues: findings
+    fold: ["/ 2", "/1/1 Z"]
+    node: /3/4
+    select_line: true
+    advance_when:
+      - type: /3/4 google.maps.routing.v2.ComputeRoutesResponse
+
+  - text: |
+      👍 Both route types are now named.
+
+      Let's look more carefully at the SearchTextRequest.
+      Navigate into /1/3/1 — the first (shadowed) occurrence of field 1.
+
+      protolens spotted something there: a bright heat cue for
+      google.rpc.Status (score: 8).
+
+      👋 Press `t` to open the type tooltip, then `z` to switch to a
+         plain path override, then Enter to commit.
+
+    heat_cues: findings
+    fold: ["/ 2", "/1/1 Z"]
+    node: /1/3/1
+    select_line: true
+    advance_when:
+      - type: /1/3/1 google.rpc.Status
+
+  - text: |
+      🚨 That is suspicious.
+
+      field 1 of SearchTextRequest is declared as a singular string
+      (the search query). But on the wire it appears twice — the second
+      occurrence ("coffee in Grenoble") shadows the first.
+
+      The shadowed first occurrence decodes as a google.rpc.Status
+      message — a debug trace injected by the app before the real query.
+      It carries Bob's API key in plain text:
+
+        AIzaSyB0b5REKn0tAr3aLk3yD0ntB0th3rTry1t
+
+      Every SearchText call leaks the key to whoever intercepts the wire.
+
+      👋 Press `w` to inspect the raw wire bytes.
+
+    heat_cues: findings
+    fold: ["/ 2", "/1/1 Z"]
+    node: /1/3/1
+    select_line: true
+    advance_when:
+      - annotations: false
+
+  - text: |
+      The wire bytes confirm it: the shadowed Status blob is present on
+      the wire, before the legitimate query string.
+
+      This is a backdoor, not a bug. 😠
+
+      👋 Press `w` again to return to annotations, then press space to
+         continue.
+
+    heat_cues: findings
+    fold: ["/ 2", "/1/1 Z"]
+    node: /1/3/1
+    select_line: true
+    advance_when:
+      - annotations: true
+
+  - text: |
+      Let's save our findings and export the full logfile as prototext.
+
+      👋 Press Enter to export.
+
+    heat_cues: findings
+    fold: ["/ 2", "/1/1 Z"]
+    node: /
+    command: xp alice/logfile.all.node.pb
+    advance_when:
+      - file_exists: alice/logfile.all.node.pb
+
+  - text: |
+      Now press Enter to quit.
+
+    heat_cues: findings
+    fold: ["/ 2", "/1/1 Z"]
+    node: /
+    command: quit
