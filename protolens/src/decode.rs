@@ -1835,12 +1835,30 @@ pub(crate) fn patch_synthetic_field_name(line: &str, field_name: &str) -> Option
 /// shows in place of the bare field number. Returns `None` (line left
 /// untouched) when the line doesn't actually start with that exact
 /// field number in one of those two shapes.
+///
+/// For schema-less renders the prototext_core annotation carries only the
+/// wire shape (`#@ string`, `#@ bytes`, …) without a `= N` field-number
+/// suffix, because `push_field_decl` is a no-op when no `FieldOrExt` is
+/// available.  `prototext encode` needs `= N` to recover the field number
+/// when the field key is a name rather than a number, so this function
+/// injects ` = {field_number}` at the end of any annotation that lacks it.
 pub(crate) fn patch_raw_field_name(
     line: &str,
     field_number: u64,
     field_name: &str,
 ) -> Option<String> {
-    patch_field_key(line, &field_number.to_string(), field_name)
+    let patched = patch_field_key(line, &field_number.to_string(), field_name)?;
+    // Inject `= N` into the annotation when absent.  The annotation is the
+    // `  #@ …` suffix; it has `= N` only when emitted via `push_field_decl`,
+    // which requires a schema — raw nodes never get it.  Without `= N`,
+    // `prototext encode` cannot map a named key back to its field number.
+    if let Some(ann_pos) = patched.find("  #@") {
+        let after_ann = &patched[ann_pos + 4..]; // skip "  #@"
+        if !after_ann.contains(" = ") {
+            return Some(format!("{} = {field_number}", patched.trim_end()));
+        }
+    }
+    Some(patched)
 }
 
 /// `line` with its leading field key rewritten to `field_name`, or

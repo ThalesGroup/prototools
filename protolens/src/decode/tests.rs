@@ -263,6 +263,36 @@ fn patch_synthetic_field_name_leaves_a_plain_numeric_key_line_untouched() {
     assert_eq!(patch_synthetic_field_name("5: 3  #@ int32 = 5", "id"), None);
 }
 
+#[test]
+fn patch_raw_field_name_injects_field_number_when_annotation_has_no_eq_n() {
+    // A schema-less string field: prototext_core emits `#@ string` without
+    // `= N` (push_field_decl is a no-op when field_schema is None).
+    // Without the injection, `prototext encode` cannot recover the field
+    // number from a named key and produces the wrong wire encoding.
+    assert_eq!(
+        patch_raw_field_name("  2: \"SearchText\"  #@ string", 2, "rpc"),
+        Some("  rpc: \"SearchText\"  #@ string = 2".to_string())
+    );
+}
+
+#[test]
+fn patch_raw_field_name_leaves_existing_eq_n_intact() {
+    // If the annotation already has `= N` (schema-derived), don't duplicate it.
+    assert_eq!(
+        patch_raw_field_name("  2: \"foo\"  #@ string = 2", 2, "rpc"),
+        Some("  rpc: \"foo\"  #@ string = 2".to_string())
+    );
+}
+
+#[test]
+fn patch_raw_field_name_works_on_message_header_without_annotation() {
+    // Message header lines (`N {`) have no annotation: no injection needed.
+    assert_eq!(
+        patch_raw_field_name("  2 {", 2, "rpc"),
+        Some("  rpc {".to_string())
+    );
+}
+
 /// Spec 0114: `--type` is optional — with no graph (autoinference
 /// unavailable), `decode()` must not error but instead render the
 /// blob with no known type. The virtual wrapper's own top-level node
