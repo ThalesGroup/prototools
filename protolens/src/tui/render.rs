@@ -898,6 +898,26 @@ impl App {
         } else {
             &source
         };
+        self.line_display_text(content, owner)
+    }
+
+    /// The single source of truth for display-transformed line text.
+    ///
+    /// Applies the two post-`line_text_at` insertions that the renderer
+    /// makes, so that the search haystack and the rendered row are always
+    /// identical and any future change only needs to be made here:
+    ///
+    /// - `{ ... }` collapse summary when the owning node is folded
+    ///   (spec 0215 S6).
+    /// - `; shadowed_scalar` annotation suffix for a shadowed slot
+    ///   (spec 0343 B10).
+    ///
+    /// `content` is the raw line text.  The caller is responsible for
+    /// stripping the annotation suffix first when `self.annotations` is
+    /// false — `row_text_of` does this via `code_part`; the search path
+    /// passes the raw text because `self.annotations` is already in scope
+    /// and the same condition gates the shadowed-scalar branch below.
+    pub(super) fn line_display_text(&self, content: &str, owner: Option<usize>) -> String {
         let mut text = content.to_string();
         if self.fold_marker_of(owner) == Some(FOLD_GLYPH_CLOSED) {
             match text.rfind('{') {
@@ -907,8 +927,7 @@ impl App {
         }
         // Spec 0343 B10: mirror the insertion that `row_spans` makes,
         // so that `row_content` and `row_spans` stay byte-identical and
-        // the caret can walk the suffix.  Only when annotations are on
-        // (same condition as above) and only for a shadowed slot.
+        // the caret can walk the suffix.
         if self.annotations {
             if let Some(idx) = owner.filter(|&i| self.is_shadowed(i)) {
                 text.push_str("; shadowed_scalar");

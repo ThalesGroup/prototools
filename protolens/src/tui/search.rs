@@ -702,19 +702,16 @@ impl App {
                             end: None,
                         });
                 }
-                let mut text = self.line_text_at(pos, sweep.offset);
-                // Spec 0343 B11: mirror `row_text_of`'s annotation
-                // insertion so the search haystack matches what the
-                // renderer tints. Only the node's own-text row (line 0)
-                // carries the suffix; shadowed scalars are always leaves
-                // and therefore single-row nodes, so `line_in_node == 0`
-                // is always true for a marked slot, but the check costs
-                // nothing and avoids a panic if that assumption breaks.
-                if self.annotations && pos.line_in_node == 0 && self.is_shadowed(pos.node) {
-                    let mut owned = text.into_owned();
-                    owned.push_str("; shadowed_scalar");
-                    text = Cow::Owned(owned);
-                }
+                let raw = self.line_text_at(pos, sweep.offset);
+                // Use `line_display_text` — the single source of truth
+                // for display-transformed text — so that the haystack
+                // matches exactly what the renderer shows, including the
+                // `{ ... }` fold summary and any `; shadowed_scalar`
+                // suffix.  Only the node's header line (line_in_node == 0)
+                // carries these insertions; later lines of a packed run
+                // have no owner-dependent transforms, so pass `None`.
+                let owner = (pos.line_in_node == 0).then_some(pos.node);
+                let text = self.line_display_text(&raw, owner);
                 // The row's first non-blank — the floor every stop's
                 // position is measured against (spec 0246 S3a).
                 let indent = text.len() - text.trim_start().len();
