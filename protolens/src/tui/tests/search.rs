@@ -498,13 +498,17 @@ fn every_match_in_text_order(app: &App, pattern: &str) -> Vec<(usize, usize)> {
     let lines = app.document_lines();
     let needle = SearchPattern::new(pattern).expect("a test pattern compiles");
     let mut out = Vec::new();
-    for (line, text) in lines.iter().enumerate() {
+    for (line, raw) in lines.iter().enumerate() {
         let Some(pos) = app.line_pos(line) else {
             continue;
         };
         if app.is_footer(pos) {
             continue;
         }
+        // Apply the same display transforms as the search haystack so
+        // that this helper and `run_search` agree on what each line says.
+        let owner = (pos.line_in_node == 0).then_some(pos.node);
+        let text = app.line_display_text(raw, owner);
         // Spec 0246 S3a: a stop sits at the column its caret lands on,
         // never left of the row's first non-blank.
         let indent = text.len() - text.trim_start().len();
@@ -515,7 +519,7 @@ fn every_match_in_text_order(app: &App, pattern: &str) -> Vec<(usize, usize)> {
             continue;
         }
         let mut from = 0;
-        while let Some(range) = needle.find_range_from(text, from) {
+        while let Some(range) = needle.find_range_from(&text, from) {
             out.push((line, range.start.max(indent)));
             from = range.start + text[range.start..].chars().next().map_or(1, char::len_utf8);
         }

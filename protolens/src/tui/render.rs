@@ -919,6 +919,14 @@ impl App {
     /// and the same condition gates the shadowed-scalar branch below.
     pub(super) fn line_display_text(&self, content: &str, owner: Option<usize>) -> String {
         let mut text = content.to_string();
+        // Spec 0361 S2: the root node's raw text starts with "1 " —
+        // field 1 of the virtual encompassing wrapper. Replace "1" with
+        // "/" (the path-notation name for the root) for a meaningful
+        // display label. The replacement is 1-for-1 in bytes, so no
+        // offsets shift.
+        if owner == Some(self.first_node) && text.starts_with("1 ") {
+            text.replace_range(..1, "/");
+        }
         if self.fold_marker_of(owner) == Some(FOLD_GLYPH_CLOSED) {
             match text.rfind('{') {
                 Some(pos) => text.insert_str(pos + 1, " ... }"),
@@ -1135,7 +1143,16 @@ impl App {
         emphasis: Modifier,
     ) -> Vec<Span<'static>> {
         let (source, node) = self.display_row_source(row);
-        let full_content: &str = &source;
+        // Spec 0361 S3: replace "1 " with "/ " on the root row. The
+        // substitution is 1-for-1 in bytes, so full_hints (byte ranges
+        // into the raw text) remain valid with no adjustment.
+        let root_owned: String;
+        let full_content: &str = if node == Some(self.first_node) && source.starts_with("1 ") {
+            root_owned = format!("/{}", &source[1..]);
+            &root_owned
+        } else {
+            &source
+        };
         let full_hints = self.window_styles.get(window_index).unwrap_or(&NO_STYLES);
         let (content, hints): (&str, LineStyles) =
             match (!self.annotations, annotation_start(full_content)) {

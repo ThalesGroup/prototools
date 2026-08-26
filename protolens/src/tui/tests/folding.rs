@@ -93,7 +93,7 @@ fn a_document_opens_closed() {
 /// The nested fixture as `App::new` leaves it.
 fn closed_rows() -> Vec<String> {
     [
-        "1 {  #@ Root = 1",
+        "/ {  #@ Root = 1",
         "  a { ... }  #@ Mid = 1",
         "  b { ... }  #@ Mid = 2",
         "}",
@@ -125,7 +125,7 @@ fn unfolding_reveals_one_level() {
 /// spelled.
 fn one_level_open() -> Vec<String> {
     [
-        "1 {  #@ Root = 1",
+        "/ {  #@ Root = 1",
         "  a {  #@ Mid = 1",
         "    x { ... }  #@ Leaf = 1",
         "  }",
@@ -614,7 +614,7 @@ fn zero_folds_and_the_caret_still_reaches_column_zero() {
     assert!(app.is_user_folded(root), "`0` closes the cursor node");
     assert_eq!(
         visible_rows(&app),
-        vec!["1 { ... }  #@ Root = 1".to_string()],
+        vec!["/ { ... }  #@ Root = 1".to_string()],
         "and everything in it"
     );
 

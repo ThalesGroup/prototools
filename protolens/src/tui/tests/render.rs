@@ -536,7 +536,7 @@ fn an_override_weights_the_key_the_marker_and_the_type_name() {
     check(
         &mut app,
         &with_type(
-            run(&[&glyph, "1"]),
+            run(&[&glyph, "/"]),
             Modifier::BOLD | Modifier::UNDERLINED,
             "Level1",
         ),
@@ -545,14 +545,15 @@ fn an_override_weights_the_key_the_marker_and_the_type_name() {
 
     app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
     assert!(!app.annotations, "`a` must have hidden the annotations");
-    check(&mut app, &run(&[&glyph, "1"]), &run(&[&glyph, "value"]));
+    check(&mut app, &run(&[&glyph, "/"]), &run(&[&glyph, "value"]));
 }
 
-/// Spec 0307 S6: the wrapper root's key is the `1` of the field `Blob`
-/// wrapped the document in — a number protolens wrote, not one the file
-/// carries — and the document row marks it the way the wire row marks
-/// the bytes that spell it. No other row's key is marked, because no
-/// other row's key was invented.
+/// Spec 0307 S6: the wrapper root's key is `/` — protolens replaces
+/// the internal field number `1` (of the virtual encompassing wrapper)
+/// with the path-notation root symbol, consistent with how node paths
+/// are displayed elsewhere.  The row is marked SYNTHETIC because the
+/// underlying field number was invented by protolens, not read from the
+/// file.
 ///
 /// The assertion is about the key alone, not about the whole row: the
 /// ANSI-16 fallback palette already spends italic on `Comment`, so every
@@ -569,9 +570,9 @@ fn the_wrapper_roots_key_says_protolens_wrote_it() {
         .collect();
     app.refresh_window_styles(&window);
 
-    // The key is the row's first glyph past the fold margin and the
-    // indent, read off the finished spans so that what is measured is
-    // what is drawn.
+    // The key is the row's first non-space, non-fold-marker glyph past
+    // the fold margin, read off the finished spans.  For regular rows
+    // that is an alphanumeric field name; for the root row it is `/`.
     let key = |app: &App, i: usize| -> (char, bool) {
         let (c, style) = app
             .row_spans(window[i], i, Modifier::empty())
@@ -580,13 +581,13 @@ fn the_wrapper_roots_key_says_protolens_wrote_it() {
                 let style = s.style;
                 s.content.chars().map(move |c| (c, style))
             })
-            .find(|&(c, _)| c.is_alphanumeric())
+            .find(|&(c, _)| c.is_alphanumeric() || c == '/')
             .unwrap_or_else(|| panic!("row {i} has no key: {:?}", app.row_content(window[i])));
         (c, style.add_modifier.contains(theme::SYNTHETIC))
     };
 
     assert_eq!(app.parent(app.line_pos(0).expect("line 0").node), None);
-    assert_eq!(key(&app, 0), ('1', true), "the root's key is protolens'");
+    assert_eq!(key(&app, 0), ('/', true), "the root's key is '/'");
 
     let child = (1..window.len())
         .find(|&i| {
@@ -2404,7 +2405,7 @@ fn the_fold_marker_does_not_displace_the_row_it_marks() {
     // indentation, while the root row has no indentation at all and
     // falls back to the reserved field.
     let root = app.row_content(app.committed_row(0).unwrap());
-    for (content, token) in [(&foldable, "value"), (&root, "1 {")] {
+    for (content, token) in [(&foldable, "value"), (&root, "/ {")] {
         assert_eq!(
             column_of(content, &render::FOLD_GLYPH_OPEN.to_string()) + render::FOLD_FIELD_WIDTH,
             column_of(content, token),

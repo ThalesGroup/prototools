@@ -22,20 +22,19 @@ title: The logfile, app.desc
 
 steps:
   - text: |
-      protolens opened bob/logfile against alice/app.desc.
+      This is bob/logfile opened against alice/app.desc.
 
-      The root type is unknown — no schema in this descriptor set
+      This is a larger protobuf than the capture.
+      The root type is unknown — no schema in alice/app.desc
       matches the envelope.  What we see is raw field numbers.
 
       Press space to step.
 
-    fold: ["/ 1"]
-    node: /
-
   - text: |
-      Notice the status line: truncated: true.
+      Let's fold the top level nodes to get a clearer view.
+      Notice the annotation on the 4th node: TRUNCATED_MESSAGE
 
-      The process was probably killed in flight and the logfile misses 1 024 bytes.
+      The process was probably killed in flight and the logfile misses 1024 bytes.
       This explains why protoc was unable to parse it.
 
       Press space to step.
@@ -82,9 +81,11 @@ steps:
     search: "[{]  #@ repeated Entry"
 
   - text: |
-      /1/5 is bright green.
+      /:1:5 is bright green.
 
-      Hover over the heat cue beside /1/5.  Notice it corresponds to
+      Hover over the heat cue beside /:1:5.  Notice it proposes two matching types
+      with identical scores.
+      Let's pick corresponds to
       /1/4 — same bytes.  This is a
       google.maps.places.v1.SearchTextRequest from the googleapis.
 
