@@ -422,14 +422,14 @@ fn the_script_pane_is_tinted_across_its_whole_width() {
     }
 }
 
-/// Spec 0357: `select: true` engages the selection on the caret's header
+/// Spec 0357: `select_line: true` engages the selection on the caret's header
 /// line; advancing to the next step clears it.
 #[test]
 fn select_directive_highlights_the_caret_line() {
     let (mut app, _) = repeated_message_fixture();
     app.set_script(script_of(
         "steps:\n\
-         - text: first\n  node: /1\n  select: true\n\
+         - text: first\n  node: /1\n  select_line: true\n\
          - text: second\n  node: /2\n",
     ));
 
@@ -484,12 +484,12 @@ fn search_directive_highlights_pattern() {
     assert!(app.search_sweep.is_none());
 }
 
-/// Spec 0357: `select: true` and `search:` may coexist on one step.
+/// Spec 0357: `select_line: true` and `search:` may coexist on one step.
 #[test]
 fn select_and_search_may_coexist() {
     let (mut app, _) = repeated_message_fixture();
     app.set_script(script_of(
-        "steps:\n- text: both\n  node: /1\n  select: true\n  search: \"v:\"\n",
+        "steps:\n- text: both\n  node: /1\n  select_line: true\n  search: \"v:\"\n",
     ));
 
     let state = app.script.as_ref().expect("a script is loaded");

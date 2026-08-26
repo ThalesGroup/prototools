@@ -223,9 +223,9 @@ impl App {
         self.script_apply_folds(&step, &mut errors);
         self.script_apply_cursor(&step, &mut errors);
         self.script_apply_wire(&step, &mut errors);
-        self.script_focus(&step);
         self.script_apply_search(&step, &mut errors);
         self.script_apply_select(&step);
+        self.script_focus(&step);
         if let Some(prefill) = &step.prefill {
             // Spec 0271 S11: typed, not run. The command line reports
             // its own errors when the reader presses Enter.
@@ -450,7 +450,7 @@ impl App {
     }
 
     /// Spec 0357: engage the selection background on the caret's current
-    /// line when the step declares `select: true`.
+    /// line when the step declares `select_line: true`.
     ///
     /// Runs after `script_apply_search`, so if the search moved the
     /// caret to a match, the selection lands on that line. The anchor is
@@ -458,11 +458,10 @@ impl App {
     /// (including any `; shadowed_scalar` suffix) to make the span cover
     /// the full line, then immediately restored to wherever the
     /// node/search directives left it. Because the selection is
-    /// persistent it survives the restore. `show_caret` is called after
-    /// the restore so panning centres on the intended caret position, not
-    /// the line's far end.
+    /// persistent it survives the restore. `script_focus` runs after
+    /// this, so scroll positioning has the final word.
     fn script_apply_select(&mut self, step: &Step) {
-        if !step.select {
+        if !step.select_line {
             return;
         }
         let saved_column = self.cursor_column;
@@ -484,9 +483,9 @@ impl App {
         self.select_engaged = true;
         // Restore the caret to where node/search left it. The selection
         // span is unaffected because it reads `select_caret`, not
-        // `cursor_column`.
+        // `cursor_column`. scroll positioning is left to `script_focus`,
+        // which runs after this.
         self.cursor_column = saved_column;
-        self.show_caret();
     }
 
     /// Spec 0357: fire the search highlight for the step's `search:`
@@ -497,7 +496,7 @@ impl App {
             return;
         };
         // Build the origin from column 0 of the node header, regardless
-        // of where `select:` may have left `cursor_column`.
+        // of where `select_line:` may have left `cursor_column`.
         let saved_line = self.cursor_line_in_node;
         let saved_col = self.cursor_column;
         self.cursor_line_in_node = 0;

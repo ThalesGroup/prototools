@@ -32,7 +32,7 @@ steps:
       👋 Press space to step.
 
     node: /
-    select: true
+    select_line: true
 
   - text: |
       Hover over the "SearchTextRequest" type name.
@@ -43,7 +43,7 @@ steps:
       👋 Press space to step.
 
     node: /
-    select: true
+    select_line: true
     search: SearchTextRequest
 
   - text: |
@@ -56,7 +56,7 @@ steps:
       👋 Press space to step.
 
     node: /2
-    select: true
+    select_line: true
     search: text_query
 
   - text: |
@@ -65,7 +65,7 @@ steps:
       👋 Press space to step.
 
     node: /2
-    select: true
+    select_line: true
     search: repeated_singular
 
   - text: |
@@ -76,12 +76,12 @@ steps:
       👋 Press space to step.
 
     node: /1
-    select: true
+    select_line: true
 
   - text: |
       Press Enter to quit.
 
     node: /1
-    select: true
+    select_line: true
     search: shadowed_scalar
     command: quit

@@ -168,7 +168,7 @@ unambiguous.
    writes nothing to the clipboard and leaves `self.message` unchanged.
 5. `ctrl_c_still_copies_an_active_selection` — `Ctrl-c` with an
    engaged selection copies and reports as before.
-6. `script_select_survives_navigation` — after `select: true` applies,
+6. `script_select_survives_navigation` — after `select_line: true` applies,
    pressing `j` leaves the selection span intact.
 7. `shift_ctrl_chords_extend_the_selection` — each of the eight new
    chords in S7 produces a non-None `selection_span` and does not clear

@@ -4,7 +4,7 @@ SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
 SPDX-License-Identifier: MIT
 -->
 
-# 0357 — script `select:` and `search:` directives
+# 0357 — script `select_line:` and `search:` directives
 
 Status: implemented
 Implemented in: 2026-08-25
@@ -12,7 +12,7 @@ App: protolens
 Refs: docs/specs/0271-a-script-walks-the-reader-through-the-blob.md (the
       script step model this spec extends);
       docs/specs/0242-the-selection-is-a-span-of-characters.md (the
-      selection machinery `select:` reuses);
+      selection machinery `select_line:` reuses);
       docs/specs/0235-the-search-prompt.md (the search machinery
       `search:` reuses)
 
@@ -25,7 +25,7 @@ hard to spot from the back of the room.
 
 Two complementary directives make a step more legible on a projector:
 
-- `select: true` engages the selection background (`DARK_SELECTION`,
+- `select_line: true` engages the selection background (`DARK_SELECTION`,
   `#264F78`) on the caret's current line — the same prominent blue that a
   `Shift`-motion produces. It reuses the existing rendering path with no
   new visual machinery.
@@ -39,7 +39,7 @@ Both may appear on the same step.
 
 ## Goals
 
-- **G1.** A step may declare `select: true`. The header line of the caret
+- **G1.** A step may declare `select_line: true`. The header line of the caret
   node (placed by `node:`, or the root if `node:` is absent) is selected,
   giving it the prominent selection background.
 - **G2.** A step may declare `search: <pattern>`. All occurrences of the
@@ -55,9 +55,9 @@ Both may appear on the same step.
 - **N1.** No multi-line selection. Only the caret's current line (the
   node's header) is selected. Selecting an entire subtree across many rows
   would be visually overwhelming.
-- **N2.** No implicit `select: true` when `node:` is present. Requiring
+- **N2.** No implicit `select_line: true` when `node:` is present. Requiring
   an explicit directive keeps old scripts unchanged.
-- **N3.** `select:` does not accept a position. It always selects the
+- **N3.** `select_line:` does not accept a position. It always selects the
   caret line (the `node:` target). A free-standing position would require
   placing the caret there, conflicting with `node:`.
 - **N4.** `search:` does not move the caret. It only highlights.
@@ -70,11 +70,11 @@ Both may appear on the same step.
 - text: |
     protolens opened without a type name and found one anyway.
   node: /2
-  select: true
+  select_line: true
   search: SearchTextRequest
 ```
 
-`select:` accepts the boolean `true` (YAML unquoted). Any other value is
+`select_line:` accepts the boolean `true` (YAML unquoted). Any other value is
 a load error.
 
 `search:` accepts a non-empty string, treated as a regex exactly as the
@@ -82,10 +82,10 @@ interactive `/` prompt does.
 
 Both are optional and default to absent (no selection, no search).
 
-### S2 — `select: true` — what is selected
+### S2 — `select_line: true` — what is selected
 
-`script_apply_select` is called after `script_apply_cursor` has placed
-the caret on the `node:` target (or the root). It sets:
+`script_apply_select` is called after `script_apply_search` has placed
+the caret on the match (or left it at the `node:` target if no search). It sets:
 
 ```
 select_anchor  = Some(CursorPos { node: self.cursor,
@@ -105,12 +105,13 @@ eye naturally starts.
 Because the anchor and the caret are on the same node, no conflict with
 `node:` arises.
 
-If the caret line has zero characters (empty line), `select: true` is a
+If the caret line has zero characters (empty line), `select_line: true` is a
 no-op for that step (nothing to select).
 
 ### S3 — `search: <pattern>` — what is searched
 
-`script_apply_search` is called after `script_apply_select`. It:
+`script_apply_search` is called after `script_apply_wire` and before
+`script_apply_select`. It:
 
 1. Sets `search_origin` to a `SearchOrigin` whose `at` field is the first
    character of the `node:` target's header line (node index =
@@ -135,15 +136,15 @@ script_reset
 script_apply_folds
 script_apply_cursor      ← places caret (node:)
 script_apply_wire
-script_focus             ← adjusts scroll
-script_apply_select      ← select: true (caret already positioned)
-script_apply_search      ← search: pattern
+script_apply_search      ← search: pattern (may move caret to match)
+script_apply_select      ← select_line: true (caret already positioned)
+script_focus             ← adjusts scroll (last word on viewport)
 prefill                  ← command: prefill
 ```
 
 ### S5 — `script_reset`
 
-`script_reset` already calls `clear_selection()` (handles `select:`).
+`script_reset` already calls `clear_selection()` (handles `select_line:`).
 It must also call `clear_search_highlight()` to drop any search left by a
 previous step's `search:` directive.
 
@@ -156,7 +157,7 @@ position saved at prompt open time, which has no meaning inside
 `Step` gains two fields:
 
 ```rust
-pub select: bool,           // default false
+pub select_line: bool,           // default false
 pub search: Option<String>, // default None
 ```
 
@@ -164,7 +165,7 @@ pub search: Option<String>, // default None
 
 ```rust
 #[serde(default)]
-select: bool,
+select_line: bool,
 #[serde(default)]
 search: Option<String>,
 ```
@@ -176,12 +177,12 @@ either).
 
 ### `select: <position>`
 
-The original design accepted a position argument, allowing `select:` and
+The original design accepted a position argument, allowing `select_line:` and
 `node:` to point to different nodes. This is incompatible with the
 anchor+caret selection model (spec 0242): the selection's moving end *is*
 the caret, so the anchor and the caret must be on the same row for the
 highlight to cover a single line. Changing `node:` to be "scroll target
-only" would be a breaking change. `select: true` avoids the conflict
+only" would be a breaking change. `select_line: true` avoids the conflict
 entirely.
 
 ### Implicit selection when `node:` is set
@@ -196,7 +197,7 @@ placement.
 ## Test plan
 
 1. `select_directive_highlights_the_caret_line` — a step with
-   `node: /1` and `select: true` produces a non-None `selection_span`
+   `node: /1` and `select_line: true` produces a non-None `selection_span`
    covering the header line of `/1`, with the caret at column 0.
 2. `select_is_cleared_at_the_next_step` — advancing clears the selection.
 3. `search_directive_highlights_pattern` — a step with `search: foo`
@@ -209,7 +210,7 @@ placement.
 
 ## Measured outcome
 
-All six test-plan items pass. `select: true` engages the selection with
+All six test-plan items pass. `select_line: true` engages the selection with
 the caret at column 0 (anchor at end, caret at start). `search: pattern`
 fires `commit_search` with a pre-set `search_origin` at column 0 of the
 node header and records the pattern via `set_last_search_for` so `F`/`n`/`N`
