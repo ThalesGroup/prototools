@@ -57,10 +57,19 @@ steps:
 
     node: /2
     select: true
+    search: text_query
+
+  - text: |
+      protolens annotates the second text_query as repeated_singular.
+
+      Press space to step.
+
+    node: /2
+    select: true
     search: repeated_singular
 
   - text: |
-      The first text_query gets shadowed.
+      The first text_query gets shadowed. protolens annotates it as such.
 
       Press `$` to see the `#@ shadowed_scalar` annotation at the right edge of the line.
 
