@@ -72,6 +72,8 @@ steps:
     node: /
     search: "1 [{]  #@ message"
     command: override /:1 --as-new Entry --cardinality repeated --field-name entries
+    advance_when:
+      - type: /:1 Entry
 
   - text: |
       To go futher, let's enable protolens heat cues.
