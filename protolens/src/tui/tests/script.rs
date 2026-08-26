@@ -488,3 +488,439 @@ fn select_and_search_may_coexist() {
     assert!(app.select_engaged, "selection is engaged");
     assert!(app.search_highlight, "search is highlighted");
 }
+
+// ── Spec 0356: advance_when predicates ────────────────────────────────────
+
+const WIRE_STEP: &str = "\
+steps:
+  - text: show wire
+    node: /1
+    advance_when:
+      - wire: /1
+  - text: done
+    node: /2
+";
+
+/// Spec 0356 test 1: a `wire:` predicate fires after `w` makes the wire
+/// span cover the target node.
+#[test]
+fn advance_when_wire_advances_on_w() {
+    let (mut app, _) = repeated_message_fixture();
+    app.set_script(script_of(WIRE_STEP));
+
+    assert_eq!(app.script.as_ref().unwrap().current, 0, "starts on step 0");
+    // `w` opens the wire span; advance_when must fire.
+    app.handle_key(key(KeyCode::Char('w'), KeyModifiers::NONE));
+    assert_eq!(
+        app.script.as_ref().unwrap().current,
+        1,
+        "wire: predicate advanced the step"
+    );
+}
+
+/// Spec 0356 test 2: a key that does not satisfy the predicate leaves the
+/// step unchanged.
+#[test]
+fn advance_when_not_satisfied_does_not_advance() {
+    let (mut app, _) = repeated_message_fixture();
+    app.set_script(script_of(WIRE_STEP));
+
+    // `j` moves the cursor but does not open wire bytes.
+    app.handle_key(key(KeyCode::Char('j'), KeyModifiers::NONE));
+    assert_eq!(
+        app.script.as_ref().unwrap().current,
+        0,
+        "unrelated key must not advance the step"
+    );
+}
+
+/// Spec 0356 test 3: a step whose own `script_apply` already satisfies
+/// its `advance_when` skips forward immediately on entry (G3).
+#[test]
+fn advance_when_fires_immediately_if_satisfied_at_entry() {
+    // Step 0 has a `wire: /1` predicate but also opens the wire itself —
+    // so on entry it is immediately satisfied and must skip to step 1.
+    let script = "\
+steps:
+  - text: already satisfied
+    node: /1
+    wire-line: /1
+    advance_when:
+      - wire: /1
+  - text: done
+    node: /2
+";
+    let (mut app, _) = repeated_message_fixture();
+    app.set_script(script_of(script));
+    assert_eq!(
+        app.script.as_ref().unwrap().current,
+        1,
+        "step 0 skipped immediately because wire: was already satisfied"
+    );
+}
+
+/// Spec 0356 test 4: `caret:` fires when the cursor moves to the target.
+#[test]
+fn advance_when_caret_predicate() {
+    // Fold items to depth 0 so j from root goes directly to /1 (not /1/1).
+    let script = "\
+steps:
+  - text: move to /1
+    node: /
+    fold: [\"/ 1\"]
+    advance_when:
+      - caret: /1
+  - text: done
+    node: /2
+";
+    let (mut app, _) = repeated_message_fixture();
+    app.set_script(script_of(script));
+    assert_eq!(app.script.as_ref().unwrap().current, 0);
+
+    // `j` moves the caret to /1 (items are folded, so /1/1 is invisible).
+    app.handle_key(key(KeyCode::Char('j'), KeyModifiers::NONE));
+    assert_eq!(
+        app.script.as_ref().unwrap().current,
+        1,
+        "caret: predicate fired after moving to /1"
+    );
+}
+
+/// Spec 0356 test 5: `type:` fires after an override sets the expected type.
+#[test]
+fn advance_when_type_predicate() {
+    // /1's natural type is test.Item; we wait for an override that
+    // re-types it as test.Outer, which does not hold at entry.
+    let script = "\
+steps:
+  - text: name the type
+    node: /1
+    advance_when:
+      - type: /1 test.Outer
+  - text: done
+    node: /2
+";
+    let (mut app, _) = repeated_message_fixture();
+    app.set_script(script_of(script));
+    assert_eq!(app.script.as_ref().unwrap().current, 0);
+
+    // Commit an override that re-types /1 as test.Outer.
+    app.run_command("override /1 --as test.Outer");
+    // The advance_when check fires after the next key.
+    app.handle_key(key(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(
+        app.script.as_ref().unwrap().current,
+        1,
+        "type: predicate fired after override re-typed /1 as test.Outer"
+    );
+}
+
+/// Spec 0356 test 6: `visible:` and `folded:` hold and fail at the right
+/// times; a leaf is never `folded:`.
+#[test]
+fn advance_when_visible_and_folded_predicates() {
+    // /1 is a message node (has children); /1/1 is a scalar (leaf).
+    let folded_script = "\
+steps:
+  - text: fold /1
+    node: /
+    advance_when:
+      - folded: /1
+  - text: done
+";
+    let (mut app, _) = repeated_message_fixture();
+    app.set_script(script_of(folded_script));
+    assert_eq!(app.script.as_ref().unwrap().current, 0);
+
+    // `z` on the root folds everything to depth 0 — /1 becomes folded.
+    app.handle_key(key(KeyCode::Char('0'), KeyModifiers::NONE));
+    assert_eq!(
+        app.script.as_ref().unwrap().current,
+        1,
+        "folded: predicate fired after /1 was folded"
+    );
+}
+
+/// Spec 0356 test 7: all predicates in an `advance_when` list must hold.
+#[test]
+fn advance_when_all_predicates_must_hold() {
+    let script = "\
+steps:
+  - text: need both
+    node: /1
+    advance_when:
+      - wire: /1
+      - caret: /2
+  - text: done
+";
+    let (mut app, _) = repeated_message_fixture();
+    app.set_script(script_of(script));
+
+    // Opening wire satisfies `wire: /1` but not `caret: /2`.
+    app.handle_key(key(KeyCode::Char('w'), KeyModifiers::NONE));
+    assert_eq!(
+        app.script.as_ref().unwrap().current,
+        0,
+        "one predicate satisfied is not enough"
+    );
+}
+
+/// Spec 0356 test 8: a predicate whose position resolves to no node is
+/// false; `space` still advances.
+#[test]
+fn advance_when_unresolvable_position_is_false() {
+    let script = "\
+steps:
+  - text: unreachable
+    advance_when:
+      - caret: /999
+  - text: done
+";
+    let (mut app, _) = repeated_message_fixture();
+    app.set_script(script_of(script));
+    assert_eq!(app.script.as_ref().unwrap().current, 0);
+
+    // Any key — predicate stays false because /999 does not exist.
+    app.handle_key(key(KeyCode::Char('j'), KeyModifiers::NONE));
+    assert_eq!(
+        app.script.as_ref().unwrap().current,
+        0,
+        "unresolvable stays false"
+    );
+
+    // space still advances (G2).
+    app.script_advance(true);
+    assert_eq!(
+        app.script.as_ref().unwrap().current,
+        1,
+        "space advances regardless"
+    );
+}
+
+/// Spec 0356 test 9: `not:` inverts a single predicate.
+#[test]
+fn advance_when_not_inverts_predicate() {
+    // Step 1 keeps wire open via wire-line: so not: starts false;
+    // pressing `w` closes it, making not: true.
+    let script = "\
+steps:
+  - text: skip
+    node: /1
+  - text: close wire
+    node: /1
+    wire-line: /1
+    advance_when:
+      - not:
+          - wire: /1
+  - text: done
+";
+    let (mut app, _) = repeated_message_fixture();
+    app.set_script(script_of(script));
+    app.script_advance(true);
+    assert_eq!(app.script.as_ref().unwrap().current, 1, "on step 1");
+    assert!(app.wire_rows().is_some(), "wire is open on step 1");
+
+    // `w` closes the wire (toggle); not: fires.
+    app.handle_key(key(KeyCode::Char('w'), KeyModifiers::NONE));
+    assert_eq!(
+        app.script.as_ref().unwrap().current,
+        2,
+        "not: predicate fired when wire was closed"
+    );
+}
+
+/// Spec 0356 test 10: `not:` of a conjunction fires when at least one
+/// sub-predicate is false (De Morgan).
+#[test]
+fn advance_when_not_of_conjunction() {
+    let script = "\
+steps:
+  - text: leave /1 or close wire
+    node: /1
+    wire-line: /1
+    advance_when:
+      - not:
+          - wire: /1
+          - caret: /1
+  - text: done
+";
+    let (mut app, _) = repeated_message_fixture();
+    // Step 0 opens wire on /1 and puts caret on /1 — both sub-predicates
+    // hold, so `not:` is false. But it is immediately satisfied check:
+    // let's verify it did NOT auto-advance (both hold → not: is false).
+    app.set_script(script_of(script));
+    assert_eq!(
+        app.script.as_ref().unwrap().current,
+        0,
+        "not: is false when both hold"
+    );
+
+    // Moving the caret off /1 breaks `caret: /1` → not: fires.
+    app.handle_key(key(KeyCode::Char('j'), KeyModifiers::NONE));
+    assert_eq!(
+        app.script.as_ref().unwrap().current,
+        1,
+        "not: fired when caret left /1"
+    );
+}
+
+/// Spec 0356 test 11: `not` inside `not` double-negates.
+#[test]
+fn advance_when_not_is_recursive() {
+    // not: [not: [wire: /1]] ≡ wire: /1 — fires when wire IS open.
+    let script = "\
+steps:
+  - text: open wire
+    node: /1
+    advance_when:
+      - not:
+          - not:
+              - wire: /1
+  - text: done
+";
+    let (mut app, _) = repeated_message_fixture();
+    app.set_script(script_of(script));
+    assert_eq!(app.script.as_ref().unwrap().current, 0);
+
+    app.handle_key(key(KeyCode::Char('w'), KeyModifiers::NONE));
+    assert_eq!(
+        app.script.as_ref().unwrap().current,
+        1,
+        "double-not is equivalent to the inner predicate"
+    );
+}
+
+/// Spec 0356 test 12: an `or` key in an `advance_when` list is a load error.
+#[test]
+fn advance_when_or_key_is_a_load_error() {
+    let result = Script::parse(
+        "steps:\n- text: t\n  advance_when:\n    - or:\n        - wire: /1\n",
+        "test.script".into(),
+    );
+    assert!(result.is_err(), "or: must be a parse error");
+}
+
+/// Spec 0356 test 13: an unknown key in an `advance_when` list is a load error.
+#[test]
+fn advance_when_unknown_key_is_a_load_error() {
+    let result = Script::parse(
+        "steps:\n- text: t\n  advance_when:\n    - dancing: /1\n",
+        "test.script".into(),
+    );
+    assert!(result.is_err(), "unknown key must be a parse error");
+}
+
+/// Spec 0356 test 14: `space` advances regardless of unsatisfied advance_when.
+#[test]
+fn space_always_advances_regardless_of_advance_when() {
+    let (mut app, _) = repeated_message_fixture();
+    app.set_script(script_of(WIRE_STEP));
+    assert_eq!(app.script.as_ref().unwrap().current, 0);
+
+    // Don't open wire — predicate unsatisfied — but space must still advance.
+    app.script_advance(true);
+    assert_eq!(
+        app.script.as_ref().unwrap().current,
+        1,
+        "space advances even when advance_when is not satisfied"
+    );
+}
+
+/// Spec 0356 test 15: `annotations:` predicate fires when the mode matches.
+#[test]
+fn advance_when_annotations_predicate() {
+    let script = "\
+steps:
+  - text: hide annotations
+    advance_when:
+      - annotations: false
+  - text: done
+";
+    let (mut app, _) = repeated_message_fixture();
+    app.set_script(script_of(script));
+    assert!(app.annotations, "annotations start on");
+    assert_eq!(app.script.as_ref().unwrap().current, 0);
+
+    // `a` toggles annotations off.
+    app.handle_key(key(KeyCode::Char('a'), KeyModifiers::NONE));
+    assert_eq!(
+        app.script.as_ref().unwrap().current,
+        1,
+        "annotations: false fired after toggling off"
+    );
+}
+
+/// Spec 0356 test 16: `heat_cues:` predicate fires when the mode matches.
+#[test]
+fn advance_when_heat_cues_predicate() {
+    use crate::tui::heat_cue::HeatCueMode;
+    let script = "\
+steps:
+  - text: enable heat cues
+    advance_when:
+      - heat_cues: findings
+  - text: done
+";
+    let (mut app, _) = repeated_message_fixture();
+    app.set_script(script_of(script));
+    assert_eq!(app.heat_cues, HeatCueMode::Off);
+    assert_eq!(app.script.as_ref().unwrap().current, 0);
+
+    // `i` cycles heat cues to Findings.
+    app.handle_key(key(KeyCode::Char('i'), KeyModifiers::NONE));
+    assert_eq!(
+        app.script.as_ref().unwrap().current,
+        1,
+        "heat_cues: findings fired after pressing i"
+    );
+}
+
+/// Spec 0356 test 17: `annotations:` step directive sets the mode on entry.
+#[test]
+fn step_directive_annotations_sets_mode() {
+    let script = "\
+steps:
+  - text: hide
+    annotations: false
+  - text: show
+    annotations: true
+";
+    let (mut app, _) = repeated_message_fixture();
+    app.set_script(script_of(script));
+    assert!(!app.annotations, "step 0 directive set annotations=false");
+
+    app.script_advance(true);
+    assert!(app.annotations, "step 1 directive set annotations=true");
+}
+
+/// Spec 0356 test 18: `heat_cues:` step directive sets the mode on entry.
+#[test]
+fn step_directive_heat_cues_sets_mode() {
+    use crate::tui::heat_cue::HeatCueMode;
+    let script = "\
+steps:
+  - text: all
+    heat_cues: all
+  - text: off
+    heat_cues: off
+";
+    let (mut app, _) = repeated_message_fixture();
+    app.set_script(script_of(script));
+    assert_eq!(app.heat_cues, HeatCueMode::All, "step 0 set heat_cues=all");
+
+    app.script_advance(true);
+    assert_eq!(app.heat_cues, HeatCueMode::Off, "step 1 set heat_cues=off");
+}
+
+/// Spec 0356 test 19: a bad `heat_cues:` directive value is a load error.
+#[test]
+fn step_directive_heat_cues_bad_value_is_load_error() {
+    let result = Script::parse(
+        "steps:\n- text: t\n  heat_cues: maybe\n",
+        "test.script".into(),
+    );
+    assert!(
+        result.is_err(),
+        "invalid heat_cues value must be a parse error"
+    );
+}

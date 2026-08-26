@@ -2727,7 +2727,7 @@ fn emit_osc52_copy(text: &str) {
 mod bake;
 mod command_line;
 mod event;
-mod heat_cue;
+pub(crate) mod heat_cue;
 mod heat_worker;
 mod help_text;
 mod key_dispatch;

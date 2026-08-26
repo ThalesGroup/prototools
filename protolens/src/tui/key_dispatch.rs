@@ -1060,6 +1060,11 @@ impl App {
 
             _ => {}
         }
+        // Spec 0356 S3: evaluate advance_when after every key that did
+        // not itself cause a step advance.
+        if self.script_advance_when_satisfied() {
+            self.script_advance(true);
+        }
     }
 
     /// Resolve the type FQDN currently under focus (G2) — the override

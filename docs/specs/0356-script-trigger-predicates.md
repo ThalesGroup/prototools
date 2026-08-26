@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0356 — script advance_when predicates
 
-Status: draft
+Status: implemented
+Implemented in: 2026-08-26
 App: protolens
 Refs: docs/specs/0271-a-script-walks-the-reader-through-the-blob.md (the
       script step model this spec extends);

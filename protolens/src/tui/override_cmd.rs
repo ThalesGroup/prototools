@@ -339,7 +339,7 @@ impl App {
     /// `span.type_fqdn`, so an enum- or primitive-typed field falls back
     /// to its effective override and then to its natural type — the same
     /// spelling this command accepts back.
-    fn effective_type(&self, idx: usize) -> Option<String> {
+    pub(super) fn effective_type(&self, idx: usize) -> Option<String> {
         if let Some(fqdn) = self.fqdns.get(self.tree[idx].span.type_fqdn) {
             return Some(fqdn.to_owned());
         }

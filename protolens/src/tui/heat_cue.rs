@@ -66,8 +66,9 @@ pub(super) const HEAT_GLYPH: &str = "■";
 /// The mode is read *after* resolution (`heat_cue_at`), so it changes
 /// what is formatted and never what is asked for: `All` costs no
 /// scoring the other two didn't already pay.
-#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
-pub(super) enum HeatCueMode {
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum HeatCueMode {
     /// Nothing at all. The opening state: the cue's value is that it
     /// is rare enough to be worth looking at, and a reader who wants
     /// it asks.
@@ -81,7 +82,7 @@ pub(super) enum HeatCueMode {
 
 impl HeatCueMode {
     /// `i`. Forward is the direction that shows more, up to the wrap.
-    pub(super) fn next(self) -> Self {
+    pub(crate) fn next(self) -> Self {
         match self {
             Self::Off => Self::Findings,
             Self::Findings => Self::All,
@@ -90,7 +91,7 @@ impl HeatCueMode {
     }
 
     /// `I`, for the reader who overshot.
-    pub(super) fn prev(self) -> Self {
+    pub(crate) fn prev(self) -> Self {
         match self {
             Self::Off => Self::All,
             Self::Findings => Self::Off,

@@ -16,6 +16,8 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::tui::heat_cue::HeatCueMode;
+
 /// The extension a script is found under (spec 0271 S1).
 pub const SCRIPT_EXTENSION: &str = "script";
 
@@ -73,6 +75,38 @@ fn looks_like_path(text: &str) -> bool {
         .all(|seg| !seg.is_empty() && seg.bytes().all(|b| b.is_ascii_digit()))
 }
 
+/// One predicate item in a step's `advance_when:` list (spec 0356).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Predicate {
+    Visible {
+        position: Position,
+    },
+    Folded {
+        position: Position,
+    },
+    Wire {
+        position: Position,
+    },
+    Type {
+        position: Position,
+        fqdn: String,
+    },
+    Caret {
+        position: Position,
+    },
+    Annotations {
+        on: bool,
+    },
+    HeatCues {
+        mode: HeatCueMode,
+    },
+    /// Conjunction of `inner` is negated.
+    /// `inner` empty → negation of vacuous truth → always false.
+    Not {
+        inner: Vec<Predicate>,
+    },
+}
+
 /// One entry in a step's `fold:` list (spec 0359).
 ///
 /// Mirrors the interactive `0`–`9` and `Z` keys: `depth` is the value
@@ -114,6 +148,12 @@ pub struct Step {
     /// Regex to highlight via the search machinery when the step is applied
     /// (spec 0357).
     pub search: Option<String>,
+    /// Spec 0356: predicates that auto-advance when all hold simultaneously.
+    pub advance_when: Vec<Predicate>,
+    /// Spec 0356 S8: set `self.annotations` on step entry (`None` = no change).
+    pub set_annotations: Option<bool>,
+    /// Spec 0356 S8: set `self.heat_cues` on step entry (`None` = no change).
+    pub set_heat_cues: Option<HeatCueMode>,
 }
 
 #[derive(Debug, Clone)]
@@ -206,6 +246,12 @@ struct RawStep {
     select: bool,
     #[serde(default)]
     search: Option<String>,
+    #[serde(default, rename = "advance_when")]
+    advance_when: Option<Vec<RawPredicate>>,
+    #[serde(default)]
+    annotations: Option<bool>,
+    #[serde(default, rename = "heat_cues")]
+    heat_cues: Option<HeatCueMode>,
 }
 
 #[derive(Deserialize)]
@@ -213,6 +259,66 @@ struct RawStep {
 struct RawRange {
     from: String,
     to: String,
+}
+
+/// Spec 0356 S6: one item in an `advance_when:` list.
+///
+/// `#[serde(untagged)]` means serde tries each arm in order and uses
+/// the first whose key is present. `deny_unknown_fields` on each arm
+/// rejects any key that is not the one the arm expects.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RawPredicate {
+    Visible { visible: String },
+    Folded { folded: String },
+    Wire { wire: String },
+    Type { r#type: String },
+    Caret { caret: String },
+    Annotations { annotations: bool },
+    HeatCues { heat_cues: HeatCueMode },
+    Not { not: Vec<RawPredicate> },
+}
+
+impl RawPredicate {
+    fn into_predicate(self) -> Result<Predicate, String> {
+        Ok(match self {
+            RawPredicate::Visible { visible } => Predicate::Visible {
+                position: Position::parse(&visible),
+            },
+            RawPredicate::Folded { folded } => Predicate::Folded {
+                position: Position::parse(&folded),
+            },
+            RawPredicate::Wire { wire } => Predicate::Wire {
+                position: Position::parse(&wire),
+            },
+            RawPredicate::Type { r#type } => {
+                // Value must be "<position> <fqdn>" — at least two tokens.
+                let raw = &r#type;
+                let (pos_str, fqdn) = raw
+                    .split_once(char::is_whitespace)
+                    .map(|(p, rest)| (p, rest.trim_start().to_string()))
+                    .filter(|(_, f)| !f.is_empty())
+                    .ok_or_else(|| {
+                        format!("advance_when type: {raw:?} must be \"<position> <fqdn>\"")
+                    })?;
+                Predicate::Type {
+                    position: Position::parse(pos_str),
+                    fqdn,
+                }
+            }
+            RawPredicate::Caret { caret } => Predicate::Caret {
+                position: Position::parse(&caret),
+            },
+            RawPredicate::Annotations { annotations } => Predicate::Annotations { on: annotations },
+            RawPredicate::HeatCues { heat_cues } => Predicate::HeatCues { mode: heat_cues },
+            RawPredicate::Not { not } => Predicate::Not {
+                inner: not
+                    .into_iter()
+                    .map(RawPredicate::into_predicate)
+                    .collect::<Result<Vec<_>, _>>()?,
+            },
+        })
+    }
 }
 
 impl RawStep {
@@ -237,6 +343,12 @@ impl RawStep {
             .into_iter()
             .map(|s| parse_fold_entry(&s))
             .collect::<Result<Vec<_>, _>>()?;
+        let advance_when = self
+            .advance_when
+            .unwrap_or_default()
+            .into_iter()
+            .map(RawPredicate::into_predicate)
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(Step {
             text: self.text,
             node: self.node.as_deref().map(Position::parse),
@@ -245,6 +357,9 @@ impl RawStep {
             prefill: self.command,
             select: self.select,
             search: self.search,
+            advance_when,
+            set_annotations: self.annotations,
+            set_heat_cues: self.heat_cues,
         })
     }
 }

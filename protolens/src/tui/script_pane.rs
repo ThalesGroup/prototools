@@ -28,7 +28,7 @@ use ratatui::Frame;
 use super::pane_scroll::{AnchorLine, WireAnchor, WireSpan};
 use super::search::SearchScope;
 use super::{App, CursorPos, SearchDir};
-use crate::script::{FoldEntry, Position, Script, Step, Wire};
+use crate::script::{FoldEntry, Position, Predicate, Script, Step, Wire};
 use crate::theme;
 
 /// Spec 0271 S4: the script pane's share of the terminal, and the two
@@ -211,6 +211,14 @@ impl App {
 
         self.script_reset();
         let mut errors = Vec::new();
+        // Spec 0356 S8: apply mode directives before cursor/fold/wire so
+        // that heat-cue visibility is correct when the view is composed.
+        if let Some(on) = step.set_annotations {
+            self.annotations = on;
+        }
+        if let Some(mode) = step.set_heat_cues {
+            self.heat_cues = mode;
+        }
         self.script_apply_folds(&step, &mut errors);
         self.script_apply_cursor(&step, &mut errors);
         self.script_apply_wire(&step, &mut errors);
@@ -234,6 +242,94 @@ impl App {
             .unwrap_or_default();
         if !diagnostics.is_empty() {
             self.message = format!("script: {diagnostics}");
+        }
+
+        // Spec 0356 G3: evaluate advance_when immediately after apply.
+        // A step whose own directives already satisfy its exit condition
+        // skips forward without waiting for user input.
+        if self.script_advance_when_satisfied() {
+            self.script_advance(true);
+        }
+    }
+
+    /// Spec 0356 S7: true iff every predicate in the current step's
+    /// `advance_when` list holds.
+    pub(super) fn script_advance_when_satisfied(&mut self) -> bool {
+        let Some(state) = self.script.as_ref() else {
+            return false;
+        };
+        if !state.active {
+            return false;
+        }
+        let predicates = state.script.steps[state.current].advance_when.clone();
+        if predicates.is_empty() {
+            return false;
+        }
+        predicates.iter().all(|p| self.script_eval_predicate(p))
+    }
+
+    /// Evaluate one predicate against the current session state.
+    fn script_eval_predicate(&mut self, predicate: &Predicate) -> bool {
+        match predicate {
+            Predicate::Visible { position } => {
+                let Some(idx) = self.script_resolve(position) else {
+                    return false;
+                };
+                // Visible iff no ancestor is folded.
+                let mut cur = idx;
+                while let Some(parent) = self.parent(cur) {
+                    if self.is_folded(parent) {
+                        return false;
+                    }
+                    cur = parent;
+                }
+                true
+            }
+            Predicate::Folded { position } => {
+                let Some(idx) = self.script_resolve(position) else {
+                    return false;
+                };
+                self.is_folded(idx) && self.has_children(idx)
+            }
+            Predicate::Wire { position } => {
+                let Some(idx) = self.script_resolve(position) else {
+                    return false;
+                };
+                let Some(span) = self.wire else {
+                    return false;
+                };
+                // Resolve anchors to absolute document lines (not visible
+                // rows) so the predicate is independent of scroll position.
+                let anchor_line = |anchor: WireAnchor| -> usize {
+                    let node = anchor.node;
+                    let line_in_node = match anchor.line {
+                        AnchorLine::Footer => {
+                            self.tree[node].lines_total.saturating_sub(1) as usize
+                        }
+                        AnchorLine::FromStart(k) => k as usize,
+                    };
+                    self.absolute_start(node) + line_in_node
+                };
+                let first = anchor_line(span.first);
+                let last = anchor_line(span.last);
+                let node_line = self.absolute_start(idx);
+                (first.min(last)..=first.max(last)).contains(&node_line)
+            }
+            Predicate::Type { position, fqdn } => {
+                let Some(idx) = self.script_resolve(position) else {
+                    return false;
+                };
+                self.effective_type(idx).as_deref() == Some(fqdn.as_str())
+            }
+            Predicate::Caret { position } => {
+                let Some(idx) = self.script_resolve(position) else {
+                    return false;
+                };
+                self.cursor == idx
+            }
+            Predicate::Annotations { on } => self.annotations == *on,
+            Predicate::HeatCues { mode } => self.heat_cues == *mode,
+            Predicate::Not { inner } => !inner.iter().all(|p| self.script_eval_predicate(p)),
         }
     }
 
@@ -260,6 +356,11 @@ impl App {
             self.command_cursor = 0;
             self.cancel_search();
         }
+        // Spec 0356 S8: mode directives are reset to their current
+        // values — i.e. not reset at all. The directives set the mode
+        // on entry; the user may change it afterward. Stepping back does
+        // not restore the previous mode; only stepping forward to a step
+        // with an explicit directive does.
     }
 
     /// Drop every *user* fold, deepest-first.

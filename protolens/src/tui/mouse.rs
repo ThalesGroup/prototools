@@ -442,6 +442,10 @@ impl App {
                 _ => {}
             }
         }
+        // Spec 0356 S3: evaluate advance_when after every mouse event.
+        if self.script_advance_when_satisfied() {
+            self.script_advance(true);
+        }
     }
 
     /// Whether `(col, row)` falls inside `area` (used for mouse hit-
