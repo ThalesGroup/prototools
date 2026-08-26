@@ -917,7 +917,42 @@ steps:
     );
 }
 
-/// Spec 0356 test 18: `annotations:` step directive sets the mode on entry.
+/// Spec 0356 test 18: `file_exists:` fires when the file appears on disk.
+#[test]
+fn advance_when_file_exists_predicate() {
+    let dir = std::env::temp_dir().join(format!("protolens-fe-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let target = dir.join("sentinel");
+    let path_str = target.to_str().expect("utf8 path").to_string();
+
+    let script = format!(
+        "steps:\n  - text: wait for file\n    advance_when:\n      - file_exists: {path_str}\n  - text: done\n"
+    );
+    let (mut app, _) = repeated_message_fixture();
+    app.set_script(script_of(&script));
+    assert_eq!(app.script.as_ref().unwrap().current, 0);
+
+    // File absent — any key leaves step unchanged.
+    press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
+    assert_eq!(
+        app.script.as_ref().unwrap().current,
+        0,
+        "step stays at 0 while file absent"
+    );
+
+    // Create the file — next key should auto-advance.
+    std::fs::write(&target, b"").expect("create sentinel");
+    press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
+    assert_eq!(
+        app.script.as_ref().unwrap().current,
+        1,
+        "file_exists: predicate fired once file appeared"
+    );
+
+    std::fs::remove_dir_all(&dir).expect("clean up");
+}
+
+/// Spec 0356 test 19: `annotations:` step directive sets the mode on entry.
 #[test]
 fn step_directive_annotations_sets_mode() {
     let script = "\

@@ -95,6 +95,9 @@ pub enum Predicate {
         position: Position,
         name: String,
     },
+    FileExists {
+        path: String,
+    },
     Caret {
         position: Position,
     },
@@ -278,6 +281,7 @@ enum RawPredicate {
     Wire { wire: String },
     Type { r#type: String },
     FieldName { field_name: String },
+    FileExists { file_exists: String },
     Caret { caret: String },
     Annotations { annotations: bool },
     HeatCues { heat_cues: HeatCueMode },
@@ -326,6 +330,7 @@ impl RawPredicate {
                     name,
                 }
             }
+            RawPredicate::FileExists { file_exists } => Predicate::FileExists { path: file_exists },
             RawPredicate::Caret { caret } => Predicate::Caret {
                 position: Position::parse(&caret),
             },

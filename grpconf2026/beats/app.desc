@@ -132,10 +132,10 @@ steps:
       👋 Press Enter to commit the prefilled command.
 
     heat_cues: findings
-    fold: ["/ 1"]
+    fold: ["/ 2"]
     node: /1/2
     select: true
-    command: override /1:2 --field-name rpc
+    command: override Entry:2 --field-name rpc
     advance_when:
       - field_name: /1/2 rpc
 
@@ -147,72 +147,57 @@ steps:
       👋 Double-click on the heat-cue, then double-click on Timestamp.
 
     heat_cues: findings
-    fold: ["/ 1", "/1/1 Z"]
+    fold: ["/ 2", "/1/1 Z"]
     node: /1/1
     select: true
     advance_when:
       - type: /1/1 google.protobuf.Timestamp
 
   - text: |
-      👍 Perfect
+      👌 Perfect
 
-      Now let's have a look at fields at the 3rd node.
-      Hovering above field 6 and 7 gives nothing convincing
-      Let's have a closer look...
+      Now let's have a look at the 3rd node.
+      Fields 6 and 7 heat cues show deeply negative scores.😨
+      And hovering above them gives nothing convincing. 🤔🤔🤔
 
-      👋 Double-click on the heat-cue for field 6 and investigate,
-         then press space to step.
+      👋 Press space to step.
 
-    fold: ["/ 1", "/1/1 Z"]
+    heat_cues: findings
+    fold: ["/ 2", "/1/1 Z"]
     node: /3/3
-
-
-
-  - text: |
-      Add a field name to /1/2 — the method line that names the call.
-
-    fold: ["/ 1", "/1 1", "/1 Z"]
-    node: /1/2
-    command: override /1/2 --field-name rpc
+    select: true
 
   - text: |
-      Now /1/1.
+      🤔 Nothing fits...
 
-      This looks like a timestamp — two integer fields, which is the
-      shape of google.protobuf.Timestamp (seconds + nanos).  The
-      command is prefilled.
+      Maybe the app.desc descriptors are not complete...
+      SearchTextRequest/Response are from the googleapis descriptors.
+      Let's try to re-open bob/logfile against the full googleapis.desc,
+      instead of app.desc.
 
-    fold: ["/ 1", "/1 1", "/1 Z"]
-    node: /1/1
-    command: override /1/1 --as google.protobuf.Timestamp --field-name timestamp
+      👋 Press space to step.
 
-  - text: |
-      /3/6 and /3/7 are dim.
-
-      Hover over their heat cues.  No candidate in alice/app.desc
-      scores well enough to light them.  They may use types from a
-      schema reproto did not recover — or from a service this descriptor
-      set was never built against.
-
-      The full googleapis descriptor set may do better.  We will try
-      that next.
-
-    fold: ["/ 1", "/1 1", "/1 Z"]
-    node: /3/6
+    heat_cues: findings
+    fold: ["/ 2", "/1/1 Z"]
+    node: /3/3
+    select: true
 
   - text: |
-      Before we leave, save our overrides.
+      ✋ Before that, let's save our current work:
+      keep a copy of the overrides we have defined.
 
-      Press Enter to write them to alice/overrides.  The next session
-      will load them with --load-overrides.
+      👋 Press Enter to save our overrides.
 
-    fold: ["/ 1"]
-    node: /
+    heat_cues: findings
+    fold: ["/ 2", "/1/1 Z"]
+    node: /3/3
     command: save-overrides alice/overrides
+    advance_when:
+      - file_exists: alice/overrides
 
   - text: |
-      Press Enter to quit.
+      Now we can press Enter to quit.
 
-    fold: ["/ 1"]
-    node: /
+    heat_cues: findings
+    fold: ["/ 2", "/1/1 Z"]
     command: quit

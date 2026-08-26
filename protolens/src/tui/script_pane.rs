@@ -328,6 +328,7 @@ impl App {
                 };
                 self.field_name_for(idx) == *name
             }
+            Predicate::FileExists { path } => std::path::Path::new(path).exists(),
             Predicate::Caret { position } => {
                 let Some(idx) = self.script_resolve(position) else {
                     return false;

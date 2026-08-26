@@ -178,6 +178,12 @@ Holds when `field_name_for(idx)` returns `<name>` — i.e. the node's
 effective field name (from an override or schema) matches the expected
 string. Same two-token format as `type:`.
 
+**`file_exists: <path>`**
+
+Holds when `std::path::Path::new(path).exists()` is true. The path is
+resolved relative to the working directory at evaluation time, matching
+the convention of `:save-overrides` and other file-path arguments.
+
 **`annotations: <bool>`**
 
 `true` holds when the annotation pane is visible (`self.annotations == true`);
@@ -220,8 +226,8 @@ as other step errors (spec 0271 S13):
 
 - An `or` key present anywhere in an `advance_when` list.
 - An unknown key in a predicate item (any key other than `visible`,
-  `folded`, `wire`, `type`, `field_name`, `caret`, `annotations`,
-  `heat_cues`, `not`).
+  `folded`, `wire`, `type`, `field_name`, `file_exists`, `caret`,
+  `annotations`, `heat_cues`, `not`).
 - A predicate item mapping with more than one key.
 - A `type` or `field_name` value with fewer than two whitespace-separated
   tokens.
@@ -344,6 +350,7 @@ Each predicate kind delegates to existing `App` queries:
 - `Wire`: the node's line range intersects `self.wire`.
 - `Type`: `self.effective_type(idx)` matches the fqdn string exactly.
 - `FieldName`: `self.field_name_for(idx)` matches the name string exactly.
+- `FileExists`: `std::path::Path::new(path).exists()`.
 - `Caret`: `self.cursor == idx`.
 - `Annotations { on }`: `self.annotations == on`.
 - `HeatCues { mode }`: `self.heat_cues == mode`.
@@ -430,13 +437,15 @@ too verbose to encourage for real use cases.
     `HeatCueMode::Findings` is active; does not fire for `Off` or `All`.
 17. `advance_when_field_name_predicate` — `field_name: /1 myfield` fires
     after an override sets that field name on `/1`.
-18. `step_directive_annotations_sets_mode` — a step with `annotations: false`
+18. `advance_when_file_exists_predicate` — `file_exists: <path>` fires when
+    the file appears on disk; does not fire while absent.
+19. `step_directive_annotations_sets_mode` — a step with `annotations: false`
     disables the annotation pane on entry; `annotations: true` re-enables it.
-19. `step_directive_heat_cues_sets_mode` — a step with `heat_cues: all` sets
+20. `step_directive_heat_cues_sets_mode` — a step with `heat_cues: all` sets
     `HeatCueMode::All` on entry; `heat_cues: off` sets `HeatCueMode::Off`.
-20. `step_directive_heat_cues_bad_value_is_load_error` — `heat_cues: maybe`
+21. `step_directive_heat_cues_bad_value_is_load_error` — `heat_cues: maybe`
     in a step fails at parse time.
-21. `reuse lint` passes.
+22. `reuse lint` passes.
 
 ## Measured outcome
 
