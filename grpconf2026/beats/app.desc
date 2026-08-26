@@ -96,8 +96,9 @@ steps:
       
       Let's pick SearchTextResponse, it feels right and corresponds to what was in capture.
       
-      👋 Double-click on the heat-cue, then double-click on the chosen type.
+      👋 Double-click on the heat-cue, then double-click on SearchTextResponse.
 
+    heat_cues: findings
     fold: ["/ 2"]
     node: /1/4
     select: true
@@ -112,8 +113,9 @@ steps:
       
       Let's accept SearchTextRequest, it feels right.
       
-      👋 Double-click on the heat-cue, then double-click on the chosen type.
+      👋 Double-click on the heat-cue, then double-click on SearchTextRequest.
 
+    heat_cues: findings
     fold: ["/ 2"]
     node: /1/3
     select: true
@@ -129,21 +131,22 @@ steps:
 
       👋 Press Enter to commit the prefilled command.
 
+    heat_cues: findings
     fold: ["/ 1"]
     node: /1/2
     select: true
     command: override /1:2 --field-name rpc
     advance_when:
-      - type: /1/2 We-need-something-else-here-about-the-field-name
+      - field_name: /1/2 rpc
 
   - text: |
       Now what about field 1?
+      Let's hover over the heat cue...
+      Hmm... Timestamp is probably right, for a log entry...
+      
+      👋 Double-click on the heat-cue, then double-click on Timestamp.
 
-      It looks like the name of the logged RPC.
-      Let's just name the field "rpc".
-
-      👋 Press Enter to commit the prefilled command.
-
+    heat_cues: findings
     fold: ["/ 1", "/1/1 Z"]
     node: /1/1
     select: true
@@ -151,11 +154,19 @@ steps:
       - type: /1/1 google.protobuf.Timestamp
 
   - text: |
-      And /1/5 — the SearchText response alongside it.
+      👍 Perfect
 
-    fold: ["/ 1", "/1 1", "/1 Z"]
-    node: /1/5
-    command: override /1/5 --as google.maps.places.v1.SearchTextResponse
+      Now let's have a look at fields at the 3rd node.
+      Hovering above field 6 and 7 gives nothing convincing
+      Let's have a closer look...
+
+      👋 Double-click on the heat-cue for field 6 and investigate,
+         then press space to step.
+
+    fold: ["/ 1", "/1/1 Z"]
+    node: /3/3
+
+
 
   - text: |
       Add a field name to /1/2 — the method line that names the call.

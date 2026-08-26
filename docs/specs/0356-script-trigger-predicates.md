@@ -172,6 +172,12 @@ The value is two whitespace-separated tokens: position then type name.
 
 The cursor is currently on the node at `<position>`.
 
+**`field_name: <position> <name>`**
+
+Holds when `field_name_for(idx)` returns `<name>` — i.e. the node's
+effective field name (from an override or schema) matches the expected
+string. Same two-token format as `type:`.
+
 **`annotations: <bool>`**
 
 `true` holds when the annotation pane is visible (`self.annotations == true`);
@@ -214,9 +220,11 @@ as other step errors (spec 0271 S13):
 
 - An `or` key present anywhere in an `advance_when` list.
 - An unknown key in a predicate item (any key other than `visible`,
-  `folded`, `wire`, `type`, `caret`, `annotations`, `heat_cues`, `not`).
+  `folded`, `wire`, `type`, `field_name`, `caret`, `annotations`,
+  `heat_cues`, `not`).
 - A predicate item mapping with more than one key.
-- A `type` value with fewer than two whitespace-separated tokens.
+- A `type` or `field_name` value with fewer than two whitespace-separated
+  tokens.
 - A `not` value that is not a list (e.g. a scalar).
 - A `heat_cues` predicate or directive value that is not one of `off`,
   `findings`, `all` — caught by serde's `HeatCueMode` deserializer.
@@ -309,6 +317,11 @@ pass as `node:`, `fold:`, and `command:`.
 
 **`heat_cues: <mode>`** — set `self.heat_cues` to `off`, `findings`, or `all`.
 
+`script_reset` (which runs at the start of every step) first resets
+`annotations` to `true` and `heat_cues` to `Off`; the step directive then
+overrides those defaults. This ensures each step starts from a known baseline
+regardless of what the user did in the previous step.
+
 Conflict with the same-named `advance_when` predicate keys is intentional and
 explicit: the directive sets the mode on step entry; the predicate checks the
 mode (possibly after the user changes it) as an exit condition.
@@ -330,6 +343,7 @@ Each predicate kind delegates to existing `App` queries:
 - `Folded`: `is_folded(idx) && has_children(idx)`.
 - `Wire`: the node's line range intersects `self.wire`.
 - `Type`: `self.effective_type(idx)` matches the fqdn string exactly.
+- `FieldName`: `self.field_name_for(idx)` matches the name string exactly.
 - `Caret`: `self.cursor == idx`.
 - `Annotations { on }`: `self.annotations == on`.
 - `HeatCues { mode }`: `self.heat_cues == mode`.
@@ -414,13 +428,15 @@ too verbose to encourage for real use cases.
     the annotation pane is visible; `annotations: false` fires when hidden.
 16. `advance_when_heat_cues_predicate` — `heat_cues: findings` fires when
     `HeatCueMode::Findings` is active; does not fire for `Off` or `All`.
-17. `step_directive_annotations_sets_mode` — a step with `annotations: false`
+17. `advance_when_field_name_predicate` — `field_name: /1 myfield` fires
+    after an override sets that field name on `/1`.
+18. `step_directive_annotations_sets_mode` — a step with `annotations: false`
     disables the annotation pane on entry; `annotations: true` re-enables it.
-18. `step_directive_heat_cues_sets_mode` — a step with `heat_cues: all` sets
+19. `step_directive_heat_cues_sets_mode` — a step with `heat_cues: all` sets
     `HeatCueMode::All` on entry; `heat_cues: off` sets `HeatCueMode::Off`.
-19. `step_directive_heat_cues_bad_value_is_load_error` — `heat_cues: maybe`
+20. `step_directive_heat_cues_bad_value_is_load_error` — `heat_cues: maybe`
     in a step fails at parse time.
-20. `reuse lint` passes.
+21. `reuse lint` passes.
 
 ## Measured outcome
 

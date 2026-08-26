@@ -91,6 +91,10 @@ pub enum Predicate {
         position: Position,
         fqdn: String,
     },
+    FieldName {
+        position: Position,
+        name: String,
+    },
     Caret {
         position: Position,
     },
@@ -273,6 +277,7 @@ enum RawPredicate {
     Folded { folded: String },
     Wire { wire: String },
     Type { r#type: String },
+    FieldName { field_name: String },
     Caret { caret: String },
     Annotations { annotations: bool },
     HeatCues { heat_cues: HeatCueMode },
@@ -304,6 +309,21 @@ impl RawPredicate {
                 Predicate::Type {
                     position: Position::parse(pos_str),
                     fqdn,
+                }
+            }
+            RawPredicate::FieldName { field_name } => {
+                // Value must be "<position> <name>" — at least two tokens.
+                let raw = &field_name;
+                let (pos_str, name) = raw
+                    .split_once(char::is_whitespace)
+                    .map(|(p, rest)| (p, rest.trim_start().to_string()))
+                    .filter(|(_, n)| !n.is_empty())
+                    .ok_or_else(|| {
+                        format!("advance_when field_name: {raw:?} must be \"<position> <name>\"")
+                    })?;
+                Predicate::FieldName {
+                    position: Position::parse(pos_str),
+                    name,
                 }
             }
             RawPredicate::Caret { caret } => Predicate::Caret {

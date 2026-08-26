@@ -887,7 +887,37 @@ steps:
     );
 }
 
-/// Spec 0356 test 17: `annotations:` step directive sets the mode on entry.
+/// Spec 0356 test 17: `field_name:` fires after an override sets the expected
+/// field name.
+#[test]
+fn advance_when_field_name_predicate() {
+    let script = "\
+steps:
+  - text: name the field
+    node: /1
+    advance_when:
+      - field_name: /1 myfield
+  - text: done
+    node: /2
+";
+    let (mut app, _) = repeated_message_fixture();
+    app.set_script(script_of(script));
+    assert_eq!(app.script.as_ref().unwrap().current, 0);
+
+    // Open the command line, type the override, then press Enter.
+    press(&mut app, KeyCode::Char(':'), KeyModifiers::NONE);
+    for ch in "override /1 --field-name myfield".chars() {
+        press(&mut app, KeyCode::Char(ch), KeyModifiers::NONE);
+    }
+    press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(
+        app.script.as_ref().unwrap().current,
+        1,
+        "field_name: predicate fired on Enter after override named /1 myfield"
+    );
+}
+
+/// Spec 0356 test 18: `annotations:` step directive sets the mode on entry.
 #[test]
 fn step_directive_annotations_sets_mode() {
     let script = "\

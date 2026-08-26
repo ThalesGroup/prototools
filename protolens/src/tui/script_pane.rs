@@ -30,6 +30,7 @@ use super::search::SearchScope;
 use super::{App, CursorPos, SearchDir};
 use crate::script::{FoldEntry, Position, Predicate, Script, Step, Wire};
 use crate::theme;
+use crate::tui::heat_cue::HeatCueMode;
 
 /// Spec 0271 S4: the script pane's share of the terminal, and the two
 /// absolute bounds on it.
@@ -321,6 +322,12 @@ impl App {
                 };
                 self.effective_type(idx).as_deref() == Some(fqdn.as_str())
             }
+            Predicate::FieldName { position, name } => {
+                let Some(idx) = self.script_resolve(position) else {
+                    return false;
+                };
+                self.field_name_for(idx) == *name
+            }
             Predicate::Caret { position } => {
                 let Some(idx) = self.script_resolve(position) else {
                     return false;
@@ -356,11 +363,11 @@ impl App {
             self.command_cursor = 0;
             self.cancel_search();
         }
-        // Spec 0356 S8: mode directives are reset to their current
-        // values — i.e. not reset at all. The directives set the mode
-        // on entry; the user may change it afterward. Stepping back does
-        // not restore the previous mode; only stepping forward to a step
-        // with an explicit directive does.
+        // Reset modes to their defaults so each step starts from a
+        // known baseline.  Step directives (`set_annotations`,
+        // `set_heat_cues`) override these immediately after.
+        self.annotations = true;
+        self.heat_cues = HeatCueMode::Off;
     }
 
     /// Drop every *user* fold, deepest-first.
