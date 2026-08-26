@@ -27,7 +27,7 @@ use ratatui::Frame;
 
 use super::pane_scroll::{AnchorLine, WireAnchor, WireSpan};
 use super::search::SearchScope;
-use super::{App, CursorPos, LinePos, SearchDir};
+use super::{App, CursorPos, SearchDir};
 use crate::script::{FoldEntry, Position, Script, Step, Wire};
 use crate::theme;
 

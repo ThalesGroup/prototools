@@ -536,6 +536,7 @@ impl App {
     /// removal, for the descendant scrub (which is vacating those slots
     /// anyway) and for `unfold_ancestors` (which cannot meet an
     /// auto-fold, a stop having no rendered descendants to climb from).
+    #[cfg(test)]
     pub(super) fn open(&mut self, idx: usize) -> bool {
         if self.auto_folded.contains(idx) {
             // Removed first: the splice below takes `idx` out of
