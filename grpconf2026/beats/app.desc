@@ -1,0 +1,158 @@
+# SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+#
+# SPDX-License-Identifier: MIT
+
+# Beat: guided walk through bob/logfile against alice/app.desc.
+#
+# Invocation:
+#   protolens --descriptor-set alice/app.desc bob/logfile \
+#       --script beats/app.desc
+#
+# The root type is not in alice/app.desc — it is Bob's own log envelope,
+# which reproto recovered no schema for.  The session opens untyped.
+# This beat names the structure by hand, enables heat cues, and follows
+# the cues as far as alice/app.desc can take them.
+#
+# Re-pin (must print nothing):
+#   protolens --descriptor-set alice/app.desc bob/logfile \
+#       --script beats/app.desc script \
+#     | grep 'error:'
+
+title: The logfile, app.desc
+
+steps:
+  - text: |
+      protolens opened bob/logfile against alice/app.desc.
+
+      The root type is unknown — no schema in this descriptor set
+      matches the envelope.  What we see is raw field numbers.
+
+      Press space to step.
+
+    fold: ["/ 1"]
+    node: /
+
+  - text: |
+      Notice the status line: truncated: true.
+
+      The process was probably killed in flight and the logfile misses 1 024 bytes.
+      This explains why protoc was unable to parse it.
+
+      Press space to step.
+
+    fold: ["/ 1"]
+    node: /
+    select: true
+    search: TRUNCATED_MESSAGE
+
+  - text: |
+      Open to depth 2.
+
+      The top-level fields each contain a repeated submessage.  These
+      look like log entries — one per RPC call.
+
+      Press space to step.
+
+    fold: ["/ 2"]
+    node: /
+    search: "[{]  #@ message"
+
+  - text: |
+      Let's name the structure.  The command below is prefilled.
+
+      It declares a new synthetic type "Entry", marks field 1 as
+      repeated and gives it the field name "entries".
+      
+      Press Enter to commit.
+
+    fold: ["/ 2"]
+    node: /
+    search: "[{]  #@ message"
+    command: override /:1 --as-new Entry --card repeated --field-name entries
+
+  - text: |
+      To go futher, let's enable protolens heat cues.
+      Protolens will tell us where it recognizes nodes with known types.
+      They will be lightened up.
+
+      Press i to enable heat cues.
+
+    fold: ["/ 2"]
+    node: /
+    search: "[{]  #@ repeated Entry"
+
+  - text: |
+      /1/5 is bright green.
+
+      Hover over the heat cue beside /1/5.  Notice it corresponds to
+      /1/4 — same bytes.  This is a
+      google.maps.places.v1.SearchTextRequest from the googleapis.
+
+      Three commands follow.  Announce each one before pressing Enter.
+
+    fold: ["/ 2"]
+    node: /1/4
+    select: true
+
+  - text: |
+      Commit the type for /1/4 — the SearchText request.
+
+    fold: ["/ 1", "/1 1", "/1 Z"]
+    node: /1/4
+    command: override /1/4 --as google.maps.places.v1.SearchTextRequest
+
+  - text: |
+      And /1/5 — the SearchText response alongside it.
+
+    fold: ["/ 1", "/1 1", "/1 Z"]
+    node: /1/5
+    command: override /1/5 --as google.maps.places.v1.SearchTextResponse
+
+  - text: |
+      Add a field name to /1/2 — the method line that names the call.
+
+    fold: ["/ 1", "/1 1", "/1 Z"]
+    node: /1/2
+    command: override /1/2 --field-name rpc
+
+  - text: |
+      Now /1/1.
+
+      This looks like a timestamp — two integer fields, which is the
+      shape of google.protobuf.Timestamp (seconds + nanos).  The
+      command is prefilled.
+
+    fold: ["/ 1", "/1 1", "/1 Z"]
+    node: /1/1
+    command: override /1/1 --as google.protobuf.Timestamp --field-name timestamp
+
+  - text: |
+      /3/6 and /3/7 are dim.
+
+      Hover over their heat cues.  No candidate in alice/app.desc
+      scores well enough to light them.  They may use types from a
+      schema reproto did not recover — or from a service this descriptor
+      set was never built against.
+
+      The full googleapis descriptor set may do better.  We will try
+      that next.
+
+    fold: ["/ 1", "/1 1", "/1 Z"]
+    node: /3/6
+
+  - text: |
+      Before we leave, save our overrides.
+
+      Press Enter to write them to alice/overrides.  The next session
+      will load them with --load-overrides.
+
+    fold: ["/ 1"]
+    node: /
+    command: save-overrides alice/overrides
+
+  - text: |
+      Press Enter to quit.
+
+    fold: ["/ 1"]
+    node: /
+    command: quit

@@ -8,7 +8,6 @@
 //! message Entry {
 //!   google.protobuf.Timestamp at = 1;
 //!   string method   = 2;   // last segment only: "SearchText" or "ComputeRoutes"
-//!   string note     = 3;
 //!   // Places pair — in embedded set:
 //!   SearchTextRequest  places_request  = 4;
 //!   SearchTextResponse places_response = 5;
@@ -54,8 +53,6 @@ struct Entry {
     at: SystemTime,
     /// Last path segment of the gRPC method (e.g. "SearchText").
     method: String,
-    /// How the call went, as far as the entry knows when it is closed.
-    note: &'static str,
     kind: EntryKind,
     request: Option<Vec<u8>>,
     response: Option<Vec<u8>>,
@@ -103,7 +100,6 @@ impl Recorder {
         self.open = Some(Entry {
             at: SystemTime::now(),
             method: method_name,
-            note: "sent",
             kind,
             request: Some(bytes.to_vec()),
             response: None,
@@ -116,7 +112,6 @@ impl Recorder {
             return; // A response to nothing is not an entry.
         };
         entry.response = Some(bytes.to_vec());
-        entry.note = "ok";
         self.done.push(entry);
     }
 
@@ -149,16 +144,15 @@ impl Recorder {
 impl Entry {
     /// Encodes the entry as raw proto bytes.
     ///
-    /// Fields 1–3 (timestamp, method, note) are built via `DynamicMessage`.
+    /// Fields 1–2 (timestamp, method) are built via `DynamicMessage`.
     /// Fields 4–7 (typed request/response payloads) are appended verbatim as
     /// length-delimited records — no decode/re-encode, so every non-canonical
     /// form written by `anomaly::rewrite_request` survives into the log.
     fn encode(&self, pool: &DescriptorPool) -> Result<Vec<u8>> {
-        // Fields 1–3 via DynamicMessage (they have no anomalies to preserve).
+        // Fields 1–2 via DynamicMessage (they have no anomalies to preserve).
         let mut header = DynamicMessage::new(message(pool, ENTRY_TYPE)?);
         set(&mut header, "at", Value::Message(timestamp(pool, self.at)?))?;
         set(&mut header, "method", Value::String(self.method.clone()))?;
-        set(&mut header, "note", Value::String(self.note.to_owned()))?;
         let mut out = Vec::with_capacity(header.encoded_len() + 256);
         header.encode(&mut out).context("encoding entry header")?;
 
