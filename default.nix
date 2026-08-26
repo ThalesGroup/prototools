@@ -453,23 +453,21 @@ let
   # ---------------------------------------------------------------------------
   # grpconf-demo — read-only stage for the gRPConf 2026 live demo.
   #
-  # Contains everything the presenter needs except the files the beats build
-  # live on stage (app.desc, src/).  Those go into writable working directories
-  # (grpconf2026/bob/, grpconf2026/alice/); see _hook_demo in nix/shells.nix.
+  # Contains the demo binary and pre-minted fixtures.  beats/ is committed
+  # source and is used directly from the working tree; it is not included here.
   #
   #   $out/bin/bobapp          the demo binary (Places embedded; Routes via extra pool)
   #   $out/capture             one SearchText request body (spec 0350 G5)
   #   $out/logfile             the log with four anomalies (Routes entries first)
-  #   $out/beats/              every grpconf2026/beats/*.script
   #
   # googleapis is not included: $PROTOTEXT_GOOGLEAPIS_SET already provides it.
   #
   # Build once:     nix-build -A grpconf-demo
-  # Populate stage: dev-shell's _hook_demo unpacks this into grpconf2026/.
+  # Populate stage: dev-shell's _hook_demo unpacks this into grpconf2026/bob/.
   # ---------------------------------------------------------------------------
   grpconfDemo = pkgs.runCommand "grpconf-demo" { } ''
     set -euo pipefail
-    mkdir -p "$out/bin" "$out/beats"
+    mkdir -p "$out/bin"
 
     # The demo binary.
     cp ${bobappDemo}/bin/bobapp "$out/bin/bobapp"
@@ -477,12 +475,6 @@ let
     # Committed fixtures: the pre-minted request capture and log.
     cp ${./grpconf2026/fixtures/bobshark} "$out/capture"
     cp ${./grpconf2026/fixtures/boblog}   "$out/logfile"
-
-    # Beat scripts.  Read-only in the stage is fine — they are never written.
-    # Copied as a directory so that renaming or adding a beat needs no edit
-    # here — the set has already turned over once (log-partial/log-full
-    # became log-v1/log-v2) and left this derivation pointing at nothing.
-    cp ${./grpconf2026/beats}/*.script "$out/beats/"
   '';
 
   # ---------------------------------------------------------------------------

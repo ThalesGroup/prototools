@@ -102,6 +102,14 @@ in
     # Allow cargo to write build artifacts to target/ (outside /nix/store).
     NIX_ENFORCE_PURITY = 0;
 
+    # Override the system-wide NIX_PATH, which on this machine contains
+    # "nixpkgs=flake:nixpkgs:…" (the system uses /etc/nixos/flake.nix).
+    # Without this, a nested nix-shell invocation (run from within the
+    # dev-shell) fails with "experimental Nix feature 'flakes' is disabled"
+    # because nix-shell looks up `(import <nixpkgs> {}).bashInteractive` and
+    # <nixpkgs> resolves via the flake: URI scheme.
+    NIX_PATH = "nixpkgs=${pkgs.path}";
+
     nativeBuildInputs = (with pkgs; [
       cargo
       rustc
@@ -430,10 +438,9 @@ components = [\"rust-src\", \"rustfmt\", \"clippy\"]"
       }
 
       _hook_demo() {
-        # Populate grpconf2026/{bob,beats,alice} from the grpconf-demo nix
-        # derivation so that the presenter has a writable working directory.
+        # Populate grpconf2026/{bob,alice} from the grpconf-demo nix derivation
+        # so that the presenter has a writable working directory.
         #
-        # The nix store is read-only, so the beats cannot write app.desc or src/.
         # --no-preserve=mode strips the 0444/0555 modes from the copy so that
         # all files are writable.
         #
@@ -441,16 +448,16 @@ components = [\"rust-src\", \"rustfmt\", \"clippy\"]"
         #   bob/app          the bobapp binary (Places embedded; Routes via extra pool)
         #   bob/logfile      the log: Routes entries first, then SearchText (truncated)
         #   bob/capture      one SearchText request body (spec 0350)
-        #   beats/           every grpconf2026/beats/*.script
         #   alice/           empty writable scratch directory for Alice's outputs
         #
+        # beats/ is committed source — it is never touched by this hook.
         # googleapis is not included: $PROTOTEXT_GOOGLEAPIS_SET already provides it.
         #
         # The copy is guarded by a sentinel file recording the nix store path
         # that last populated the directory.  If it matches, skip everything to
         # avoid the overhead on every shell entry after the first.
         #
-        # grpconf2026/{bob,beats,alice} are gitignored, so nothing here touches
+        # grpconf2026/{bob,alice} are gitignored, so nothing here touches
         # the repo index.
         local stage="$PWD/grpconf2026"
         local bob="$stage/bob"
@@ -461,12 +468,11 @@ components = [\"rust-src\", \"rustfmt\", \"clippy\"]"
           return
         fi
         echo "[hook] demo: populating grpconf2026/ from grpconf-demo"
-        rm -rf "$bob" "$stage/beats"
-        mkdir -p "$bob" "$stage/beats" "$stage/alice"
+        rm -rf "$bob"
+        mkdir -p "$bob" "$stage/alice"
         cp --no-preserve=mode "$demo/bin/bobapp" "$bob/app"
         cp --no-preserve=mode "$demo/logfile"    "$bob/logfile"
         cp --no-preserve=mode "$demo/capture"   "$bob/capture"
-        cp -r --no-preserve=mode "$demo/beats"/. "$stage/beats/"
         # Record which nix derivation populated the directory.
         echo "$demo" > "$sentinel"
         echo "[hook] demo: grpconf2026/ ready ($(du -sh "$stage" | cut -f1) total)"
