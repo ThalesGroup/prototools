@@ -2386,7 +2386,9 @@ fn an_unknown_scalar_in_a_typed_parent_wears_a_blue_diamond() {
         .visible_row_of_line(app.node_lines(known).start)
         .expect("known field is visible") as u16;
     assert!(
-        marks.iter().all(|&(_, y, _)| y != app.main_area.y + known_line),
+        marks
+            .iter()
+            .all(|&(_, y, _)| y != app.main_area.y + known_line),
         "the declared sibling must not be marked"
     );
 

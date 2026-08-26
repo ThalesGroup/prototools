@@ -130,11 +130,12 @@ fn hovering_an_unknown_leaf_diamond_names_the_tier() {
     // The unknown leaf's absolute line index is its screen row when
     // main_area.y == 0 and scroll.index == 0 (the fixture's defaults).
     let unknown_line = app.absolute_start(unknown) as u16;
-    let pos = app.line_pos(unknown as usize).expect("unknown is a valid line");
+    let pos = app
+        .line_pos(unknown as usize)
+        .expect("unknown is a valid line");
     let line_text = app.line_text(pos);
-    let mark_col = app.main_area.x
-        + render::HEAT_FIELD_WIDTH as u16
-        + render::marker_column(&line_text);
+    let mark_col =
+        app.main_area.x + render::HEAT_FIELD_WIDTH as u16 + render::marker_column(&line_text);
 
     let hit = app
         .doc_element_at_point(mark_col, unknown_line)

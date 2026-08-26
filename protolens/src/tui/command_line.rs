@@ -1203,7 +1203,9 @@ impl App {
         let current_root_type = self.resolve_active_override(self.first_node).flatten();
         self.overrides = collection;
         if !has_root_entry {
-            self.overrides.seed_root(current_root_type);
+            if let Some(t) = current_root_type {
+                self.overrides.seed_root(Some(t));
+            }
         }
         self.render_overrides(self.first_node);
         self.set_manage_highlight(0);
