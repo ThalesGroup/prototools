@@ -22,13 +22,17 @@ title: The logfile, app.desc
 
 steps:
   - text: |
-      This is bob/logfile opened against alice/app.desc.
+      This is bob/logfile opened
+      against the descriptors in alice/app.desc.
 
-      This is a larger protobuf than the capture.
+      bob/logfile is a larger protobuf than bob/capture.
       The root type is unknown — no schema in alice/app.desc
       matches the envelope.  What we see is raw field numbers.
 
       👋 Press space to step.
+
+    node: /
+    select: true
 
   - text: |
       Let's fold the top level nodes to get a clearer view.
@@ -47,8 +51,8 @@ steps:
   - text: |
       Let's unfold to depth 2.
 
-      The top-level fields each contain a repeated submessage.  These
-      look like log entries — one per RPC call.
+      The top-level fields each contain similar submessages.
+      They look like log entries — one per RPC call.
 
       👋 Press space to step.
 
@@ -62,7 +66,7 @@ steps:
       It declares a new synthetic type "Entry", marks field 1 as
       repeated and gives it the field name "entries".
       
-      Press Enter to commit.
+      👋 Press Enter to commit.
 
     fold: ["/ 2"]
     node: /
@@ -71,36 +75,62 @@ steps:
 
   - text: |
       To go futher, let's enable protolens heat cues.
-      Protolens will tell us where it recognizes known types in the subnodes of the protobuf.
-      Heat cues appear as green/amber/blue annotation.
+      Protolens will tell us where in the protobuf it recognizes known types.
+      Heat cues show as green/amber/blue annotations.
 
-      Press `i` to enable heat cues.
+      👋 Press `i` to enable heat cues.
 
     fold: ["/ 2"]
     node: /
     # search: "1 [{]  #@ repeated Entry"
 
   - text: |
-      /:1:5 is bright green.
-
-      Hover over the heat cue beside /:1:5.  Notice it proposes two matching types
-      with identical scores.
-      Let's pick corresponds to
-      /1/4 — same bytes.  This is a
-      google.maps.places.v1.SearchTextRequest from the googleapis.
-
-      Three commands follow.  Announce each one before pressing Enter.
+      We see that field 5 of the first entry has a bright heat cue.
+      Hover over it. Notice it proposes two matching types with identical score.
+      
+      Let's pick SearchTextResponse, it feels right and corresponds to what was in capture.
+      
+      👋 Double-click on the heat-cue, then double-click on the chosen type.
 
     fold: ["/ 2"]
     node: /1/4
     select: true
 
   - text: |
-      Commit the type for /1/4 — the SearchText request.
+      Now hover over the amber heat-cue of field 4.
+      It proposes a single matching type.
+      
+      Let's accept SearchTextRequest, it feels right.
+      
+      👋 Double-click on the heat-cue, then double-click on the chosen type.
 
-    fold: ["/ 1", "/1 1", "/1 Z"]
-    node: /1/4
-    command: override /1/4 --as google.maps.places.v1.SearchTextRequest
+    fold: ["/ 2"]
+    node: /1/3
+    select: true
+
+  - text: |
+      What about field 2?
+      It looks like the name of the logged RPC.
+      Let's just name the field "rpc".
+
+      👋 Press Enter to commit the prefilled command.
+
+    fold: ["/ 1"]
+    node: /1/2
+    select: true
+    command: override /1:2 --field-name rpc
+
+  - text: |
+      Now what about field 1?
+
+      It looks like the name of the logged RPC.
+      Let's just name the field "rpc".
+
+      👋 Press Enter to commit the prefilled command.
+
+    fold: ["/ 1", "/1/1 Z"]
+    node: /1/1
+    select: true
 
   - text: |
       And /1/5 — the SearchText response alongside it.
