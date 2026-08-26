@@ -66,16 +66,18 @@ steps:
       It declares a new synthetic type "Entry", marks field 1 as
       repeated and gives it the field name "entries".
       
-      👋 Press Enter to commit.
+      👋 Press Enter to commit the type override.
 
     fold: ["/ 2"]
     node: /
     search: "1 [{]  #@ message"
     command: override /:1 --as-new Entry --cardinality repeated --field-name entries
     advance_when:
-      - type: /:1 Entry
+      - type: /1 Entry
 
   - text: |
+      👍 Good, the Entry type override is in place.
+       
       To go futher, let's enable protolens heat cues.
       Protolens will tell us where in the protobuf it recognizes known types.
       Heat cues show as green/amber/blue annotations.
@@ -84,7 +86,9 @@ steps:
 
     fold: ["/ 2"]
     node: /
-    # search: "1 [{]  #@ repeated Entry"
+    search: "entries [{]  #@ repeated Entry"
+    advance_when:
+      - heat_cues: findings
 
   - text: |
       We see that field 5 of the first entry has a bright heat cue.
@@ -97,8 +101,12 @@ steps:
     fold: ["/ 2"]
     node: /1/4
     select: true
+    advance_when:
+      - type: /1/4 google.maps.places.v1.SearchTextResponse
 
   - text: |
+      👍 Good, the SearchTextResponse override is in place.
+
       Now hover over the amber heat-cue of field 4.
       It proposes a single matching type.
       
@@ -109,8 +117,12 @@ steps:
     fold: ["/ 2"]
     node: /1/3
     select: true
+    advance_when:
+      - type: /1/3 google.maps.places.v1.SearchTextRequest
 
   - text: |
+      👍 OK, SearchTextRequest is also in place.
+
       What about field 2?
       It looks like the name of the logged RPC.
       Let's just name the field "rpc".
@@ -121,6 +133,8 @@ steps:
     node: /1/2
     select: true
     command: override /1:2 --field-name rpc
+    advance_when:
+      - type: /1/2 We-need-something-else-here-about-the-field-name
 
   - text: |
       Now what about field 1?
@@ -133,6 +147,8 @@ steps:
     fold: ["/ 1", "/1/1 Z"]
     node: /1/1
     select: true
+    advance_when:
+      - type: /1/1 google.protobuf.Timestamp
 
   - text: |
       And /1/5 — the SearchText response alongside it.
