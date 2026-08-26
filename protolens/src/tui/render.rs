@@ -1121,15 +1121,15 @@ impl App {
         let idx = owner?;
         match self.fold_marker_of(owner) {
             Some(glyph) => Some(glyph),
-            // N1: `Unknown` and `Unbaked` are absence of information,
-            // not defects, and both are near-universal where they occur
-            // — an untyped document is `Unknown` throughout (spec 0247
-            // S12), so marking it would mark every leaf on screen.
             // Spec 0349 S3: Shadowed gets a hollow diamond; NonCanonical
             // and above get the filled one.
+            // Spec 0364 S2: Unknown gets the filled blue diamond, but
+            // only when the parent has a schema — otherwise it is mere
+            // absence of information (spec 0247 S12 / spec 0322 N1).
             None => match self.status_of(idx) {
                 s if s >= Status::NonCanonical => Some(ANOMALY_GLYPH),
                 Status::Shadowed => Some(HOLLOW_ANOMALY_GLYPH),
+                Status::Unknown if self.parent_is_typed(idx) => Some(ANOMALY_GLYPH),
                 _ => None,
             },
         }

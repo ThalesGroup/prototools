@@ -71,11 +71,15 @@ pub(super) enum DocElement {
     /// S2's `Unbaked` color: nobody has looked inside this region, as
     /// against a fold the reader made.
     FoldSummary { unread: bool },
-    /// Spec 0322 S5: the `◆` a leaf wears in the fold column. A fifth
-    /// chrome member rather than a flag on `FoldMarker`, because the
-    /// two share only a column: this one folds nothing, and every line
-    /// of the fold marker's box would be false of it.
-    AnomalyMark { tier: Tier },
+    /// Spec 0322 S5: the `◆`/`◇` a leaf wears in the fold column. A
+    /// fifth chrome member rather than a flag on `FoldMarker`, because
+    /// the two share only a column: this one folds nothing, and every
+    /// line of the fold marker's box would be false of it.
+    ///
+    /// `status` is one of the four that produce a mark:
+    /// `Unknown` (spec 0364), `Shadowed` (spec 0349), `NonCanonical`,
+    /// or `Invalid` (spec 0322).
+    AnomalyMark { status: Status },
 }
 
 /// Which cue drew the `■`. Three since spec 0335 gave the unmatched
@@ -467,13 +471,24 @@ impl App {
     /// `a_leaf_anomaly_wears_a_diamond` and
     /// `hovering_a_leaf_diamond_names_the_tier`, which run the same
     /// fixture through the renderer and the hit test.
+    /// Spec 0322 S5 / spec 0364 S3: the leaf anomaly mark —
+    /// `in_fold_field`'s geometry over the nodes `in_fold_field`
+    /// refuses.
+    ///
+    /// The node test mirrors `margin_glyph_of`'s rather than asking it,
+    /// because what is wanted here is the *tier*, and a glyph cannot be
+    /// turned back into one. The two are kept honest by the paired
+    /// tests that run the same fixture through the renderer and the hit
+    /// test.
     fn anomaly_mark_hit(&self, column: u16, line: usize, pos: LinePos) -> Option<DocHit> {
         if self.is_footer(pos) || self.has_children(pos.node) {
             return None;
         }
-        let tier = match self.status_of(pos.node) {
-            Status::NonCanonical => Tier::NonCanonical,
-            Status::Invalid => Tier::Invalid,
+        // Spec 0364 S3: `None` tier for `Unknown` (parent has schema);
+        // `Some` for the two annotation tiers.
+        let status = match self.status_of(pos.node) {
+            s @ (Status::Invalid | Status::NonCanonical | Status::Shadowed) => s,
+            Status::Unknown if self.parent_is_typed(pos.node) => Status::Unknown,
             _ => return None,
         };
         if !self.in_fold_column(column, pos) {
@@ -482,7 +497,7 @@ impl App {
         Some(DocHit {
             line,
             at: 0,
-            element: DocElement::AnomalyMark { tier },
+            element: DocElement::AnomalyMark { status },
             token: render::ANOMALY_GLYPH.to_string(),
             enum_number: None,
             heat_top: vec![],
@@ -760,14 +775,43 @@ pub(super) fn doc_lines(hit: &DocHit, heat_anchor: f32) -> Vec<BoxLine> {
                 lines.push("the color is the worst thing found anywhere inside".to_string());
             }
         }
-        DocElement::AnomalyMark { tier } => {
-            lines.push(tier.clause().to_string());
-            // The one thing the mark cannot say by itself. A leaf has no
-            // toggle, so this is the node's *own* trouble and not a
-            // roll-up — and the row's annotation names it, which matters
-            // because `a` may be hiding the annotation right now, which
-            // is the case this mark exists for (spec 0322 Background).
-            lines.push("this row's own annotation says which".to_string());
+        DocElement::AnomalyMark { status } => {
+            match status {
+                Status::NonCanonical => {
+                    lines.push(Tier::NonCanonical.clause().to_string());
+                    // The one thing the mark cannot say by itself. A leaf
+                    // has no toggle, so this is the node's *own* trouble
+                    // and not a roll-up — and the row's annotation names
+                    // it, which matters because `a` may be hiding the
+                    // annotation right now (spec 0322 Background).
+                    lines.push("this row's own annotation says which".to_string());
+                }
+                Status::Invalid => {
+                    lines.push(Tier::Invalid.clause().to_string());
+                    lines.push("this row's own annotation says which".to_string());
+                }
+                // Spec 0349: shadowed scalar — overridden by a later
+                // occurrence, less severe than a genuine anomaly.
+                Status::Shadowed => {
+                    lines.push(
+                        "this value is shadowed by a later occurrence of the same field"
+                            .to_string(),
+                    );
+                    lines
+                        .push("the last occurrence wins; this one is silently ignored".to_string());
+                }
+                // Spec 0364 S3: the field is not in the parent's schema.
+                Status::Unknown => {
+                    lines.push("this field is not declared in the parent's schema".to_string());
+                    lines.push("it is invisible to protoc".to_string());
+                    lines.push(
+                        "the annotation at the end of the line says what wire type it carries"
+                            .to_string(),
+                    );
+                }
+                // Other statuses do not produce a mark; unreachable.
+                _ => {}
+            }
         }
         DocElement::FoldSummary { unread } => {
             if unread {

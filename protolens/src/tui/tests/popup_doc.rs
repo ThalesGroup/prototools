@@ -116,6 +116,50 @@ fn hovering_a_leaf_diamond_names_the_tier() {
     );
 }
 
+/// Spec 0364 S3 / test-plan item 3: hovering the blue diamond on an
+/// unknown leaf names the situation — the field is not in the parent's
+/// schema — and reminds the reader that the annotation says the wire type,
+/// even when `a` is hiding it.
+#[test]
+fn hovering_an_unknown_leaf_diamond_names_the_tier() {
+    use crate::node_status::Status;
+    let (mut app, _inner, _known, unknown) = unknown_field_fixture();
+    app.splash = false;
+    app.main_area = Rect::new(0, 0, 120, 24);
+
+    // The unknown leaf's absolute line index is its screen row when
+    // main_area.y == 0 and scroll.index == 0 (the fixture's defaults).
+    let unknown_line = app.absolute_start(unknown) as u16;
+    let pos = app.line_pos(unknown as usize).expect("unknown is a valid line");
+    let line_text = app.line_text(pos);
+    let mark_col = app.main_area.x
+        + render::HEAT_FIELD_WIDTH as u16
+        + render::marker_column(&line_text);
+
+    let hit = app
+        .doc_element_at_point(mark_col, unknown_line)
+        .expect("the blue diamond is a hover target");
+
+    assert_eq!(
+        hit.element(),
+        DocElement::AnomalyMark {
+            status: Status::Unknown
+        },
+        "hit must be AnomalyMark with Unknown status"
+    );
+    assert_eq!(
+        doc_lines(&hit, HEAT_ANCHOR_DEFAULT)
+            .into_iter()
+            .map(|l| l.text)
+            .collect::<Vec<_>>(),
+        [
+            "this field is not declared in the parent's schema".to_string(),
+            "it is invisible to protoc".to_string(),
+            "the annotation at the end of the line says what wire type it carries".to_string(),
+        ]
+    );
+}
+
 /// Spec 0285 test plan 4 / S4: every part of a field declaration is its
 /// own element, and the type name is none of them (S5/N1).
 #[test]

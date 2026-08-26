@@ -381,7 +381,11 @@ impl App {
     /// difference between "no schema declares this field" and "there was
     /// no schema to ask", which is the whole of what S7's second line
     /// distinguishes.
-    fn parent_is_typed(&self, idx: usize) -> bool {
+    ///
+    /// Also used by `render.rs` (spec 0364 S1) and `popup_doc.rs`
+    /// (spec 0364 S3) to decide whether an unknown leaf should wear a
+    /// blue diamond.
+    pub(super) fn parent_is_typed(&self, idx: usize) -> bool {
         self.parent(idx)
             .and_then(|parent| self.fqdns.get(self.tree[parent].span.type_fqdn))
             .and_then(|fqdn| self.ctx.pool().get_message_by_name(fqdn))

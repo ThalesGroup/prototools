@@ -2293,7 +2293,7 @@ fn a_defect_tints_the_fold_marker_of_every_node_above_it() {
     // is about which *triangles* the color reaches.
     let tinted: Vec<_> = marked_cells(&app, &terminal, |s| s.fg == Some(want))
         .into_iter()
-        .filter(|(_, sym)| sym != " " && !is_bar(sym))
+        .filter(|(_, sym)| sym != " " && !is_bar(sym) && sym != &render::ANOMALY_GLYPH.to_string())
         .collect();
     // The root and `inner {` — every foldable node on the path.
     let glyph = render::FOLD_GLYPH_OPEN.to_string();
@@ -2359,21 +2359,64 @@ fn a_leaf_anomaly_wears_a_diamond() {
     );
 }
 
-/// Spec 0322 N1 / test-plan item 3: `Unknown` is absence of information
-/// rather than a defect, and spec 0247 S12 makes it universal in the
-/// documents that produce it — so an unknown leaf gets no mark. The
-/// fixture is the one `a_defect_tints_the_fold_marker_of_every_node_
-/// above_it` uses, which pins that its ancestors' toggles *are* tinted,
-/// so this is not passing by nothing being wrong with it.
+/// Spec 0364 G1 / test-plan item 1: an unknown scalar leaf in a typed
+/// parent wears a blue `◆` in the fold column.  The fixture is
+/// `unknown_field_fixture`, whose `Inner` parent has a schema — the
+/// condition that makes the mark fire.  The `known` sibling (`id: 5`)
+/// must not be marked.
+///
+/// Also covers test-plan item 1b: the mark outlives the `a` toggle
+/// (annotations hidden → mark still present).
 #[test]
-fn an_unknown_leaf_wears_no_diamond() {
-    let (mut app, ..) = unknown_field_fixture();
+fn an_unknown_scalar_in_a_typed_parent_wears_a_blue_diamond() {
+    let want = crate::theme::status_color(crate::node_status::Status::Unknown, ThemeKind::Dark)
+        .expect("Unknown must have a color");
+
+    let (mut app, _inner, known, unknown) = unknown_field_fixture();
     app.theme = ThemeKind::Dark;
     let terminal = drawn_frame(&mut app, 120, 12);
+
+    let marks = margin_cells(&app, &terminal, render::ANOMALY_GLYPH);
+    // Exactly the unknown leaf is marked, in the blue hue.
+    assert_eq!(marks.len(), 1, "only the unknown leaf must be marked");
+    assert_eq!(marks[0].2, want, "the mark must be the Unknown blue");
+
+    // The known leaf has no mark.
+    let known_line = app
+        .visible_row_of_line(app.node_lines(known).start)
+        .expect("known field is visible") as u16;
+    assert!(
+        marks.iter().all(|&(_, y, _)| y != app.main_area.y + known_line),
+        "the declared sibling must not be marked"
+    );
+
+    // The mark outlives the `a` toggle.
+    app.annotations = false;
+    let terminal = drawn_frame(&mut app, 120, 12);
+    assert_eq!(
+        margin_cells(&app, &terminal, render::ANOMALY_GLYPH).len(),
+        1,
+        "the mark must survive annotations being hidden"
+    );
+    let _ = (known, unknown); // suppress unused warnings
+}
+
+/// Spec 0364 G2 / test-plan item 2: an unknown scalar in an *untyped*
+/// parent (no schema) wears no mark.  This is spec 0322 N1's original
+/// justification: without a schema every leaf is Unknown and marking
+/// them all says nothing.
+#[test]
+fn an_unknown_scalar_without_a_schema_wears_no_diamond() {
+    // `sibling_leaves_app` builds an untyped tree — no schema, no parent
+    // fqdn — so every leaf is `Status::Unknown` but `parent_is_typed`
+    // returns false.
+    let mut app = sibling_leaves_app(&["7: 0  #@ varint", "8: 0  #@ varint"]);
+    app.theme = ThemeKind::Dark;
+    let terminal = drawn_frame(&mut app, 120, 8);
     assert_eq!(
         margin_cells(&app, &terminal, render::ANOMALY_GLYPH),
         Vec::new(),
-        "an undeclared field is not an anomaly"
+        "an unknown leaf in an untyped parent must not be marked"
     );
 }
 
