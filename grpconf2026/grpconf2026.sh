@@ -97,13 +97,14 @@ protolens --descriptor-set alice/app.desc bob/capture   --script beats/capture
 # Let's try with the logfile:
 protolens --descriptor-set alice/app.desc bob/logfile   --script beats/app.desc
 
+# Let's re-open the logfile against googleapis.desc (25-megabyte descriptor set)
 \
-protolens --descriptor-set $PROTOTEXT_GOOGLEAPIS_DESC bob/logfile \
+protolens --descriptor-set $PROTOTEXT_GOOGLEAPIS_SET bob/logfile \
   --load-overrides alice/overrides \
   --script beats/googleapis.desc
 
 view_textproto alice/export
-cmp bob/logfile <(prototext encode alice/export) && echo Identical 🙂
+cmp bob/logfile <(prototext encode alice/logfile.0-20134.node.pb) && echo Identical 👍
 
 
 

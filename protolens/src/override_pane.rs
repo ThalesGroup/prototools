@@ -345,7 +345,8 @@ pub struct OverrideEntry {
     /// Explicit cardinality override (spec 0348 §G1): `None` defers to
     /// the schema-derived `field_cardinality` fallback; `Some(c)` forces
     /// `c` in `register_wrapper`/`splice_override`, ignoring the schema.
-    /// Not persisted to YAML in this spec (spec 0348 §N3).
+    /// Persisted to YAML as `"optional"`, `"repeated"`, or `"required"`;
+    /// absent key deserializes as `None`.
     pub cardinality: Option<Cardinality>,
 }
 
@@ -714,6 +715,23 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
+fn cardinality_to_str(c: Cardinality) -> &'static str {
+    match c {
+        Cardinality::Optional => "optional",
+        Cardinality::Repeated => "repeated",
+        Cardinality::Required => "required",
+    }
+}
+
+fn cardinality_from_str(s: &str) -> Option<Cardinality> {
+    match s {
+        "optional" => Some(Cardinality::Optional),
+        "repeated" => Some(Cardinality::Repeated),
+        "required" => Some(Cardinality::Required),
+        _ => None,
+    }
+}
+
 /// The `version:` value `to_yaml` writes and the only one `from_yaml`
 /// accepts. It is checked rather than merely written: a file from a
 /// future build is far more likely to be *structurally* readable than
@@ -803,6 +821,8 @@ struct YamlPathEntry {
     name: Option<String>,
     #[serde(default, skip_serializing_if = "is_false")]
     auto: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cardinality: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -818,6 +838,8 @@ struct YamlPathFieldEntry {
     name: Option<String>,
     #[serde(default, skip_serializing_if = "is_false")]
     auto: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cardinality: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -833,6 +855,8 @@ struct YamlFqdnFieldEntry {
     name: Option<String>,
     #[serde(default, skip_serializing_if = "is_false")]
     auto: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cardinality: Option<String>,
 }
 
 /// SHA-256 hex digest of `bytes` (spec 0117 §4's `blob_sha256`/
@@ -863,6 +887,7 @@ impl OverrideCollection {
                     active: e.active,
                     name: e.name.clone(),
                     auto: e.auto,
+                    cardinality: e.cardinality.map(|c| cardinality_to_str(c).to_string()),
                 }),
                 OverrideOrigin::PathField { path, field } => {
                     YamlEntry::PathField(YamlPathFieldEntry {
@@ -872,6 +897,7 @@ impl OverrideCollection {
                         active: e.active,
                         name: e.name.clone(),
                         auto: e.auto,
+                        cardinality: e.cardinality.map(|c| cardinality_to_str(c).to_string()),
                     })
                 }
                 OverrideOrigin::FqdnField { fqdn, field } => {
@@ -882,6 +908,7 @@ impl OverrideCollection {
                         active: e.active,
                         name: e.name.clone(),
                         auto: e.auto,
+                        cardinality: e.cardinality.map(|c| cardinality_to_str(c).to_string()),
                     })
                 }
             })
@@ -942,13 +969,14 @@ impl OverrideCollection {
                     active,
                     name,
                     auto,
+                    cardinality,
                 }) => OverrideEntry {
                     origin: OverrideOrigin::Path { path },
                     r#type,
                     active,
                     name,
                     auto,
-                    cardinality: None,
+                    cardinality: cardinality.as_deref().and_then(cardinality_from_str),
                 },
                 YamlEntry::PathField(YamlPathFieldEntry {
                     path,
@@ -957,13 +985,14 @@ impl OverrideCollection {
                     active,
                     name,
                     auto,
+                    cardinality,
                 }) => OverrideEntry {
                     origin: OverrideOrigin::PathField { path, field },
                     r#type,
                     active,
                     name,
                     auto,
-                    cardinality: None,
+                    cardinality: cardinality.as_deref().and_then(cardinality_from_str),
                 },
                 YamlEntry::FqdnField(YamlFqdnFieldEntry {
                     fqdn,
@@ -972,13 +1001,14 @@ impl OverrideCollection {
                     active,
                     name,
                     auto,
+                    cardinality,
                 }) => OverrideEntry {
                     origin: OverrideOrigin::FqdnField { fqdn, field },
                     r#type,
                     active,
                     name,
                     auto,
-                    cardinality: None,
+                    cardinality: cardinality.as_deref().and_then(cardinality_from_str),
                 },
             });
         }
@@ -1377,6 +1407,50 @@ mod tests {
         assert_eq!(target.blob_sha256, "blobhash");
         assert_eq!(target.descriptor_set_sha256, "deschash");
         assert_eq!(restored.entries(), collection.entries());
+    }
+
+    #[test]
+    fn yaml_round_trip_preserves_cardinality() {
+        let mut collection = OverrideCollection::new();
+        collection.activate(
+            OverrideOrigin::PathField {
+                path: "/".to_string(),
+                field: 1,
+            },
+            Some("Entry".to_string()),
+        );
+        collection.set_cardinality(0, Some(Cardinality::Repeated));
+        let yaml = collection.to_yaml("b".to_string(), "d".to_string(), Vec::new());
+        assert!(
+            yaml.contains("cardinality: repeated"),
+            "yaml must contain cardinality"
+        );
+        let (restored, _, _) = OverrideCollection::from_yaml(&yaml).unwrap();
+        assert_eq!(
+            restored.entries()[0].cardinality,
+            Some(Cardinality::Repeated)
+        );
+    }
+
+    #[test]
+    fn yaml_loads_file_with_cardinality_field() {
+        let yaml = "\
+version: 1
+target:
+  blob_sha256: abc
+  descriptor_set_sha256: def
+overrides:
+- path: /
+  field: 1
+  type: Entry
+  active: true
+  cardinality: repeated
+";
+        let (collection, _, _) = OverrideCollection::from_yaml(yaml).expect("must parse");
+        assert_eq!(
+            collection.entries()[0].cardinality,
+            Some(Cardinality::Repeated)
+        );
     }
 
     #[test]
