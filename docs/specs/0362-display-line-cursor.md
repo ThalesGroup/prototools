@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0362 — display_pieces: single source of truth for display transforms
 
-Status: draft
+Status: implemented
+Implemented in: 2026-08-26
 App: protolens
 Refs: docs/specs/0274-cursor-search.md (DocCursor / regex_cursor::Cursor),
       docs/specs/0343-shadow-mark.md (shadowed_scalar),

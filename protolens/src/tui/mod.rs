@@ -2658,28 +2658,6 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
         .split(vertical[1])[1]
 }
 
-/// Fills the gaps between `hints` (sorted, non-overlapping byte ranges
-/// into `content`) with `None`-tagged segments, so the result covers all
-/// of `content` — the input `App::spans_with_insertions` needs to build a
-/// complete `Vec<Span>` for a line (spec 0116 §7).
-fn segment_line(
-    content: &str,
-    hints: &[(Range<usize>, SyntaxRole)],
-) -> Vec<(Range<usize>, Option<SyntaxRole>)> {
-    let mut segments = Vec::new();
-    let mut pos = 0;
-    for (range, role) in hints {
-        if range.start > pos {
-            segments.push((pos..range.start, None));
-        }
-        segments.push((range.clone(), Some(*role)));
-        pos = range.end;
-    }
-    if pos < content.len() {
-        segments.push((pos..content.len(), None));
-    }
-    segments
-}
 
 /// Drop the leading `offset` characters of the rendered line (spec 0113
 /// D24's horizontal pan, composed with spec 0116 §7's syntax

@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MIT
 
 use super::super::heat_worker::{HeatRequest, HeatWorkerHandle};
-use super::super::render::{window_styles_for, ACTIVITY_GLYPH};
+use super::super::render::{display_pieces, window_styles_for, DisplayPiece, ACTIVITY_GLYPH};
 use super::super::*;
 use super::support::*;
 use prototext_core::serialize::encode_text::annotation_start;
@@ -3388,3 +3388,93 @@ fn filled_anomaly_glyph_for_non_canonical_leaf() {
 // bar_color_is_dimmed and shadowed_bar_color_matches_non_canonical_bar_color
 // live in theme.rs where bar_status_color_in is in scope, so they can test
 // the RGB path explicitly regardless of whether the terminal supports RGB.
+
+/// Spec 0362 test-plan item 6: `display_pieces` yields the correct piece
+/// sequence for each of the three display transforms in isolation, and
+/// produces a plain pass-through for an untransformed line.
+#[test]
+fn display_pieces_cover_every_transform() {
+    let no_hints: LineStyles = vec![];
+
+    // Helper: collect just the text of each piece.
+    let texts = |raw: &str,
+                 owner: Option<usize>,
+                 first_node: usize,
+                 fold_closed: bool,
+                 shadowed: bool,
+                 annotations: bool|
+     -> Vec<&'static str> {
+        display_pieces(
+            raw,
+            owner,
+            &no_hints,
+            first_node,
+            fold_closed,
+            None,
+            shadowed,
+            annotations,
+        )
+        .map(|p| match p {
+            DisplayPiece::Raw { text, .. } => {
+                // SAFETY: `raw` is a literal in every call below, so its
+                // lifetime is 'static. We box-leak to get a &'static str
+                // for the return type; this is test-only and the memory
+                // is intentionally leaked (tiny, one-off).
+                Box::leak(text.to_string().into_boxed_str()) as &str
+            }
+            DisplayPiece::Lit { text, .. } => text,
+        })
+        .collect()
+    };
+
+    // No-op: a plain inner-line with no transforms.
+    assert_eq!(
+        texts("  value: 42", None, 0, false, false, true),
+        vec!["  value: 42"],
+        "plain line: one Raw piece, whole text"
+    );
+
+    // Root label: "1" → "/".
+    assert_eq!(
+        texts("1 {", Some(0), 0, false, false, true),
+        vec!["/", " {"],
+        "root: Lit '/' then Raw ' {{'"
+    );
+
+    // Fold summary: "{{ ... }}" emitted after raw body up to `{`, then
+    // the annotation clause that follows.
+    assert_eq!(
+        texts("  a {  #@ Mid = 1", Some(1), 0, true, false, true),
+        vec!["  a ", "{ ... }", "  #@ Mid = 1"],
+        "fold: raw-before-brace, Lit, annotation-after-brace"
+    );
+
+    // Fold summary without annotation (annotations=false): Phase 1b
+    // is empty because the annotation clause is suppressed.
+    assert_eq!(
+        texts("  a {  #@ Mid = 1", Some(1), 0, true, false, false),
+        vec!["  a ", "{ ... }"],
+        "fold + !annotations: raw-before-brace then Lit, no annotation"
+    );
+
+    // Shadowed suffix.
+    assert_eq!(
+        texts("  x: 1  #@ int32 = 1", Some(1), 0, false, true, true),
+        vec!["  x: 1  #@ int32 = 1", ";", " shadowed_scalar"],
+        "shadowed: full raw, then two Lit suffixes"
+    );
+
+    // Shadowed suffix suppressed when !annotations.
+    assert_eq!(
+        texts("  x: 1", Some(1), 0, false, true, false),
+        vec!["  x: 1"],
+        "shadowed + !annotations: suffix suppressed"
+    );
+
+    // Folded AND shadowed: suffix appears after the annotation clause.
+    assert_eq!(
+        texts("  a {  #@ Mid = 1", Some(1), 0, true, true, true),
+        vec!["  a ", "{ ... }", "  #@ Mid = 1", ";", " shadowed_scalar"],
+        "folded + shadowed: fold summary then annotation then suffix"
+    );
+}

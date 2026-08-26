@@ -265,32 +265,173 @@ pub(super) fn marker_column(line: &str) -> u16 {
     }
 }
 
-/// Spec 0193 S1/S2: drop `cut`'s bytes from `segments`, which stay in
-/// their original `content` coordinates — the bytes are simply never
-/// emitted by `spans_with_insertions`.
+/// Spec 0362: one contiguous piece of a rendered row.
 ///
-/// Two callers: the leading indentation, which `fold_margin` replaces
-/// wholesale, and a brace that is re-emitted as a styled insertion at
-/// the very same position. A segment straddling both ends of `cut`
-/// survives as two.
-fn cut_segments(segments: &mut Vec<(Range<usize>, Option<SyntaxRole>)>, cut: Range<usize>) {
-    if cut.is_empty() {
-        return;
+/// `Raw` pieces borrow from the caller's `&str` — zero allocation.
+/// `Lit` pieces are `&'static str` — also zero allocation.
+pub(super) enum DisplayPiece<'a> {
+    /// A contiguous slice of the raw line text, with its byte range in
+    /// that raw text and the syntax role the highlighter assigned to it
+    /// (`None` for unstyled gaps between hints).
+    Raw {
+        text: &'a str,
+        range: Range<usize>,
+        role: Option<SyntaxRole>,
+    },
+    /// A literal insertion with no backing in the raw text.
+    /// `style` is `Some` when the caller has pre-computed the color
+    /// (e.g. the bake-unread fold color); `None` when `row_spans`
+    /// derives it from `role`.
+    Lit {
+        text: &'static str,
+        role: Option<SyntaxRole>,
+        style: Option<Style>,
+    },
+}
+
+/// Spec 0362 S2/S3: forward-only iterator of display pieces for one
+/// rendered row.  All state is passed explicitly so that `row_spans`
+/// can hold a `&LineStyles` borrow at the call site without conflict.
+///
+/// Phases (each fires at most once, in order):
+///   0. Root prefix: `"1"` → `"/"` at byte 0 when `owner ==
+///      Some(first_node)`.
+///   1. Raw body: raw bytes `[cursor .. end)` split at hint boundaries.
+///      `end` = `brace_pos` when folded, else annotation-hide boundary.
+///   2. Fold summary: emit `"{ ... }"` when folded.
+///   3. Shadowed suffix: emit `";"`  + `" shadowed_scalar"` when
+///      `shadowed && annotations && !fold_closed`.
+pub(super) fn display_pieces<'a>(
+    raw: &'a str,
+    owner: Option<usize>,
+    hints: &'a LineStyles,
+    first_node: usize,
+    fold_closed: bool,
+    fold_style: Option<Style>,
+    shadowed: bool,
+    annotations: bool,
+) -> impl Iterator<Item = DisplayPiece<'a>> {
+    // Pre-compute everything the phases need so the iterator closure is
+    // a pure forward walk with no searching inside it.
+    let is_root = owner == Some(first_node) && raw.starts_with("1 ");
+    // When folded: cut Phase 1 just after the last `{`, then Phase 2
+    // inserts `" ... }"` at that point.  Bytes after the `{` (i.e. the
+    // content inside the braces) are skipped by jumping `cursor` to
+    // `raw.len()` after Phase 2, while the annotation clause that
+    // follows on the same header line is re-emitted from Phase 1b.
+    //
+    // Concretely, `"  a {  #@ Mid = 1"` folds to
+    // `"  a { ... }  #@ Mid = 1"`: the annotation is NOT suppressed,
+    // only the message body between `{` and the closing `}` is.
+    let brace_pos: Option<usize> = if fold_closed { raw.rfind('{') } else { None };
+    // Phase 1 runs in two sub-windows:
+    //   window_a: [raw_start .. brace_pos)   — up to but not including `{`
+    //   (Phase 2 emits the full "{ ... }" at this point)
+    //   window_b: [brace_pos+1 .. raw_end)   — the annotation clause
+    //     after the `{`; suppressed when !annotations.
+    // When not folded, window_a covers [raw_start .. raw_end) and there
+    // is no window_b.
+    let annot_end = if !annotations {
+        annotation_start(raw).unwrap_or(raw.len())
+    } else {
+        raw.len()
+    };
+    let (window_a_end, window_b_start, window_b_end) = match brace_pos {
+        // When folded: Phase 1a ends before `{`, Phase 1b re-emits the
+        // annotation clause after `{`, but only up to `annot_end` when
+        // `!annotations` (suppressing the `#@` clause).
+        Some(pos) => (pos, pos + 1, annot_end),
+        None => (annot_end, annot_end, annot_end),
+    };
+    // Cursor into `raw`; starts at 1 when the root prefix fires
+    // (byte 0 = `"1"` is replaced by the `"/"` Lit).
+    let raw_start = usize::from(is_root);
+
+    // The iterator is a small state machine collected into a Vec up
+    // front.  Total items is O(grammar tokens per line) — at most ~9.
+    let mut pieces: Vec<DisplayPiece<'a>> = Vec::with_capacity(10);
+
+    // Phase 0: root prefix.
+    if is_root {
+        let role = hints.iter().find(|(r, _)| r.contains(&0)).map(|(_, r)| *r);
+        pieces.push(DisplayPiece::Lit {
+            text: "/",
+            role,
+            style: None,
+        });
     }
-    let mut kept = Vec::with_capacity(segments.len() + 1);
-    for (range, role) in segments.drain(..) {
-        if range.end <= cut.start || range.start >= cut.end {
-            kept.push((range, role));
-            continue;
+
+    // Helper: emit raw bytes [from..to) split at hint boundaries.
+    let emit_raw = |pieces: &mut Vec<DisplayPiece<'a>>, from: usize, to: usize| {
+        let mut cursor = from;
+        for (hint_range, hint_role) in hints.iter() {
+            let h_start = hint_range.start.max(cursor);
+            let h_end = hint_range.end.min(to);
+            if h_start >= h_end {
+                if hint_range.start >= to {
+                    break;
+                }
+                cursor = cursor.max(hint_range.end);
+                continue;
+            }
+            if h_start > cursor {
+                pieces.push(DisplayPiece::Raw {
+                    text: &raw[cursor..h_start],
+                    range: cursor..h_start,
+                    role: None,
+                });
+            }
+            pieces.push(DisplayPiece::Raw {
+                text: &raw[h_start..h_end],
+                range: h_start..h_end,
+                role: Some(*hint_role),
+            });
+            cursor = h_end;
         }
-        if range.start < cut.start {
-            kept.push((range.start..cut.start, role));
+        if cursor < to {
+            pieces.push(DisplayPiece::Raw {
+                text: &raw[cursor..to],
+                range: cursor..to,
+                role: None,
+            });
         }
-        if range.end > cut.end {
-            kept.push((cut.end..range.end, role));
-        }
+    };
+
+    // Phase 1a: raw body up to (and including) the `{`, or to raw_end.
+    emit_raw(&mut pieces, raw_start, window_a_end);
+
+    // Phase 2: fold summary replaces the `{` and its content.
+    if fold_closed {
+        pieces.push(DisplayPiece::Lit {
+            text: "{ ... }",
+            role: None,
+            style: fold_style,
+        });
     }
-    *segments = kept;
+
+    // Phase 1b: text after the `{` (the annotation clause).
+    // When not folded, window_b_start == window_a_end so this is a
+    // no-op — Phase 1a already covered the whole line.
+    if window_b_start < window_b_end {
+        emit_raw(&mut pieces, window_b_start, window_b_end);
+    }
+
+    // Phase 3: shadowed-scalar suffix — appended regardless of whether
+    // the node is folded; the suffix follows the annotation clause.
+    if shadowed && annotations {
+        pieces.push(DisplayPiece::Lit {
+            text: ";",
+            role: Some(SyntaxRole::Comment),
+            style: None,
+        });
+        pieces.push(DisplayPiece::Lit {
+            text: " shadowed_scalar",
+            role: None,
+            style: None,
+        });
+    }
+
+    pieces.into_iter()
 }
 
 /// Spec 0194 S1/A5: a byte offset into a row's text expressed as a
@@ -901,48 +1042,43 @@ impl App {
         self.line_display_text(content, owner)
     }
 
-    /// The single source of truth for display-transformed line text.
+    /// Spec 0362 S5: the single source of truth for display-transformed
+    /// line text, built by concatenating `display_pieces`.
     ///
-    /// Applies the two post-`line_text_at` insertions that the renderer
-    /// makes, so that the search haystack and the rendered row are always
-    /// identical and any future change only needs to be made here:
+    /// - `"1"` → `"/"` on the root node header (spec 0361).
+    /// - `"{ ... }"` fold summary on a closed node's header (spec 0194).
+    /// - `"; shadowed_scalar"` suffix on a shadowed slot (spec 0343 B10).
     ///
-    /// - `{ ... }` collapse summary when the owning node is folded
-    ///   (spec 0215 S6).
-    /// - `; shadowed_scalar` annotation suffix for a shadowed slot
-    ///   (spec 0343 B10).
-    ///
-    /// `content` is the raw line text.  The caller is responsible for
-    /// stripping the annotation suffix first when `self.annotations` is
-    /// false — `row_text_of` does this via `code_part`; the search path
-    /// passes the raw text because `self.annotations` is already in scope
-    /// and the same condition gates the shadowed-scalar branch below.
+    /// `content` is the raw line text (before annotation hiding).  The
+    /// caller is responsible for stripping the annotation suffix first
+    /// when `self.annotations` is false — `row_text_of` does this via
+    /// `code_part`; the search path passes the raw text and the
+    /// `annotations` flag gates the shadowed-scalar branch inside
+    /// `display_pieces`.
     pub(super) fn line_display_text(&self, content: &str, owner: Option<usize>) -> String {
-        let mut text = content.to_string();
-        // Spec 0361 S2: the root node's raw text starts with "1 " —
-        // field 1 of the virtual encompassing wrapper. Replace "1" with
-        // "/" (the path-notation name for the root) for a meaningful
-        // display label. The replacement is 1-for-1 in bytes, so no
-        // offsets shift.
-        if owner == Some(self.first_node) && text.starts_with("1 ") {
-            text.replace_range(..1, "/");
-        }
-        if self.fold_marker_of(owner) == Some(FOLD_GLYPH_CLOSED) {
-            match text.rfind('{') {
-                Some(pos) => text.insert_str(pos + 1, " ... }"),
-                None => text.push_str(" ... }"),
-            }
-        }
-        // Spec 0343 B10: mirror the insertion that `row_spans` makes,
-        // so that `row_content` and `row_spans` stay byte-identical and
-        // the caret can walk the suffix.
-        if self.annotations {
-            if let Some(idx) = owner.filter(|&i| self.is_shadowed(i)) {
-                text.push_str("; shadowed_scalar");
-                let _ = idx;
-            }
-        }
-        text
+        let fold_closed = self.fold_marker_of(owner) == Some(FOLD_GLYPH_CLOSED);
+        // `content` is already annotation-hidden by the caller (via
+        // `code_part`) when `!self.annotations`, so pass
+        // `annotations=true` to prevent `display_pieces` applying the
+        // annotation-hiding truncation a second time. Phase 3 (the
+        // shadowed suffix) must still be suppressed when
+        // `!self.annotations`, so `shadowed` is masked by that flag.
+        let shadowed = self.annotations && owner.is_some_and(|i| self.is_shadowed(i));
+        display_pieces(
+            content,
+            owner,
+            &NO_STYLES,
+            self.first_node,
+            fold_closed,
+            None,  // fold_style: irrelevant, text-only path
+            shadowed,
+            true, // annotation hiding already done by caller
+        )
+        .map(|p| match p {
+            DisplayPiece::Raw { text, .. } => text,
+            DisplayPiece::Lit { text, .. } => text,
+        })
+        .collect()
     }
 
     /// Spec 0193 S1: `(the row's left margin, the byte offset in
@@ -1113,11 +1249,9 @@ impl App {
     /// `" ... }"` collapse-summary text — the two **must** agree
     /// byte for byte, and a test asserts they do.
     ///
-    /// Follows the same display-time annotation-hiding truncation as
-    /// `row_content` (spec 0133 G4) — any hint extending past the
-    /// truncated length is clipped/dropped before `segment_line` runs,
-    /// since `segment_line` doesn't bounds-check hint ranges against
-    /// `content`.
+    /// Spec 0362: uses `display_pieces` as the single source of truth
+    /// for all display transforms (root label, fold summary,
+    /// shadowed-scalar suffix, annotation hiding).
     ///
     /// Spec 0185 S2: takes a display row, so overlay rows come through
     /// here too. **There must not be a second line-rendering path** — a
@@ -1143,144 +1277,126 @@ impl App {
         emphasis: Modifier,
     ) -> Vec<Span<'static>> {
         let (source, node) = self.display_row_source(row);
-        // Spec 0361 S3: replace "1 " with "/ " on the root row. The
-        // substitution is 1-for-1 in bytes, so full_hints (byte ranges
-        // into the raw text) remain valid with no adjustment.
-        let root_owned: String;
-        let full_content: &str = if node == Some(self.first_node) && source.starts_with("1 ") {
-            root_owned = format!("/{}", &source[1..]);
-            &root_owned
+        let hints = self.window_styles.get(window_index).unwrap_or(&NO_STYLES);
+
+        let fold_closed = node.is_some_and(|i| self.is_folded(i) && self.has_children(i));
+        let fold_style = node.and_then(|i| self.unread_fold_style(i));
+        let shadowed = node.is_some_and(|i| self.is_shadowed(i));
+
+        // Spec 0307 S6 / 0361: the root row's `"/"` key is synthetic —
+        // protolens invented the field number, not the file.
+        let synthetic_key =
+            self.wrapper_offset > 0 && node.is_some_and(|idx| self.parent(idx).is_none());
+
+        // Spec 0362 S6: pre-compute the amber kw_style for the
+        // shadowed-scalar suffix once, outside the piece loop.
+        let kw_style = if shadowed && self.annotations {
+            theme::status_color(Status::NonCanonical, self.theme)
+                .map(|c| Style::default().fg(c))
         } else {
-            &source
+            None
         };
-        let full_hints = self.window_styles.get(window_index).unwrap_or(&NO_STYLES);
-        let (content, hints): (&str, LineStyles) =
-            match (!self.annotations, annotation_start(full_content)) {
-                (true, Some(pos)) => {
-                    let truncated = &full_content[..pos];
-                    let clipped = full_hints
-                        .iter()
-                        .filter(|(r, _)| r.start < truncated.len())
-                        .map(|(r, role)| (r.start..r.end.min(truncated.len()), *role))
-                        .collect();
-                    (truncated, clipped)
-                }
-                _ => (full_content, full_hints.to_vec()),
-            };
-        let mut segments = segment_line(content, &hints);
 
-        // Spec 0193 S1: the margin *replaces* the line's indentation
-        // rather than displacing it, so those bytes are cut from the
-        // segments and re-emitted as one raw span in front.
-        let (margin, body_start) = self.fold_margin_of(row, content);
-        cut_segments(&mut segments, 0..body_start);
+        // Spec 0193 S1: the fold margin replaces the row's leading
+        // indentation.  Compute `body_start` (the byte where the margin
+        // ends) from the raw source before display_pieces sees it, so
+        // the margin spans come first and the pieces start after.
+        let (margin, body_start) = self.fold_margin_of(row, &source);
 
-        // Spec 0194 S2: one insertion. The synthetic closing brace needs
-        // no span of its own to carry `brace_match_style` — the caret
-        // restyles it by character index over the finished span list —
-        // so the summary stays one piece of text.
-        let mut insertions: Vec<(usize, String, Option<Style>)> = Vec::new();
-        if let Some(idx) = node.filter(|&i| self.is_folded(i) && self.has_children(i)) {
-            let brace = content.rfind('{');
-            match (brace, self.unread_fold_style(idx)) {
-                // Spec 0260 S2: a node the bake has not reached is not a
-                // region the reader collapsed, it is one nobody has
-                // looked inside, and the summary is where that shows.
-                // The whole brace pair takes the color — a grayed
-                // `... }` beside a grammar-colored `{` reads as two
-                // things when the point is that the region is one — so
-                // the opening brace is cut from the segments and
-                // re-emitted as part of the insertion.
-                (Some(pos), Some(style)) => {
-                    cut_segments(&mut segments, pos..pos + 1);
-                    insertions.push((pos, "{ ... }".to_string(), Some(style)));
-                }
-                (Some(pos), None) => insertions.push((pos + 1, " ... }".to_string(), None)),
-                (None, style) => insertions.push((content.len(), " ... }".to_string(), style)),
-            }
-        }
-
-        // Spec 0328 S6/S7: a preview that was cut says where it stops,
-        // on its last content row and in the bar's own color. A
-        // display insertion, like the collapse summary above: spec 0318
-        // N4's "every row is grammatical prototext" is about
-        // `window_text`, the raw line the highlighter parses, and
-        // insertions are applied downstream of it. Nor is it added to
-        // `row_text_of`, which carries the collapse summary only
-        // because the caret walks over that.
-        if let (DisplayRow::Overlay(i), Some(o)) = (row, self.preview_overlay.as_ref()) {
-            if o.ellipsis_row == Some(i) {
-                let style = self.preview_bar_color(o).map(|c| Style::default().fg(c));
-                insertions.push((content.len(), "...".to_string(), style));
-            }
-        }
-
-        // Spec 0343 B10: a shadowed scalar appends `; shadowed_scalar`
-        // to the row's existing `#@` clause — the mark is a later token
-        // in the v2 format, so it takes the intra-comment separator
-        // `"; "` (no leading space, since the annotations.rs helpers
-        // already add one before the first token).
-        //
-        // Only when annotations are on: `row_spans` already strips the
-        // `#@` clause when !self.annotations, so the mark would attach
-        // to nothing. The margin ◆ comes from the shadow bit via B9's
-        // status rung and is independent of this toggle.
-        //
-        // Only for a Committed row owning a shadowed slot. An overlay
-        // row is never shadowed (B5 drops any link with a message end,
-        // and an overlay is a preview of a message).
-        if self.annotations {
-            if let Some(idx) = node.filter(|&i| self.is_shadowed(i)) {
-                // The `;` separator takes the comment color (greenish),
-                // matching other `#@` annotation separators. Only the
-                // keyword itself is amber (NonCanonical).
-                let sep_style = Some(theme::style_for(SyntaxRole::Comment, self.theme));
-                let kw_style = theme::status_color(Status::NonCanonical, self.theme)
-                    .map(|c| Style::default().fg(c));
-                let pos = content.len();
-                insertions.push((pos, ";".to_string(), sep_style));
-                insertions.push((pos, " shadowed_scalar".to_string(), kw_style));
-                let _ = idx; // used only for the filter above
-            }
-        }
-
-        let mut spans = Vec::with_capacity(segments.len() + 6);
+        // Spec 0362 S3: iterate display pieces.  Each piece is either a
+        // raw slice of `source` with a syntax role from `window_styles`,
+        // or a static-literal insertion.  Pieces whose `range.end <=
+        // body_start` belong to the margin and are skipped here (the
+        // margin spans already cover them).
+        let mut spans = Vec::with_capacity(hints.len() + 8);
         if !margin.is_empty() {
             spans.extend(self.margin_spans(margin, row, node, emphasis));
         }
 
-        // Spec 0307 S6: the wrapper root's key is `Blob`'s field 1 — a
-        // number protolens wrote to wrap the file, not one the file
-        // carries — and it is marked as the wire row marks the bytes
-        // that spell it. Only the key: the row's other `Attribute` is
-        // its annotation's field number, which repeats it.
-        let synthetic_key =
-            self.wrapper_offset > 0 && node.is_some_and(|idx| self.parent(idx).is_none());
-
-        // Spec 0192 S2: the key is the *first* `Attribute` segment. The
-        // annotation's field number — the `1` of `#@ Inner = 1` — is an
-        // `Attribute` too, and is deliberately left alone: it repeats
-        // what the key already says, and a third weighted run on the
-        // same row reads as noise rather than as a cue.
+        // Spec 0192 S2: weight the *first* Attribute piece as the key.
         let mut key_seen = false;
-        let segments: Vec<_> = segments
-            .into_iter()
-            .map(|(range, role)| {
-                let key = matches!(role, Some(SyntaxRole::Attribute))
-                    && !std::mem::replace(&mut key_seen, true);
-                let mut weight = if key || matches!(role, Some(SyntaxRole::Type)) {
-                    emphasis
-                } else {
-                    Modifier::empty()
-                };
-                if key && synthetic_key {
-                    weight |= theme::SYNTHETIC;
+        for piece in display_pieces(
+            &source,
+            node,
+            hints,
+            self.first_node,
+            fold_closed,
+            fold_style,
+            shadowed,
+            self.annotations,
+        ) {
+            match piece {
+                DisplayPiece::Raw { text, range, role } => {
+                    // Skip bytes that belong to the fold margin.
+                    if range.end <= body_start {
+                        continue;
+                    }
+                    let text = if range.start < body_start {
+                        &text[body_start - range.start..]
+                    } else {
+                        text
+                    };
+                    if text.is_empty() {
+                        continue;
+                    }
+                    let key = matches!(role, Some(SyntaxRole::Attribute))
+                        && !std::mem::replace(&mut key_seen, true);
+                    let mut weight = if key || matches!(role, Some(SyntaxRole::Type)) {
+                        emphasis
+                    } else {
+                        Modifier::empty()
+                    };
+                    if key && synthetic_key {
+                        weight |= theme::SYNTHETIC;
+                    }
+                    spans.push(self.make_span(text.to_string(), role, weight));
                 }
-                (range, role, weight)
-            })
-            .collect();
+                DisplayPiece::Lit { text, role, style } => {
+                    // Spec 0362 S6: Lit pieces participate in key/type
+                    // weighting just like Raw pieces. The "/" root label
+                    // is the first Attribute and must get emphasis +
+                    // SYNTHETIC. The shadowed suffix and fold summary
+                    // carry explicit styles and bypass weighting.
+                    let span = if text == " shadowed_scalar" {
+                        match kw_style {
+                            Some(s) => Span::styled(text, s),
+                            None => Span::raw(text),
+                        }
+                    } else if let Some(s) = style {
+                        // Pre-styled piece (e.g. bake-unread fold color).
+                        Span::styled(text, s)
+                    } else {
+                        let key = matches!(role, Some(SyntaxRole::Attribute))
+                            && !std::mem::replace(&mut key_seen, true);
+                        let mut weight = if key || matches!(role, Some(SyntaxRole::Type)) {
+                            emphasis
+                        } else {
+                            Modifier::empty()
+                        };
+                        if key && synthetic_key {
+                            weight |= theme::SYNTHETIC;
+                        }
+                        self.make_span(text.to_string(), role, weight)
+                    };
+                    spans.push(span);
+                }
+            }
+        }
 
-        spans.extend(self.spans_with_insertions(content, segments, insertions));
+        // Spec 0328 S6/S7: overlay-ellipsis is a preview-overlay
+        // concern, not a node_text transform — kept as a post-loop
+        // append rather than in display_pieces (spec 0362 S6).
+        if let (DisplayRow::Overlay(i), Some(o)) = (row, self.preview_overlay.as_ref()) {
+            if o.ellipsis_row == Some(i) {
+                let style = self.preview_bar_color(o).map(|c| Style::default().fg(c));
+                let span = match style {
+                    Some(s) => Span::styled("...", s),
+                    None => Span::raw("..."),
+                };
+                spans.push(span);
+            }
+        }
+
         spans
     }
 
@@ -1626,58 +1742,6 @@ impl App {
             spans.push(Span::raw(margin[cut..].to_string()));
         }
         spans
-    }
-
-    /// Turns `content`'s `segments` (byte ranges tagged with an optional
-    /// `SyntaxRole`) into styled `Span`s, splicing in `insertions` —
-    /// `(byte position in content, literal text, optional style)` triples,
-    /// each rendered as its own `Span` at that point.
-    ///
-    /// `segments` need not cover all of `content`: `cut_segments` removes
-    /// the bytes the fold margin replaces, and those an insertion stands
-    /// in for (spec 0193). Anything cut is simply never emitted.
-    ///
-    /// Each segment carries its own override weight (spec 0192 S2)
-    /// rather than the whole row taking one: which segment is weighted
-    /// depends on where it sits, not only on its role — the row's key
-    /// and the annotation's field number are both `Attribute` — so the
-    /// caller is the only one that can decide, and a split segment
-    /// simply keeps the answer its parent had.
-    pub(super) fn spans_with_insertions(
-        &self,
-        content: &str,
-        segments: Vec<(Range<usize>, Option<SyntaxRole>, Modifier)>,
-        mut insertions: Vec<(usize, String, Option<Style>)>,
-    ) -> Vec<Span<'static>> {
-        insertions.sort_by_key(|(pos, _, _)| *pos);
-        let mut segments: std::collections::VecDeque<_> = segments.into();
-        let mut result = Vec::new();
-        for (ins_pos, ins_text, ins_style) in insertions {
-            while let Some((range, role, weight)) = segments.pop_front() {
-                if range.end <= ins_pos {
-                    result.push(self.make_span(content[range].to_string(), role, weight));
-                } else if range.start < ins_pos {
-                    result.push(self.make_span(
-                        content[range.start..ins_pos].to_string(),
-                        role,
-                        weight,
-                    ));
-                    segments.push_front((ins_pos..range.end, role, weight));
-                    break;
-                } else {
-                    segments.push_front((range, role, weight));
-                    break;
-                }
-            }
-            result.push(match ins_style {
-                Some(style) => Span::styled(ins_text, style),
-                None => Span::raw(ins_text),
-            });
-        }
-        for (range, role, weight) in segments {
-            result.push(self.make_span(content[range].to_string(), role, weight));
-        }
-        result
     }
 
     /// Spec 0138 N1/G9: a row's heat chrome — the leading glyph, whose
