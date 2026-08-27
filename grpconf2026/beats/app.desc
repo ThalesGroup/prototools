@@ -29,44 +29,40 @@ steps:
       The root type is unknown — no schema in alice/app.desc
       matches the envelope.  What we see is raw field numbers.
 
-      👋 Press space to step.
+      👋 Press `1` to fold the top level nodes.
 
     node: /
     select_line: true
+    advance_when:
+      - not:
+        - visible: /1/1
 
   - text: |
-      Let's fold the top level nodes to get a clearer view.
-      Notice the annotation on the 4th node: TRUNCATED_MESSAGE
+      Now we have a clearer view.
 
-      The process was probably killed in flight and the logfile misses 1024 bytes.
+      Note the TRUNCATED_MESSAGE annotation. 
+
+      The logging process was probably killed in flight and the logfile misses 1024 bytes.
       This explains why protoc was unable to parse it.
 
-      👋 Press space to step.
+      👋 Press `2` to see a bit more of the protobuf.
 
     fold: ["/ 1"]
     node: /
     select_line: true
-    search: TRUNCATED_MESSAGE
+    advance_when:
+      - visible: /1/1
 
   - text: |
-      Let's unfold to depth 2.
-
       The top-level fields each contain similar submessages.
-      They look like log entries — one per RPC call.
+      They look like log entries indeed — one per RPC call.
 
-      👋 Press space to step.
-
-    fold: ["/ 2"]
-    node: /
-    search: "1 [{]  #@ message"
-
-  - text: |
-      Let's name this structure using the proposed prefilled command below.
+      Let's name the entries using the proposed prefilled command below.
 
       It declares a new synthetic type "Entry", marks field 1 as
-      repeated and gives it the field name "entries".
+      repeated and gives it the name "entries".
       
-      👋 Press Enter to commit the type override.
+      👋 Press Enter to commit the Entry type override.
 
     fold: ["/ 2"]
     node: /
@@ -113,7 +109,7 @@ steps:
       
       Let's accept SearchTextRequest.
       
-      👋 Double-click on the heat-cue, then double-click on SearchTextRequest.
+      👋 Double-click on the heat-cue, then press Enter to commit the override.
 
     heat_cues: findings
     fold: ["/ 2"]
@@ -127,7 +123,7 @@ steps:
 
       What about field 2?
       It looks like the name of the logged RPC.
-      Let's just name the field "rpc".
+      Let's keep the string type and simply rename it "rpc".
 
       👋 Press Enter to commit the prefilled command.
 
@@ -144,8 +140,8 @@ steps:
       Let's hover over the heat cue...
       Hmm... Timestamp is probably right, for a log entry.
       
-      👋 Double-click on the heat-cue, then move to Timestamp
-         and press Enter.
+      👋 Press `t` to open the override selection pane, then
+         choose Timestamp and press Enter to commit the override.
 
     heat_cues: findings
     fold: ["/ 2", "/1/1 Z"]
@@ -157,9 +153,9 @@ steps:
   - text: |
       👌 Perfect
 
-      Now let's have a look at the 3rd node.
-      Fields 6 and 7 heat cues show deeply negative scores.😨
-      And hovering above them gives nothing convincing. 🤔🤔🤔
+      Now let's have a look at the 3rd node, with fields number 6 and 7.
+      Fields 6 shows a deeply negative score 😨.
+      And hovering above the heat cues gives nothing convincing. 🤔🤔🤔
 
       👋 Press space to step.
 
@@ -171,10 +167,11 @@ steps:
   - text: |
       🤔 Nothing fits...
 
-      Maybe the app.desc descriptors are not complete...
-      SearchTextRequest/Response are from the googleapis descriptors.
-      Let's try to re-open bob/logfile against the full googleapis.desc,
-      instead of app.desc.
+      Maybe the app.desc descriptors do not include what's needed...
+      Now SearchTextRequest/Response are from the googleapis descriptors.
+      
+      Maybe we can try by re-opening bob/logfile,
+      this time against the full googleapis.desc?
 
       👋 Press space to step.
 
@@ -184,10 +181,10 @@ steps:
     select_line: true
 
   - text: |
-      ✋ Before that, let's save our current work:
-      keep a copy of the overrides we have defined.
+      ✋ Before doing that, let's save our overrides:
+         we don't want to have to redo this work.
 
-      👋 Press Enter to save our overrides.
+      👋 Press Enter to save the overrides to disk.
 
     heat_cues: findings
     fold: ["/ 2", "/1/1 Z"]
@@ -197,7 +194,7 @@ steps:
       - file_exists: alice/overrides
 
   - text: |
-      Now we can press Enter to quit.
+      Now press Enter to quit.
 
     heat_cues: findings
     fold: ["/ 2", "/1/1 Z"]

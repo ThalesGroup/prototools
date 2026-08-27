@@ -22,7 +22,9 @@ steps:
   - text: |
       This is bob/logfile reopened — this time against the full googleapis descriptor set.
 
-      👋 Press `2` to unfold more of bob/logfile.
+      Good, our overrides have been correctly re-loaded.
+
+      👋 Press `2` to unfold more of the logfile.
 
     heat_cues: findings
     fold: ["/ 1"]
@@ -32,7 +34,7 @@ steps:
       - visible: /3/4
 
   - text: |
-      Now protolens has proposals for fields 6 and 7.
+      Now protolens shows proposals for fields 6 and 7.
 
       Let's hover over the heat cue for field 7.
       Protolens proposes ComputeRoutesResponse which feels reasonable.
@@ -60,10 +62,10 @@ steps:
       - type: /3/3 google.maps.routing.v2.ComputeRoutesRequest
 
   - text: |
-      👍 Perfect, we're done with overriding the log file.
+      👌 Perfect, we're done with making sense of the log file.
 
-      Now there seems to be a couple of non-canonicality issues with the protobuf.
-      (See the amber signals?)
+      Now there seems to be a couple of issues with the protobuf:
+      See the amber cues?
       Let's have a closer look... 🔍
 
       👋 Click the amber triangle to unfold the compute_routes_request node.
@@ -80,7 +82,7 @@ steps:
       The amber diamond and the ohb annotation (ohb for OverHangingBytes)
       mean that the encoding for the DRIVE value uses too many bytes
 
-      Let's have a look at the wire encoding for this value:
+      Show wire-level information for a closer look.
 
       👋 Press `w` to show wire-level information.
 
@@ -111,9 +113,9 @@ steps:
       Now let's have a second look at the shadowed SearchTextRequest field.
 
       Hover on the heat cue at the left edge of the line.
-      protolens thinks that the string actually is a google.rpc.Status message.
+      protolens reckons that the string actually might be a google.rpc.Status message.
 
-      👋 Press Enter to commit the google.rpc.Status override.
+      👋 Press Enter to commit the proposed google.rpc.Status override.
 
     heat_cues: findings
     fold: ["/ 2", "/1/1 Z"]
@@ -126,7 +128,6 @@ steps:
   - text: |
       🚨 Indeed... That is very suspicious.
       The unmasked google.rpc.Status message even includes an API key 😠
-      /value: ".*" 
 
       👋 Press space to step.
 
@@ -137,7 +138,8 @@ steps:
     search: 'value: ".*"'
 
   - text: |
-      Let's save our findings and export the full logfile as prototext
+      Let's save our findings:
+      Export the full logfile as prototext format
       for sending back to Bob.
 
       👋 Press Enter to commit the prefilled export command.

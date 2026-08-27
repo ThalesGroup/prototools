@@ -28,11 +28,15 @@ steps:
       protolens opened without a type name and found one anyway:
 
         👉 SearchTextRequest.
+      
+      What you see is prototext format:
+      i.e., textproto format enriched with structured annotations
 
       👋 Press space to step.
 
     node: /
     select_line: true
+    search: SearchTextRequest
 
   - text: |
       Hover over the "SearchTextRequest" type name.
@@ -47,11 +51,12 @@ steps:
     search: SearchTextRequest
 
   - text: |
-      Here is the issue.  text_query appears twice.
+      The text_query field is the issue.
+      The schema declares it singular (press `v` to verify)
+      but it appears twice at wire-level.
 
-      The schema declares it singular — press `v` to verify.
-      But the wire carries two instances of the field...
-      Last one wins: protoc shows you "coffee in Grenoble" and silently drops the 1st instance.
+      The first instance gets shadowed by the second:
+      most tools (including protoc) will silently drop it.
 
       👋 Press space to step.
 
@@ -60,7 +65,9 @@ steps:
     search: text_query
 
   - text: |
-      protolens annotates the second text_query as repeated_singular.
+      protolens signals the repeated instance with
+      - an amber diamond, and
+      - a `repeated_singular` annotation.
 
       👋 Press space to step.
 
@@ -69,28 +76,32 @@ steps:
     search: repeated_singular
 
   - text: |
-      The first text_query gets shadowed. protolens annotates it as such.
-
-      Press `$` to see the `#@ shadowed_scalar` annotation at the right edge of the line.
+      The shadowed instance is also flagged:
+      - a `shadowed_scalar` annotation,
+      - a hollow amber diamond - press `^` to see it at the left edge of the line.
 
       👋 Press space to step.
 
     node: /1
     select_line: true
+    search: shadowed_scalar
 
   - text: |
-      While we are here, play with the navigation arrows.
-      And click on the node fold-togglers.
-      These are the basic commands to navigate a protobuf in protolens.
+      You can navigate the protobuf using the arrow keys.
+      And click on the triangles to fold/unfold nodes.
 
-      You can also press a number on a node to set the folding level.
+      👋 Fold the `location_bias` node to step.
 
-      👋 Press space to step when you are done.
-
-    node: /1
+    node: /7
+    select_line: true
+    advance_when:
+      - not:
+        - visible: /7/1
 
   - text: |
-      Press Enter to quit.
+      Let's move on.
+
+      👋 Press Enter to quit.
 
     node: /1
     command: quit
