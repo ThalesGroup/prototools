@@ -942,22 +942,6 @@ impl App {
     ///
     /// A refusal writes no file. Silence here would be the defect this
     /// spec exists to remove — a document that looks complete and is
-    /// not — so the one case the drain cannot fix is the one case the
-    /// user is told about. `expand_auto_fold` has already put the
-    /// underlying splice failure in `message`, which is the useful half
-    /// of the news, so this wraps it rather than overwriting it.
-    fn drain_for_export(&mut self) -> bool {
-        if self.bake_subtree(self.cursor) {
-            return true;
-        }
-        self.message = format!(
-            "export refused: this node is still incomplete and could not be \
-             finished ({})",
-            self.message
-        );
-        false
-    }
-
     /// Shared core of `xdb`/`xdp` (TUI) and batch's
     /// `--format=descriptor-binary`/`descriptor-prototext` (spec 0156 G6/
     /// G7): resolves the cursor node's synthetic fields (G6a-c) and

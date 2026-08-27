@@ -526,32 +526,29 @@ fn suffix_box(app: &mut App) -> Vec<String> {
         .collect()
 }
 
-/// Spec 0287 test plan 1 / S4: the glyph's own color decides the words,
-/// so the box and the mark cannot disagree (G2). Spec 0337 S6: the box
-/// also states the current anchor so the brightness is interpretable.
+/// The LHS glyph popup is identical to the RHS suffix popup: "Best
+/// scorers:" + candidates + "double-click", regardless of glyph kind.
 #[test]
-fn the_heat_glyph_explains_its_color() {
-    // The default anchor is ln(144) ≈ 4.97, so exp(anchor).round() = 144.
+fn the_heat_glyph_popup_matches_the_suffix_popup() {
+    // Mismatch: cache has one candidate.
     let mut app = cue_app(Some((50, 1)), Some(Some(10)));
-    assert_eq!(
-        glyph_box(&mut app),
-        [
-            "the current typing (10) does not max the score (50)",
-            "see the heat cue on the right",
-            "brightest at score 144 and above",
-        ]
-    );
+    let g = glyph_box(&mut app);
+    let s = suffix_box(&mut app);
+    assert_eq!(g, s, "glyph and suffix boxes must be identical");
 
-    // A tie is the same glyph in the same column, and a different box.
+    // Tie: same expectation.
     let mut app = cue_app(Some((50, 3)), Some(Some(50)));
-    assert_eq!(
-        glyph_box(&mut app),
-        [
-            "current typing maxes the score (50) but there are ties",
-            "see the heat cue on the right",
-            "brightest at score 144 and above",
-        ]
-    );
+    let g = glyph_box(&mut app);
+    let s = suffix_box(&mut app);
+    assert_eq!(g, s, "glyph and suffix boxes must be identical");
+
+    // No cache entry yet: both show "retrieving…".
+    let mut app = cue_app(None, None);
+    // For None/None the glyph is not drawn (HeatDisplay::Unknown), so
+    // only test the suffix here.
+    let s = suffix_box(&mut app);
+    assert_eq!(s[0], "Best scorers:");
+    assert_eq!(s[1], "retrieving…");
 }
 
 /// Spec 0287 test plan 2 / S4: each of `HeatDisplay`'s drawn shapes has
@@ -610,10 +607,10 @@ fn the_heat_suffix_explains_its_numbers() {
     );
 }
 
-/// Spec 0287 G3: the one thing about the suffix a reader cannot
-/// discover by looking at it, on every shape it takes.
+/// Both the suffix and the glyph name "double-click" on every shape,
+/// since both are controls for choosing a type.
 #[test]
-fn the_heat_suffix_names_the_double_click() {
+fn the_heat_cues_name_the_double_click() {
     for (stats, current) in [
         (Some((50, 1)), Some(Some(10))),
         (Some((50, 1)), Some(None)),
@@ -630,11 +627,9 @@ fn the_heat_suffix_names_the_double_click() {
         );
     }
 
-    // The glyph is not: `heat_cue_at_point` measures the suffix alone,
-    // so column 0 has no double-click to name and the box points at the
-    // numbers instead.
+    // The glyph also names double-click (same popup as the suffix).
     let mut app = cue_app(Some((50, 1)), Some(Some(10)));
-    assert!(!glyph_box(&mut app).iter().any(|l| l.contains("double")));
+    assert!(glyph_box(&mut app).iter().any(|l| l.contains("double")));
 }
 
 /// Spec 0331 test 7 / S6: spec 0287's rule is that every drawn mark
@@ -705,10 +700,11 @@ fn the_unmatched_square_has_a_box() {
     assert_eq!(
         glyph_box(&mut app),
         [
+            "Best scorers:",
             "no type known here fits these bytes",
-            "this one is not graded - there is no score",
+            "double-click to choose a type for this node",
         ],
-        "and no trailing line pointing at numbers that are not there"
+        "unmatched glyph popup matches unmatched suffix popup"
     );
 }
 

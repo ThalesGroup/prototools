@@ -1817,9 +1817,14 @@ fn the_box_names_the_anchor() {
         .into_iter()
         .map(|l| l.text)
         .collect();
+    // Glyph popup now matches the suffix popup: "Best scorers:" + candidates.
+    assert_eq!(
+        lines[0], "Best scorers:",
+        "box must open with Best scorers:"
+    );
     assert!(
-        lines.iter().any(|l| l.contains("brightest at score 144")),
-        "box must name the default anchor score (144): {lines:?}"
+        !lines.iter().any(|l| l.contains("brightest")),
+        "anchor line no longer shown in glyph popup: {lines:?}"
     );
 
     // Unmatched glyph: flat sentinel, no anchor line. Seeded as

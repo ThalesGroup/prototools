@@ -352,6 +352,28 @@ fn key_clause(key: &str) -> &'static str {
 }
 
 impl App {
+    /// Spec 0365 S3: read the top-scoring candidate names for `node`
+    /// from the `by_range` cache.  Returns `(names, truncated)` where
+    /// `truncated` is true when the worker has not yet widened `top_n`
+    /// to cover all tied winners.
+    fn read_heat_tops(&self, node: usize) -> (Vec<String>, bool) {
+        let start = self.heat_scored_range(node).start;
+        let mut caches = self.heat_caches.lock().unwrap_or_else(|e| e.into_inner());
+        caches
+            .by_range
+            .peek_with(&start, tiered::Tier::Visible, |entry| {
+                let names: Vec<_> = entry
+                    .top_n
+                    .iter()
+                    .take(entry.best_count)
+                    .map(|(name, _)| name.clone())
+                    .collect();
+                let truncated = !names.is_empty() && names.len() < entry.best_count;
+                (names, truncated)
+            })
+            .unwrap_or_default()
+    }
+
     /// Spec 0287 S3: the two heat-cue targets, both in columns no token
     /// of the row can reach — column 0 exactly, which spec 0285's
     /// mapping gives up on with its `HEAT_FIELD_WIDTH` `checked_sub`
@@ -400,37 +422,16 @@ impl App {
                 heat_cue::HeatDisplay::Settled { score: None } => HeatGlyphKind::Unmatched,
                 _ => return None,
             };
+            let (tops, truncated) = self.read_heat_tops(pos.node);
             (
                 DocElement::HeatGlyph(kind),
                 glyph.content.into_owned(),
-                vec![],
-                false,
+                tops,
+                truncated,
             )
         } else {
             let suffix = suffix?;
-            // Spec 0365 S3: read tied winners from `by_range.top_n`.
-            // `heat_cue_resolve` now requests `override_list_height`
-            // entries, so `top_n` is wide enough for a full popup once
-            // the worker has answered. While it is still narrow
-            // (`top_n.len() < best_count`), set `truncated` so the
-            // popup appends `…`.
-            let start = self.heat_scored_range(pos.node).start;
-            let (tops, truncated) = {
-                let mut caches = self.heat_caches.lock().unwrap_or_else(|e| e.into_inner());
-                caches
-                    .by_range
-                    .peek_with(&start, tiered::Tier::Visible, |entry| {
-                        let names: Vec<_> = entry
-                            .top_n
-                            .iter()
-                            .take(entry.best_count)
-                            .map(|(name, _)| name.clone())
-                            .collect();
-                        let truncated = !names.is_empty() && names.len() < entry.best_count;
-                        (names, truncated)
-                    })
-                    .unwrap_or_default()
-            };
+            let (tops, truncated) = self.read_heat_tops(pos.node);
             (
                 DocElement::HeatSuffix(SuffixShape::of(&display)?),
                 suffix.content.trim().to_string(),
@@ -647,7 +648,10 @@ impl App {
         // Heat-suffix boxes end with a fixed "double-click" line that
         // must survive avail-based truncation (spec 0284 S2 / popup.rs
         // `Doc.tail`). Every other doc box is short and needs no tail.
-        let tail = matches!(hit.element, DocElement::HeatSuffix(_)) as usize;
+        let tail = matches!(
+            hit.element,
+            DocElement::HeatSuffix(_) | DocElement::HeatGlyph(_)
+        ) as usize;
         self.popup = Some(Popup {
             body: PopupBody::Doc {
                 lines: doc_lines(hit, self.heat_anchor),
@@ -668,13 +672,7 @@ impl App {
 /// only for the graded glyph kinds — passed in rather than re-derived
 /// here so the box and the square use the same value.
 pub(super) fn doc_lines(hit: &DocHit, heat_anchor: f32) -> Vec<BoxLine> {
-    // The token is always in the border title; the content starts with
-    // the explanation. For a heat suffix, name what the list below is.
-    let first = match hit.element {
-        DocElement::HeatSuffix(_) => Some("Best scorers:".to_string()),
-        _ => None,
-    };
-    let mut lines: Vec<String> = first.into_iter().collect();
+    let mut lines: Vec<String> = Vec::new();
     match hit.element {
         DocElement::Key => lines.push(key_clause(&hit.token).to_string()),
         DocElement::Value => {
@@ -726,65 +724,32 @@ pub(super) fn doc_lines(hit: &DocHit, heat_anchor: f32) -> Vec<BoxLine> {
         // and none of them carries a number the reader does not
         // already have on screen: where one is wanted, the box says
         // where it is.
-        DocElement::HeatGlyph(kind) => {
-            match kind {
-                HeatGlyphKind::Tie { score } => {
-                    lines.push(format!(
-                        "current typing maxes the score ({score}) but there are ties"
-                    ));
-                    lines.push("see the heat cue on the right".to_string());
-                }
-                HeatGlyphKind::Mismatch {
-                    current: Some(current),
-                    best,
-                } => {
-                    lines.push(format!(
-                        "the current typing ({current}) does not max the score ({best})"
-                    ));
-                    lines.push("see the heat cue on the right".to_string());
-                }
-                HeatGlyphKind::Mismatch {
-                    current: None,
-                    best,
-                } => {
-                    lines.push("the current typing does not fit these bytes at all".to_string());
-                    lines.push(format!("best score any candidate reached: {best}"));
-                    lines.push("see the heat cue on the right".to_string());
-                }
-                HeatGlyphKind::Unmatched => {
-                    lines.push("no type known here fits these bytes".to_string());
-                    // Spec 0335 S5.
-                    lines.push("this one is not graded - there is no score".to_string());
+        // Both the LHS glyph and the RHS suffix show the same popup:
+        // "Best scorers:" + candidates + "double-click".  The glyph's
+        // `kind` is not exposed here — readers who want the color
+        // interpretation already have it from the suffix on the same row.
+        DocElement::HeatGlyph(_) | DocElement::HeatSuffix(_) => {
+            let unmatched = matches!(
+                hit.element,
+                DocElement::HeatGlyph(HeatGlyphKind::Unmatched)
+                    | DocElement::HeatSuffix(SuffixShape::Unmatched)
+            );
+            // Spec 0365 S4: "Best scorers:" header is always first.
+            lines.push("Best scorers:".to_string());
+            if unmatched {
+                // Spec 0335 S5: no score exists; listing candidates
+                // would be empty and misleading.
+                lines.push("no type known here fits these bytes".to_string());
+            } else if hit.heat_top.is_empty() {
+                lines.push("retrieving…".to_string());
+            } else {
+                lines.extend(hit.heat_top.iter().cloned());
+                if hit.heat_truncated {
+                    lines.push("…".to_string());
                 }
             }
-            // Spec 0337 S6: state the anchor for the graded kinds.
-            if !matches!(kind, HeatGlyphKind::Unmatched) {
-                let brightest_at = heat_anchor.exp().round() as u64;
-                lines.push(format!("brightest at score {brightest_at} and above"));
-            }
-        }
-        DocElement::HeatSuffix(shape) => {
-            // List the FQDNs that share the top score for this range.
-            // Spec 0365 S4: three cases.
-            match shape {
-                SuffixShape::Unmatched => {
-                    lines.push("no type known here fits these bytes".to_string());
-                }
-                _ if hit.heat_top.is_empty() => {
-                    // Worker has not answered yet.
-                    lines.push("retrieving…".to_string());
-                }
-                _ => {
-                    lines.extend(hit.heat_top.iter().cloned());
-                    if hit.heat_truncated {
-                        // `top_n` narrower than `best_count`: more tied
-                        // winners exist but are not in the cache yet.
-                        lines.push("…".to_string());
-                    }
-                }
-            }
-            // G3: the one thing about this mark a reader cannot
-            // discover by looking at it (spec 0284 S2).
+            // G3: the one thing about these marks a reader cannot
+            // discover by looking at them (spec 0284 S2).
             lines.push("double-click to choose a type for this node".to_string());
         }
         DocElement::FoldMarker { folded, colored } => {
