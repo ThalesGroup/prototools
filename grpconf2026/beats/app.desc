@@ -92,9 +92,9 @@ steps:
 
   - text: |
       We see that field 5 of the first entry has a bright heat cue.
-      Hover over it. Notice it proposes two matching types with identical score.
+      Hover over it. Notice it proposes two matching types.
       
-      Let's pick SearchTextResponse, it feels right and corresponds to what was in capture.
+      Let's pick SearchTextResponse, it feels right and corresponds to what was in bob/capture.
       
       👋 Double-click on the heat-cue, then double-click on SearchTextResponse.
 
@@ -111,7 +111,7 @@ steps:
       Now hover over the amber heat-cue of field 4.
       It proposes a single matching type.
       
-      Let's accept SearchTextRequest, it feels right.
+      Let's accept SearchTextRequest.
       
       👋 Double-click on the heat-cue, then double-click on SearchTextRequest.
 
@@ -142,9 +142,10 @@ steps:
   - text: |
       Now what about field 1?
       Let's hover over the heat cue...
-      Hmm... Timestamp is probably right, for a log entry...
+      Hmm... Timestamp is probably right, for a log entry.
       
-      👋 Double-click on the heat-cue, then double-click on Timestamp.
+      👋 Double-click on the heat-cue, then move to Timestamp
+         and press Enter.
 
     heat_cues: findings
     fold: ["/ 2", "/1/1 Z"]
