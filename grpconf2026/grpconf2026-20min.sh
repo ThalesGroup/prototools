@@ -1,3 +1,15 @@
+# SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+#
+# SPDX-License-Identifier: MIT
+
+# 20-minute cut of grpconf2026.sh.
+#
+# Three cuts applied vs. the full version:
+#   Cut 1 — scale demo removed (googleapis.desc against itself)
+#   Cut 2 — reproto section shortened: no tree / no file view
+#   Cut 3 — intermediate protoc --decode step removed;
+#            go straight from list-schemas to protolens
+
 clear && header "S3NS"
 # \
 # S3NS is a French Thales × Google joint venture that operates a GCP region    \
@@ -47,10 +59,6 @@ clear && header "The stage"
 # The executable answers routing questions by calling an external service.     \
 # Bob captured one of its network calls.                                       \
 
-[[Consider naming the external service "Google Maps" explicitly here,
-  since that is what the audience will recognize once descriptors appear.
-  Or keep it vague for dramatic effect — your call.]]
-
 ls -lh bob \
 # Three files:                                                                 \
 # - bob/app       the downloaded executable                                    \
@@ -76,8 +84,6 @@ protoc --decode_raw < bob/capture   | view_textproto
 # Let's try the logfile:
 protoc --decode_raw < bob/logfile
 # Outright failure 😭
-# [[If protoc actually prints an error message here, quote the key line
-#   aloud — it lands better than a silent failure.]]
 
 header "3. If only we had descriptors"
 
@@ -95,11 +101,10 @@ ls -lhd alice/app.desc alice/app/* \
 # - app/index.rkyv:     fast-access index ✅                                   \
 # - app/proto/:         decompiled .proto files ✅                             \
 
-# Let's peek at the decompiled sources:
-tree alice/app/proto
-view alice/app/proto/google/maps/places/v1/places_service.proto
-# [[Point out the service name — "Places" — it tells the audience
-#   what the app is actually calling.]]
+# [CUT 2] Skip tree / file view — mention Places API in passing:
+# [[Say: "reproto decompiled the descriptors. Among them: the Google Maps
+#   Places API — which tells us immediately what this app is calling."]]
+
 
 header "4. Let's use our descriptors"
 
@@ -108,14 +113,10 @@ prototext --descriptor-set alice/app.desc list-schemas bob/capture
 
 # One match: google.maps.places.v1.SearchTextRequest 🏅
 # (Score is negative — we will come back to that.)
-# For now, let's decode with protoc:
-\
-protoc --descriptor_set_in=alice/app.desc \
-       --decode=google.maps.places.v1.SearchTextRequest \
-    < bob/capture   | view_textproto
-# protoc is happy 🍀
 
-# But protolens shows more:
+# [CUT 3] Skip the intermediate protoc --decode step. Go straight to protolens:
+# [[Say: "protoc can now decode this if we hand it the type —
+#   but protolens shows more."]]
 protolens --descriptor-set alice/app.desc bob/capture   --script beats/capture
 
 # There was more to bob/capture than protoc let on 🕵️
@@ -142,16 +143,10 @@ cmp bob/logfile <(prototext encode alice/logfile.all.node.pb)   && echo Identica
 
 # When Bob sees this report, I suspect he will uninstall the app 😬
 
-# \
-# bob/capture and bob/logfile are small protobufs.                             \
-# protolens handles large ones just as well.                                   \
-# Let's throw googleapis.desc at itself:                                       \
-
-protolens --descriptor-set $PROTOTEXT_GOOGLEAPIS_SET $PROTOTEXT_GOOGLEAPIS_SET
-
-# \
-# Navigation stays fluid. Startup latency:                                     \
-time protolens --descriptor-set $PROTOTEXT_GOOGLEAPIS_SET $PROTOTEXT_GOOGLEAPIS_SET quit
+# [CUT 1] Scale demo removed.
+# [[If time permits, say from the podium:
+#   "protolens handles 25 MB descriptor sets just as fluidly —
+#    we can show that in Q&A."]]
 
 # \
 # In conclusion:                                                               \
@@ -162,7 +157,6 @@ time protolens --descriptor-set $PROTOTEXT_GOOGLEAPIS_SET $PROTOTEXT_GOOGLEAPIS_
 
 
 # Thank you 👋
-
 
 
 

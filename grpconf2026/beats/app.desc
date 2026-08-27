@@ -22,14 +22,13 @@ title: The logfile, app.desc
 
 steps:
   - text: |
-      This is bob/logfile opened
-      against the descriptors in alice/app.desc.
+      bob/logfile, opened against alice/app.desc.
 
-      bob/logfile is a larger protobuf than bob/capture.
-      The root type is unknown — no schema in alice/app.desc
-      matches the envelope.  What we see is raw field numbers.
+      Larger than bob/capture.
+      The root type is unknown — app.desc has no schema for the envelope.
+      What we see is raw field numbers.
 
-      👋 Press `1` to fold the top level nodes.
+      👋 Press `1` to fold the top-level nodes.
 
     node: /
     select_line: true
@@ -38,14 +37,13 @@ steps:
         - visible: /1/1
 
   - text: |
-      Now we have a clearer view.
+      Cleaner view.
 
-      Note the TRUNCATED_MESSAGE annotation. 
+      Note the TRUNCATED_MESSAGE annotation.
+      The logging process was probably killed mid-write — 1024 bytes missing.
+      That is why protoc bailed out entirely.
 
-      The logging process was probably killed in flight and the logfile misses 1024 bytes.
-      This explains why protoc was unable to parse it.
-
-      👋 Press `2` to see a bit more of the protobuf.
+      👋 Press `2` to see one level deeper.
 
     fold: ["/ 1"]
     node: /
@@ -54,15 +52,13 @@ steps:
       - visible: /1/1
 
   - text: |
-      The top-level fields each contain similar submessages.
-      They look like log entries indeed — one per RPC call.
+      Each top-level field holds a similar submessage.
+      Log entries — one per RPC call.
 
-      Let's name the entries using the proposed prefilled command below.
+      The prefilled command below declares a synthetic type "Entry",
+      marks field 1 as repeated, and names it "entries".
 
-      It declares a new synthetic type "Entry", marks field 1 as
-      repeated and gives it the name "entries".
-      
-      👋 Press Enter to commit the Entry type override.
+      👋 Press Enter to commit.
 
     fold: ["/ 2"]
     node: /
@@ -72,13 +68,13 @@ steps:
       - type: /1 Entry
 
   - text: |
-      👍 Good, the Entry type override is in place.
-       
-      To go futher, let's enable protolens heat cues.
-      Protolens will tell us where in the protobuf it recognizes known types.
-      Heat cues show as green/amber/blue annotations.
+      👍 Entry is in place.
 
-      👋 Press `i` to enable heat cues.
+      Now let's enable heat cues.
+      protolens will highlight where it recognizes known types.
+      Green = confident. Amber = uncertain.
+
+      👋 Press `i`.
 
     fold: ["/ 2"]
     node: /
@@ -87,12 +83,12 @@ steps:
       - heat_cues: findings
 
   - text: |
-      We see that field 5 of the first entry has a bright heat cue.
-      Hover over it. Notice it proposes two matching types.
-      
-      Let's pick SearchTextResponse, it feels right and corresponds to what was in bob/capture.
-      
-      👋 Double-click on the heat-cue, then double-click on SearchTextResponse.
+      Field 5 of the first entry has a bright heat cue.
+      Hover over it — two candidates.
+
+      SearchTextResponse matches what we saw in bob/capture.
+
+      👋 Double-click the heat cue, then double-click SearchTextResponse.
 
     heat_cues: findings
     fold: ["/ 2"]
@@ -102,14 +98,12 @@ steps:
       - type: /1/4 google.maps.places.v1.SearchTextResponse
 
   - text: |
-      👍 Good, the SearchTextResponse override is in place.
+      👍 SearchTextResponse locked in.
 
-      Now hover over the amber heat-cue of field 4.
-      It proposes a single matching type.
-      
-      Let's accept SearchTextRequest.
-      
-      👋 Double-click on the heat-cue, then press Enter to commit the override.
+      Field 4 has an amber cue — one candidate.
+      SearchTextRequest. Makes sense: request + response pair.
+
+      👋 Double-click the heat cue, then press Enter.
 
     heat_cues: findings
     fold: ["/ 2"]
@@ -119,13 +113,12 @@ steps:
       - type: /1/3 google.maps.places.v1.SearchTextRequest
 
   - text: |
-      👍 OK, SearchTextRequest is also in place.
+      👍 SearchTextRequest locked in.
 
-      What about field 2?
-      It looks like the name of the logged RPC.
-      Let's keep the string type and simply rename it "rpc".
+      Field 2: a string. Looks like the RPC method name.
+      Let's just rename it "rpc".
 
-      👋 Press Enter to commit the prefilled command.
+      👋 Press Enter.
 
     heat_cues: findings
     fold: ["/ 2"]
@@ -136,12 +129,10 @@ steps:
       - field_name: /1/2 rpc
 
   - text: |
-      Now what about field 1?
-      Let's hover over the heat cue...
-      Hmm... Timestamp is probably right, for a log entry.
-      
-      👋 Press `t` to open the override selection pane, then
-         choose Timestamp and press Enter to commit the override.
+      Field 1: hover the heat cue.
+      Timestamp — fits a log entry.
+
+      👋 Press `t`, choose Timestamp, press Enter.
 
     heat_cues: findings
     fold: ["/ 2", "/1/1 Z"]
@@ -151,27 +142,14 @@ steps:
       - type: /1/1 google.protobuf.Timestamp
 
   - text: |
-      👌 Perfect
+      👌 Perfect.
 
-      Now let's have a look at the 3rd node, with fields number 6 and 7.
-      Fields 6 shows a deeply negative score 😨.
-      And hovering above the heat cues gives nothing convincing. 🤔🤔🤔
+      Now look at the 3rd entry — fields 6 and 7.
+      Field 6 scores deeply negative 😨
+      Heat cues give nothing convincing. 🤔
 
-      👋 Press space to step.
-
-    heat_cues: findings
-    fold: ["/ 2", "/1/1 Z"]
-    node: /3/3
-    select_line: true
-
-  - text: |
-      🤔 Nothing fits...
-
-      Maybe the app.desc descriptors do not include what's needed...
-      Now SearchTextRequest/Response are from the googleapis descriptors.
-      
-      Maybe we can try by re-opening bob/logfile,
-      this time against the full googleapis.desc?
+      app.desc only knows the Places API.
+      Fields 6 and 7 look like a different service entirely.
 
       👋 Press space to step.
 
@@ -181,10 +159,10 @@ steps:
     select_line: true
 
   - text: |
-      ✋ Before doing that, let's save our overrides:
-         we don't want to have to redo this work.
+      Before we go further, let's save our overrides.
+      We do not want to redo this work.
 
-      👋 Press Enter to save the overrides to disk.
+      👋 Press Enter to save.
 
     heat_cues: findings
     fold: ["/ 2", "/1/1 Z"]
@@ -194,7 +172,7 @@ steps:
       - file_exists: alice/overrides
 
   - text: |
-      Now press Enter to quit.
+      👋 Press Enter to quit.
 
     heat_cues: findings
     fold: ["/ 2", "/1/1 Z"]

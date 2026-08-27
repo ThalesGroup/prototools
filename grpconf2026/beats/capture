@@ -28,9 +28,8 @@ steps:
       protolens opened without a type name and found one anyway:
 
         👉 SearchTextRequest.
-      
-      What you see is prototext format:
-      i.e., textproto format enriched with structured annotations
+
+      This is prototext format: textproto enriched with annotations.
 
       👋 Press space to step.
 
@@ -39,9 +38,11 @@ steps:
     search: SearchTextRequest
 
   - text: |
-      Hover over the "SearchTextRequest" type name.
+      Hover over "SearchTextRequest".
 
       A score breakdown tooltip appears.
+      [[Mention the specific penalty shown — "non-canonical encoding" —
+        and foreshadow that this is intentional, not accidental.]]
       Note the penalty for "non-canonical encoding".
 
       👋 Press space to step.
@@ -51,12 +52,11 @@ steps:
     search: SearchTextRequest
 
   - text: |
-      The text_query field is the issue.
-      The schema declares it singular (press `v` to verify)
-      but it appears twice at wire-level.
+      The culprit: text_query.
+      The schema declares it singular — but it appears twice at wire level.
 
-      The first instance gets shadowed by the second:
-      most tools (including protoc) will silently drop it.
+      The first instance is shadowed by the second.
+      Most tools, including protoc, silently drop it.
 
       👋 Press space to step.
 
@@ -65,9 +65,9 @@ steps:
     search: text_query
 
   - text: |
-      protolens signals the repeated instance with
-      - an amber diamond, and
-      - a `repeated_singular` annotation.
+      protolens flags the surviving instance:
+      - amber diamond
+      - `repeated_singular` annotation
 
       👋 Press space to step.
 
@@ -76,9 +76,9 @@ steps:
     search: repeated_singular
 
   - text: |
-      The shadowed instance is also flagged:
-      - a `shadowed_scalar` annotation,
-      - a hollow amber diamond - press `^` to see it at the left edge of the line.
+      The dropped instance is flagged too:
+      - `shadowed_scalar` annotation
+      - hollow amber diamond — press `^` to see it at the line's left edge
 
       👋 Press space to step.
 
@@ -87,10 +87,9 @@ steps:
     search: shadowed_scalar
 
   - text: |
-      You can navigate the protobuf using the arrow keys.
-      And click on the triangles to fold/unfold nodes.
+      Arrow keys navigate. Triangles fold/unfold nodes.
 
-      👋 Fold the `location_bias` node to step.
+      👋 Fold `location_bias` to step.
 
     node: /7
     select_line: true
@@ -99,6 +98,10 @@ steps:
         - visible: /7/1
 
   - text: |
+      [[Consider ending on the key takeaway rather than "Let's move on" —
+        something like "So bob/capture is a SearchTextRequest — with a
+        deliberately corrupted encoding." That lands better before
+        transitioning to the logfile.]]
       Let's move on.
 
       👋 Press Enter to quit.
