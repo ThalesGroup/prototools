@@ -398,7 +398,7 @@ fn a_document_box_is_dismissed_like_any_other() {
     open(&mut app);
     let popup = app.popup.clone().expect("the dwell has been earned");
     assert_eq!(popup.anchor, (column, 0));
-    assert!(matches!(popup.body, PopupBody::Doc(_)));
+    assert!(matches!(popup.body, PopupBody::Doc { .. }));
 
     app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
     assert!(app.popup.is_none(), "any keystroke takes it down");
@@ -606,10 +606,7 @@ fn the_heat_suffix_explains_its_numbers() {
     let mut app = cue_app(None, None);
     assert_eq!(
         lines(&mut app),
-        (
-            "Best scorers:".to_string(),
-            "still scoring these bytes".to_string()
-        )
+        ("Best scorers:".to_string(), "retrieving…".to_string())
     );
 }
 

@@ -747,83 +747,27 @@ impl App {
         // asking again at the end of the frame, not from a tier of its
         // own — `Tier::User` now stops the whole worker pool, and a held
         // arrow key must not do that once per keystroke.
+        // Spec 0365 S1: request a full viewport's worth of candidates so
+        // that the heat-suffix hover popup can list all tied winners
+        // without a secondary fetch. `HEAT_CUE_PREVIEW` was the old
+        // bound; `override_list_height` matches what the override pane
+        // requests, making the two consumers share one worker answer.
         let tier = Tier::Visible;
-        self.heat_lookup(&range, current_key.as_deref(), 0, HEAT_CUE_PREVIEW, tier);
+        self.heat_lookup(
+            &range,
+            current_key.as_deref(),
+            0,
+            self.override_list_height.max(1),
+            tier,
+        );
 
         let state = self.read_heat_state(start, current_key.as_deref(), tier);
 
-        if state.settled() || self.heat_worker.is_some() {
-            self.record_heat_state(idx, state);
-            return heat_display(state, self.heat_anchor);
-        }
-
-        // No worker and still unsettled after an independent cache read
-        // — either scoring is genuinely needed (the synchronous logic
-        // below) or there's no scoring graph at all, in which case
-        // nothing is ever going to resolve this node further: show
-        // nothing rather than a permanent `[?]`. `heat_states[idx]` is
-        // left untouched (still unsettled) so a cache write from
-        // elsewhere is still picked up on a later call.
-        // Cloned rather than borrowed (spec 0180 S2): the `Arc` clone
-        // keeps `self` free to be borrowed mutably below.
-        let Some(graph) = self.ctx.graph.clone() else {
-            return HeatDisplay::None;
-        };
-        let graph = graph.graph();
-        let range_bytes = &self.blob[range.clone()];
-        let cut = override_pane::ends_where_the_bytes_end(&range, self.blob.len());
-        let state = if let Some(best) = state.best() {
-            // Window already covered — only the current type's score is
-            // missing (spec 0154 G3's cheap path, mirrored here).
-            let key = current_key
-                .as_deref()
-                .expect("unsettled with best known implies current is still pending");
-            let score = override_pane::inferred_score(range_bytes, key, graph, cut);
-            let mut caches = self.heat_caches.lock().unwrap_or_else(|e| e.into_inner());
-            caches
-                .current_score
-                .upsert((start, key.to_string()), score, Tier::Visible);
-            HeatState::new(Some(best), Some(score))
-        } else {
-            // The whole budget, not the worker's share: this arm is only
-            // reached when there is no worker, so nothing else in the
-            // session is sweeping (spec 0217 S6). `None` for the same
-            // reason it is synchronous: this runs on the thread that
-            // would have to raise the flag.
-            let candidates =
-                override_pane::inferred_candidates(range_bytes, graph, self.sweep_jobs, None, cut);
-            let stats = derive_stats(&candidates);
-            let current_entry = current_key
-                .as_deref()
-                .and_then(|key| score_of(&candidates, key));
-
-            let mut caches = self.heat_caches.lock().unwrap_or_else(|e| e.into_inner());
-            // At least `HEAT_CUE_PREVIEW` (what `heat_lookup` just
-            // checked coverage against), and at least
-            // `override_list_height` too (spec 0151 G6's
-            // cross-population cap) — never narrower than either.
-            let cap = self.override_list_height.max(1).max(HEAT_CUE_PREVIEW);
-            let top_n: Vec<_> = candidates.iter().take(cap).cloned().collect();
-            caches
-                .by_range
-                .upsert(start, RangeHeatEntry::new(stats, top_n), Tier::Visible);
-            if let Some(key) = current_key.as_ref() {
-                caches
-                    .current_score
-                    .upsert((start, key.clone()), current_entry, Tier::Visible);
-            }
-            // Spec 0250 S8 reserves this cache for the override pane's
-            // whole-list request, and this arm is a *cue*. It writes
-            // anyway because in the no-worker configuration it is the
-            // only thing that ever will: with no worker there is
-            // nothing for `heat_lookup` to push a request to, so the
-            // pane's `[0, usize::MAX)` lookup can only ever be answered
-            // out of what a cue already computed here — `by_range`'s
-            // `top_n` is a screenful and can never cover it.
-            caches.complete.insert(range.clone(), candidates);
-            HeatState::new(Some(stats), Some(current_entry))
-        };
-
+        // Spec 0365 S2: the synchronous scoring fallback that used to
+        // follow this point has been removed. When a scoring graph is
+        // loaded the worker is always running; when it is not, there is
+        // nothing to score. Either way, blocking the render thread on
+        // `inferred_candidates` is wrong.
         self.record_heat_state(idx, state);
         heat_display(state, self.heat_anchor)
     }

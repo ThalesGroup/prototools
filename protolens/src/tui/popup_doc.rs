@@ -173,6 +173,10 @@ pub(super) struct DocHit {
     /// when the cache has not yet settled or when the hit is not a
     /// suffix.
     heat_top: Vec<String>,
+    /// `true` when `heat_top` is non-empty but shorter than
+    /// `best_count` — the worker has not yet widened `top_n` to cover
+    /// all tied winners (spec 0365 S3). `false` everywhere else.
+    heat_truncated: bool,
 }
 
 impl DocHit {
@@ -377,7 +381,7 @@ impl App {
         let display = self.heat_cue_at(pos);
         let (glyph, suffix) = self.heat_chrome(&display);
 
-        let (element, token, heat_top) = if on_glyph {
+        let (element, token, heat_top, heat_truncated) = if on_glyph {
             // N3: the reserved blank is not a target. `heat_chrome`
             // draws one for a settled node, for a pending one, and for
             // a cue the ANSI-16 palette cannot color — so what decides
@@ -400,23 +404,30 @@ impl App {
                 DocElement::HeatGlyph(kind),
                 glyph.content.into_owned(),
                 vec![],
+                false,
             )
         } else {
             let suffix = suffix?;
-            // Read the top-scoring FQDNs from the cache: the first
-            // `best_count` entries of `top_n` all share the top score.
+            // Spec 0365 S3: read tied winners from `by_range.top_n`.
+            // `heat_cue_resolve` now requests `override_list_height`
+            // entries, so `top_n` is wide enough for a full popup once
+            // the worker has answered. While it is still narrow
+            // (`top_n.len() < best_count`), set `truncated` so the
+            // popup appends `…`.
             let start = self.heat_scored_range(pos.node).start;
-            let tops = {
+            let (tops, truncated) = {
                 let mut caches = self.heat_caches.lock().unwrap_or_else(|e| e.into_inner());
                 caches
                     .by_range
                     .peek_with(&start, tiered::Tier::Visible, |entry| {
-                        entry
+                        let names: Vec<_> = entry
                             .top_n
                             .iter()
                             .take(entry.best_count)
                             .map(|(name, _)| name.clone())
-                            .collect::<Vec<_>>()
+                            .collect();
+                        let truncated = !names.is_empty() && names.len() < entry.best_count;
+                        (names, truncated)
                     })
                     .unwrap_or_default()
             };
@@ -424,6 +435,7 @@ impl App {
                 DocElement::HeatSuffix(SuffixShape::of(&display)?),
                 suffix.content.trim().to_string(),
                 tops,
+                truncated,
             )
         };
         Some(DocHit {
@@ -433,6 +445,7 @@ impl App {
             token,
             enum_number: None,
             heat_top,
+            heat_truncated,
         })
     }
 
@@ -459,6 +472,7 @@ impl App {
             .to_string(),
             enum_number: None,
             heat_top: vec![],
+            heat_truncated: false,
         })
     }
 
@@ -501,6 +515,7 @@ impl App {
             token: render::ANOMALY_GLYPH.to_string(),
             enum_number: None,
             heat_top: vec![],
+            heat_truncated: false,
         })
     }
 
@@ -543,6 +558,7 @@ impl App {
             token: content.get(span)?.to_string(),
             enum_number: None,
             heat_top: vec![],
+            heat_truncated: false,
         })
     }
 
@@ -612,6 +628,7 @@ impl App {
             token,
             enum_number,
             heat_top: vec![],
+            heat_truncated: false,
         })
     }
 
@@ -627,8 +644,15 @@ impl App {
         // border title so the first content line can be "Best scorers:".
         let doc_title = Some(format!(" {} ", hit.token));
 
+        // Heat-suffix boxes end with a fixed "double-click" line that
+        // must survive avail-based truncation (spec 0284 S2 / popup.rs
+        // `Doc.tail`). Every other doc box is short and needs no tail.
+        let tail = matches!(hit.element, DocElement::HeatSuffix(_)) as usize;
         self.popup = Some(Popup {
-            body: PopupBody::Doc(doc_lines(hit, self.heat_anchor)),
+            body: PopupBody::Doc {
+                lines: doc_lines(hit, self.heat_anchor),
+                tail,
+            },
             anchor,
             doc_title,
         });
@@ -741,15 +765,22 @@ pub(super) fn doc_lines(hit: &DocHit, heat_anchor: f32) -> Vec<BoxLine> {
         }
         DocElement::HeatSuffix(shape) => {
             // List the FQDNs that share the top score for this range.
+            // Spec 0365 S4: three cases.
             match shape {
                 SuffixShape::Unmatched => {
                     lines.push("no type known here fits these bytes".to_string());
                 }
                 _ if hit.heat_top.is_empty() => {
-                    lines.push("still scoring these bytes".to_string());
+                    // Worker has not answered yet.
+                    lines.push("retrieving…".to_string());
                 }
                 _ => {
                     lines.extend(hit.heat_top.iter().cloned());
+                    if hit.heat_truncated {
+                        // `top_n` narrower than `best_count`: more tied
+                        // winners exist but are not in the cache yet.
+                        lines.push("…".to_string());
+                    }
                 }
             }
             // G3: the one thing about this mark a reader cannot
