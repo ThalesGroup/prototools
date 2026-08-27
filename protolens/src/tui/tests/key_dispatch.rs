@@ -726,9 +726,10 @@ fn x_b_and_x_p_prefill_export_data_format_and_open_the_command_line() {
         assert_eq!(app.pending_x, ExportChord::Leader);
         app.handle_key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE));
         assert_eq!(app.pending_x, ExportChord::None);
+        let node = app.positional_path(app.cursor);
         assert_eq!(
             app.command_buffer.as_deref(),
-            Some(format!("export {flag} {expected_path}").as_str())
+            Some(format!("export {flag} --node {node} {expected_path}").as_str())
         );
         assert_eq!(app.command_kind, CommandLineKind::Command);
     }
@@ -749,9 +750,10 @@ fn x_d_b_and_x_d_p_prefill_export_descriptor_format_and_open_the_command_line() 
         assert_eq!(app.pending_x, ExportChord::Descriptor);
         app.handle_key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE));
         assert_eq!(app.pending_x, ExportChord::None);
+        let node = app.positional_path(app.cursor);
         assert_eq!(
             app.command_buffer.as_deref(),
-            Some(format!("export {flag} {expected_path}").as_str())
+            Some(format!("export {flag} --node {node} {expected_path}").as_str())
         );
         assert_eq!(app.command_kind, CommandLineKind::Command);
     }

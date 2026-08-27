@@ -421,10 +421,16 @@ impl App {
         }
     }
 
-    /// Pre-fills the command line with `export <flag> <path>` and opens
-    /// it (spec 0156 G3) — shared by all four chord resolutions.
+    /// Pre-fills the command line with `export <flag> --node <pos> <path>`
+    /// and opens it (spec 0156 G3) — shared by all four chord resolutions.
+    /// Including `--node` makes the command self-contained for scripting:
+    /// the exported node is explicit and independent of where the cursor is.
     fn prefill_export(&mut self, flag: &str, path: String) {
-        self.open_command_line(CommandLineKind::Command, format!("export {flag} {path}"));
+        let node = self.positional_path(self.cursor);
+        self.open_command_line(
+            CommandLineKind::Command,
+            format!("export {flag} --node {node} {path}"),
+        );
     }
 
     /// Propose a default `xdb`/`xdp`/`:export --descriptor-*` path (spec

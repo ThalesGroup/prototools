@@ -842,13 +842,22 @@ impl App {
     /// node's own data.
     pub(super) fn run_export(&mut self, args: Vec<&str>) {
         let mut format = ExportFormat::Prototext;
+        let mut node_pos: Option<String> = None;
         let mut path_parts = Vec::new();
-        for a in args {
+        let mut args_iter = args.into_iter();
+        while let Some(a) = args_iter.next() {
             match a {
                 "--binary" => format = ExportFormat::Binary,
                 "--prototext" => format = ExportFormat::Prototext,
                 "--descriptor-binary" => format = ExportFormat::DescriptorBinary,
                 "--descriptor-prototext" => format = ExportFormat::DescriptorPrototext,
+                "--node" => match args_iter.next() {
+                    Some(pos) => node_pos = Some(pos.to_string()),
+                    None => {
+                        self.message = "export: --node requires a position argument".to_string();
+                        return;
+                    }
+                },
                 other => path_parts.push(other),
             }
         }
@@ -856,6 +865,18 @@ impl App {
             self.message = "export: missing path".to_string();
             return;
         }
+        // Resolve --node to a tree index, defaulting to the cursor.
+        let node = if let Some(ref pos) = node_pos {
+            match self.resolve_path(pos) {
+                Some(idx) => idx,
+                None => {
+                    self.message = format!("export: unknown node {pos}");
+                    return;
+                }
+            }
+        } else {
+            self.cursor
+        };
         let path = path_parts.join(" ");
         match format {
             ExportFormat::DescriptorBinary | ExportFormat::DescriptorPrototext => {
@@ -863,11 +884,20 @@ impl App {
                 // of the cursor's children, and `child_slots` reports a
                 // stop as having none — so an unbaked node would export
                 // as a message with no fields at all.
-                if !self.drain_for_export() {
+                if !self.bake_subtree(node) {
+                    self.message = format!(
+                        "export refused: this node is still incomplete and could not be \
+                         finished ({})",
+                        self.message
+                    );
                     return;
                 }
                 let as_prototext = format == ExportFormat::DescriptorPrototext;
-                self.message = match self.export_descriptor(&path, as_prototext) {
+                let saved_cursor = self.cursor;
+                self.cursor = node;
+                let result = self.export_descriptor(&path, as_prototext);
+                self.cursor = saved_cursor;
+                self.message = match result {
                     Ok(()) => format!("exported to {path}"),
                     Err(e) => e,
                 };
@@ -882,16 +912,21 @@ impl App {
                 // raw range and never reads a rendered line, so it has
                 // nothing to wait for — and making it wait would turn a
                 // free root export into a multi-second one.
-                if extract_format == ExtractFormat::Text && !self.drain_for_export() {
+                if extract_format == ExtractFormat::Text && !self.bake_subtree(node) {
+                    self.message = format!(
+                        "export refused: this node is still incomplete and could not be \
+                         finished ({})",
+                        self.message
+                    );
                     return;
                 }
-                let lines = self.subtree_lines(self.cursor);
+                let lines = self.subtree_lines(node);
                 match extract::extract(
                     Path::new(&path),
                     extract_format,
                     &self.blob,
                     &lines,
-                    &self.tree[self.cursor],
+                    &self.tree[node],
                     0..lines.len(),
                 ) {
                     Ok(()) => self.message = format!("exported to {path}"),
