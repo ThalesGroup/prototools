@@ -498,6 +498,113 @@ fn select_and_search_may_coexist() {
     assert!(app.search_highlight, "search is highlighted");
 }
 
+/// `select_node: true` selects the whole subtree of the node: target,
+/// spanning from its first line to its last descendant line.
+#[test]
+fn select_node_covers_the_whole_subtree() {
+    let (mut app, _) = repeated_message_fixture();
+    // /1 is an Item message with one scalar child — 2 lines total.
+    app.set_script(script_of(
+        "steps:\n- text: first\n  node: /1\n  select_node: true\n",
+    ));
+
+    assert!(app.select_engaged, "select_node must engage the selection");
+    let span = app.selection_span().expect("a span must be present");
+    let (lo_line, lo_col, hi_line, _hi_col) = span;
+
+    let node = app.cursor;
+    let subtree_start = app.absolute_start(node);
+    let subtree_lines = app.tree[node].lines_total as usize;
+    assert_eq!(lo_col, 0, "selection starts at column 0");
+    assert_eq!(
+        lo_line, subtree_start,
+        "selection starts at the node header"
+    );
+    assert_eq!(
+        hi_line,
+        subtree_start + subtree_lines - 1,
+        "selection ends at the last line of the subtree"
+    );
+}
+
+/// `select_node: true` on a step with `search:` selects the node: target's
+/// subtree, not the line the search moved the cursor to.
+#[test]
+fn select_node_is_not_affected_by_search() {
+    let (mut app, _) = repeated_message_fixture();
+    // node: /1 (Item), search: moves the caret into /1's child scalar.
+    // select_node must still cover /1's whole subtree.
+    app.set_script(script_of(
+        "steps:\n- text: both\n  node: /1\n  select_node: true\n  search: \"v:\"\n",
+    ));
+
+    assert!(app.select_engaged, "selection must be engaged");
+    assert!(app.search_highlight, "search must also be active");
+
+    let span = app.selection_span().expect("span must exist");
+    let (lo_line, _lo_col, hi_line, _hi_col) = span;
+
+    // Resolve /1 to confirm the expected subtree bounds.
+    let node_1 = app.resolve_path("/1").expect("/1 must resolve");
+    let subtree_start = app.absolute_start(node_1);
+    let subtree_lines = app.tree[node_1].lines_total as usize;
+    assert_eq!(lo_line, subtree_start, "selection starts at /1 header");
+    assert_eq!(
+        hi_line,
+        subtree_start + subtree_lines - 1,
+        "selection ends at /1's last descendant, not the search match"
+    );
+}
+
+/// Spec 0366: `select_node:` written before `search:` selects the `node:`
+/// target's subtree, not the search-match node.
+#[test]
+fn select_node_before_search_selects_node_subtree() {
+    let (mut app, _) = repeated_message_fixture();
+    // select_node comes first in the YAML, so it fires before search.
+    app.set_script(script_of(
+        "steps:\n- text: x\n  node: /1\n  select_node: true\n  search: \"v:\"\n",
+    ));
+
+    let span = app.selection_span().expect("span must exist");
+    let (lo_line, _lo_col, hi_line, _hi_col) = span;
+    let node_1 = app.resolve_path("/1").expect("/1 must resolve");
+    let subtree_start = app.absolute_start(node_1);
+    let subtree_lines = app.tree[node_1].lines_total as usize;
+    assert_eq!(lo_line, subtree_start, "selection starts at /1 header");
+    assert_eq!(
+        hi_line,
+        subtree_start + subtree_lines - 1,
+        "select_node selects /1's subtree, not the search match"
+    );
+}
+
+/// Spec 0366: `search:` written before `select_node:` means search runs
+/// first — the selection then covers the search-match node's subtree.
+#[test]
+fn search_before_select_node_selects_match_subtree() {
+    let (mut app, _) = repeated_message_fixture();
+    // search comes first, so the cursor moves to the match before select_node.
+    // "v:" matches the scalar child of /1, so the cursor lands there.
+    // select_node then selects that scalar's subtree (1 line).
+    app.set_script(script_of(
+        "steps:\n- text: x\n  node: /1\n  search: \"v:\"\n  select_node: true\n",
+    ));
+
+    let span = app.selection_span().expect("span must exist");
+    let (lo_line, _lo_col, hi_line, _hi_col) = span;
+    // The cursor is now on the search-match node (the scalar child), not /1.
+    let match_node = app.cursor;
+    let match_start = app.absolute_start(match_node);
+    let match_lines = app.tree[match_node].lines_total as usize;
+    assert_eq!(lo_line, match_start, "selection starts at the match node");
+    assert_eq!(
+        hi_line,
+        match_start + match_lines - 1,
+        "select_node selects the match node's subtree"
+    );
+}
+
 // ── Spec 0356: advance_when predicates ────────────────────────────────────
 
 const WIRE_STEP: &str = "\

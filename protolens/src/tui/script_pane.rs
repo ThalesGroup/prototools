@@ -28,7 +28,7 @@ use ratatui::Frame;
 use super::pane_scroll::{AnchorLine, WireAnchor, WireSpan};
 use super::search::SearchScope;
 use super::{App, CursorPos, SearchDir};
-use crate::script::{FoldEntry, Position, Predicate, Script, Step, Wire};
+use crate::script::{Directive, FoldEntry, Position, Predicate, Script, Step, Wire};
 use crate::theme;
 use crate::tui::heat_cue::HeatCueMode;
 
@@ -212,7 +212,7 @@ impl App {
 
         self.script_reset();
         let mut errors = Vec::new();
-        // Spec 0356 S8: apply mode directives before cursor/fold/wire so
+        // Spec 0356 S8: mode switches applied before all view directives so
         // that heat-cue visibility is correct when the view is composed.
         if let Some(on) = step.set_annotations {
             self.annotations = on;
@@ -220,11 +220,17 @@ impl App {
         if let Some(mode) = step.set_heat_cues {
             self.heat_cues = mode;
         }
-        self.script_apply_folds(&step, &mut errors);
-        self.script_apply_cursor(&step, &mut errors);
-        self.script_apply_wire(&step, &mut errors);
-        self.script_apply_search(&step, &mut errors);
-        self.script_apply_select(&step);
+        // Spec 0366: execute position-sensitive directives in YAML key order.
+        for directive in &step.directives {
+            match directive {
+                Directive::Node(pos) => self.script_apply_cursor(pos, &mut errors),
+                Directive::Fold(entries) => self.script_apply_folds(entries, &mut errors),
+                Directive::Wire(wire) => self.script_apply_wire(wire, &mut errors),
+                Directive::SelectLine => self.script_apply_select_line(),
+                Directive::SelectNode => self.script_apply_select_node(),
+                Directive::Search(pat) => self.script_apply_search(pat, &mut errors),
+            }
+        }
         self.script_focus(&step);
         if let Some(prefill) = &step.prefill {
             // Spec 0271 S11: typed, not run. The command line reports
@@ -402,8 +408,8 @@ impl App {
         self.folds_changed();
     }
 
-    fn script_apply_folds(&mut self, step: &Step, errors: &mut Vec<String>) {
-        for entry in &step.fold {
+    fn script_apply_folds(&mut self, entries: &[FoldEntry], errors: &mut Vec<String>) {
+        for entry in entries {
             self.script_apply_fold_entry(entry, errors);
         }
         self.script_settle_cursor();
@@ -436,10 +442,7 @@ impl App {
         }
     }
 
-    fn script_apply_cursor(&mut self, step: &Step, errors: &mut Vec<String>) {
-        let Some(position) = &step.node else {
-            return;
-        };
+    fn script_apply_cursor(&mut self, position: &Position, errors: &mut Vec<String>) {
         match self.script_resolve(position) {
             Some(idx) => {
                 self.unfold_ancestors(idx);
@@ -460,14 +463,6 @@ impl App {
     /// node/search directives left it. Because the selection is
     /// persistent it survives the restore. `script_focus` runs after
     /// this, so scroll positioning has the final word.
-    fn script_apply_select(&mut self, step: &Step) {
-        if step.select_node {
-            self.script_apply_select_node();
-        } else if step.select_line {
-            self.script_apply_select_line();
-        }
-    }
-
     /// Spec 0357: engage the selection background on the caret's current
     /// line when the step declares `select_line: true`.
     ///
@@ -519,18 +514,20 @@ impl App {
             column: 0,
         });
         let last_abs = self.absolute_start(root) + lines_total - 1;
+        // Use usize::MAX - 1 so that selection_span's `hi.1 + 1` does not
+        // overflow; selected_columns clamps the result to the actual line width.
         let caret = if let Some(lp) = self.line_pos(last_abs) {
             CursorPos {
                 node: lp.node,
                 line_in_node: lp.line_in_node,
-                column: usize::MAX,
+                column: usize::MAX - 1,
             }
         } else {
             // Fallback: use the root node's last line directly.
             CursorPos {
                 node: root,
                 line_in_node: (lines_total - 1) as u32,
-                column: usize::MAX,
+                column: usize::MAX - 1,
             }
         };
         self.select_caret = Some(caret);
@@ -540,10 +537,7 @@ impl App {
     /// Spec 0357: fire the search highlight for the step's `search:`
     /// pattern, as if `/pattern Enter` had been typed from column 0 of
     /// the caret node's header line.
-    fn script_apply_search(&mut self, step: &Step, errors: &mut Vec<String>) {
-        let Some(pattern) = step.search.clone() else {
-            return;
-        };
+    fn script_apply_search(&mut self, pattern: &str, errors: &mut Vec<String>) {
         // Build the origin from column 0 of the node header, regardless
         // of where `select_line:` may have left `cursor_column`.
         let saved_line = self.cursor_line_in_node;
@@ -553,10 +547,10 @@ impl App {
         let origin = self.search_origin_for(SearchScope::Main);
         self.cursor_line_in_node = saved_line;
         self.cursor_column = saved_col;
-        self.set_last_search_for(SearchScope::Main, (SearchDir::Forward, pattern.clone()));
+        self.set_last_search_for(SearchScope::Main, (SearchDir::Forward, pattern.to_string()));
         self.search_origin = Some(origin);
         self.search_highlight = true;
-        self.commit_search(SearchDir::Forward, &pattern);
+        self.commit_search(SearchDir::Forward, pattern);
         // If the pattern did not compile, `search_sweep` stays `None`
         // and `commit_search` sets `self.message`. Demote that to a
         // diagnostic so the step's own commentary can still appear on
@@ -609,7 +603,7 @@ impl App {
     /// document row two terminal rows tall and every extent here is in
     /// terminal rows.
     fn script_focus(&mut self, step: &Step) {
-        if step.node.is_none() || self.tree.is_empty() {
+        if !step.has_node() || self.tree.is_empty() {
             return;
         }
         let pane = self.main_area.height as usize;
@@ -653,10 +647,7 @@ impl App {
         self.set_scroll_top(heights.offset(top) as isize);
     }
 
-    fn script_apply_wire(&mut self, step: &Step, errors: &mut Vec<String>) {
-        let Some(wire) = &step.wire else {
-            return;
-        };
+    fn script_apply_wire(&mut self, wire: &Wire, errors: &mut Vec<String>) {
         match wire {
             Wire::Line(position) => match self.script_resolve(position) {
                 Some(idx) => {

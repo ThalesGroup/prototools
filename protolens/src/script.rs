@@ -18,6 +18,21 @@ use serde::Deserialize;
 
 use crate::tui::heat_cue::HeatCueMode;
 
+/// One position-sensitive step directive (spec 0366).
+///
+/// The order of directives within a step is the order the script author
+/// wrote the corresponding YAML keys.  `script_apply` executes them in
+/// that order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Directive {
+    Node(Position),
+    Fold(Vec<FoldEntry>),
+    Wire(Wire),
+    SelectLine,
+    SelectNode,
+    Search(String),
+}
+
 /// The extension a script is found under (spec 0271 S1).
 pub const SCRIPT_EXTENSION: &str = "script";
 
@@ -141,29 +156,28 @@ pub enum Wire {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Step {
     pub text: String,
-    pub node: Option<Position>,
-    /// Spec 0359: ordered list of `(position, depth)` fold directives,
-    /// applied after `script_reset_folds`. Empty means start fully unfolded.
-    pub fold: Vec<FoldEntry>,
-    pub wire: Option<Wire>,
+    /// Spec 0366: position-sensitive directives in YAML key order.
+    /// `script_apply` executes them in this order.
+    pub directives: Vec<Directive>,
     /// Command-line text to prefill, without the leading `:`
     /// (spec 0271 S11). Never executed by the script.
     pub prefill: Option<String>,
-    /// Whether to select the caret's header line when the step is applied
-    /// (spec 0357).
-    pub select_line: bool,
-    /// Whether to select the entire subtree rooted at the caret node when
-    /// the step is applied.
-    pub select_node: bool,
-    /// Regex to highlight via the search machinery when the step is applied
-    /// (spec 0357).
-    pub search: Option<String>,
     /// Spec 0356: predicates that auto-advance when all hold simultaneously.
     pub advance_when: Vec<Predicate>,
     /// Spec 0356 S8: set `self.annotations` on step entry (`None` = no change).
     pub set_annotations: Option<bool>,
     /// Spec 0356 S8: set `self.heat_cues` on step entry (`None` = no change).
     pub set_heat_cues: Option<HeatCueMode>,
+}
+
+impl Step {
+    /// Whether any `Node` directive appears in this step.  Used by
+    /// `script_focus` to decide whether to adjust the scroll position.
+    pub fn has_node(&self) -> bool {
+        self.directives
+            .iter()
+            .any(|d| matches!(d, Directive::Node(_)))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -192,7 +206,7 @@ impl Script {
             .steps
             .into_iter()
             .enumerate()
-            .map(|(i, s)| s.into_step().map_err(|e| format!("step {}: {e}", i + 1)))
+            .map(|(i, s)| parse_step(s).map_err(|e| format!("step {}: {e}", i + 1)))
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| format!("script {}: {e}", path.display()))?;
         Ok(Script {
@@ -219,10 +233,12 @@ impl Script {
 // ---------------------------------------------------------------------
 // Deserialization
 //
-// The raw shapes exist so that the public types above can be plain enums
-// with no serde attributes on them, and so that "at most one wire key"
-// is checked in one place rather than encoded as an untagged enum that
-// would silently pick the first key that parsed.
+// Steps are deserialized via serde_norway::Value so that the insertion
+// order of YAML keys is preserved (serde_norway::Mapping uses IndexMap).
+// Position-sensitive keys become Directive variants appended in encounter
+// order; position-insensitive keys (text, annotations, heat_cues,
+// advance_when, command) are collected into named slots regardless of
+// where they appear (spec 0366 S3).
 // ---------------------------------------------------------------------
 
 #[derive(Deserialize)]
@@ -230,40 +246,7 @@ impl Script {
 struct RawScript {
     #[serde(default)]
     title: Option<String>,
-    steps: Vec<RawStep>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawStep {
-    #[serde(default)]
-    text: String,
-    #[serde(default)]
-    node: Option<String>,
-    /// Spec 0359: sequence of `"<position> <depth>"` strings.
-    /// A bare scalar (not a sequence) is a load error via serde.
-    #[serde(default)]
-    fold: Option<Vec<String>>,
-    #[serde(default)]
-    wire_line: Option<String>,
-    #[serde(default)]
-    wire_lines: Option<RawRange>,
-    #[serde(default)]
-    wire_node: Option<String>,
-    #[serde(default)]
-    command: Option<String>,
-    #[serde(default, rename = "select_line")]
-    select_line: bool,
-    #[serde(default)]
-    select_node: bool,
-    #[serde(default)]
-    search: Option<String>,
-    #[serde(default, rename = "advance_when")]
-    advance_when: Option<Vec<RawPredicate>>,
-    #[serde(default)]
-    annotations: Option<bool>,
-    #[serde(default, rename = "heat_cues")]
-    heat_cues: Option<HeatCueMode>,
+    steps: Vec<serde_norway::Value>,
 }
 
 #[derive(Deserialize)]
@@ -351,48 +334,149 @@ impl RawPredicate {
     }
 }
 
-impl RawStep {
-    fn into_step(self) -> Result<Step, String> {
-        let wire = match (self.wire_line, self.wire_lines, self.wire_node) {
-            (None, None, None) => None,
-            (Some(p), None, None) => Some(Wire::Line(Position::parse(&p))),
-            (None, Some(r), None) => Some(Wire::Lines {
-                from: Position::parse(&r.from),
-                to: Position::parse(&r.to),
-            }),
-            (None, None, Some(p)) => Some(Wire::Node(Position::parse(&p))),
-            _ => {
-                return Err(
-                    "at most one of `wire_line`, `wire_lines`, `wire_node` per step".to_string(),
-                )
+/// Parse one step from a `serde_norway::Value` (must be a mapping).
+/// Keys are visited in insertion order, so YAML key order becomes
+/// `directives` order (spec 0366 S4).
+fn parse_step(value: serde_norway::Value) -> Result<Step, String> {
+    let mapping = value
+        .as_mapping()
+        .ok_or("step must be a YAML mapping")?
+        .clone();
+
+    let mut text = String::new();
+    let mut directives: Vec<Directive> = Vec::new();
+    let mut prefill: Option<String> = None;
+    let mut advance_when: Vec<Predicate> = Vec::new();
+    let mut set_annotations: Option<bool> = None;
+    let mut set_heat_cues: Option<HeatCueMode> = None;
+    // Accumulate wire keys to enforce "at most one" in the order they appear.
+    let mut wire_key: Option<(String, serde_norway::Value)> = None;
+
+    for (k, v) in &mapping {
+        let key = k
+            .as_str()
+            .ok_or_else(|| format!("step key must be a string, got {k:?}"))?;
+        match key {
+            "text" => {
+                text = v.as_str().ok_or("text: must be a string")?.to_string();
             }
-        };
-        let fold = self
-            .fold
-            .unwrap_or_default()
-            .into_iter()
-            .map(|s| parse_fold_entry(&s))
-            .collect::<Result<Vec<_>, _>>()?;
-        let advance_when = self
-            .advance_when
-            .unwrap_or_default()
-            .into_iter()
-            .map(RawPredicate::into_predicate)
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(Step {
-            text: self.text,
-            node: self.node.as_deref().map(Position::parse),
-            fold,
-            wire,
-            prefill: self.command,
-            select_line: self.select_line,
-            select_node: self.select_node,
-            search: self.search,
-            advance_when,
-            set_annotations: self.annotations,
-            set_heat_cues: self.heat_cues,
-        })
+            "annotations" => {
+                set_annotations = Some(v.as_bool().ok_or("annotations: must be a boolean")?);
+            }
+            "heat_cues" => {
+                set_heat_cues = Some(
+                    serde_norway::from_value(v.clone()).map_err(|e| format!("heat_cues: {e}"))?,
+                );
+            }
+            "advance_when" => {
+                let raw: Vec<RawPredicate> = serde_norway::from_value(v.clone())
+                    .map_err(|e| format!("advance_when: {e}"))?;
+                advance_when = raw
+                    .into_iter()
+                    .map(RawPredicate::into_predicate)
+                    .collect::<Result<Vec<_>, _>>()?;
+            }
+            "command" => {
+                prefill = Some(v.as_str().ok_or("command: must be a string")?.to_string());
+            }
+            "node" => {
+                let pos = Position::parse(v.as_str().ok_or("node: must be a string")?);
+                directives.push(Directive::Node(pos));
+            }
+            "fold" => {
+                let raw: Vec<String> =
+                    serde_norway::from_value(v.clone()).map_err(|e| format!("fold: {e}"))?;
+                let entries = raw
+                    .into_iter()
+                    .map(|s| parse_fold_entry(&s))
+                    .collect::<Result<Vec<_>, _>>()?;
+                directives.push(Directive::Fold(entries));
+            }
+            "select_line" => {
+                if v.as_bool().ok_or("select_line: must be a boolean")? {
+                    directives.push(Directive::SelectLine);
+                }
+            }
+            "select_node" => {
+                if v.as_bool().ok_or("select_node: must be a boolean")? {
+                    directives.push(Directive::SelectNode);
+                }
+            }
+            "search" => {
+                let pat = v.as_str().ok_or("search: must be a string")?.to_string();
+                directives.push(Directive::Search(pat));
+            }
+            "wire_line" | "wire_lines" | "wire_node" => {
+                if wire_key.is_some() {
+                    return Err(
+                        "at most one of `wire_line`, `wire_lines`, `wire_node` per step"
+                            .to_string(),
+                    );
+                }
+                wire_key = Some((key.to_string(), v.clone()));
+            }
+            other => {
+                return Err(format!("unknown step key: `{other}`"));
+            }
+        }
     }
+
+    // Build the Wire directive from whichever wire key was seen (if any),
+    // and insert it at the position in `directives` corresponding to where
+    // the wire key appeared in the YAML.  Since we deferred wire key parsing,
+    // we need to find its insertion position.  Re-walk the mapping in order.
+    if wire_key.is_some() {
+        // Re-build directives list with Wire inserted at the right position.
+        let mut new_directives: Vec<Directive> = Vec::with_capacity(directives.len() + 1);
+        let mut wire_inserted = false;
+        let mut non_wire_idx = 0; // index into the pre-built directives (no wire)
+
+        for (k, v) in &mapping {
+            let key = k.as_str().unwrap_or("");
+            match key {
+                "wire_line" => {
+                    let pos = Position::parse(v.as_str().ok_or("wire_line: must be a string")?);
+                    new_directives.push(Directive::Wire(Wire::Line(pos)));
+                    wire_inserted = true;
+                }
+                "wire_lines" => {
+                    let raw: RawRange = serde_norway::from_value(v.clone())
+                        .map_err(|e| format!("wire_lines: {e}"))?;
+                    new_directives.push(Directive::Wire(Wire::Lines {
+                        from: Position::parse(&raw.from),
+                        to: Position::parse(&raw.to),
+                    }));
+                    wire_inserted = true;
+                }
+                "wire_node" => {
+                    let pos = Position::parse(v.as_str().ok_or("wire_node: must be a string")?);
+                    new_directives.push(Directive::Wire(Wire::Node(pos)));
+                    wire_inserted = true;
+                }
+                "text" | "annotations" | "heat_cues" | "advance_when" | "command" => {
+                    // position-insensitive: skip
+                }
+                _ => {
+                    // position-sensitive non-wire: take from pre-built list
+                    if non_wire_idx < directives.len() {
+                        new_directives.push(directives[non_wire_idx].clone());
+                        non_wire_idx += 1;
+                    }
+                }
+            }
+        }
+        let _ = wire_inserted; // always true when wire_key.is_some()
+        directives = new_directives;
+    }
+
+    Ok(Step {
+        text,
+        directives,
+        prefill,
+        advance_when,
+        set_annotations,
+        set_heat_cues,
+    })
 }
 
 /// Parse one `"<position> <depth>"` fold-entry string (spec 0359 S2).
@@ -459,26 +543,25 @@ mod tests {
         .expect("must parse");
         let step = &s.steps[0];
         assert_eq!(step.text, "hello");
-        assert_eq!(step.node, Some(Position::Path("/4/2".into())));
         assert_eq!(
-            step.fold,
+            step.directives,
             vec![
-                FoldEntry {
-                    position: Position::Path("/4/2".into()),
-                    depth: 0,
-                },
-                FoldEntry {
-                    position: Position::Path("/4".into()),
-                    depth: usize::MAX,
-                },
+                Directive::Node(Position::Path("/4/2".into())),
+                Directive::Fold(vec![
+                    FoldEntry {
+                        position: Position::Path("/4/2".into()),
+                        depth: 0,
+                    },
+                    FoldEntry {
+                        position: Position::Path("/4".into()),
+                        depth: usize::MAX,
+                    },
+                ]),
+                Directive::Wire(Wire::Lines {
+                    from: Position::Path("/4/2/1".into()),
+                    to: Position::Path("/4/2/3".into()),
+                }),
             ]
-        );
-        assert_eq!(
-            step.wire,
-            Some(Wire::Lines {
-                from: Position::Path("/4/2/1".into()),
-                to: Position::Path("/4/2/3".into()),
-            })
         );
         assert_eq!(
             step.prefill.as_deref(),
@@ -492,8 +575,8 @@ mod tests {
         let s = parse("steps:\n- text: x\n  fold: [\"/3 2\", \"/ 0\", \"/1 Z\"]\n")
             .expect("must parse");
         assert_eq!(
-            s.steps[0].fold,
-            vec![
+            s.steps[0].directives,
+            vec![Directive::Fold(vec![
                 FoldEntry {
                     position: Position::Path("/3".into()),
                     depth: 2,
@@ -506,6 +589,27 @@ mod tests {
                     position: Position::Path("/1".into()),
                     depth: usize::MAX,
                 },
+            ])]
+        );
+    }
+
+    /// Spec 0366: YAML key order becomes directive execution order.
+    #[test]
+    fn directive_order_matches_yaml_key_order() {
+        let s = parse(
+            "steps:\n\
+             - text: x\n  \
+               search: foo\n  \
+               node: /2\n  \
+               select_line: true\n",
+        )
+        .expect("must parse");
+        assert_eq!(
+            s.steps[0].directives,
+            vec![
+                Directive::Search("foo".into()),
+                Directive::Node(Position::Path("/2".into())),
+                Directive::SelectLine,
             ]
         );
     }
