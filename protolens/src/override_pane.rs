@@ -6,6 +6,7 @@
 //! `override` itself is a reserved Rust keyword, unusable as a module name
 //! (spec 0114 Background) — hence `override_pane`.
 
+#[cfg(test)]
 use std::sync::atomic::AtomicBool;
 
 use prost_reflect::{Cardinality, DescriptorPool};
