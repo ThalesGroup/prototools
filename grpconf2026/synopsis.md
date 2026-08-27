@@ -1073,8 +1073,8 @@ listed as a requirement for script mode; it is satisfied by
 construction and needs no code.
 
 **The inner layer** is protolens's script mode (spec 0271). A step
-*declares a view* — `fold`, `unfold`, `node`, `wire-line`/`wire-lines`/
-`wire-node`, plus the commentary `text` — and stepping is `;`/`,`.
+*declares a view* — `fold`, `unfold`, `node`, `wire_line`/`wire_lines`/
+`wire_node`, plus the commentary `text` — and stepping is `;`/`,`.
 There is no undo stack because a step is a reset plus a re-derivation.
 `space` turns navigation off at any moment, from wherever the step left
 the caret; that is the "instant fall-through to manual" requirement, and

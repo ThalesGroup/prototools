@@ -66,7 +66,7 @@ steps:
   - text: the second item, alone
     fold: [\"/ 0\", \"/2 Z\"]
     node: /2/1
-    wire-line: /2/1
+    wire_line: /2/1
   - text: and a command to run
     node: /3
     command: \"override /3 --as test.Item\"
@@ -200,7 +200,7 @@ fn a_step_waits_for_its_lines() {
     );
 
     app.set_script(script_of(
-        "steps:\n- text: the last item's value\n  node: /3/1\n  wire-line: /3/1\n",
+        "steps:\n- text: the last item's value\n  node: /3/1\n  wire_line: /3/1\n",
     ));
 
     assert_eq!(app.positional_path(app.cursor), "/3/1");
@@ -553,7 +553,7 @@ fn advance_when_fires_immediately_if_satisfied_at_entry() {
 steps:
   - text: already satisfied
     node: /1
-    wire-line: /1
+    wire_line: /1
     advance_when:
       - wire: /1
   - text: done
@@ -712,7 +712,7 @@ steps:
 /// Spec 0356 test 9: `not:` inverts a single predicate.
 #[test]
 fn advance_when_not_inverts_predicate() {
-    // Step 1 keeps wire open via wire-line: so not: starts false;
+    // Step 1 keeps wire open via wire_line: so not: starts false;
     // pressing `w` closes it, making not: true.
     let script = "\
 steps:
@@ -720,7 +720,7 @@ steps:
     node: /1
   - text: close wire
     node: /1
-    wire-line: /1
+    wire_line: /1
     advance_when:
       - not:
           - wire: /1
@@ -749,7 +749,7 @@ fn advance_when_not_of_conjunction() {
 steps:
   - text: leave /1 or close wire
     node: /1
-    wire-line: /1
+    wire_line: /1
     advance_when:
       - not:
           - wire: /1

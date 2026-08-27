@@ -105,7 +105,7 @@ steps:
       which field and what shape; it does not say what the payload
       means.
     node: /1
-    wire-line: /1
+    wire_line: /1
 
   - text: |
       Field 4 is a nested message — or a string that happens to parse.
@@ -113,7 +113,7 @@ steps:
     fold: all
     unfold: [/4]
     node: /4/2
-    wire-lines:
+    wire_lines:
       from: /4/2/1
       to: /4/2/3
 
@@ -375,12 +375,12 @@ Nothing else, for now (N6).
 
 Three forms, mapping onto spec 0268's two gestures:
 
-- `wire-line: <position>` — the `w` gesture: the node's own line shows
+- `wire_line: <position>` — the `w` gesture: the node's own line shows
   its bytes.
-- `wire-lines: { from: <position>, to: <position> }` — the `w` gesture
+- `wire_lines: { from: <position>, to: <position> }` — the `w` gesture
   over a range. The nested form exists so a search position containing
   a dash is not mistaken for a range separator.
-- `wire-node: <position>` — the `W` gesture: the whole subtree.
+- `wire_node: <position>` — the `W` gesture: the whole subtree.
 
 At most one per step; two is an error at load.
 

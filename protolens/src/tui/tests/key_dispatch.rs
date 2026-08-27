@@ -588,18 +588,23 @@ fn v_in_main_pane_resolves_an_enum_scalars_natural_type() {
 
 /// Spec 0144 G2 (`fqdn_under_focus` doc comment): the internal,
 /// non-real `decode::MESSAGE_SET_ITEM_FQDN` placeholder is never
-/// registered as a real message — `v` must treat it the same as "no
-/// type at all", not surface a confusing "unknown type" message.
+/// registered as a real message — `v` must not surface a confusing
+/// "unknown type" message. With the parent-fallback feature, `v` now
+/// climbs to the enclosing message's type instead, stopping at "no
+/// proto root configured" (no root is set in the fixture).
 #[test]
 #[cfg(unix)]
-fn v_is_a_no_op_for_the_internal_message_set_item_fqdn() {
+fn v_falls_back_to_parent_for_the_internal_message_set_item_fqdn() {
     let mut app = message_set_fixture();
     let item_idx = node_with_type(&app, decode::MESSAGE_SET_ITEM_FQDN)
         .expect("fixture must contain a MessageSet Item node");
     app.cursor = item_idx;
 
     app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
-    assert_eq!(app.message, "no declaration to jump to here");
+    assert_eq!(
+        app.message,
+        "no proto root configured; set one with :proto-root <dir> or -I/--proto-root"
+    );
 }
 
 /// Spec 0144 G3/G4: a real, resolving FQDN (`type_as_fixture`'s

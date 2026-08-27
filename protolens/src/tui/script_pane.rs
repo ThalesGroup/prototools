@@ -632,7 +632,7 @@ impl App {
                 let (first, last) = (self.absolute_start(a), self.absolute_start(b));
                 if first > last {
                     errors.push(format!(
-                        "wire-lines: {} comes after {}",
+                        "wire_lines: {} comes after {}",
                         from.as_written(),
                         to.as_written()
                     ));
@@ -640,7 +640,7 @@ impl App {
                 }
                 match self.wire_span_of_lines(first, last) {
                     Some(span) => self.show_wire_span(span),
-                    None => errors.push("wire-lines: no lines there".to_string()),
+                    None => errors.push("wire_lines: no lines there".to_string()),
                 }
             }
             Wire::Node(position) => match self.script_resolve(position) {

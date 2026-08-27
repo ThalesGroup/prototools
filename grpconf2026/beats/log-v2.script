@@ -42,7 +42,7 @@
 #
 # TWO error lines are expected there, and only two:
 #
-#   no match for "val_ohb"      (the node:, and again the wire-line:)
+#   no match for "val_ohb"      (the node:, and again the wire_line:)
 #
 # The headless transcript applies node:/fold:/wire: but never executes
 # a prefill, so the route request is still an escaped byte string when
@@ -268,7 +268,7 @@ steps:
           Bob's API key.
     fold: ["/ 1", "/1 1", "/1/4 Z"]
     node: coffee in Grenoble
-    wire-line: coffee in Grenoble
+    wire_line: coffee in Grenoble
 
   - text: |
       2.  A non-minimal varint.
@@ -286,7 +286,7 @@ steps:
       8 priced.
     fold: ["/ 1", "/3 1", "/3/4 Z"]
     node: val_ohb
-    wire-line: val_ohb
+    wire_line: val_ohb
 
   - text: |
       3.  A field the recovered schema does not declare.
@@ -302,7 +302,7 @@ steps:
       the other deduction from beat 8.
     fold: ["/ 1", "/3 1", "/3/4 Z"]
     node: bobapp/0.9.3-rc2
-    wire-line: bobapp/0.9.3-rc2
+    wire_line: bobapp/0.9.3-rc2
 
   - text: |
       4.  The truncated record — back where beat 9 started.

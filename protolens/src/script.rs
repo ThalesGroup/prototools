@@ -241,11 +241,11 @@ struct RawStep {
     /// A bare scalar (not a sequence) is a load error via serde.
     #[serde(default)]
     fold: Option<Vec<String>>,
-    #[serde(default, rename = "wire-line")]
+    #[serde(default)]
     wire_line: Option<String>,
-    #[serde(default, rename = "wire-lines")]
+    #[serde(default)]
     wire_lines: Option<RawRange>,
-    #[serde(default, rename = "wire-node")]
+    #[serde(default)]
     wire_node: Option<String>,
     #[serde(default)]
     command: Option<String>,
@@ -358,7 +358,7 @@ impl RawStep {
             (None, None, Some(p)) => Some(Wire::Node(Position::parse(&p))),
             _ => {
                 return Err(
-                    "at most one of `wire-line`, `wire-lines`, `wire-node` per step".to_string(),
+                    "at most one of `wire_line`, `wire_lines`, `wire_node` per step".to_string(),
                 )
             }
         };
@@ -445,7 +445,7 @@ mod tests {
              - text: hello\n  \
                node: /4/2\n  \
                fold: [\"/4/2 0\", \"/4 Z\"]\n  \
-               wire-lines:\n    \
+               wire_lines:\n    \
                  from: /4/2/1\n    \
                  to: /4/2/3\n  \
                command: override /7 --as google.protobuf.Any\n",
@@ -534,7 +534,7 @@ mod tests {
     #[test]
     fn two_wire_directives_are_a_load_error() {
         let err =
-            parse("steps:\n- text: x\n  wire-line: /1\n  wire-node: /2\n").expect_err("must fail");
+            parse("steps:\n- text: x\n  wire_line: /1\n  wire_node: /2\n").expect_err("must fail");
         assert!(err.contains("at most one"), "{err}");
     }
 
