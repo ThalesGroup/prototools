@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+#
+# SPDX-License-Identifier: MIT
+
+# Reset the demo workspace: remove all files generated during a previous run.
+# alice/ is repopulated by the demo script itself (reproto, protolens exports,
+# overrides). Sourced by teleprompt at startup unless --no-init was given.
+
+_init_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+rm -rf "${_init_dir}/alice"
+mkdir -p "${_init_dir}/alice"
+unset _init_dir

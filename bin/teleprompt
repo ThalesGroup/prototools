@@ -5,9 +5,12 @@
 #
 # SPDX-License-Identifier: MIT
 
-# Parse arguments: [--splash <file-or-name>] <commands_file>
+# Parse arguments: [--splash <file-or-name>] [--no-splash] [--init <file>] [--no-init] <commands_file>
 SPLASH_FILE=""
 SPLASH_NAME=""
+NO_SPLASH=0
+INIT_FILE=""
+NO_INIT=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --splash) SPLASH_ARG="$2"; shift 2
@@ -17,12 +20,53 @@ while [[ $# -gt 0 ]]; do
                 SPLASH_NAME="$SPLASH_ARG"
             fi
             ;;
-        *)        break ;;
+        --no-splash) NO_SPLASH=1; shift ;;
+        --init)      INIT_FILE="$2"; shift 2 ;;
+        --no-init)   NO_INIT=1;   shift ;;
+        --help|-h)
+            cat <<'EOF'
+Usage: teleprompt [OPTIONS] <commands_file>
+
+A readline-powered demo shell that steps through a script of commands.
+
+Options:
+  --splash <file|name>  Show a splash screen at startup.
+                        If <file> exists, its contents are printed.
+                        Otherwise <name> is passed to header() and rendered
+                        as a styled SVG title via magick + chafa.
+                        Automatic: if <commands_file> has a sibling with the
+                        same stem and a .splash extension, it is used when
+                        --splash is not given.
+  --no-splash           Skip the splash screen entirely, even if a .splash
+                        sibling exists.
+  --init <file>         Source <file> at startup instead of the automatic
+                        stem.init sibling.
+  --no-init             Skip the startup init script entirely, even if a
+                        .init sibling exists (or --init was given).
+                        Automatic: if <commands_file> has a sibling with the
+                        same stem and a .init extension, it is sourced into
+                        the shell before the first command is presented.
+  --help, -h            Show this help and exit.
+
+Keyboard shortcuts (during the demo):
+  Enter         Run the current command.
+  Up / Ctrl-P   Go to the previous command.
+  Down / Ctrl-N Go to the next command.
+  PgUp / PgDn   Jump 10 commands back / forward.
+  F1            Show keyboard shortcut help.
+  F2            Duplicate the current command.
+  F3            Delete the current command.
+  Ctrl-S        Save the (possibly edited) script back to <commands_file>.
+  Ctrl-D        Quit.
+EOF
+            exit 0
+            ;;
+        *)           break ;;
     esac
 done
 
 CONFIG_FILE="$1"
-[[ -f "$CONFIG_FILE" ]] || { echo "Usage: $0 [--splash <file|name>] <commands_file>"; exit 1; }
+[[ -f "$CONFIG_FILE" ]] || { echo "Usage: $0 [--splash <file|name>] [--no-splash] [--init <file>] [--no-init] <commands_file>"; exit 1; }
 
 trap 'stty sane' EXIT
 
@@ -333,20 +377,38 @@ unset _ratio_source
 stty -ixon -echoctl
 
 clear
-if [[ -n "$SPLASH_NAME" ]]; then
-    header "$SPLASH_NAME"
-elif [[ -f "$SPLASH_FILE" ]]; then
-    cat "$SPLASH_FILE"
-else
-    _config_stem="$(basename "$CONFIG_FILE")"
-    _config_stem="${_config_stem%.*}"
-    _auto_splash="$(dirname "$CONFIG_FILE")/${_config_stem}.splash"
-    if [[ -f "$_auto_splash" ]]; then
-        cat "$_auto_splash"
+if [[ "$NO_SPLASH" -eq 0 ]]; then
+    if [[ -n "$SPLASH_NAME" ]]; then
+        header "$SPLASH_NAME"
+    elif [[ -f "$SPLASH_FILE" ]]; then
+        cat "$SPLASH_FILE"
+    else
+        _config_stem="$(basename "$CONFIG_FILE")"
+        _config_stem="${_config_stem%.*}"
+        _auto_splash="$(dirname "$CONFIG_FILE")/${_config_stem}.splash"
+        if [[ -f "$_auto_splash" ]]; then
+            cat "$_auto_splash"
+        fi
+        unset _config_stem _auto_splash
     fi
-    unset _config_stem _auto_splash
 fi
 printf "%s  F1  help   F2  duplicate   F3  delete   Ctrl-S  save%s\n\n" "$YELLOW" "$RESET"
+
+if [[ "$NO_INIT" -eq 0 ]]; then
+    if [[ -n "$INIT_FILE" ]]; then
+        # shellcheck source=/dev/null
+        source "$INIT_FILE"
+    else
+        _config_stem="$(basename "$CONFIG_FILE")"
+        _config_stem="${_config_stem%.*}"
+        _auto_init="$(dirname "$CONFIG_FILE")/${_config_stem}.init"
+        if [[ -f "$_auto_init" ]]; then
+            # shellcheck source=/dev/null
+            source "$_auto_init"
+        fi
+        unset _config_stem _auto_init
+    fi
+fi
 
 # ---------------------------------------------------------------------------
 # Start persistent Python readline coproc.
