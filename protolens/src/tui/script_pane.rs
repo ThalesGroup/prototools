@@ -461,9 +461,25 @@ impl App {
     /// persistent it survives the restore. `script_focus` runs after
     /// this, so scroll positioning has the final word.
     fn script_apply_select(&mut self, step: &Step) {
-        if !step.select_line {
-            return;
+        if step.select_node {
+            self.script_apply_select_node();
+        } else if step.select_line {
+            self.script_apply_select_line();
         }
+    }
+
+    /// Spec 0357: engage the selection background on the caret's current
+    /// line when the step declares `select_line: true`.
+    ///
+    /// Runs after `script_apply_search`, so if the search moved the
+    /// caret to a match, the selection lands on that line. The anchor is
+    /// fixed at column 0; the caret is moved to the last column
+    /// (including any `; shadowed_scalar` suffix) to make the span cover
+    /// the full line, then immediately restored to wherever the
+    /// node/search directives left it. Because the selection is
+    /// persistent it survives the restore. `script_focus` runs after
+    /// this, so scroll positioning has the final word.
+    fn script_apply_select_line(&mut self) {
         let saved_column = self.cursor_column;
         let (_, last) = self.caret_bounds();
         self.select_anchor = Some(CursorPos {
@@ -486,6 +502,39 @@ impl App {
         // `cursor_column`. scroll positioning is left to `script_focus`,
         // which runs after this.
         self.cursor_column = saved_column;
+    }
+
+    /// Select the entire subtree rooted at the caret node: anchor at the
+    /// node's first line (col 0), caret at the subtree's very last line
+    /// (col `usize::MAX`, clamped by rendering to the actual line width).
+    fn script_apply_select_node(&mut self) {
+        let root = self.cursor;
+        let lines_total = self.tree[root].lines_total as usize;
+        if lines_total == 0 {
+            return;
+        }
+        self.select_anchor = Some(CursorPos {
+            node: root,
+            line_in_node: 0,
+            column: 0,
+        });
+        let last_abs = self.absolute_start(root) + lines_total - 1;
+        let caret = if let Some(lp) = self.line_pos(last_abs) {
+            CursorPos {
+                node: lp.node,
+                line_in_node: lp.line_in_node,
+                column: usize::MAX,
+            }
+        } else {
+            // Fallback: use the root node's last line directly.
+            CursorPos {
+                node: root,
+                line_in_node: (lines_total - 1) as u32,
+                column: usize::MAX,
+            }
+        };
+        self.select_caret = Some(caret);
+        self.select_engaged = true;
     }
 
     /// Spec 0357: fire the search highlight for the step's `search:`

@@ -152,6 +152,9 @@ pub struct Step {
     /// Whether to select the caret's header line when the step is applied
     /// (spec 0357).
     pub select_line: bool,
+    /// Whether to select the entire subtree rooted at the caret node when
+    /// the step is applied.
+    pub select_node: bool,
     /// Regex to highlight via the search machinery when the step is applied
     /// (spec 0357).
     pub search: Option<String>,
@@ -251,6 +254,8 @@ struct RawStep {
     command: Option<String>,
     #[serde(default, rename = "select_line")]
     select_line: bool,
+    #[serde(default)]
+    select_node: bool,
     #[serde(default)]
     search: Option<String>,
     #[serde(default, rename = "advance_when")]
@@ -381,6 +386,7 @@ impl RawStep {
             wire,
             prefill: self.command,
             select_line: self.select_line,
+            select_node: self.select_node,
             search: self.search,
             advance_when,
             set_annotations: self.annotations,
