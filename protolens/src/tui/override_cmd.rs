@@ -409,7 +409,7 @@ impl App {
         for (i, &b) in bytes.iter().enumerate() {
             if b.is_ascii_uppercase() && i > 0 {
                 let prev_lower = bytes[i - 1].is_ascii_lowercase() || bytes[i - 1].is_ascii_digit();
-                let next_lower = bytes.get(i + 1).map_or(false, |nb| nb.is_ascii_lowercase());
+                let next_lower = bytes.get(i + 1).is_some_and(|nb| nb.is_ascii_lowercase());
                 let prev_upper = bytes[i - 1].is_ascii_uppercase();
                 if prev_lower || (prev_upper && next_lower) {
                     out.push('_');

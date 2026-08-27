@@ -3,7 +3,9 @@
 // SPDX-License-Identifier: MIT
 
 use super::super::heat_worker::{HeatRequest, HeatWorkerHandle};
-use super::super::render::{display_pieces, window_styles_for, DisplayPiece, ACTIVITY_GLYPH};
+use super::super::render::{
+    display_pieces, window_styles_for, DisplayPiece, FoldState, ACTIVITY_GLYPH,
+};
 use super::super::*;
 use super::support::*;
 use prototext_core::serialize::encode_text::annotation_start;
@@ -3454,8 +3456,10 @@ fn display_pieces_cover_every_transform() {
             owner,
             &no_hints,
             first_node,
-            fold_closed,
-            None,
+            FoldState {
+                closed: fold_closed,
+                style: None,
+            },
             shadowed,
             annotations,
         )

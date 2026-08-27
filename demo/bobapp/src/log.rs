@@ -33,8 +33,6 @@ use prost_reflect::{DescriptorPool, DynamicMessage, Value};
 
 use crate::request::{message, set};
 
-/// `bobapp.v1.Log`, fully qualified.
-pub const LOG_TYPE: &str = "bobapp.v1.Log";
 /// `bobapp.v1.Entry`, fully qualified.
 pub const ENTRY_TYPE: &str = "bobapp.v1.Entry";
 

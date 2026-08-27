@@ -289,6 +289,13 @@ pub(super) enum DisplayPiece<'a> {
     },
 }
 
+/// Fold state for [`display_pieces`]: whether the node is closed and
+/// the pre-computed style for the `"{ ... }"` summary glyph.
+pub(super) struct FoldState {
+    pub closed: bool,
+    pub style: Option<Style>,
+}
+
 /// Spec 0362 S2/S3: forward-only iterator of display pieces for one
 /// rendered row.  All state is passed explicitly so that `row_spans`
 /// can hold a `&LineStyles` borrow at the call site without conflict.
@@ -300,14 +307,13 @@ pub(super) enum DisplayPiece<'a> {
 ///      `end` = `brace_pos` when folded, else annotation-hide boundary.
 ///   2. Fold summary: emit `"{ ... }"` when folded.
 ///   3. Shadowed suffix: emit `";"`  + `" shadowed_scalar"` when
-///      `shadowed && annotations && !fold_closed`.
+///      `shadowed && annotations && !fold.closed`.
 pub(super) fn display_pieces<'a>(
     raw: &'a str,
     owner: Option<usize>,
     hints: &'a LineStyles,
     first_node: usize,
-    fold_closed: bool,
-    fold_style: Option<Style>,
+    fold: FoldState,
     shadowed: bool,
     annotations: bool,
 ) -> impl Iterator<Item = DisplayPiece<'a>> {
@@ -323,7 +329,7 @@ pub(super) fn display_pieces<'a>(
     // Concretely, `"  a {  #@ Mid = 1"` folds to
     // `"  a { ... }  #@ Mid = 1"`: the annotation is NOT suppressed,
     // only the message body between `{` and the closing `}` is.
-    let brace_pos: Option<usize> = if fold_closed { raw.rfind('{') } else { None };
+    let brace_pos: Option<usize> = if fold.closed { raw.rfind('{') } else { None };
     // Phase 1 runs in two sub-windows:
     //   window_a: [raw_start .. brace_pos)   — up to but not including `{`
     //   (Phase 2 emits the full "{ ... }" at this point)
@@ -401,11 +407,11 @@ pub(super) fn display_pieces<'a>(
     emit_raw(&mut pieces, raw_start, window_a_end);
 
     // Phase 2: fold summary replaces the `{` and its content.
-    if fold_closed {
+    if fold.closed {
         pieces.push(DisplayPiece::Lit {
             text: "{ ... }",
             role: None,
-            style: fold_style,
+            style: fold.style,
         });
     }
 
@@ -1069,8 +1075,10 @@ impl App {
             owner,
             &NO_STYLES,
             self.first_node,
-            fold_closed,
-            None, // fold_style: irrelevant, text-only path
+            FoldState {
+                closed: fold_closed,
+                style: None,
+            },
             shadowed,
             true, // annotation hiding already done by caller
         )
@@ -1319,8 +1327,10 @@ impl App {
             node,
             hints,
             self.first_node,
-            fold_closed,
-            fold_style,
+            FoldState {
+                closed: fold_closed,
+                style: fold_style,
+            },
             shadowed,
             self.annotations,
         ) {
@@ -2859,7 +2869,7 @@ impl App {
         let style = upper_heat
             .or_else(|| self.bake_dot_style())
             .or_else(|| self.shadow_dot_style())
-            .or_else(|| prefetch_heat);
+            .or(prefetch_heat);
         let span = match style {
             Some(style) => Span::styled(ACTIVITY_GLYPH, style),
             None => Span::raw(" "),

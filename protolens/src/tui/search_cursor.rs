@@ -101,6 +101,22 @@ pub(super) struct Segment {
     pub(super) end: Place,
 }
 
+/// The read-only document view a [`DocCursor`] needs: tree structure,
+/// node texts, the shadow bitset, and the annotations display flag.
+///
+/// Passed as a unit to [`DocCursor::with_marks`], [`find_in_segment`],
+/// and [`find_last_in_segment`] so those functions stay under the
+/// `too_many_arguments` limit (spec 0367).
+pub(super) struct DocView<'a> {
+    pub st: Structure<'a>,
+    pub text: &'a [Option<Box<str>>],
+    /// Shadow bitset (spec 0343 B7). `None` before the filter runs or
+    /// when no slots are marked.
+    pub shadowed: Option<Arc<Vec<u64>>>,
+    /// Mirror of `App::annotations`.
+    pub annotations: bool,
+}
+
 /// The bytes of one [`Segment`], chunk by chunk.
 pub(super) struct DocCursor<'a> {
     st: Structure<'a>,
@@ -144,22 +160,28 @@ impl<'a> DocCursor<'a> {
         seg: Segment,
         abort: Option<(&'a AtomicU64, u64)>,
     ) -> Self {
-        Self::with_marks(st, text, None, false, seg, abort)
+        Self::with_marks(
+            DocView {
+                st,
+                text,
+                shadowed: None,
+                annotations: false,
+            },
+            seg,
+            abort,
+        )
     }
 
     /// Like [`Self::new`] but with the shadow bitset and annotations
     /// flag so the cursor includes `; shadowed_scalar` suffixes (B11).
     pub(super) fn with_marks(
-        st: Structure<'a>,
-        text: &'a [Option<Box<str>>],
-        shadowed: Option<Arc<Vec<u64>>>,
-        annotations: bool,
+        doc: DocView<'a>,
         seg: Segment,
         abort: Option<(&'a AtomicU64, u64)>,
     ) -> Self {
         let mut cur = DocCursor {
-            st,
-            text,
+            st: doc.st,
+            text: doc.text,
             start: seg.start,
             end: seg.end,
             at: seg.start,
@@ -167,8 +189,8 @@ impl<'a> DocCursor<'a> {
             offset: 0,
             close: String::new(),
             mark: String::new(),
-            shadowed,
-            annotations,
+            shadowed: doc.shadowed,
+            annotations: doc.annotations,
             abort,
         };
         cur.reload_close();
@@ -556,15 +578,18 @@ impl App {
                 tree: tree.as_slice(),
                 arena: &arena,
             };
+            let doc = DocView {
+                st,
+                text: &text,
+                shadowed,
+                annotations,
+            };
             let abort = Some((&*held, SCAN_LIVE));
             let found = match dir {
                 SearchDir::Forward => {
-                    find_in_segment(st, &text, shadowed, annotations, &re, seg, lo, abort)
-                        .filter(|r| r.start < hi)
+                    find_in_segment(doc, &re, seg, lo, abort).filter(|r| r.start < hi)
                 }
-                SearchDir::Backward => {
-                    find_last_in_segment(st, &text, shadowed, annotations, &re, seg, lo, hi, abort)
-                }
+                SearchDir::Backward => find_last_in_segment(doc, &re, seg, lo, hi, abort),
             };
             // The answer goes out *before* the wake-up, so the main
             // thread's `try_recv` on this channel cannot see the event
@@ -592,32 +617,15 @@ impl App {
         lo: usize,
         hi: usize,
     ) -> Option<Range<usize>> {
-        let st = self.structure();
-        let shadowed = Some(Arc::clone(&self.shadowed));
-        let annotations = self.annotations;
+        let doc = DocView {
+            st: self.structure(),
+            text: &self.node_text,
+            shadowed: Some(Arc::clone(&self.shadowed)),
+            annotations: self.annotations,
+        };
         match dir {
-            SearchDir::Forward => find_in_segment(
-                st,
-                &self.node_text,
-                shadowed,
-                annotations,
-                re,
-                seg,
-                lo,
-                None,
-            )
-            .filter(|r| r.start < hi),
-            SearchDir::Backward => find_last_in_segment(
-                st,
-                &self.node_text,
-                shadowed,
-                annotations,
-                re,
-                seg,
-                lo,
-                hi,
-                None,
-            ),
+            SearchDir::Forward => find_in_segment(doc, re, seg, lo, None).filter(|r| r.start < hi),
+            SearchDir::Backward => find_last_in_segment(doc, re, seg, lo, hi, None),
         }
     }
 }
@@ -681,16 +689,13 @@ impl Drop for SegmentScan {
 /// A free function over the pieces rather than a method, because the
 /// worker holds those pieces through `Arc`s and has no `&App` (S8).
 pub(super) fn find_in_segment(
-    st: Structure<'_>,
-    text: &[Option<Box<str>>],
-    shadowed: Option<Arc<Vec<u64>>>,
-    annotations: bool,
+    doc: DocView<'_>,
     re: &CursorRegex,
     seg: Segment,
     from: usize,
     abort: Option<(&AtomicU64, u64)>,
 ) -> Option<Range<usize>> {
-    let mut cursor = DocCursor::with_marks(st, text, shadowed, annotations, seg, abort);
+    let mut cursor = DocCursor::with_marks(doc, seg, abort);
     let mut input = CursorInput::new(&mut cursor);
     input.set_start(from);
     re.find(input).map(|m| m.range())
@@ -702,17 +707,14 @@ pub(super) fn find_in_segment(
 /// There is no reverse engine in the cursor meta API, so this reads the
 /// prefix forwards and keeps the last (S14).
 pub(super) fn find_last_in_segment(
-    st: Structure<'_>,
-    text: &[Option<Box<str>>],
-    shadowed: Option<Arc<Vec<u64>>>,
-    annotations: bool,
+    doc: DocView<'_>,
     re: &CursorRegex,
     seg: Segment,
     from: usize,
     before: usize,
     abort: Option<(&AtomicU64, u64)>,
 ) -> Option<Range<usize>> {
-    let mut cursor = DocCursor::with_marks(st, text, shadowed, annotations, seg, abort);
+    let mut cursor = DocCursor::with_marks(doc, seg, abort);
     let mut input = CursorInput::new(&mut cursor);
     input.set_start(from);
     let mut last = None;

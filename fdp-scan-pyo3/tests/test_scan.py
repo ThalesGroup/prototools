@@ -20,9 +20,16 @@ import fdp_scan_lib
 # ---------------------------------------------------------------------------
 
 def _make_fdp_bytes(name: str) -> bytes:
-    """Return a minimal serialised FileDescriptorProto with the given name."""
+    """Return a minimal serialised FileDescriptorProto with the given name.
+
+    Sets ``package`` as well as ``name`` so that the record passes the
+    structural floor in ``declares_more_than_a_name`` (spec 0313 S4):
+    a descriptor with only its name is indistinguishable from a Java
+    package option and is deliberately rejected.
+    """
     fdp = FileDescriptorProto()
     fdp.name = name
+    fdp.package = "test"
     return fdp.SerializeToString()
 
 
