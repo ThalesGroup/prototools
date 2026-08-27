@@ -77,11 +77,9 @@ steps:
 
   - text: |
       travel_mode: amber diamond + `ohb` annotation.
-      ohb = OverHangingBytes: the DRIVE value (1) is encoded with 5 bytes
-      instead of the canonical 1.
+      ohb = OverHangingBytes: the DRIVE value (1) is encoded with too many bytes.
 
-      [[Pause here — this is a meaningful anomaly. The app is deliberately
-        producing non-canonical encoding. Worth saying so explicitly.]]
+      Weird...
 
       👋 Press `w` for wire-level detail.
 
@@ -94,7 +92,7 @@ steps:
 
   - text: |
       Five bytes for the value 1. Canonical would be one byte (0x01).
-      This is not accidental.
+      This is probably not accidental.
 
       👋 Press `w` to close wire view.
 
@@ -126,9 +124,6 @@ steps:
   - text: |
       🚨 The shadowed field is a google.rpc.Status —
       and it contains an API key 😠
-
-      [[Let this land. The audience should understand: the app was
-        leaking credentials inside a shadowed, normally-invisible field.]]
 
       👋 Press space to step.
 

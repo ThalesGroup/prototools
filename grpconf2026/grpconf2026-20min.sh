@@ -1,15 +1,3 @@
-# SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
-#
-# SPDX-License-Identifier: MIT
-
-# 20-minute cut of grpconf2026.sh.
-#
-# Three cuts applied vs. the full version:
-#   Cut 1 — scale demo removed (googleapis.desc against itself)
-#   Cut 2 — reproto section shortened: no tree / no file view
-#   Cut 3 — intermediate protoc --decode step removed;
-#            go straight from list-schemas to protolens
-
 clear && header "S3NS"
 # \
 # S3NS is a French Thales × Google joint venture that operates a GCP region    \
@@ -101,9 +89,8 @@ ls -lhd alice/app.desc alice/app/* \
 # - app/index.rkyv:     fast-access index ✅                                   \
 # - app/proto/:         decompiled .proto files ✅                             \
 
-# [CUT 2] Skip tree / file view — mention Places API in passing:
-# [[Say: "reproto decompiled the descriptors. Among them: the Google Maps
-#   Places API — which tells us immediately what this app is calling."]]
+# reproto decompiled the descriptors. Among them: the Google Maps
+# Places API — which tells us immediately what this app is calling.
 
 
 header "4. Let's use our descriptors"
@@ -114,9 +101,14 @@ prototext --descriptor-set alice/app.desc list-schemas bob/capture
 # One match: google.maps.places.v1.SearchTextRequest 🏅
 # (Score is negative — we will come back to that.)
 
-# [CUT 3] Skip the intermediate protoc --decode step. Go straight to protolens:
-# [[Say: "protoc can now decode this if we hand it the type —
-#   but protolens shows more."]]
+
+# Given the type, protoc will now happily decode the protobuf 🍀:
+\
+protoc --descriptor_set_in=alice/app.desc \
+       --decode=google.maps.places.v1.SearchTextRequest \
+    < bob/capture   | view_textproto
+
+# But protolens shows more:
 protolens --descriptor-set alice/app.desc bob/capture   --script beats/capture
 
 # There was more to bob/capture than protoc let on 🕵️
@@ -143,17 +135,12 @@ cmp bob/logfile <(prototext encode alice/logfile.all.node.pb)   && echo Identica
 
 # When Bob sees this report, I suspect he will uninstall the app 😬
 
-# [CUT 1] Scale demo removed.
-# [[If time permits, say from the podium:
-#   "protolens handles 25 MB descriptor sets just as fluidly —
-#    we can show that in Q&A."]]
-
 # \
 # In conclusion:                                                               \
-# [[Fill in 3 punchy bullet points — suggested starting points:]]              \
+#                                                                              \
 # - Descriptors are often hiding in the binary itself                          \
 # - protobuf is not opaque if you have the right tools                         \
-# - prototools is open source — pull requests welcome 🙂                      \
+# - prototools is open source — pull requests welcome 🙂                       \
 
 
 # Thank you 👋

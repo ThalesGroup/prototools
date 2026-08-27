@@ -41,9 +41,7 @@ steps:
       Hover over "SearchTextRequest".
 
       A score breakdown tooltip appears.
-      [[Mention the specific penalty shown — "non-canonical encoding" —
-        and foreshadow that this is intentional, not accidental.]]
-      Note the penalty for "non-canonical encoding".
+      Note the 20-point penalty for "non-canonical encoding".
 
       👋 Press space to step.
 
@@ -98,11 +96,9 @@ steps:
         - visible: /7/1
 
   - text: |
-      [[Consider ending on the key takeaway rather than "Let's move on" —
-        something like "So bob/capture is a SearchTextRequest — with a
-        deliberately corrupted encoding." That lands better before
-        transitioning to the logfile.]]
-      Let's move on.
+      So bob/capture is a SearchTextRequest — with a deliberately corrupted encoding.
+
+      Let's move on to the log file.
 
       👋 Press Enter to quit.
 
