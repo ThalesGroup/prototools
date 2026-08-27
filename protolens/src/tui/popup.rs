@@ -95,9 +95,14 @@ pub(super) enum PopupBody {
     },
     /// Spec 0282: what one part of one wire row says.
     Wire(WireBox),
-    /// Spec 0285: what one token of one document row means. A fixed
-    /// two to four lines, so it needs nothing of 0282 S10's `fit`.
-    Doc(Vec<BoxLine>),
+    /// Spec 0285: what one token of one document row means.
+    ///
+    /// `tail` is the count of trailing lines that must never be
+    /// truncated (the "double-click" hint on a heat-suffix box). When
+    /// `tail > 0` and `lines.len() > avail`, `popup_lines` fits the
+    /// body by dropping from the middle and inserting a `…` line, so
+    /// the terminal height governs how many candidates are shown.
+    Doc { lines: Vec<BoxLine>, tail: usize },
 }
 
 /// One line of a box.
@@ -611,7 +616,7 @@ impl App {
                 " {} ",
                 type_key.rsplit('.').next().unwrap_or(type_key)
             )),
-            PopupBody::Doc(_) => popup.doc_title.clone(),
+            PopupBody::Doc { .. } => popup.doc_title.clone(),
             PopupBody::Wire(_) => None,
         };
         let inner_width = lines
@@ -657,7 +662,21 @@ impl App {
     pub(super) fn popup_lines(popup: &Popup, avail: usize) -> Vec<BoxLine> {
         let (type_key, breakdown, candidate) = match &popup.body {
             PopupBody::Wire(body) => return body.fit(avail),
-            PopupBody::Doc(lines) => return lines.clone(),
+            PopupBody::Doc { lines, tail } => {
+                let tail = *tail;
+                if tail == 0 || lines.len() <= avail {
+                    return lines.clone();
+                }
+                // The body is longer than the available height. Keep as
+                // many body lines as fit, leave one slot for `…`, then
+                // append the fixed tail. The head (e.g. "Best scorers:")
+                // is part of `lines[..len-tail]`.
+                let body_room = avail.saturating_sub(tail + 1);
+                let mut out = lines[..body_room.min(lines.len() - tail)].to_vec();
+                out.push(BoxLine::plain("…".to_string()));
+                out.extend_from_slice(&lines[lines.len() - tail..]);
+                return out;
+            }
             PopupBody::Score {
                 type_key,
                 breakdown,
