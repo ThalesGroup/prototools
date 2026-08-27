@@ -671,7 +671,7 @@ impl App {
 /// `heat_anchor` is the log-space scale top (spec 0337 S5/S6), used
 /// only for the graded glyph kinds — passed in rather than re-derived
 /// here so the box and the square use the same value.
-pub(super) fn doc_lines(hit: &DocHit, heat_anchor: f32) -> Vec<BoxLine> {
+pub(super) fn doc_lines(hit: &DocHit, _heat_anchor: f32) -> Vec<BoxLine> {
     let mut lines: Vec<String> = Vec::new();
     match hit.element {
         DocElement::Key => lines.push(key_clause(&hit.token).to_string()),
