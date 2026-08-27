@@ -164,6 +164,7 @@ fn target_parts(workers: usize) -> usize {
 /// stops each of them at its next wire field, and the ranking returned is
 /// then **partial and meaningless**. It is for a caller that has already
 /// decided not to use the answer and only wants its thread back.
+#[cfg(test)]
 pub(crate) fn ranked(
     pb: &[u8],
     graph: &ArchivedCompiledGraph,

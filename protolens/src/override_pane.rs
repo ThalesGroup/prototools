@@ -73,6 +73,7 @@ pub fn all_type_fqdns(pool: &DescriptorPool) -> Vec<String> {
 /// `cancel` is passed straight through to `sweep::ranked`: raising it
 /// abandons the sweep, and the list returned is then partial and must not
 /// be used. `None` for a caller with no way to change its mind.
+#[cfg(test)]
 pub fn inferred_candidates(
     range_bytes: &[u8],
     graph: &ArchivedCompiledGraph,
