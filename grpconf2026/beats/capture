@@ -49,9 +49,9 @@ steps:
   - text: |
       Here is the issue.  text_query appears twice.
 
-      The schema declares it singular — one value per message.  The
-      wire carries two.  Last one wins: protoc shows you
-      "coffee in Grenoble" and silently drops everything above it.
+      The schema declares it singular — press `v` to verify.
+      But the wire carries two instances of the field...
+      Last one wins: protoc shows you "coffee in Grenoble" and silently drops the 1st instance.
 
       👋 Press space to step.
 
@@ -79,9 +79,18 @@ steps:
     select_line: true
 
   - text: |
+      While we are here, play with the navigation arrows.
+      And click on the node fold-togglers.
+      These are the basic commands to navigate a protobuf in protolens.
+
+      You can also press a number on a node to set the folding level.
+
+      👋 Press space to step when you are done.
+
+    node: /1
+
+  - text: |
       Press Enter to quit.
 
     node: /1
-    select_line: true
-    search: shadowed_scalar
     command: quit

@@ -20,117 +20,132 @@ title: The logfile, googleapis.desc
 
 steps:
   - text: |
-      We reopened bob/logfile — this time against the full googleapis.desc
-      descriptor set (25 MB, thousands of types).
+      This is bob/logfile reopened — this time against the full googleapis descriptor set.
 
-      Our earlier overrides are loaded: Entry, Timestamp, rpc,
-      SearchTextRequest, SearchTextResponse are already named.
-
-      And now we have heat cues for fields 6 and 7 of the ComputeRoutes
-      entry — types that were unknown to alice/app.desc.
-
-      👋 Press space to step.
+      👋 Press `2` to unfold more of bob/logfile.
 
     heat_cues: findings
-    fold: ["/ 2", "/1/1 Z"]
-    node: /3/3
-    select_line: true
-
-  - text: |
-      Field 6 has a bright heat cue: ComputeRoutesRequest.
-      Let's accept it.
-
-      👋 Double-click on the heat cue, then double-click on
-         ComputeRoutesRequest.
-
-    heat_cues: findings
-    fold: ["/ 2", "/1/1 Z"]
-    node: /3/3
+    fold: ["/ 1"]
+    node: /
     select_line: true
     advance_when:
-      - type: /3/3 google.maps.routing.v2.ComputeRoutesRequest
+      - visible: /3/4
 
   - text: |
-      👍 And field 7: ComputeRoutesResponse.
+      Now protolens has proposals for fields 6 and 7.
 
-      👋 Double-click on the heat cue, then double-click on
-         ComputeRoutesResponse.
+      Let's hover over the heat cue for field 7.
+      Protolens proposes ComputeRoutesResponse which feels reasonable.
+
+      👋 Press `t` for the override menu and commit ComputeRoutesResponse v2.
 
     heat_cues: findings
-    fold: ["/ 2", "/1/1 Z"]
+    fold: ["/ 2", "/3 1", "/4 1"]
     node: /3/4
     select_line: true
     advance_when:
       - type: /3/4 google.maps.routing.v2.ComputeRoutesResponse
 
   - text: |
-      👍 Both route types are now named.
+      Similarly with field 6.
+      ComputeRoutesRequest v2 feels right.
 
-      Let's look more carefully at the SearchTextRequest.
-      Navigate into /1/3/1 — the first (shadowed) occurrence of field 1.
+      👋 Press `t`for the override menu and commit ComputeRoutesRequest v2.
 
-      protolens spotted something there: a bright heat cue for
-      google.rpc.Status (score: 8).
+    heat_cues: findings
+    fold: ["/ 2", "/3 1", "/4 1"]
+    node: /3/3
+    select_line: true
+    advance_when:
+      - type: /3/3 google.maps.routing.v2.ComputeRoutesRequest
 
-      👋 Press `t` to open the type tooltip, then `z` to switch to a
-         plain path override, then Enter to commit.
+  - text: |
+      👍 Perfect, we're done with overriding the log file.
+
+      Now there seems to be a couple of non-canonicality issues with the protobuf.
+      (See the amber signals?)
+      Let's have a closer look... 🔍
+
+      👋 Click the amber triangle to unfold the compute_routes_request node.
+
+    heat_cues: findings
+    fold: ["/ 2", "/3 1", "/4 1"]
+    node: /3/3
+    select_line: true
+    advance_when:
+      - visible: /3/3/3
+
+  - text: |
+      Look at the travel_mode field:
+      The amber diamond and the ohb annotation (ohb for OverHangingBytes)
+      mean that the encoding for the DRIVE value uses too many bytes
+
+      Let's have a look at the wire encoding for this value:
+
+      👋 Press `w` to show wire-level information.
+
+    heat_cues: findings
+    fold: ["/ 2", "/3 1", "/3/3 1", "/4 1"]
+    node: /3/3/3
+    select_line: true
+    advance_when:
+      - wire: /3/3/3
+
+  - text: |
+      Indeed, the wire-level encoding uses 5 bytes for encoding the value 1.
+      A normal encoding would have used a single byte (0x01).
+      Weird.
+
+      👋 Press `w` again to hide wire-level information.
+
+    heat_cues: findings
+    fold: ["/ 2", "/3 1", "/3/3 1", "/4 1"]
+    node: /3/3/3
+    wire_line: /3/3/3
+    select_line: true
+    advance_when:
+      - not:
+        - wire: /3/3/3
+
+  - text: |
+      Now let's have a second look at the shadowed SearchTextRequest field.
+
+      Hover on the heat cue at the left edge of the line.
+      protolens thinks that the string actually is a google.rpc.Status message.
+
+      👋 Press Enter to commit the google.rpc.Status override.
 
     heat_cues: findings
     fold: ["/ 2", "/1/1 Z"]
     node: /1/3/1
     select_line: true
+    command: override /1/3/1 --as google.rpc.Status --cardinality optional --field-name status
     advance_when:
       - type: /1/3/1 google.rpc.Status
 
   - text: |
-      🚨 That is suspicious.
+      🚨 Indeed... That is very suspicious.
+      The unmasked google.rpc.Status message even includes an API key 😠
+      /value: ".*" 
 
-      field 1 of SearchTextRequest is declared as a singular string
-      (the search query). But on the wire it appears twice — the second
-      occurrence ("coffee in Grenoble") shadows the first.
-
-      The shadowed first occurrence decodes as a google.rpc.Status
-      message — a debug trace injected by the app before the real query.
-      It carries Bob's API key in plain text:
-
-        AIzaSyB0b5REKn0tAr3aLk3yD0ntB0th3rTry1t
-
-      Every SearchText call leaks the key to whoever intercepts the wire.
-
-      👋 Press `w` to inspect the raw wire bytes.
+      👋 Press space to step.
 
     heat_cues: findings
-    fold: ["/ 2", "/1/1 Z"]
+    fold: ["/ 2", "/1/3 Z"]
     node: /1/3/1
-    select_line: true
-    advance_when:
-      - annotations: false
+    select_node: true
+    search: 'value: ".*"'
 
   - text: |
-      The wire bytes confirm it: the shadowed Status blob is present on
-      the wire, before the legitimate query string.
+      Let's save our findings and export the full logfile as prototext
+      for sending back to Bob.
 
-      This is a backdoor, not a bug. 😠
-
-      👋 Press `w` again to return to annotations, then press space to
-         continue.
-
-    heat_cues: findings
-    fold: ["/ 2", "/1/1 Z"]
-    node: /1/3/1
-    select_line: true
-    advance_when:
-      - annotations: true
-
-  - text: |
-      Let's save our findings and export the full logfile as prototext.
-
-      👋 Press Enter to export.
+      👋 Press Enter to commit the prefilled export command.
 
     heat_cues: findings
     fold: ["/ 2", "/1/1 Z"]
     node: /
-    command: xp alice/logfile.all.node.pb
+    command: export --prototext alice/logfile.all.node.pb
     advance_when:
       - file_exists: alice/logfile.all.node.pb
 

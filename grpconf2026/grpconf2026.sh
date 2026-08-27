@@ -1,9 +1,18 @@
 clear && header "S3NS"
 # \
-# S3NS is Thales x Google joint venture that operates a GCP region as a Trusted Cloud service, for European customers. The service is hosted on French data centers and operated by French personel, in autonomy. However Google provides all software updates, which are inspected and tested in a quarantine environment before being deployed to production. As part of the inspection activities, we have developed tooling to help audit protobufs, which are ubiquitous in the design of the Google Cloud platform.                                                                \
+# S3NS is Thales x Google joint venture that operates a GCP region as a        \
+# Trusted Cloud service, for European customers.                               \
+# The service is hosted on French data centers and operated by French          \
+# personel, in autonomy.                                                       \
+#                                                                              \
+# However Google provides all software updates, which are inspected and tested \
+# in a quarantine environment before being deployed to production.             \
+#                                                                              \
+# As part of the inspection activities, we have developed tooling to help      \
+# auditing protobufs, which are ubiquitous in the Google Cloud infrastructure. \
 
 
-header "prototools"
+clear && header "prototools"
 # \
 # prototools is 3 CLIs :                                                       \
 #                                                                              \
@@ -51,34 +60,35 @@ protoc --decode_raw < bob/capture   | view_textproto
 protoc --decode_raw < bob/logfile
 # No luck here... 😭
 
-header "3. Let's retrieve descriptors"
+header "3. If only we had descriptors"
 
 # protoscan and reproto are our friends
 
 protoscan bob/app   | view
-# So bob/app contains reflected descriptors indeed
+# So bob/app contains reflected descriptors indeed 🥹
 
-# Let's retrieve, decompile and index the descriptors
+# Let's retrieve, decompile and index the descriptors 🤞
 reproto --desc-root bob/app --schema-db-out alice/app.desc
 
 ls -lhd alice/app.desc alice/app/* \
-# A couple of files were produced:                                             \
-# - app.desc:           Set of descriptors found in app                        \
-# - app/hopcroft.rkyv:  Graph for type inference                               \
-# - app/index.rkyv:     Index for fast access and loading                      \
-# - app/proto/:         Decompiled descriptors                                 \
+# A couple of files were produced 💪:                                          \
+# - app.desc:           Set of descriptors found in app ✅                     \
+# - app/hopcroft.rkyv:  Graph for type inference ✅                            \
+# - app/index.rkyv:     Index for fast access and loading ✅                   \
+# - app/proto/:         Decompiled descriptors ✅                              \
 
 
 tree alice/app/proto   | view
 # Let's look at one decompiled .proto file:
 view alice/app/proto/google/maps/places/v1/places_service.proto
 
-header "4. Let's use the descriptors"
+header "4. Let's use our descriptors"
 
 # prototext is our friend 🙏
+# Given a descriptor set, it will try to infer the type of a protobuf:
 prototext --descriptor-set alice/app.desc decode bob/capture   | view_textproto
 
-# prototext was able to infer capture's protobuf type 💪💪💪
+# prototext was able to infer capture's protobuf type 🏅
 #   👉 google.maps.places.v1.SearchTextRequest
 # Let's use this with protoc:
 \
@@ -88,10 +98,10 @@ protoc --descriptor_set_in=alice/app.desc \
 # Now protoc is happy 🍀🍀🍀
 
 # Compare again with the prototext output.
-# This time, let's use protolens, the interactive version of prototext:
+# (This time, we'll use protolens, the interactive version of prototext.)
 protolens --descriptor-set alice/app.desc bob/capture   --script beats/capture
 # Notice that protolens adds annotations as comments
-# There is more to capture than met the protoc eye 🕵
+# There was more to bob/capture than met the protoc eye 🕵
 
 
 # Let's try with the logfile:
@@ -112,7 +122,21 @@ cmp bob/logfile <(prototext encode alice/logfile.all.node.pb) \
 
 # Bob will probably decide to stop using this suspicious app... 😠
 
-# Now... I'd like to end with a demonstration that protolens scales to larger protobufs. For example, you can examine googleapis.desc (25 megabytes) against itself and keep a fluid experience.
-# ==> Please rephrase the above and polish this part + add a short beats/scaling protolens script for this.
+# \
+# Before the demo ends up, let me show you how protolens scales to larger      \
+# protobufs.                                                                   \
+# For example we can inspect googleapis.desc against itself, why not?          \
+
 protolens --descriptor-set $PROTOTEXT_GOOGLEAPIS_SET $PROTOTEXT_GOOGLEAPIS_SET   --script beats/scaling
+
+# \
+# As you can see, navigations stays fluid, and the startup time is short:
 time protolens --descriptor-set $PROTOTEXT_GOOGLEAPIS_SET $PROTOTEXT_GOOGLEAPIS_SET quit
+
+# Thank you for your attention 🙂
+
+
+
+
+
+# The End...
