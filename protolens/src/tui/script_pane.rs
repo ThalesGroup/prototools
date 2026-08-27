@@ -232,6 +232,7 @@ impl App {
             }
         }
         self.script_focus(&step);
+        self.pan_to_caret();
         if let Some(prefill) = &step.prefill {
             // Spec 0271 S11: typed, not run. The command line reports
             // its own errors when the reader presses Enter.

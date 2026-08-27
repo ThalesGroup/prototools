@@ -688,6 +688,7 @@ impl App {
             CaretAnchor::End => last,
             CaretAnchor::Free => self.desired_column.clamp(first, last),
         };
+        self.pan_to_caret();
     }
 
     /// The cursor node is foldable and currently open — the state in
