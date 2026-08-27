@@ -1128,7 +1128,37 @@ impl App {
     /// existing auto-dismissing bottom-bar notice) and stops here.
     #[cfg(unix)]
     fn open_definition(&mut self) {
-        let Some(fqdn) = self.fqdn_under_focus() else {
+        // When the focused node has no associated FQDN (e.g. a scalar field)
+        // and we are in normal tree mode, climb to the nearest ancestor that
+        // does have one and open its declaration instead.
+        let fqdn = self.fqdn_under_focus().or_else(|| {
+            if self.override_focus || (self.manage_open && self.manage_focus) {
+                return None;
+            }
+            let mut node = self.cursor;
+            while let Some(p) = self.parent(node) {
+                node = p;
+                // Re-use the same FQDN resolution logic as fqdn_under_focus
+                // but applied to `node` rather than `self.cursor`.
+                let candidate = match self.fqdns.get(self.tree[node].span.type_fqdn) {
+                    Some(fqdn) => Some(fqdn.to_owned()),
+                    None => match self.resolve_active_override(node) {
+                        Some(inner) => inner,
+                        None => self.natural_type(node),
+                    }
+                    .and_then(|eff| {
+                        decode::primitive_type_for_keyword(&eff)
+                            .is_none()
+                            .then_some(eff)
+                    }),
+                };
+                if let Some(f) = candidate.filter(|f| f != decode::MESSAGE_SET_ITEM_FQDN) {
+                    return Some(f);
+                }
+            }
+            None
+        });
+        let Some(fqdn) = fqdn else {
             self.message = "no declaration to jump to here".to_string();
             return;
         };
