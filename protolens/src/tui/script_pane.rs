@@ -342,6 +342,25 @@ impl App {
                 };
                 self.cursor == idx
             }
+            Predicate::Node {
+                position,
+                field_number,
+            } => {
+                let Some(idx) = self.script_resolve(position) else {
+                    return false;
+                };
+                match field_number {
+                    None => self.cursor == idx,
+                    Some(n) => {
+                        self.parent(self.cursor) == Some(idx)
+                            && self.tree[self.cursor].span.field_number == *n
+                    }
+                }
+            }
+            Predicate::Line { n } => {
+                let abs = self.absolute_start(self.cursor) + self.cursor_line_in_node as usize;
+                abs + 1 == *n as usize
+            }
             Predicate::Annotations { on } => self.annotations == *on,
             Predicate::HeatCues { mode } => self.heat_cues == *mode,
             Predicate::Not { inner } => !inner.iter().all(|p| self.script_eval_predicate(p)),

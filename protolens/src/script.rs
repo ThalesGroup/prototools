@@ -116,6 +116,22 @@ pub enum Predicate {
     Caret {
         position: Position,
     },
+    /// Caret is on the node at `position`, or on a child of it with the
+    /// given proto field number (spec 0368).
+    /// - `node: /a/b/c`   — cursor anywhere on that node
+    /// - `node: /a/b/c:N` — cursor on a child whose field_number is N
+    /// - `node: f.q.d.n:N` — cursor on a child of the FQN-resolved node
+    ///   whose field_number is N
+    Node {
+        position: Position,
+        /// Proto field number of the child to match, or `None` to match
+        /// the node itself (any child).
+        field_number: Option<u32>,
+    },
+    /// Caret is on the given 1-based absolute document line (spec 0368).
+    Line {
+        n: u32,
+    },
     Annotations {
         on: bool,
     },
@@ -271,6 +287,8 @@ enum RawPredicate {
     FieldName { field_name: String },
     FileExists { file_exists: String },
     Caret { caret: String },
+    Node { node: String },
+    Line { line: u32 },
     Annotations { annotations: bool },
     HeatCues { heat_cues: HeatCueMode },
     Not { not: Vec<RawPredicate> },
@@ -322,6 +340,27 @@ impl RawPredicate {
             RawPredicate::Caret { caret } => Predicate::Caret {
                 position: Position::parse(&caret),
             },
+            RawPredicate::Node { node } => {
+                // Split a trailing `:N` suffix — the proto field number of
+                // the child to match.
+                // `/a/b/c:3`  → position `/a/b/c`, field_number Some(3).
+                // `f.q.d.n:2` → position `f.q.d.n`, field_number Some(2).
+                // No colon (or non-numeric suffix) → match the node itself.
+                let (pos_str, field_number) = if let Some(colon) = node.rfind(':') {
+                    let suffix = &node[colon + 1..];
+                    match suffix.parse::<u32>() {
+                        Ok(n) if n >= 1 => (&node[..colon], Some(n)),
+                        _ => (node.as_str(), None),
+                    }
+                } else {
+                    (node.as_str(), None)
+                };
+                Predicate::Node {
+                    position: Position::parse(pos_str),
+                    field_number,
+                }
+            }
+            RawPredicate::Line { line } => Predicate::Line { n: line },
             RawPredicate::Annotations { annotations } => Predicate::Annotations { on: annotations },
             RawPredicate::HeatCues { heat_cues } => Predicate::HeatCues { mode: heat_cues },
             RawPredicate::Not { not } => Predicate::Not {

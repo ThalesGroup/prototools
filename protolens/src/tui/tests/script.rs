@@ -1096,6 +1096,112 @@ steps:
     assert_eq!(app.heat_cues, HeatCueMode::Off, "step 1 set heat_cues=off");
 }
 
+/// Spec 0368: `node: <path>` fires when the caret is on that node
+/// (any line within it), matching the positional-path form.
+#[test]
+fn advance_when_node_predicate_path_form() {
+    let script = "\
+steps:
+  - text: move to /1
+    node: /
+    fold: [\"/ 1\"]
+    advance_when:
+      - node: /1
+  - text: done
+    node: /2
+";
+    let (mut app, _) = repeated_message_fixture();
+    app.set_script(script_of(script));
+    assert_eq!(app.script.as_ref().unwrap().current, 0);
+
+    press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
+    assert_eq!(
+        app.script.as_ref().unwrap().current,
+        1,
+        "node: predicate fired on reaching /1"
+    );
+}
+
+/// Spec 0368: `node: <path>:N` fires when the caret is on a child of the
+/// named node whose proto field number is N.
+///
+/// The fixture is `Outer { repeated Item items = 1; }` — all three `/1`,
+/// `/2`, `/3` are children of `/` with field_number 1.  So `node: /:1`
+/// fires as soon as the cursor reaches `/1` (the first child of `/` with
+/// field_number 1).  `node: /:2` never fires because no child of `/` has
+/// field_number 2.
+#[test]
+fn advance_when_node_predicate_with_field_number() {
+    // `node: /:1` fires when `j` moves to /1 (field_number 1 on Outer).
+    let script_fires = "\
+steps:
+  - text: move to /1
+    node: /
+    fold: [\"/ 1\"]
+    advance_when:
+      - node: /:1
+  - text: done
+    node: /2
+";
+    let (mut app, _) = repeated_message_fixture();
+    app.set_script(script_of(script_fires));
+    assert_eq!(app.script.as_ref().unwrap().current, 0);
+    press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
+    assert_eq!(
+        app.script.as_ref().unwrap().current,
+        1,
+        "node: /:1 fired when cursor moved to /1 (field_number 1)"
+    );
+
+    // `node: /:2` never fires — Outer has no field numbered 2.
+    let script_never = "\
+steps:
+  - text: wait for field 2
+    node: /
+    fold: [\"/ 1\"]
+    advance_when:
+      - node: /:2
+  - text: done
+    node: /2
+";
+    let (mut app, _) = repeated_message_fixture();
+    app.set_script(script_of(script_never));
+    assert_eq!(app.script.as_ref().unwrap().current, 0);
+    press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
+    assert_eq!(
+        app.script.as_ref().unwrap().current,
+        0,
+        "node: /:2 must not fire — Outer has no field_number 2"
+    );
+}
+
+/// Spec 0368: `line: n` fires when the caret is on the given 1-based
+/// absolute document line.
+#[test]
+fn advance_when_line_predicate() {
+    // The root `/` is line 1. `/1` header is line 2 (root line + 1).
+    let script = "\
+steps:
+  - text: move to /1
+    node: /
+    fold: [\"/ 1\"]
+    advance_when:
+      - line: 2
+  - text: done
+    node: /2
+";
+    let (mut app, _) = repeated_message_fixture();
+    app.set_script(script_of(script));
+    assert_eq!(app.script.as_ref().unwrap().current, 0);
+
+    press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
+    assert_eq!(
+        app.script.as_ref().unwrap().current,
+        1,
+        "line: 2 predicate fired when caret reached absolute line 2"
+    );
+}
+
 /// Spec 0356 test 19: a bad `heat_cues:` directive value is a load error.
 #[test]
 fn step_directive_heat_cues_bad_value_is_load_error() {
