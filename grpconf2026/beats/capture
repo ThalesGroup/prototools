@@ -99,7 +99,7 @@ steps:
       protolens basics:
       - navigate with arrow keys
       - hover over text for more information
-      - fold/unfold nodes by clicking their leading triangle
+      - fold/unfold nodes by clicking their triangle
 
       👋 Fold `location_bias` to step.
 

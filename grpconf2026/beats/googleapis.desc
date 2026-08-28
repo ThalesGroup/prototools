@@ -106,9 +106,23 @@ steps:
         - wire: /3/3/3
 
   - text: |
-      One more thing. Back to the shadowed field in the SearchTextRequest.
+      One more thing. Remember the shadowed field in the SearchTextRequest?
+      Go to the very first search_text_request field,
+      at the top of the document, on line 8.
 
-      Hover the heat cue at the left edge.
+      👋 Unfold the search_text_request field.
+
+    heat_cues: findings
+    fold: ["/ 2", "/3 1", "/3/3 1", "/4 1"]
+    node: /3/3/3
+    select_line: true
+    advance_when:
+      - visible: /1/3/1
+
+  - text: |
+      Good.
+
+      Now hover the heat cue at the left edge of the shadowed node.
       protolens thinks this string might be a google.rpc.Status message.
 
       👋 Press Enter to commit the google.rpc.Status override.
@@ -134,19 +148,36 @@ steps:
     search: 'value: ".*"'
 
   - text: |
-      Let's export the full logfile as prototext
-      and send our findings to Bob.
+      Let's export our annotated logfile as prototext
+      so that we can send our findings to Bob.
 
-      👋 Press Enter to export.
+      👋 Navigate to the root node.
 
     heat_cues: findings
-    fold: ["/ 2", "/1/1 Z"]
+    fold: ["/ 2", "/1/3 Z"]
+    node: /1/3/1
+    select_node: true
+    search: 'value: ".*"'
+    advance_when:
+      - node: /
+
+  - text: |
+      Now export the full logfile to disk.
+      The command is: `x` `p ` (eXport as Prototext).
+
+      👋 Press `x`, `p` and save under directory alice/
+
+    heat_cues: findings
+    fold: ["/ 2", "/1/3 Z"]
+    search: 'value: ".*"'
     node: /
-    command: export --prototext alice/logfile.all.node.pb
+    select_line: true
     advance_when:
       - file_exists: alice/logfile.all.node.pb
 
   - text: |
+      All done.
+      
       👋 Press Enter to quit.
 
     heat_cues: findings

@@ -23,6 +23,13 @@ clear && header "S3NS"
 
 clear && header "prototools"
 # \
+#                                                                              \
+#           https://github.com/ThalesGroup/prototools                          \
+#                                                                              \
+#           MIT License                                                        \
+#                                                                              \
+
+# \
 # prototools is 3 Command-Line Interfaces and 1 Text-based User Interface      \
 # for working with protobufs, including for reverse-engineering.               \
 
@@ -66,7 +73,7 @@ ls -lh bob \
 clear && header "2. protoc falls short"
 
 # Alice's first reflex: protoc --decode_raw.
-protoc --decode_raw < bob/capture
+protoc --decode_raw < bob/capture   | view_textproto
 # This is protobuf indeed 🙂
 # But field numbers without names mean nothing 🤔
 
@@ -87,11 +94,11 @@ protoscan bob/app
 reproto --desc-root bob/app --schema-db-out alice/app.desc  # 🤞
 
 ls -lhd alice/app.desc alice/app/* \
-# reproto produced:                                                            \
-# - app.desc:           descriptor set ✅                                      \
-# - app/hopcroft.rkyv:  type-inference graph ✅                                \
-# - app/index.rkyv:     fast-access index ✅                                   \
-# - app/proto/:         decompiled .proto files ✅                             \
+# reproto delivered 💪:                                                         \
+# - app.desc:           descriptor set                                         \
+# - app/hopcroft.rkyv:  type-inference graph                                   \
+# - app/index.rkyv:     fast-access index                                      \
+# - app/proto/:         decompiled .proto files                                \
 
 
 # What's inside the decompiled places_service.proto?
@@ -101,7 +108,8 @@ view alice/app/proto/google/maps/places/v1/places_service.proto
 clear && header "4. Descriptors to the help"
 
 # Now prototext can infer the type of an unknown protobuf:
-prototext --descriptor-set alice/app.desc list-schemas bob/capture
+prototext --descriptor-set alice/app.desc list-schemas bob/capture \
+  | bat -l yaml --style=plain
 
 # One match: google.maps.places.v1.SearchTextRequest 🏅
 # (Score is negative — we will come back to that.)
@@ -130,7 +138,7 @@ protolens --descriptor-set $PROTOTEXT_GOOGLEAPIS_SET bob/logfile \
   --load-overrides alice/overrides \
   --script beats/googleapis.desc
 
-clear && header "6. Back to Bob"
+clear && header "6. Reporting to Bob"
 
 # The exported prototext preserves everything we uncovered:
 view_textproto alice/logfile.all.node.pb
@@ -161,7 +169,7 @@ clear && header "A. Performance and scaling"
 protolens --descriptor-set $PROTOTEXT_GOOGLEAPIS_SET $PROTOTEXT_GOOGLEAPIS_SET
 
 time protolens --descriptor-set $PROTOTEXT_GOOGLEAPIS_SET $PROTOTEXT_GOOGLEAPIS_SET quit \
-# Navigation stays fluid and tartup latency short:                                     \
+# Navigation stays fluid and startup latency short:                                     \
 
 
 
