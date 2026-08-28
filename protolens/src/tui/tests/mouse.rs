@@ -1407,6 +1407,31 @@ fn a_pending_cue_is_a_target_too() {
     assert_eq!(app.override_target, Some(0));
 }
 
+/// Double-clicking the LHS heat glyph (column 0 of the pane) opens
+/// the override pane, same as double-clicking the RHS suffix.
+#[test]
+fn a_double_click_on_the_lhs_heat_glyph_opens_the_override_pane() {
+    let mut app = cue_app(1, 10);
+    // Render a frame to establish `main_area` and committed rows.
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    let row = app.main_area.y;
+    let glyph_col = app.main_area.x;
+    assert_eq!(
+        app.heat_glyph_at_point(glyph_col, row),
+        Some(0),
+        "the glyph hit test must fire at the glyph column"
+    );
+    double_click_at(&mut app, glyph_col, row);
+    assert_eq!(
+        app.override_target,
+        Some(0),
+        "double-clicking the LHS glyph opens the override pane"
+    );
+    assert!(app.override_focus, "and hands it the keyboard");
+    assert!(app.selection_span().is_none(), "and selects nothing");
+}
+
 /// A row that draws no suffix offers no target there — the target is
 /// exactly what is on screen. The columns past such a row's text are
 /// the caret track's own right-hand zone (spec 0194 S1), so a

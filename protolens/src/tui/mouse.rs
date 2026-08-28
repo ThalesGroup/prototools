@@ -299,9 +299,12 @@ impl App {
                 // different things, so a pair may not straddle them.
                 self.pending_double_click = match line_idx {
                     Some(l) if !on_marker => {
-                        let zone = match self.heat_cue_at_point(event.column, event.row) {
-                            Some(_) => ClickZone::Cue,
-                            None => ClickZone::Text,
+                        let zone = if self.heat_cue_at_point(event.column, event.row).is_some()
+                            || self.heat_glyph_at_point(event.column, event.row).is_some()
+                        {
+                            ClickZone::Cue
+                        } else {
+                            ClickZone::Text
                         };
                         is_double_click(&mut self.last_click, (l, zone)).then_some(zone)
                     }
@@ -539,6 +542,27 @@ impl App {
             heights.row_at(heights.offset(self.scroll.index) + rel_row as usize);
         self.visible_row_pos(content_row)
             .map(|(_, line)| (line, part))
+    }
+
+    /// The line whose drawn LHS heat glyph (`■`) covers `(col, row)`,
+    /// or `None` where no glyph is drawn there.
+    ///
+    /// The LHS glyph lives at `main_area.x` (column 0 of the pane).
+    /// The reserved blank beside it is not a target (matching the hover
+    /// rule in `popup_doc`'s `heat_chrome_hit`). A pending cue counts —
+    /// same reasoning as the RHS suffix (spec 0284 S3).
+    pub(super) fn heat_glyph_at_point(&mut self, col: u16, row: u16) -> Option<usize> {
+        if col != self.main_area.x {
+            return None;
+        }
+        let (line_idx, part) = self.main_pane_line_part(col, row)?;
+        if part != 0 {
+            return None;
+        }
+        let pos = self.line_pos(line_idx)?;
+        let display = self.heat_cue_at(pos);
+        let (glyph, _) = self.heat_chrome(&display);
+        (glyph.content == heat_cue::HEAT_GLYPH).then_some(line_idx)
     }
 
     /// Spec 0284 S2: the line whose drawn heat suffix — ` [3/7]`,
