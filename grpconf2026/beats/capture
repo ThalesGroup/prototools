@@ -29,7 +29,8 @@ steps:
 
         👉 SearchTextRequest.
 
-      This is prototext format: textproto enriched with annotations.
+      What you see is prototext format:
+      textproto enriched with #@ annotations.
 
       👋 Press space to step.
 
@@ -51,7 +52,8 @@ steps:
 
   - text: |
       The culprit: text_query.
-      The schema declares it singular — but it appears twice at wire level.
+      The schema declares it singular — check the decompiled source (`v`).
+      But it appears twice at wire level.
 
       The first instance is shadowed by the second.
       Most tools, including protoc, silently drop it.
@@ -63,7 +65,7 @@ steps:
     search: text_query
 
   - text: |
-      protolens flags the surviving instance:
+      protolens flags the repeated instance:
       - amber diamond
       - `repeated_singular` annotation
 
@@ -75,8 +77,17 @@ steps:
 
   - text: |
       The dropped instance is flagged too:
+      - hollow amber diamond
+
+      👋 Press space to step.
+
+    node: /1
+    select_line: true
+
+  - text: |
+      The dropped instance is flagged too:
+      - hollow amber diamond
       - `shadowed_scalar` annotation
-      - hollow amber diamond — press `^` to see it at the line's left edge
 
       👋 Press space to step.
 
@@ -85,7 +96,10 @@ steps:
     search: shadowed_scalar
 
   - text: |
-      Arrow keys navigate. Triangles fold/unfold nodes.
+      protolens basics:
+      - navigate with arrow keys
+      - hover over text for more information
+      - fold/unfold nodes by clicking their leading triangle
 
       👋 Fold `location_bias` to step.
 
@@ -96,11 +110,12 @@ steps:
         - visible: /7/1
 
   - text: |
-      So bob/capture is a SearchTextRequest — with a deliberately corrupted encoding.
+      So bob/capture is a SearchTextRequest — with a non-canonical encoding.
 
       Let's move on to the log file.
 
       👋 Press Enter to quit.
 
-    node: /1
+    node: /
+    fold: ["/7 0"]
     command: quit

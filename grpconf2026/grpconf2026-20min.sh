@@ -40,6 +40,7 @@ clear && header "prototools"
 # \
 # We will demonstrate prototools through a short fictional scenario 🎬.        \
 
+
 clear && header "The stage"
 
 # \
@@ -65,20 +66,23 @@ ls -lh bob \
 clear && header "2. protoc falls short"
 
 # Alice's first reflex: protoc --decode_raw.
-protoc --decode_raw < bob/capture   | view_textproto
-# OK — this is protobuf 🙂
+protoc --decode_raw < bob/capture
+# This is protobuf indeed 🙂
 # But field numbers without names mean nothing 🤔
 
 # Let's try the logfile:
 protoc --decode_raw < bob/logfile
 # Outright failure 😭
 
-header "3. If only we had descriptors"
+clear && header "3. If only we had descriptors"
 
 # Can we find descriptors in the binary itself?
-protoscan bob/app   | view
+protoscan bob/app
 
-# bob/app contains reflected descriptors 🥹
+# \
+# So bob/app contains reflected descriptors 🥹                                 \
+# Interesting: they look like a subset of the Google APIs 💡.                  \
+
 # Let's extract, decompile, and index them:
 reproto --desc-root bob/app --schema-db-out alice/app.desc  # 🤞
 
@@ -89,18 +93,18 @@ ls -lhd alice/app.desc alice/app/* \
 # - app/index.rkyv:     fast-access index ✅                                   \
 # - app/proto/:         decompiled .proto files ✅                             \
 
-# reproto decompiled the descriptors. Among them: the Google Maps
-# Places API — which tells us immediately what this app is calling.
 
+# What's inside the decompiled places_service.proto?
+view alice/app/proto/google/maps/places/v1/places_service.proto
+# Confirmed: this is from the Google maps API.
 
-header "4. Let's use our descriptors"
+clear && header "4. Descriptors to the help"
 
-# prototext can infer the type of an unknown protobuf:
+# Now prototext can infer the type of an unknown protobuf:
 prototext --descriptor-set alice/app.desc list-schemas bob/capture
 
 # One match: google.maps.places.v1.SearchTextRequest 🏅
 # (Score is negative — we will come back to that.)
-
 
 # Given the type, protoc will now happily decode the protobuf 🍀:
 \
@@ -111,8 +115,7 @@ protoc --descriptor_set_in=alice/app.desc \
 # But protolens shows more:
 protolens --descriptor-set alice/app.desc bob/capture   --script beats/capture
 
-# There was more to bob/capture than protoc let on 🕵️
-
+clear && header "5. On to the log file"
 
 # Now the logfile, same descriptor set:
 protolens --descriptor-set alice/app.desc bob/logfile   --script beats/app.desc
@@ -127,6 +130,8 @@ protolens --descriptor-set $PROTOTEXT_GOOGLEAPIS_SET bob/logfile \
   --load-overrides alice/overrides \
   --script beats/googleapis.desc
 
+clear && header "6. Back to Bob"
+
 # The exported prototext preserves everything we uncovered:
 view_textproto alice/logfile.all.node.pb
 
@@ -135,15 +140,29 @@ cmp bob/logfile <(prototext encode alice/logfile.all.node.pb)   && echo Identica
 
 # When Bob sees this report, I suspect he will uninstall the app 😬
 
+clear && header "7. Conclusion"
+
 # \
-# In conclusion:                                                               \
-#                                                                              \
 # - Descriptors are often hiding in the binary itself                          \
 # - protobuf is not opaque if you have the right tools                         \
 # - prototools is open source — pull requests welcome 🙂                       \
 
 
 # Thank you 👋
+
+
+clear && header "A. Performance and scaling"
+
+# \
+# bob/capture and bob/logfile are small protobufs.                             \
+# protolens handles large ones just as well.                                   \
+# Let's throw googleapis.desc at itself:                                       \
+
+protolens --descriptor-set $PROTOTEXT_GOOGLEAPIS_SET $PROTOTEXT_GOOGLEAPIS_SET
+
+time protolens --descriptor-set $PROTOTEXT_GOOGLEAPIS_SET $PROTOTEXT_GOOGLEAPIS_SET quit \
+# Navigation stays fluid and tartup latency short:                                     \
+
 
 
 

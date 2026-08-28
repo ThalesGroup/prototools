@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+# SPDX-FileCopyrightText: Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
 #
 # SPDX-License-Identifier: MIT
 
@@ -10,3 +10,25 @@ _init_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 rm -rf "${_init_dir}/alice"
 mkdir -p "${_init_dir}/alice"
 unset _init_dir
+
+header "Beyond protoc --decode"
+
+echo "
+            [1;94mgRPConf 2026 North America
+
+
+            Beyond protoc --decode:
+            Schema Inference, Lossless Decoding, and Descriptor Archaeology
+
+
+            Frederic Ruget
+            Senior Cloud Architect, S3NS
+            fred@s3ns.io
+
+            Thomas Butter
+            Senior Software Engineer, Google
+            tabutter@google.com
+[0m
+
+
+"

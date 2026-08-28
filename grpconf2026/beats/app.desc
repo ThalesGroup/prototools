@@ -72,7 +72,7 @@ steps:
 
       Now let's enable heat cues.
       protolens will highlight where it recognizes known types.
-      Green = confident. Amber = uncertain.
+      The brighter the cue, the more confident.
 
       👋 Press `i`.
 
@@ -118,7 +118,7 @@ steps:
       Field 2: a string. Looks like the RPC method name.
       Let's just rename it "rpc".
 
-      👋 Press Enter.
+      👋 Press Enter to commit the prefilled command.
 
     heat_cues: findings
     fold: ["/ 2"]
@@ -132,7 +132,7 @@ steps:
       Field 1: hover the heat cue.
       Timestamp — fits a log entry.
 
-      👋 Press `t`, choose Timestamp, press Enter.
+      👋 Press `t`, choose Timestamp, press Enter to commit.
 
     heat_cues: findings
     fold: ["/ 2", "/1/1 Z"]

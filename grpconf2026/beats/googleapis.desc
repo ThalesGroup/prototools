@@ -34,7 +34,7 @@ steps:
       - visible: /3/4
 
   - text: |
-      Fields 6 and 7 now have heat cues — googleapis knows them.
+      Fields 6 and 7 now have bright cues — googleapis knows them.
 
       Field 7: hover the cue.
       ComputeRoutesResponse. The app also calls the Routes API.
@@ -137,7 +137,7 @@ steps:
       Let's export the full logfile as prototext
       and send our findings to Bob.
 
-      👋 Press Enter.
+      👋 Press Enter to export.
 
     heat_cues: findings
     fold: ["/ 2", "/1/1 Z"]
