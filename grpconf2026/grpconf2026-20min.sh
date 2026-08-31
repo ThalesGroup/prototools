@@ -196,10 +196,12 @@ reproto \
     --emit-binary \
     --seed 'file:google/maps/places/v1/*.proto'
 
-# reproto decompiled 34 files: the 18 places.v1 files plus their transitive deps:
-tree -P "*.proto" alice/places
-# The corresponding .pb files have been extracted too (--emit-binary option)
+# reproto extracted 34 files: the 18 places.v1 files plus their transitive deps:
 tree -P "*.pb" alice/places
+# and decompiled them to equivalent .proto files:
+tree -P "*.proto" alice/places
+# What's inside places_service.proto again?
+view alice/app/proto/google/maps/places/v1/places_service.proto
 
 # \
 # 2. We can also have reproto work on an incomplete FDS.                       \
@@ -223,10 +225,10 @@ reproto \
     --proto-out alice/places-incomplete \
     --emit-binary \
     --seed 'file:google/maps/places/v1/*.proto'
+# reproto noticed the missing dependencies and worked around them.
 
-# reproto noticed the missing dependencies and worked around them:
-diff -x "*.pb" -d -r alice/places alice/places-incomplete \
-  | view
+# How did it manage?
+view -d -R alice/places*/google/maps/places/v1/places_service.proto
 
 # \
 # 3. We can ask reproto to transcribe decompiled file to proto2                \
@@ -239,10 +241,9 @@ reproto \
     --force-proto2-output
 
 # Let's have a look at the differences.
-diff \
+view -d -R \
     alice/places/google/maps/places/v1/place.proto \
-    alice/places-proto2/google/maps/places/v1/place.proto \
-  | view
+    alice/places-proto2/google/maps/places/v1/place.proto
 # Implicit proto3 optional labels have become explicit.
 # Explicit proto3 optional labels have been translated into oneof constructs.
 
