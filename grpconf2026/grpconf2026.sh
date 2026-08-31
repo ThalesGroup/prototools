@@ -164,6 +164,21 @@ time protolens --descriptor-set $PROTOTEXT_GOOGLEAPIS_SET $PROTOTEXT_GOOGLEAPIS_
 # Thank you 👋
 
 
+clear && header "B. Anomaly taxonomy"
+
+# \
+# Not all protobuf anomalies are accidental.                                   \
+# Some are fingerprints. Some are covert channels.                             \
+# Some hide data below the application layer.                                  \
+
+# \
+# prototext detects and annotates every category.                              \
+# Here is the complete vocabulary, ordered from most to least interesting:     \
+
+protolens --descriptor-set $PROTOTEXT_WKT_SET \
+    --type google.protobuf.FileDescriptorProto \
+    grpconf2026/anomalies.pb \
+    --script grpconf2026/anomalies.script
 
 
 
