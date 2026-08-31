@@ -6,9 +6,9 @@ SPDX-License-Identifier: MIT
 
 # GreHack 2026 — Submission draft
 
-**Deadline:** August 31, 2026
-**Notification:** September 16, 2026
-**Conference:** November 13, 2026 — Grenoble, France
+- **Deadline:** August 31, 2026
+- **Notification:** September 16, 2026
+- **Conference:** November 13, 2026 — Grenoble, France
 
 ---
 
@@ -40,8 +40,8 @@ wire-level anomalies invisible.
 This talk presents prototools, an open-source suite built during the
 inspection of Google software updates at S3NS (a Thales–Google joint
 venture operating a "Cloud de confiance" platform for European customers).
-The talk is organized as a live working session: an analyst's
-investigation replayed end-to-end in the terminal, not a slide deck.
+It is a live working session rather than a slide deck: the real tools,
+running in a terminal, taking an analyst's investigation end to end.
 We show how to extract and decompile
 embedded descriptors from an unknown binary, infer the message type of
 an undocumented network capture, and surface the anomalies that `protoc`
@@ -59,26 +59,37 @@ and a freely available toolset they can apply immediately.
 
 #### Who I am
 
-Frederic Ruget is a reverse engineer at S3NS, a Thales–Google joint
-venture that operates PREMI3NS — a Google Cloud region hosted in French
-data centers and operated autonomously by French personnel as a
-SecNumCloud-qualified "Cloud de confiance" platform.
-He developed prototools as part of the inspection work S3NS performs
-on every Google software update before it reaches production.
+I am a reverse engineer at S3NS, a Thales–Google joint venture that
+operates PREMI3NS — a Google Cloud region hosted in French data centers
+and operated autonomously by French personnel as a SecNumCloud-qualified
+"Cloud de confiance" platform. I developed prototools as part of the
+inspection work S3NS performs on every Google software and configuration
+update before it reaches production: static analysis and dynamic
+assessment in an isolated quarantine environment.
 prototools is MIT-licensed and available at
 github.com/ThalesGroup/prototools.
 
 #### Context
 
-The Google infrastructure is saturated with protobufs. S3NS inspects
-every software and configuration update that Google ships to PREMI3NS
-before it reaches production, using static analysis and dynamic
-assessment in an isolated quarantine environment. The protobufs we
-encounter come as binary blobs with no accompanying schema. prototools
-helps us make sense of them and verify that they are canonical, free
-of nefarious constructs. The proto sources decompiled from the Google
-binaries are also embedded in our analyzers, which continuously scrub
-the software updates we receive from Google.
+Google's infrastructure is the limit case: protobufs carry not only
+the RPC traffic but the configuration, the update metadata, and the
+descriptors of the binaries themselves. We meet them as bare blobs: no
+schema, no message type name, and often no indication that a given
+byte range is a protobuf at all.
+
+Two consequences shape the work. First, we have to recover the schema
+before we can say anything about the content — and since the
+descriptors are usually embedded in the very binaries under
+inspection, the corpus is there for the taking, provided we can
+extract it. The proto sources we decompile this way are then embedded
+in our own analyzers, which screen every subsequent update.
+
+Second, decoding is not enough. A blob that decodes cleanly can still
+be non-canonical, and non-canonicity is precisely what a normalizing
+decoder destroys. A duplicated field, a padded varint, a message that
+stops mid-write — none of these are curiosities: each marks a gap
+between what the wire carries and what the application will see. That
+gap is where we look.
 
 #### State of the art
 
@@ -98,14 +109,17 @@ A number of open-source tools address parts of the problem:
   design and tolerant of corrupted input, it is the closest thing to a
   low-level protobuf hex editor. But it does not apply a schema, infer
   types, or classify anomalies: the analyst gets raw structure and does
-  the semantics by hand.
-- **protodump** (arkadiyt/protodump), **proto-dump** (obriensp),
-  **pbtk** (marin-m/pbtk) — extract embedded descriptors from
-  binaries. protodump locates descriptors by searching for the ASCII
-  string `.proto` and scanning heuristically around it; pbtk targets
-  specific runtimes (Java flavors, C++ reflection metadata, JsProtoUrl
-  web apps). Extraction is where these tools stop: no decompilation to
-  buildable sources across syntaxes, no downstream analysis.
+  the semantics by hand. And it normalizes silently too — non-canonical
+  varints and similar constructs are transcribed to their canonical
+  form, so the very details we treat as evidence are gone by the time
+  the analyst reads the output.
+- **protodump** (arkadiyt/protodump), **pbtk** (marin-m/pbtk) —
+  extract embedded descriptors from binaries. protodump locates
+  descriptors by searching for the ASCII string `.proto` and scanning
+  heuristically around it; pbtk targets specific runtimes (Java
+  flavors, C++ reflection metadata, JsProtoUrl web apps). Extraction is
+  where these tools stop: no decompilation to buildable sources across
+  syntaxes, no downstream analysis.
 - **blackboxprotobuf** (NCC Group) — decodes and re-encodes messages
   without a schema, guessing field types from the wire data alone.
   Built for Burp-style traffic interception. Its type model is derived
@@ -125,27 +139,31 @@ evidence rather than noise to be normalized away.
 
 **The use case first.** The talk is a demo of a working session with
 the prototools — slides serve only as framing; the substance happens
-in the terminal:
+in the terminal. Two fictional characters carry the scenario: Bob, who
+comes across the artifacts, and Alice, who analyzes them.
 
 - *Bob* downloads an unknown executable and a truncated log file, and
-  captures a network call. `protoc --decode_raw` gives field numbers and
-  no semantics; the log file fails entirely.
+  captures a network call. `protoc --decode_raw` gives him field
+  numbers and no semantics; on the log file it fails outright.
 - *Alice* runs `protoscan` on the executable: embedded descriptors found
   — a subset of the Google Maps API. `reproto` decompiles them.
   `prototext` infers the capture's type: `SearchTextRequest` — with a
   non-canonical encoding flag. `protolens` opens the capture and shows
   what `protoc` missed: a shadowed `text_query` field carrying data the
-  application never saw.
+  application never sees.
 - Against the log file, `protolens` guides Alice through heat cues to
   identify two services: Maps Places and Routes. The overhanging bytes
   on `travel_mode` confirm intentional non-canonical encoding. A
   shadowed field in the first log entry, once typed, contains an API
   key.
 - The annotated log file is exported as prototext and re-encoded to the
-  original bytes, byte-exact. The report goes to Bob.
+  original bytes, byte-exact. Alice's report goes back to Bob.
 
-The entire demo runs from a scripted teleprompt; no live typing is
-required. Every claim is demonstrated in a terminal.
+A teleprompt proposes each command, so nothing hinges on live typing —
+but this is not a replay: the tools really are running underneath, and
+the speaker can step off script at any moment to try a variant, follow
+a detail, or answer a question. Every claim is demonstrated in a
+terminal.
 
 **The tools.** prototools is a suite of four tools; each maps to a
 stage of the demo, and each pushes past what the existing tools listed
@@ -165,8 +183,10 @@ heuristically.
 incomplete descriptor
 sets: missing imports and pruned symbols degrade the output gracefully
 instead of aborting the run. It also produces an indexed descriptor
-database used by the other tools for fast type lookup, deduplicated
-via Hopcroft minimization across thousands of schemas.
+database used by the other tools for fast type lookup, in which
+structurally identical type definitions coming from thousands of
+schemas are collapsed into a single entry (a Hopcroft-style partition
+refinement over the type graph).
 
 **prototext** is a lossless, bidirectional converter between binary
 protobuf and human-readable text. "Lossless" is the differentiator:
@@ -181,9 +201,11 @@ corpus-driven inference is the piece no existing tool has —
 blackboxprotobuf guesses types from the wire data alone; prototext
 matches the blob against thousands of recovered schemas at once.
 Inference cost scales with the size of the target blob and of the
-corpus; as a data point, on a 12-CPU machine the googleapis descriptor
-set (25 MB, ~8,000 `FileDescriptorProto` entries) is evaluated against
-itself in under a second.
+corpus. As a data point, `googleapis.desc` is convenient because it is
+both at once: it is a 25 MB protobuf (a `FileDescriptorSet` holding
+some 8,000 `FileDescriptorProto` entries), and it is a corpus of tens
+of thousands of message types. Inferring the type of that 25 MB blob
+against the corpus it itself defines takes 0.7 s on a 12-CPU machine.
 
 **protolens** is the interactive TUI version of prototext. Interactive
 protobuf viewers exist (blackboxprotobuf's Burp extension, a handful of
@@ -203,38 +225,71 @@ memory-mapped, inference runs in parallel across cores, and the
 renderer materializes only the visible viewport.
 
 **Wire-level anomaly taxonomy.** A concrete output of this work is a
-taxonomy of protobuf encoding anomalies and their forensic significance:
+classification of protobuf encoding anomalies — some two dozen distinct
+conditions, every one of them reproducible from a single reference blob
+shipped with the tools — organized by what an anomaly means to the
+analyst rather than by where it sits in the wire format.
 
-- *Shadowed scalar*: a singular field appears more than once at wire
-  level. Standard decoders apply last-write-wins and silently discard
-  all earlier values — a data exfiltration or smuggling vector invisible
-  to the application layer, and a classic parser-differential primitive:
-  two decoders that disagree on which occurrence wins see two different
-  messages in the same bytes.
-- *Overhanging bytes* (ohb): a varint padded beyond its minimal
-  encoding. Forbidden by the spec, accepted by every parser. For the
-  attacker, a covert channel (the padding bytes are ignored) and an
-  evasion primitive against naive signature matching; for the defender,
-  a fingerprint — no canonical encoder produces it, so its presence
-  identifies a non-standard producer.
-- *Non-canonical negative integers and NaNs*: values that decode
-  identically to their canonical form but whose wire encoding a
-  conformant re-encoder would not reproduce. They defeat
-  canonicalization-based integrity checks: hash the re-encoded message
-  and the tampering disappears.
-- *Truncated message*: the binary ends mid-field. `protoc --decode`
-  fails; prototext decodes as far as possible and annotates the
-  boundary. In log forensics, truncation is timeline evidence — a
-  process killed mid-write, and a precise marker of when.
+*Legal but non-canonical.* Overhanging bytes: a varint padded beyond
+its minimal encoding — and not only value varints, but tags, length
+prefixes, and group-closing tags. Non-canonical negative integers
+(`-1` in five bytes where a ten-byte sign-extended varint is expected).
+Non-canonical NaNs (IEEE 754 has 2^52 distinct NaN payloads; a
+re-encoder picks one and the others are lost). Parsers accept all of
+these without a word; no mainstream encoder emits any of them. That
+asymmetry is the whole point: for the attacker, a covert channel — the
+padding bytes never reach the application — and an evasion primitive
+against naive signature matching; for the defender, a fingerprint that
+betrays a non-standard producer. They also defeat canonicalization-based
+integrity checks: hash the re-encoded message and the anomaly is gone.
+
+*Ambiguous — the decoder decides.* A singular field that appears twice
+on the wire, where last-write-wins silently discards the first value. A
+group opened as field 100 and closed as field 101 (groups are proto2
+legacy, but they never left the wire format, and decoders still have to
+take a position on them). Fields the schema does not declare, and enum
+values it has no name for. A field declared `string` that arrives as a
+varint, or as bytes that are not valid UTF-8. These are
+parser-differential primitives: two conformant decoders can read two
+different messages out of the same bytes. That is a smuggling vector
+invisible at the application layer, and a well-known way for a
+validator and the service behind it to disagree about what they just
+approved.
+
+*Malformed — where analysis normally stops.* Truncated messages.
+Varints and length prefixes with no terminating byte. A fixed64 field
+with three bytes behind it. Wire type 6, which does not exist. Field
+number 0, which is out of range. Groups that are never closed, and
+`END_GROUP` tags that close nothing. `protoc --decode` rejects the
+entire input on any of these; prototext localizes the damage, annotates
+it, and resumes at the next tag — one bad byte costs one field instead
+of the whole document. In log forensics that pays twice, because
+truncation is itself evidence: a process killed mid-write, and a
+precise marker of when.
 
 #### Limitations
 
 Type inference matches a blob against a corpus of recovered
 descriptors, and the heat cues in protolens come from that corpus.
-Without a corpus, prototext and protolens still work: they fall back
-to best-effort discrimination between bytes, strings, and embedded
-messages, and the analyst can still handcraft and apply type overrides
-to make sense of the data — but the heat cues disappear.
+Three consequences are worth stating up front.
+
+*The binary may embed no descriptors at all* — stripped builds,
+non-reflective runtimes. prototext and protolens still work: they fall
+back to best-effort discrimination between bytes, strings, and
+embedded messages, which is roughly the view protoscope offers, minus
+the normalization. From there the analyst can handcraft and apply type
+overrides. Sidecar corpora are the other way out: descriptors
+recovered from another version of the same binary, or from an
+unrelated source, are often close enough to type the message.
+
+*Inference is often ambiguous* — candidates tie, or come within noise
+of each other. protolens does not paper over this. Every applicable
+override is listed with its score, and the analyst arbitrates. The
+tool assists the decision; it does not make it.
+
+*Without any corpus, the heat cues disappear.* The structural view and
+manual overrides remain, but the guidance that makes the workflow fast
+is gone.
 
 #### On-site setup
 
@@ -246,10 +301,12 @@ Laptop + terminal only. No special hardware.
 
 #### Prior and planned submissions
 
-Presented at gRPConf 2026 (San Francisco, September 2026) — same tools,
-engineering/practitioner framing rather than security framing. The
-attached recording shows the same demo scenario (20-minute cut); the
-GreHack version deepens the forensic and adversarial analysis.
+Accepted at gRPConf 2026 (San Francisco) — same tools, but an
+engineering/practitioner framing rather than a security one. That talk
+takes place a few days after this submission deadline, so the attached
+video is a recording of the same demo scenario (20-minute cut) rather
+than of the conference itself. The GreHack version deepens the
+forensic and adversarial analysis.
 
 ---
 
@@ -262,7 +319,7 @@ must answer escalating questions about their content — CTF-style. The
 workshop is independent: the talk stands alone if no workshop slot is
 available.
 
-The gRPConf 2026 talk recording (20-minute version of the same scenario)
+A 20-minute recording of the same demo scenario (the gRPConf 2026 cut)
 is attached as supporting material.
 
 All tools are MIT-licensed. No proprietary technology. The demo scenario
@@ -279,15 +336,15 @@ binary analysis
 
 ### Author
 
-Frederic Ruget
-Reverse engineer — S3NS (Thales x Google joint venture, Cloud de confiance)
-GitHub: @douzebis
+- Frederic Ruget
+- Reverse engineer — S3NS (Thales x Google joint venture, Cloud de confiance)
+- GitHub: @douzebis
 
 ---
 
 ### Video upload
 
-Upload the gRPConf 2026 talk recording (20-minute version of the demo scenario).
+Upload the 20-minute recording of the demo scenario (the gRPConf 2026 cut).
 
 ---
 
@@ -311,6 +368,9 @@ a series of escalating questions about what the protobufs contain.
 This is not a product tutorial. The tools are a means to an end; the
 learning objective is fluency with the wire format and the recon workflow.
 
+Attending the talk is not a prerequisite: the workshop is self-contained
+and opens with the wire-format background it needs.
+
 ### Prerequisites
 
 - Familiarity with protobuf at the "I have used it in a project" level.
@@ -332,7 +392,6 @@ learning objective is fluency with the wire format and the recon workflow.
 
 - github.com/ThalesGroup/prototools
 - Protocol Buffers encoding specification: protobuf.dev/programming-guides/encoding/
-- "Shadowed fields and wire-level anomalies" — covered in the accompanying talk
 
 ---
 
