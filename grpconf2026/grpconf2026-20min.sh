@@ -94,7 +94,7 @@ protoscan bob/app
 reproto --desc-root bob/app --schema-db-out alice/app.desc  # 🤞
 
 ls -lhd alice/app.desc alice/app/* \
-# reproto delivered 💪:                                                         \
+# reproto delivered 💪:                                                        \
 # - app.desc:           descriptor set                                         \
 # - app/hopcroft.rkyv:  type-inference graph                                   \
 # - app/index.rkyv:     fast-access index                                      \
@@ -225,7 +225,8 @@ reproto \
     --seed 'file:google/maps/places/v1/*.proto'
 
 # reproto noticed the missing dependencies and worked around them:
-diff -x "*.pb" -d -r alice/places alice/places-incomplete
+diff -x "*.pb" -d -r alice/places alice/places-incomplete \
+  | view
 
 # \
 # 3. We can ask reproto to transcribe decompiled file to proto2                \
@@ -240,7 +241,8 @@ reproto \
 # Let's have a look at the differences.
 diff \
     alice/places/google/maps/places/v1/place.proto \
-    alice/places-proto2/google/maps/places/v1/place.proto
+    alice/places-proto2/google/maps/places/v1/place.proto \
+  | view
 # Implicit proto3 optional labels have become explicit.
 # Explicit proto3 optional labels have been translated into oneof constructs.
 
@@ -254,7 +256,7 @@ clear && header "C. Protobuf anomaly taxonomy"
 
 # \
 # prototext detects and annotates every category.                              \
-# Here is the complete vocabulary, ordered from most to least interesting:     \
+# Here is the complete vocabulary:                                             \
 
 protolens --descriptor-set $PROTOTEXT_WKT_SET \
     --type google.protobuf.FileDescriptorSet \
