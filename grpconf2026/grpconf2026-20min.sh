@@ -159,6 +159,14 @@ clear && header "7. Conclusion"
 # Thank you 👋
 
 
+clear && header "8. Annexes"
+
+# \
+# A. Performance and scaling                                                   \
+# B. reproto deep-dive                                                         \
+# C. Protobuf anomaly taxonomy                                                 \
+
+
 clear && header "A. Performance and scaling"
 
 # \
@@ -237,7 +245,7 @@ diff \
 # Explicit proto3 optional labels have been translated into oneof constructs.
 
 
-clear && header "C. Anomaly taxonomy"
+clear && header "C. Protobuf anomaly taxonomy"
 
 # \
 # Not all protobuf anomalies are accidental.                                   \
