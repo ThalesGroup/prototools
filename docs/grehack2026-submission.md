@@ -39,7 +39,7 @@ wire-level anomalies invisible.
 
 This talk presents prototools, an open-source suite built during the
 inspection of Google software updates at S3NS (a Thales–Google joint
-venture operating a "Cloud de confiance" platform for European customers).
+venture operating a "Cloud de confiance" platform).
 It is a live working session rather than a slide deck: the real tools,
 running in a terminal, taking an analyst's investigation end to end.
 We show how to extract and decompile
@@ -48,6 +48,15 @@ an undocumented network capture, and surface the anomalies that `protoc`
 would have silently discarded: shadowed fields carrying data the application
 never sees, non-canonical varints used as fingerprints or covert channels,
 and truncated messages that standard decoders reject entirely.
+
+A recovered corpus rarely contains the message you are holding — but it
+often contains the messages inside it. Every node of a blob is scored
+against the corpus on its own, and the interactive viewer marks each one
+with a heat cue: how well those particular bytes fit the best type the
+corpus can offer for them. An unknown wrapper stays cold while a
+familiar sub-message lights up. The analyst applies a type override
+there, the structure around it resolves, and an unknown schema is
+recovered piece by piece out of the parts that are known.
 
 Attendees will leave with a clear mental model of the protobuf wire
 format, a taxonomy of encoding anomalies and their forensic significance,
@@ -213,13 +222,22 @@ schema-less GUI viewers), but to our knowledge none combines
 schema-driven decode, wire-level anomaly classification, and live
 corpus-based type inference in one interactive UI.
 It displays a protobuf as a navigable tree, color-codes nodes
-by anomaly severity, and overlays *heat cues* — per-field confidence
-indicators from the live type-inference engine — to guide the analyst
-toward the interesting types. The underlying wire bytes can be shown
-side by side with the decoded text, down to individual tag, length,
-and payload bytes. Type overrides are applied
-interactively and saved; the annotated result is exportable as
-prototext for reporting. The TUI stays fluid on documents and
+by anomaly severity, and overlays *heat cues*. The cues are what make
+an unrecognized message tractable: scoring runs per node, not per
+document, so a blob whose top-level type is nowhere in the corpus
+still lights up wherever a sub-message does match one. Each node
+carries the best type the corpus can offer for its own bytes and how
+well those bytes fit it — including nodes that have no type yet, which
+is exactly where the question is worth asking. The analyst applies a
+type override on the node that lit up, the decode re-runs, and the
+structure around it resolves; repeat, and a schema nobody has ever
+seen is reconstructed out of the fragments that are known. Overrides
+are saved with the document, and the override pane lists every
+candidate with its score, so the analyst always sees what was rejected
+and on what evidence. The underlying wire bytes can be shown side by
+side with the decoded text, down to individual tag, length, and
+payload bytes; the annotated result is exportable as prototext for
+reporting. The TUI stays fluid on documents and
 descriptor corpora of tens of megabytes: indexes are pre-built and
 memory-mapped, inference runs in parallel across cores, and the
 renderer materializes only the visible viewport.
@@ -282,10 +300,14 @@ overrides. Sidecar corpora are the other way out: descriptors
 recovered from another version of the same binary, or from an
 unrelated source, are often close enough to type the message.
 
-*Inference is often ambiguous* — candidates tie, or come within noise
-of each other. protolens does not paper over this. Every applicable
-override is listed with its score, and the analyst arbitrates. The
-tool assists the decision; it does not make it.
+*The tool narrows the search; it does not close it.* Candidates tie, or
+come within noise of one another, and no amount of scoring turns that
+into certainty. So protolens never picks silently: the override pane
+lists every candidate with its score, a node's cue reports how many
+others tie with the one it names, and the analyst arbitrates. This is
+a division of labor rather than a shortcoming — but it does mean the
+output is an analyst's reasoned reconstruction, not a decompilation
+that can be taken on trust.
 
 *Without any corpus, the heat cues disappear.* The structural view and
 manual overrides remain, but the guidance that makes the workflow fast
