@@ -172,6 +172,85 @@ time protolens --descriptor-set $PROTOTEXT_GOOGLEAPIS_SET $PROTOTEXT_GOOGLEAPIS_
 # Navigation stays fluid and startup latency short:                                     \
 
 
+clear && header "B. reproto deep-dive"
+
+# \
+# reproto decompiles FileDescriptorProto blobs back to .proto source.          \
+# It is designed to be flexible and forgiving.                                 \
+
+# \
+# 1. We can ask reproto to decompile only a subset of an FDS.                  \
+
+# Here, let's decompile only the places v1 part from the google APIs:
+reproto \
+    --desc-root $PROTOTEXT_GOOGLEAPIS_SET \
+    --proto-out alice/places \
+    --emit-binary \
+    --seed 'file:google/maps/places/v1/*.proto'
+
+# reproto decompiled 34 files: the 18 places.v1 files plus their transitive deps:
+tree -P "*.proto" alice/places
+# The corresponding .pb files have been extracted too (--emit-binary option)
+tree -P "*.pb" alice/places
+
+# \
+# 2. We can also have reproto work on an incomplete FDS.                       \
+
+# For example, starting from the places v1 APIs:
+cp -r alice/places alice/places-incomplete
+# Remove polyline.pb:
+rm alice/places-incomplete/google/maps/places/v1/polyline.*
+# And remove the TravelMode definition from travel_mode.pb:
+reproto \
+    --desc-root alice/places-incomplete \
+    --proto-out alice/places-incomplete \
+    --emit-binary \
+    --use-variant all \
+    google/maps/places/v1/travel_mode.pb \
+    --prune enum:google.maps.places.v1.TravelMode
+
+# Now run reproto on the pruned set
+reproto \
+    --desc-root alice/places-incomplete \
+    --proto-out alice/places-incomplete \
+    --emit-binary \
+    --seed 'file:google/maps/places/v1/*.proto'
+
+# reproto noticed the missing dependencies and worked around them:
+diff -x "*.pb" -d -r alice/places alice/places-incomplete
+
+# \
+# 3. We can ask reproto to transcribe decompiled file to proto2                \
+#    even when the source syntax is proto3 or editions.                        \
+
+# This is the --force-proto2-output option:
+reproto \
+    --desc-root alice/places \
+    --proto-out alice/places-proto2 \
+    --force-proto2-output
+
+# Let's have a look at the differences.
+diff \
+    alice/places/google/maps/places/v1/place.proto \
+    alice/places-proto2/google/maps/places/v1/place.proto
+# Implicit proto3 optional labels have become explicit.
+# Explicit proto3 optional labels have been translated into oneof constructs.
+
+
+clear && header "C. Anomaly taxonomy"
+
+# \
+# Not all protobuf anomalies are accidental.                                   \
+# Some are fingerprints. Some are covert channels.                             \
+# Some hide data below the application layer.                                  \
+
+# \
+# prototext detects and annotates every category.                              \
+# Here is the complete vocabulary, ordered from most to least interesting:     \
+
+protolens --descriptor-set $PROTOTEXT_WKT_SET \
+    --type google.protobuf.FileDescriptorSet \
+    anomalies.pb
 
 
 

@@ -145,8 +145,7 @@ steps:
       👌 Perfect.
 
       Now look at the 3rd entry — fields 6 and 7.
-      Field 6 scores deeply negative 😨
-      Heat cues give nothing convincing. 🤔
+      Field 6 scores deeply negative 😨 and heat cues give nothing convincing 🤔.
 
       app.desc only knows the Places API.
       Fields 6 and 7 look like a different service entirely.
@@ -172,6 +171,8 @@ steps:
       - file_exists: alice/overrides
 
   - text: |
+      All done.
+      
       👋 Press Enter to quit.
 
     heat_cues: findings

@@ -1,5 +1,5 @@
 #@ prototext: protoc
-# Type: google.protobuf.FileDescriptorProto
+# Type: google.protobuf.FileDescriptorSet
 
 # ============================================================================
 # Every anomaly prototext-core can report, in one document.
@@ -7,19 +7,17 @@
 # Opened with:
 #
 #     protolens --descriptor-set $PROTOTEXT_WKT_SET \
-#         --type google.protobuf.FileDescriptorProto \
-#         grpconf2026/anomalies.pb \
-#         --script grpconf2026/anomalies.script
+#         --type google.protobuf.FileDescriptorSet \
+#         anomalies.pb
 #
 # Ordered from most to least interesting for a security audience, so
 # the presenter can exit early at any natural break.
 #
-# Structure: every example lives in its own submessage so the document
-# folds cleanly.  Each submessage is introduced by a top-level `name`
-# line that remains visible however far the document is folded.
+# Structure: every example lives in its own FileDescriptorProto (field 1
+# of FileDescriptorSet), identified by its `name` field.
 #
 # Where an anomaly has a canonical counterpart, the two sit side by side
-# in the SAME submessage: unusual line first, canonical line under it.
+# in the SAME FDP: unusual line first, canonical line under it.
 # ============================================================================
 
 
@@ -34,10 +32,12 @@
 # invisible to every standard SDK and to protoc --decode.
 # ---------------------------------------------------------------------------
 
-name: "1. A singular field written twice: one value shadows the other."  #@ string = 1
-message_type {  #@ repeated DescriptorProto = 4
-  name: "I am the shadowed value — no standard SDK sees me"  #@ string = 1; repeated_singular
-  name: "I am the surviving value — last write wins"  #@ string = 1
+file {  #@ repeated FileDescriptorProto = 1
+  name: "1. A singular field written twice: one value shadows the other."  #@ string = 1
+  message_type {  #@ repeated DescriptorProto = 4
+    name: "I am the shadowed value — no standard SDK sees me"  #@ string = 1; repeated_singular
+    name: "I am the surviving value — last write wins"  #@ string = 1
+  }
 }
 
 
@@ -51,27 +51,33 @@ message_type {  #@ repeated DescriptorProto = 4
 # Deliberate padding is a fingerprint, or a covert channel in the encoding.
 # ---------------------------------------------------------------------------
 
-name: "2.a. Legal, not canonical: a TAG padded to 3 bytes."  #@ string = 1
-message_type {  #@ repeated DescriptorProto = 4
-  reserved_name: "this line's tag is padded"  #@ repeated string = 10; tag_ohb: 2
-  reserved_name: "this line's tag is not"  #@ repeated string = 10
-}
-
-name: "2.b. Legal, not canonical: a LENGTH prefix padded to 4 bytes."  #@ string = 1
-message_type {  #@ repeated DescriptorProto = 4
-  reserved_name: "this line's length prefix is padded"  #@ repeated string = 10; len_ohb: 3
-  reserved_name: "this line's length prefix is not"  #@ repeated string = 10
-}
-
-name: "2.c. Legal, not canonical: a VALUE padded to 5 bytes."  #@ string = 1
-message_type {  #@ repeated DescriptorProto = 4
-  field {  #@ repeated FieldDescriptorProto = 2
-    name: "padded"  #@ string = 1
-    number: 5  #@ int32 = 3; val_ohb: 4
+file {  #@ repeated FileDescriptorProto = 1
+  name: "2.a. Legal, not canonical: a TAG padded to 3 bytes."  #@ string = 1
+  message_type {  #@ repeated DescriptorProto = 4
+    reserved_name: "this line's tag is padded"  #@ repeated string = 10; tag_ohb: 2
+    reserved_name: "this line's tag is not"  #@ repeated string = 10
   }
-  field {  #@ repeated FieldDescriptorProto = 2
-    name: "canonical"  #@ string = 1
-    number: 5  #@ int32 = 3
+}
+
+file {  #@ repeated FileDescriptorProto = 1
+  name: "2.b. Legal, not canonical: a LENGTH prefix padded to 4 bytes."  #@ string = 1
+  message_type {  #@ repeated DescriptorProto = 4
+    reserved_name: "this line's length prefix is padded"  #@ repeated string = 10; len_ohb: 3
+    reserved_name: "this line's length prefix is not"  #@ repeated string = 10
+  }
+}
+
+file {  #@ repeated FileDescriptorProto = 1
+  name: "2.c. Legal, not canonical: a VALUE padded to 5 bytes."  #@ string = 1
+  message_type {  #@ repeated DescriptorProto = 4
+    field {  #@ repeated FieldDescriptorProto = 2
+      name: "padded"  #@ string = 1
+      number: 5  #@ int32 = 3; val_ohb: 4
+    }
+    field {  #@ repeated FieldDescriptorProto = 2
+      name: "canonical"  #@ string = 1
+      number: 5  #@ int32 = 3
+    }
   }
 }
 
@@ -83,24 +89,28 @@ message_type {  #@ repeated DescriptorProto = 4
 # no name for them, so prototext shows what the bytes themselves say.
 # ---------------------------------------------------------------------------
 
-name: "3.a. An enum value this schema has no name for."  #@ string = 1
-message_type {  #@ repeated DescriptorProto = 4
-  field {  #@ repeated FieldDescriptorProto = 2
-    name: "unnamed"  #@ string = 1
-    label: 99  #@ Label(99) = 4
-  }
-  field {  #@ repeated FieldDescriptorProto = 2
-    name: "named"  #@ string = 1
-    label: LABEL_OPTIONAL  #@ Label(1) = 4
+file {  #@ repeated FileDescriptorProto = 1
+  name: "3.a. An enum value this schema has no name for."  #@ string = 1
+  message_type {  #@ repeated DescriptorProto = 4
+    field {  #@ repeated FieldDescriptorProto = 2
+      name: "unnamed"  #@ string = 1
+      label: 99  #@ Label(99) = 4
+    }
+    field {  #@ repeated FieldDescriptorProto = 2
+      name: "named"  #@ string = 1
+      label: LABEL_OPTIONAL  #@ Label(1) = 4
+    }
   }
 }
 
-name: "3.b. Below: four fields this schema does not declare, by wire type."  #@ string = 1
-message_type {  #@ repeated DescriptorProto = 4
-  200: 42  #@ varint
-  201: 0x400921fb54442d18  #@ fixed64
-  202: 0x40490fdb  #@ fixed32
-  203: "an undeclared payload that is not text: \377\376"  #@ bytes
+file {  #@ repeated FileDescriptorProto = 1
+  name: "3.b. Below: four fields this schema does not declare, by wire type."  #@ string = 1
+  message_type {  #@ repeated DescriptorProto = 4
+    200: 42  #@ varint
+    201: 0x400921fb54442d18  #@ fixed64
+    202: 0x40490fdb  #@ fixed32
+    203: "an undeclared payload that is not text: \377\376"  #@ bytes
+  }
 }
 
 
@@ -113,10 +123,12 @@ message_type {  #@ repeated DescriptorProto = 4
 # mid-write.
 # ---------------------------------------------------------------------------
 
-name: "4. A length prefix that claims more bytes than are there."  #@ string = 1
-message_type {  #@ repeated DescriptorProto = 4
-  field {  #@ repeated FieldDescriptorProto = 2; TRUNCATED_MESSAGE; MISSING: 3
-    1: "ab"  #@ TRUNCATED_BYTES; MISSING: 2
+file {  #@ repeated FileDescriptorProto = 1
+  name: "4. A length prefix that claims more bytes than are there."  #@ string = 1
+  message_type {  #@ repeated DescriptorProto = 4
+    field {  #@ repeated FieldDescriptorProto = 2; TRUNCATED_MESSAGE; MISSING: 3
+      1: "ab"  #@ TRUNCATED_BYTES; MISSING: 2
+    }
   }
 }
 
@@ -125,20 +137,26 @@ message_type {  #@ repeated DescriptorProto = 4
 # 5. The blob and the descriptor set disagree.
 # ---------------------------------------------------------------------------
 
-name: "5.a. The schema says this field is a string; the wire says varint."  #@ string = 1
-message_type {  #@ repeated DescriptorProto = 4
-  1: 7  #@ varint; TYPE_MISMATCH
+file {  #@ repeated FileDescriptorProto = 1
+  name: "5.a. The schema says this field is a string; the wire says varint."  #@ string = 1
+  message_type {  #@ repeated DescriptorProto = 4
+    1: 7  #@ varint; TYPE_MISMATCH
+  }
 }
 
-name: "5.b. Declared a string, but the payload is not valid UTF-8."  #@ string = 1
-message_type {  #@ repeated DescriptorProto = 4
-  10: "\377\376"  #@ INVALID_STRING
+file {  #@ repeated FileDescriptorProto = 1
+  name: "5.b. Declared a string, but the payload is not valid UTF-8."  #@ string = 1
+  message_type {  #@ repeated DescriptorProto = 4
+    10: "\377\376"  #@ INVALID_STRING
+  }
 }
 
-name: "5.c. Declared packed int32, but the payload does not decode."  #@ string = 1
-source_code_info {  #@ SourceCodeInfo = 9
-  location {  #@ repeated Location = 1
-    1: "\001\002\200"  #@ INVALID_PACKED_RECORDS
+file {  #@ repeated FileDescriptorProto = 1
+  name: "5.c. Declared packed int32, but the payload does not decode."  #@ string = 1
+  source_code_info {  #@ SourceCodeInfo = 9
+    location {  #@ repeated Location = 1
+      1: "\001\002\200"  #@ INVALID_PACKED_RECORDS
+    }
   }
 }
 
@@ -147,27 +165,31 @@ source_code_info {  #@ SourceCodeInfo = 9
 # 6. Values that survive a round trip but not a re-encode.
 # ---------------------------------------------------------------------------
 
-name: "6.a. -1 written in five bytes instead of the specified ten."  #@ string = 1
-message_type {  #@ repeated DescriptorProto = 4
-  field {  #@ repeated FieldDescriptorProto = 2
-    name: "truncated"  #@ string = 1
-    number: -1  #@ int32 = 3; truncated_neg
-  }
-  field {  #@ repeated FieldDescriptorProto = 2
-    name: "canonical"  #@ string = 1
-    number: -1  #@ int32 = 3
+file {  #@ repeated FileDescriptorProto = 1
+  name: "6.a. -1 written in five bytes instead of the specified ten."  #@ string = 1
+  message_type {  #@ repeated DescriptorProto = 4
+    field {  #@ repeated FieldDescriptorProto = 2
+      name: "truncated"  #@ string = 1
+      number: -1  #@ int32 = 3; truncated_neg
+    }
+    field {  #@ repeated FieldDescriptorProto = 2
+      name: "canonical"  #@ string = 1
+      number: -1  #@ int32 = 3
+    }
   }
 }
 
-name: "6.b. A NaN whose payload bits are not the canonical NaN's."  #@ string = 1
-options {  #@ FileOptions = 8
-  uninterpreted_option {  #@ repeated UninterpretedOption = 999
-    identifier_value: "unusual"  #@ string = 3
-    double_value: nan  #@ double = 6; nan_bits: 0x7ff8000000000001
-  }
-  uninterpreted_option {  #@ repeated UninterpretedOption = 999
-    identifier_value: "canonical"  #@ string = 3
-    double_value: nan  #@ double = 6
+file {  #@ repeated FileDescriptorProto = 1
+  name: "6.b. A NaN whose payload bits are not the canonical NaN's."  #@ string = 1
+  options {  #@ FileOptions = 8
+    uninterpreted_option {  #@ repeated UninterpretedOption = 999
+      identifier_value: "unusual"  #@ string = 3
+      double_value: nan  #@ double = 6; nan_bits: 0x7ff8000000000001
+    }
+    uninterpreted_option {  #@ repeated UninterpretedOption = 999
+      identifier_value: "canonical"  #@ string = 3
+      double_value: nan  #@ double = 6
+    }
   }
 }
 
@@ -176,15 +198,17 @@ options {  #@ FileOptions = 8
 # 7. A packed repeated field with per-element anomalies.
 # ---------------------------------------------------------------------------
 
-name: "7. Two packed runs: three text lines each, one wire record each."  #@ string = 1
-source_code_info {  #@ SourceCodeInfo = 9
-  location {  #@ repeated Location = 1
-    path: 4  #@ repeated int32 [packed=true] = 1; pack_size: 3
-    path: 0  #@ repeated int32 [packed=true] = 1; ohb: 2
-    path: -1  #@ repeated int32 [packed=true] = 1; neg
-    span: 4  #@ repeated int32 [packed=true] = 2; pack_size: 3
-    span: 0  #@ repeated int32 [packed=true] = 2
-    span: -1  #@ repeated int32 [packed=true] = 2
+file {  #@ repeated FileDescriptorProto = 1
+  name: "7. Two packed runs: three text lines each, one wire record each."  #@ string = 1
+  source_code_info {  #@ SourceCodeInfo = 9
+    location {  #@ repeated Location = 1
+      path: 4  #@ repeated int32 [packed=true] = 1; pack_size: 3
+      path: 0  #@ repeated int32 [packed=true] = 1; ohb: 2
+      path: -1  #@ repeated int32 [packed=true] = 1; neg
+      span: 4  #@ repeated int32 [packed=true] = 2; pack_size: 3
+      span: 0  #@ repeated int32 [packed=true] = 2
+      span: -1  #@ repeated int32 [packed=true] = 2
+    }
   }
 }
 
@@ -197,34 +221,46 @@ source_code_info {  #@ SourceCodeInfo = 9
 # than merely unusual.
 # ---------------------------------------------------------------------------
 
-name: "8.a. A varint with no terminating byte."  #@ string = 1
-message_type {  #@ repeated DescriptorProto = 4
-  3: "\200\200"  #@ INVALID_VARINT
+file {  #@ repeated FileDescriptorProto = 1
+  name: "8.a. A varint with no terminating byte."  #@ string = 1
+  message_type {  #@ repeated DescriptorProto = 4
+    3: "\200\200"  #@ INVALID_VARINT
+  }
 }
 
-name: "8.b. A length prefix that is itself an unterminated varint."  #@ string = 1
-message_type {  #@ repeated DescriptorProto = 4
-  4: "\377\377\377\377\377\377\377\377\377\377"  #@ INVALID_LEN
+file {  #@ repeated FileDescriptorProto = 1
+  name: "8.b. A length prefix that is itself an unterminated varint."  #@ string = 1
+  message_type {  #@ repeated DescriptorProto = 4
+    4: "\377\377\377\377\377\377\377\377\377\377"  #@ INVALID_LEN
+  }
 }
 
-name: "8.c. A 64-bit field with only three bytes behind it."  #@ string = 1
-message_type {  #@ repeated DescriptorProto = 4
-  5: "\001\002\003"  #@ INVALID_FIXED64
+file {  #@ repeated FileDescriptorProto = 1
+  name: "8.c. A 64-bit field with only three bytes behind it."  #@ string = 1
+  message_type {  #@ repeated DescriptorProto = 4
+    5: "\001\002\003"  #@ INVALID_FIXED64
+  }
 }
 
-name: "8.d. A 32-bit field with only two bytes behind it."  #@ string = 1
-message_type {  #@ repeated DescriptorProto = 4
-  6: "\001\002"  #@ INVALID_FIXED32
+file {  #@ repeated FileDescriptorProto = 1
+  name: "8.d. A 32-bit field with only two bytes behind it."  #@ string = 1
+  message_type {  #@ repeated DescriptorProto = 4
+    6: "\001\002"  #@ INVALID_FIXED32
+  }
 }
 
-name: "8.e. Wire type 6: no such thing. Nothing after it can be found."  #@ string = 1
-message_type {  #@ repeated DescriptorProto = 4
-  0: "&\030\t"  #@ INVALID_TAG_TYPE
+file {  #@ repeated FileDescriptorProto = 1
+  name: "8.e. Wire type 6: no such thing. Nothing after it can be found."  #@ string = 1
+  message_type {  #@ repeated DescriptorProto = 4
+    0: "&\030\t"  #@ INVALID_TAG_TYPE
+  }
 }
 
-name: "8.f. Field number 0 is out of range: field numbers start at 1."  #@ string = 1
-message_type {  #@ repeated DescriptorProto = 4
-  0: 5  #@ varint; TAG_OOR
+file {  #@ repeated FileDescriptorProto = 1
+  name: "8.f. Field number 0 is out of range: field numbers start at 1."  #@ string = 1
+  message_type {  #@ repeated DescriptorProto = 4
+    0: 5  #@ varint; TAG_OOR
+  }
 }
 
 
@@ -232,38 +268,48 @@ message_type {  #@ repeated DescriptorProto = 4
 # 9. Groups. (proto2 legacy; rarely seen, included for completeness.)
 # ---------------------------------------------------------------------------
 
-name: "9.a. A group closed by a padded tag, then the same group canonically."  #@ string = 1
-message_type {  #@ repeated DescriptorProto = 4
-  100 {  #@ group; etag_ohb: 2
-    1: 5  #@ varint
-  }
-  100 {  #@ group
-    1: 5  #@ varint
-  }
-}
-
-name: "9.b. Opened as field 100, closed as field 101."  #@ string = 1
-message_type {  #@ repeated DescriptorProto = 4
-  100 {  #@ group; END_MISMATCH: 101
-    1: 5  #@ varint
+file {  #@ repeated FileDescriptorProto = 1
+  name: "9.a. A group closed by a padded tag, then the same group canonically."  #@ string = 1
+  message_type {  #@ repeated DescriptorProto = 4
+    100 {  #@ group; etag_ohb: 2
+      1: 5  #@ varint
+    }
+    100 {  #@ group
+      1: 5  #@ varint
+    }
   }
 }
 
-name: "9.c. Closed with a field number no field may have."  #@ string = 1
-message_type {  #@ repeated DescriptorProto = 4
-  100 {  #@ group; END_MISMATCH: 536870912
-    1: 5  #@ varint
+file {  #@ repeated FileDescriptorProto = 1
+  name: "9.b. Opened as field 100, closed as field 101."  #@ string = 1
+  message_type {  #@ repeated DescriptorProto = 4
+    100 {  #@ group; END_MISMATCH: 101
+      1: 5  #@ varint
+    }
   }
 }
 
-name: "9.d. A group that is never closed."  #@ string = 1
-message_type {  #@ repeated DescriptorProto = 4
-  100 {  #@ group; OPEN_GROUP
-    1: 5  #@ varint
+file {  #@ repeated FileDescriptorProto = 1
+  name: "9.c. Closed with a field number no field may have."  #@ string = 1
+  message_type {  #@ repeated DescriptorProto = 4
+    100 {  #@ group; END_MISMATCH: 536870912
+      1: 5  #@ varint
+    }
   }
 }
 
-name: "9.e. An END_GROUP tag that closes nothing."  #@ string = 1
-message_type {  #@ repeated DescriptorProto = 4
-  100: "\010\001"  #@ INVALID_GROUP_END
+file {  #@ repeated FileDescriptorProto = 1
+  name: "9.d. A group that is never closed."  #@ string = 1
+  message_type {  #@ repeated DescriptorProto = 4
+    100 {  #@ group; OPEN_GROUP
+      1: 5  #@ varint
+    }
+  }
+}
+
+file {  #@ repeated FileDescriptorProto = 1
+  name: "9.e. An END_GROUP tag that closes nothing."  #@ string = 1
+  message_type {  #@ repeated DescriptorProto = 4
+    100: "\010\001"  #@ INVALID_GROUP_END
+  }
 }

@@ -16,7 +16,7 @@
 #
 #               _hook_env        — exports NIXSHELL_REPO, PROTOTEXT_DESCRIPTOR_SET,
 #                                  PROTOTEXT_WKT_SET, PROTOTEXT_GOOGLEAPIS_SET,
-#                                  PYO3_PYTHON, PATH, PYTHONPATH
+#                                  PROTOTEXT_GOOGLEAPIS_PBS, PYO3_PYTHON, PATH, PYTHONPATH
 #               _hook_python     — writes python.env, pyrightconfig.json, ruff.toml
 #               _hook_protos     — compiles fixture .pb descriptors (guarded)
 #               _hook_codegen    — runs patch_reproto.sh (guarded)
@@ -50,6 +50,7 @@
 , protoscan
 , wktDb             # well-known-types schema DB; carries the PROTOTEXT_DESCRIPTOR_SET setup-hook
 , googleapisDb      # googleapis schema DB; dev-shell only (PROTOTEXT_GOOGLEAPIS_SET)
+, googleapisPbs     # googleapis per-file FDS blob; dev-shell only (PROTOTEXT_GOOGLEAPIS_PBS)
 , grpconfDemo       # grpconf-demo stage: bin/bobapp, logfile, capture, beats/
 , buf               # narrow-pinned buf (newer than the main nixpkgs pin's 1.59.0; see default.nix)
 }:
@@ -184,7 +185,7 @@ in
       # ── Named hook functions ───────────────────────────────────────────────
 
       _hook_env() {
-        echo "[hook] env: NIXSHELL_REPO, PROTOTEXT_{DESCRIPTOR,WKT,GOOGLEAPIS}_SET, PROTOTEXT_ANOMALIES_BLOB, PYO3_PYTHON, PATH, PYTHONPATH, TELEPROMPT_LIBREADLINE"
+        echo "[hook] env: NIXSHELL_REPO, PROTOTEXT_{DESCRIPTOR,WKT,GOOGLEAPIS}_SET, PROTOTEXT_GOOGLEAPIS_PBS, PROTOTEXT_ANOMALIES_BLOB, PYO3_PYTHON, PATH, PYTHONPATH, TELEPROMPT_LIBREADLINE"
         # Detected by ~/.claude/hooks/claude-hook-post-edit-lint to confirm
         # that the active nix-shell belongs to this repo.
         export NIXSHELL_REPO="${repoRoot}"
@@ -215,6 +216,7 @@ in
         # it in user-shell would make a first `nix-shell` build all of it.
         export PROTOTEXT_WKT_SET="${wktDb}/share/prototools/wkt.desc"
         export PROTOTEXT_GOOGLEAPIS_SET="${googleapisDb}/googleapis.desc"
+        export PROTOTEXT_GOOGLEAPIS_PBS="${googleapisPbs}/googleapis.pb"
 
         # The spec-0226 fixture: one example of every annotation prototext can
         # emit, as `#@` prototext text under a `.pb` name.  It is a test

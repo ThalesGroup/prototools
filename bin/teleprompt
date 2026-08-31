@@ -670,7 +670,7 @@ for _bname, _cb in [
 
 _rl_mod.parse_and_bind("tab: complete")
 ctypes.c_void_p.in_dll(_librl, "rl_attempted_completion_function").value = None
-_rl_mod.set_completer_delims(_rl_mod.get_completer_delims().replace('/', ''))
+_rl_mod.set_completer_delims(' \t\n')
 
 _rl_mod.parse_and_bind(r'"\e[A":   tp-up')
 _rl_mod.parse_and_bind(r'"\C-p":   tp-up')

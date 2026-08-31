@@ -423,12 +423,12 @@ let
     inherit (rust) prototext protolens;
     inherit (python) reprotoSrc reprotoBare reprotoTestDeps reproto protoscan;
     inherit wktDb;
-    # dev-shell only, for PROTOTEXT_GOOGLEAPIS_SET. Entering the dev-shell
-    # therefore forces googleapisDb — a fetch of the pinned corpus, a whole-
-    # corpus protoc run and a reproto --schema-db-out. It is `full-tests`
-    # material, not `ci` material, and it is deliberately kept out of
-    # user-shell for that reason.
-    inherit (python) googleapisDb;
+    # dev-shell only, for PROTOTEXT_GOOGLEAPIS_SET / PROTOTEXT_GOOGLEAPIS_PBS.
+    # Entering the dev-shell therefore forces googleapisDb — a fetch of the
+    # pinned corpus, a whole-corpus protoc run and a reproto --schema-db-out.
+    # It is `full-tests` material, not `ci` material, and it is deliberately
+    # kept out of user-shell for that reason.
+    inherit (python) googleapisDb googleapisPbs;
     inherit grpconfDemo;
     repoRoot    = toString ./.;
     rustcVersion = pkgs.rustc.unwrapped.version;

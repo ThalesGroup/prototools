@@ -164,7 +164,92 @@ time protolens --descriptor-set $PROTOTEXT_GOOGLEAPIS_SET $PROTOTEXT_GOOGLEAPIS_
 # Thank you 👋
 
 
-clear && header "B. Anomaly taxonomy"
+clear && header "B. reproto deep-dive"
+
+# \
+# reproto decompiles FileDescriptorProto blobs back to .proto source.         \
+# It is designed to work under real-world constraints:                         \
+# incomplete imports, missing types, legacy syntaxes.                          \
+
+# \
+# B.1. Full decompile — seeded to google.maps.places.v1.                      \
+# Input: googleapis.pb (21 MB, ~8 000 FDPs in one blob).                      \
+# Seed: every FDP whose name matches google/maps/places/v1/*.proto.            \
+
+reproto \
+    -I $PROTOTEXT_GOOGLEAPIS_PBS \
+    --seed 'file:google/maps/places/v1/*.proto' \
+    --use-variant all \
+    --emit-binary \
+    --proto-out grpconf2026/alice/places-full
+
+# reproto extracted 34 files: the 18 places.v1 files plus their transitive
+# deps (google/api, google/type, google/geo/type, google/protobuf WKTs).
+
+tree grpconf2026/alice/places-full
+view grpconf2026/alice/places-full/google/maps/places/v1/places_service.proto
+
+
+# \
+# B.2. Missing imports.                                                        \
+# Same 18 places.v1 .pb files, but without the surrounding googleapis corpus. \
+# reproto works — but marks unresolvable types clearly.                        \
+
+reproto \
+    --use-variant all \
+    --proto-out grpconf2026/alice/places-missing \
+    $(ls grpconf2026/alice/places-full/google/maps/places/v1/*.pb \
+        | grep -v '/routing_preference\.pb$')
+
+# Files that import RoutingPreference render it as an unresolvable dotted FQDN.
+
+diff \
+    grpconf2026/alice/places-full/google/maps/places/v1/places_service.proto \
+    grpconf2026/alice/places-missing/google/maps/places/v1/places_service.proto \
+    | view
+
+
+# \
+# B.3. Incomplete input — TravelMode enum removed from travel_mode.pb.        \
+# reproto can prune at the symbol level, not just at the file level.          \
+
+reproto \
+    --use-variant all \
+    -I grpconf2026/alice/places-full \
+    --prune 'enum:google.maps.places.v1.TravelMode' \
+    --proto-out grpconf2026/alice/places-incomplete \
+    grpconf2026/alice/places-full/google/maps/places/v1/*.pb
+
+grep 'TravelMode\|travel_mode' \
+    grpconf2026/alice/places-incomplete/google/maps/places/v1/places_service.proto \
+    | view
+
+
+# \
+# B.4. proto3 → proto2 translation.                                           \
+# --force-proto2-output rewrites proto3 files to proto2 syntax.               \
+# In proto2, every singular field must carry an explicit label.                \
+
+reproto \
+    --use-variant all \
+    --force-proto2-output \
+    --emit-binary \
+    -I grpconf2026/alice/places \
+    --seed 'file:google/maps/places/v1/*.proto' \
+    --proto-out grpconf2026/alice/places-proto2 \
+    grpconf2026/alice/places/google/maps/places/v1/*.pb
+
+# Every field gained an explicit 'optional' label:
+diff \
+    grpconf2026/alice/places/google/maps/places/v1/place.proto \
+    grpconf2026/alice/places-proto2/google/maps/places/v1/place.proto \
+    | view
+
+# \
+# The wire encoding is unchanged — same binary, different schema syntax.      \
+
+
+clear && header "C. Anomaly taxonomy"
 
 # \
 # Not all protobuf anomalies are accidental.                                   \

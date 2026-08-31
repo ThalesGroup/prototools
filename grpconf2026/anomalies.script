@@ -8,21 +8,18 @@
 #
 # Invocation:
 #   protolens --descriptor-set $PROTOTEXT_WKT_SET \
-#       --type google.protobuf.FileDescriptorProto \
-#       grpconf2026/anomalies.pb \
-#       --script grpconf2026/anomalies.script
+#       --type google.protobuf.FileDescriptorSet \
+#       anomalies.pb
 
 title: Protobuf encoding anomalies
 
 steps:
   - text: |
       This document contains one example of every encoding anomaly
-      prototext can detect — ordered from most to least interesting.
+      prototext can detect.
 
-      Each example lives in its own submessage, under a heading that
-      stays visible however far the document is folded.
+      👋 Press space to step through.
 
-      👋 Press space to hand navigation here, then -> to step through.
     fold: ["/ 1"]
 
   # ── 1. Shadowed scalar ────────────────────────────────────────────────────
@@ -36,130 +33,92 @@ steps:
       Standard decoders apply last-write-wins: the first value is silently
       overwritten and never reaches the application.
 
-      👋 Unfold to see both occurrences.
-    fold: ["/ 1"]
-    node: /2
+      👋 Press space to step
+
+    fold: ["/ 1", "/1 Z"]
+    node: /1/2/2
     select_line: true
-    advance_when:
-      - visible: /2/1
-
-  - text: |
-      The second occurrence: `repeated_singular`.
-      It is the value the application sees.
-
-      The first occurrence: `shadowed_scalar`.
-      It is invisible to every standard SDK and to protoc --decode.
-
-      This is a data exfiltration vector: content hidden at the wire
-      level, below the application layer.
-
-      👋 Press `w` on the shadowed line to inspect the bytes.
-    fold: ["/ 1", "/2 Z"]
-    node: /2/1
-    select_line: true
-    advance_when:
-      - wire: /2/1
-
-  - text: |
-      The bytes are there. Nothing malformed — the value round-trips
-      faithfully. It is simply never delivered to the application.
-
-      👋 Press `w` to close, then -> to step.
-    fold: ["/ 1", "/2 Z"]
-    node: /2/1
-    wire_line: /2/1
-    select_line: true
-    advance_when:
-      - not:
-        - wire: /2/1
 
   # ── 2. OverHanging Bytes (ohb) ────────────────────────────────────────────
 
   - text: |
       2. OverHanging Bytes — legal but non-canonical.
 
-      A varint may carry trailing 0x80 padding bytes. Every parser in
-      the world accepts them and decodes the same value. But no canonical
-      writer produces them.
+      A varint with spurious trailing 0x80 padding bytes. Parsers accept them
+      but no canonical writer produces them.
 
-      2.a. A TAG varint padded to 3 bytes (1 would suffice).
-      The amber color signals non-canonical encoding.
+      Example a: A TAG varint padded to 3 bytes (1 would suffice).
 
-      👋 Press `w` to compare the bytes of both lines.
+      👋 Press space to step
+
+    fold: ["/ 1", "/2 Z"]
+    node: /2/2/1
+    select_line: true
+    wire_lines:
+      from: /2/2/1
+      to: /2/2/2
+
+  - text: |
+      2. OverHanging Bytes — legal but non-canonical.
+
+      A varint with spurious trailing 0x80 padding bytes. Parsers accept them
+      but no canonical writer produces them.
+
+      Example b: A LENGTH PREFIX padded to 4 bytes.
+
+      👋 Press space to step
+
+    fold: ["/ 1", "/3 Z"]
+    node: /3/2/1
+    select_line: true
+    wire_lines:
+      from: /3/2/1
+      to: /3/2/2
+
+  - text: |
+      2. OverHanging Bytes — legal but non-canonical.
+
+      A varint with spurious trailing 0x80 padding bytes. Parsers accept them
+      but no canonical writer produces them.
+
+      Example c: a VALUE varint padded to 5 bytes.
+
+      👋 Press space to step
+
     fold: ["/ 1", "/4 Z"]
-    node: /4/1
+    node: /4/2/1/2
     select_line: true
-    wire_lines:
-      from: /4/1
-      to: /4/2
-    advance_when:
-      - not:
-        - wire: /4/1
-
-  - text: |
-      2.b. A LENGTH PREFIX padded to 4 bytes.
-      Same principle, same color, different position in the encoding.
-
-      👋 Press `w` to compare.
-    fold: ["/ 1", "/6 Z"]
-    node: /6/1
-    select_line: true
-    wire_lines:
-      from: /6/1
-      to: /6/2
-    advance_when:
-      - not:
-        - wire: /6/1
-
-  - text: |
-      2.c. A VALUE varint padded to 5 bytes.
-      The integer 5 — one byte of information — written in five.
-
-      Deliberate padding is a fingerprint. It can also encode a covert
-      channel: five bytes for a value that needs one, leaving four bytes
-      of padding whose content is ignored by all standard parsers.
-
-      👋 Press `w` to compare.
-    fold: ["/ 1", "/8 1", "/8/1 Z", "/8/2 Z"]
-    node: /8/1/2
-    wire_line: /8/1/2
-    select_line: true
-    advance_when:
-      - not:
-        - wire: /8/1/2
+    wire_line: /4/2/1/2
 
   # ── 3. Unknown enum / unknown fields ─────────────────────────────────────
 
   - text: |
-      3.a. An enum value this schema has no name for.
+      3. A newer producer, an older schema.
 
-      The wire carries the number 99. The schema knows no name for it.
-      prototext shows the number as-is and marks it ENUM_UNKNOWN.
+      The bytes are valid. But the schema in hand has no name for them.
 
-      Nothing is lost — the value round-trips exactly.
+      Example a: An enum value the schema has no name for.
+      The wire carries 99; Press `v` for the enum definition.
 
-      👋 Press -> to step.
-    fold: ["/ 1", "/10 1", "/10/1 Z", "/10/2 Z"]
-    node: /10/1/2
-    wire_line: /10/1/2
+      👋 Press space to step
+
+    fold: ["/ 1", "/5 Z"]
+    node: /5/2/1/2
     select_line: true
 
   - text: |
-      3.b. Fields the schema does not declare at all.
+      3. A newer producer, an older schema.
 
-      Each is rendered by its wire type — varint, fixed64, fixed32, bytes
-      — which is all the tag bytes themselves can tell us.
+      Example b: Fields the schema does not declare at all.
 
-      This is forward compatibility: a newer sender, an older schema.
-      The data is preserved; the names are just not known yet.
+      Each is rendered by its wire type — varint, fixed64, fixed32,
+      bytes — which is all the tag bytes themselves can tell us.
 
-      👋 Press -> to step.
-    fold: ["/ 1", "/12 Z"]
-    node: /12/1
-    select_line: true
-    wire_lines:
-      from: /12/1
-      to: /12/4
+      👋 Press space to step
+
+    fold: ["/ 1", "/6 Z"]
+    node: /6/2
+    select_node: true
 
   # ── 4. Truncated message ──────────────────────────────────────────────────
 
@@ -169,206 +128,288 @@ steps:
       The length prefix promises more bytes than the buffer contains.
       protoc --decode fails entirely on this input.
 
-      prototext decodes as far as possible, annotates the boundary with
-      TRUNCATED_MESSAGE / TRUNCATED_BYTES, and continues.
+      prototext decodes as far as possible, annotates the boundary
+      with TRUNCATED_MESSAGE / TRUNCATED_BYTES, and continues.
 
-      In log forensics, truncation is evidence of a process killed
-      mid-write — as we saw in bob/logfile.
+      👋 Press space to step
 
-      👋 Press -> to step.
-    fold: ["/ 1", "/14 Z"]
-    node: /14/1
-    wire_line: /14/1
-    select_line: true
+    fold: ["/ 1", "/7 Z"]
+    node: /7/2/1
+    select_node: true
 
   # ── 5. Schema / wire disagreement ────────────────────────────────────────
 
   - text: |
-      5.a. Type mismatch: schema says string, wire says varint.
+      5. The blob and the descriptor set disagree.
 
-      The wire type in the tag is the ground truth. prototext shows
-      what the bytes actually are and marks TYPE_MISMATCH.
+      Example a: schema says string, wire says varint.
+      The wire type is the ground truth; prototext marks TYPE_MISMATCH.
 
-      👋 Press -> to step.
-    fold: ["/ 1", "/16 Z"]
-    node: /16/1
-    wire_line: /16/1
+      👋 Press space to step
+
+    fold: ["/ 1", "/8 Z"]
+    node: /8/2/1
     select_line: true
+    wire_line: /8/2/1
 
   - text: |
-      5.b. Declared a string, but the payload is not valid UTF-8.
+      5. The blob and the descriptor set disagree.
 
-      The bytes are shown as-is with the ill-formed sequence marked.
+      Example b: declared a string, but the payload is not valid UTF-8.
 
-      👋 Press -> to step.
-    fold: ["/ 1", "/18 Z"]
-    node: /18/1
-    wire_line: /18/1
+      Press `v` to check the proto source.
+
+      👋 Press space to step
+
+    fold: ["/ 1", "/9 Z"]
+    node: /9/2/1
     select_line: true
+    wire_line: /9/2/1
 
   - text: |
-      5.c. Declared packed int32, but the payload does not decode.
+      5. The blob and the descriptor set disagree.
 
+      Example c: declared packed int32, but the payload does not decode.
       The last byte promises continuation that never comes.
-      prototext keeps the record whole rather than guessing.
 
-      👋 Press -> to step.
-    fold: ["/ 1", "/20 Z"]
-    node: /20/1/1
-    wire_line: /20/1/1
+      👋 Press space to step
+
+    fold: ["/ 1", "/10 Z"]
+    node: /10/2/1/1
     select_line: true
+    wire_line: /10/2/1/1
 
-  # ── 6. Round-trip survivors ───────────────────────────────────────────────
+  # ── 6. Non-canonical values ───────────────────────────────────────────────
 
   - text: |
-      6.a. -1 written in five bytes instead of the specified ten.
+      6. Non-canonical values.
 
-      The spec says a negative int32 travels as a 10-byte sign-extended
-      varint. Some producers truncate it to five. The value is identical;
+      Example a: non-canonical negative integer.
+      -1 written in five bytes instead of ten.
+      The spec requires a 10-byte sign-extended varint for negative
+      int32. Some producers truncate it. The value is identical;
       a re-encode would write the longer form.
 
-      👋 Press `w` to compare.
-    fold: ["/ 1", "/22 1", "/22/1 Z", "/22/2 Z"]
-    node: /22/1/2
-    wire_line: /22/1/2
+      👋 Press space to step
+
+    fold: ["/ 1", "/11 Z"]
+    node: /11/2/1/2
     select_line: true
-    advance_when:
-      - not:
-        - wire: /22/1/2
+    wire_line: /11/2/1/2
 
   - text: |
-      6.b. A non-canonical NaN.
+      6. Non-canonical values.
 
-      IEEE 754 has 2^52 distinct NaN bit patterns. Protobuf text has one
-      spelling: `nan`. A re-encode silently picks the canonical one.
-      prototext preserves the original bits.
+      Example a: non-canonical negative integer.
+      
+      The canonical way is like so:
 
-      👋 Press -> to step.
-    fold: ["/ 1", "/24 1"]
-    node: /24/1/1
-    wire_line: /24/1/1
+      👋 Press space to step
+
+    fold: ["/ 1", "/11 Z"]
+    node: /11/2/1/2
     select_line: true
+    wire_line: /11/2/2/2
+
+  - text: |
+      6. Non-canonical values.
+
+      Example b: non-canonical NaN.
+      IEEE 754 has 2^52 distinct NaN patterns. A re-encode silently
+      picks the canonical one. prototext preserves the original bits.
+
+      👋 Press space to step
+      
+    fold: ["/ 1", "/12 Z"]
+    node: /12/2/1/2
+    select_line: true
+    wire_line: /12/2/1/2
+
+  - text: |
+      6. Non-canonical values.
+
+      Example b: non-canonical NaN.
+
+      The canonical way is like so:
+
+      👋 Press space to step
+      
+    fold: ["/ 1", "/12 Z"]
+    node: /12/2/2/2
+    select_line: true
+    wire_line: /12/2/2/2
 
   # ── 7. Packed run ─────────────────────────────────────────────────────────
 
   - text: |
-      7. A packed repeated field.
+      7. A packed repeated field with per-element anomalies.
 
-      Three text lines share one tag and one length prefix on the wire —
-      one wire record. Press `w` to see the single run of bytes.
+      Three text lines share one wire record (one tag, one length
+      prefix). The middle element is padded (ohb); the last is a
+      truncated -1 (neg).
 
-      The middle element is a 0 padded to 3 bytes (ohb).
-      The last is a -1 truncated to 5 bytes (neg).
-      The canonical run below is actually longer: sign-extending -1
-      costs more than the padding saves.
+      👋 Press space to step
 
-      👋 Press -> to step.
-    fold: ["/ 1", "/26 1", "/26/1 Z"]
-    node: /26/1/1
-    wire_node: /26/1/1
-    select_line: true
+    fold: ["/ 1", "/13 Z"]
+    node: /13/2/1/1
+    select_node: true
+    wire_node: /13/2/1/1
 
   # ── 8. Malformed bytes ────────────────────────────────────────────────────
 
   - text: |
       8. Malformed wire bytes.
 
-      From here on the bytes are not merely unusual — they are
-      unreadable. Each one ends the scan of its enclosing region.
-      The length-prefix boundary limits the damage to one submessage.
+      From here on the bytes are unreadable, not merely unusual.
+      Each stops the scan of its enclosing region; the parent resumes
+      at the next tag.
 
-      8.a. A varint with no terminating byte. The continuation bit
-      of the last byte promises another one; there is none.
+      Example a: a varint with no terminating byte.
 
-      👋 Press -> to step through the remaining cases.
-    fold: ["/ 1", "/28 Z"]
-    node: /28/1
-    wire_line: /28/1
+      👋 Press space to step
+
+    fold: ["/ 1", "/14 Z"]
+    node: /14/2/1
     select_line: true
+    wire_line: /14/2/1
 
   - text: |
-      8.b. A length prefix that is itself an unterminated varint.
-    fold: ["/ 1", "/30 Z"]
-    node: /30/1
-    wire_line: /30/1
+      8. Malformed wire bytes.
+
+      Example b: a length prefix that is itself an unterminated varint.
+
+      👋 Press space to step
+
+    fold: ["/ 1", "/15 Z"]
+    node: /15/2/1
     select_line: true
+    wire_line: /15/2/1
 
   - text: |
-      8.c. A 64-bit field with only 3 bytes behind it.
-    fold: ["/ 1", "/32 Z"]
-    node: /32/1
-    wire_line: /32/1
+      8. Malformed wire bytes.
+
+      Example c: a 64-bit field with only 3 bytes behind it.
+
+      👋 Press space to step
+
+    fold: ["/ 1", "/16 Z"]
+    node: /16/2/1
     select_line: true
+    wire_line: /16/2/1
 
   - text: |
-      8.d. A 32-bit field with only 2 bytes behind it.
-    fold: ["/ 1", "/34 Z"]
-    node: /34/1
-    wire_line: /34/1
+      8. Malformed wire bytes.
+
+      Example d: a 32-bit field with only 2 bytes behind it.
+
+      👋 Press space to step
+
+    fold: ["/ 1", "/17 Z"]
+    node: /17/2/1
     select_line: true
+    wire_line: /17/2/1
 
   - text: |
-      8.e. Wire type 6 — no such wire type exists.
+      8. Malformed wire bytes.
+
+      Example e: wire type 6 — no such wire type exists.
       The three type bits in the tag are wrong; nothing after them
       can be located.
-    fold: ["/ 1", "/36 Z"]
-    node: /36/1
-    wire_line: /36/1
+
+      👋 Press space to step
+
+    fold: ["/ 1", "/18 Z"]
+    node: /18/2/1
     select_line: true
+    wire_line: /18/2/1
 
   - text: |
-      8.f. Field number 0 — out of range (field numbers start at 1).
-      The wire type is fine; only the number beside it is marked.
-    fold: ["/ 1", "/38 Z"]
-    node: /38/1
-    wire_line: /38/1
+      8. Malformed wire bytes.
+
+      Example f: field number 0 — out of range.
+      Field numbers start at 1; the wire type is fine.
+
+      👋 Press space to step
+    fold: ["/ 1", "/19 Z"]
+    node: /19/2/1
     select_line: true
+    wire_line: /19/2/1
 
   # ── 9. Groups ─────────────────────────────────────────────────────────────
 
   - text: |
-      9. Groups — proto2 legacy, included for completeness.
+      9. Groups — proto2 legacy.
 
       A group is opened by a START_GROUP tag and closed by an END_GROUP
-      tag with the same field number, with no length prefix. Nothing in
-      this schema declares groups, so they arrive as undeclared fields.
+      tag with the same field number, no length prefix.
 
-      9.a. Padded closing tag (etag_ohb), then the same group closed
-      canonically.
-    fold: ["/ 1", "/40 1", "/40/1 Z", "/40/2 Z"]
-    node: /40/1
-    wire_node: /40/1
-    select_line: true
+      Example a: padded closing tag (etag_ohb), then the same group
+      closed canonically.
 
-  - text: |
-      9.b. Opened as field 100, closed as field 101 — END_MISMATCH.
-    fold: ["/ 1", "/42 1", "/42/1 Z"]
-    node: /42/1
-    wire_node: /42/1
-    select_line: true
+      👋 Press space to step
+
+    fold: ["/ 1", "/20 Z"]
+    node: /20/2/1
+    select_node: true
+    wire_node: /20/2/1
 
   - text: |
-      9.c. Closed with field number 2^29 — out of range.
-    fold: ["/ 1", "/44 1", "/44/1 Z"]
-    node: /44/1
-    wire_node: /44/1
-    select_line: true
+      9. Groups — proto2 legacy.
+
+      Example b: opened as field 100, closed as field 101 — END_MISMATCH.
+
+      👋 Press space to step
+
+    fold: ["/ 1", "/21 Z"]
+    node: /21/2/1
+    select_node: true
+    wire_node: /21/2/1
 
   - text: |
-      9.d. A group that is never closed — OPEN_GROUP.
-    fold: ["/ 1", "/46 1", "/46/1 Z"]
-    node: /46/1
-    wire_node: /46/1
-    select_line: true
+      9. Groups — proto2 legacy.
+
+      Example c: closed with field number 2^29 — out of range.
+
+      👋 Press space to step
+
+    fold: ["/ 1", "/22 Z"]
+    node: /22/2/1
+    select_node: true
+    wire_node: /22/2/1
 
   - text: |
-      9.e. An END_GROUP tag that closes nothing — INVALID_GROUP_END.
+      9. Groups — proto2 legacy.
+
+      Example d: a group that is never closed — OPEN_GROUP.
+
+      👋 Press space to step
+
+    fold: ["/ 1", "/23 Z"]
+    node: /23/2/1
+    select_node: true
+    wire_node: /23/2/1
+
+  - text: |
+      9. Groups — proto2 legacy.
+
+      Example e: an END_GROUP tag that closes nothing — INVALID_GROUP_END.
 
       That is the complete vocabulary.
 
-      👋 Press space to return navigation to the main pane and explore
-      freely. The script does not constrain anything.
-    fold: ["/ 1", "/48 Z"]
-    node: /48/1
-    wire_line: /48/1
+      👋 Press space to step.
+
+    fold: ["/ 1", "/24 Z"]
+    node: /24/2/1
     select_line: true
+    wire_line: /24/2/1
+
+  - text: |
+      9. Groups — proto2 legacy.
+
+      👋 Press Enter to quit.
+
+    fold: ["/ 1", "/24 Z"]
+    node: /24/2/1
+    select_line: true
+    wire_line: /24/2/1
+    command: quit
