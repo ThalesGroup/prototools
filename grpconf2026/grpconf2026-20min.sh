@@ -201,7 +201,7 @@ tree -P "*.pb" alice/places
 # and decompiled them to equivalent .proto files:
 tree -P "*.proto" alice/places
 # What's inside places_service.proto again?
-view alice/app/proto/google/maps/places/v1/places_service.proto
+view alice/places/google/maps/places/v1/places_service.proto
 
 # \
 # 2. We can also have reproto work on an incomplete FDS.                       \
@@ -231,10 +231,11 @@ reproto \
 view -d -R alice/places*/google/maps/places/v1/places_service.proto
 
 # \
-# 3. We can ask reproto to transcribe decompiled file to proto2                \
-#    even when the source syntax is proto3 or editions.                        \
+# 3. We can ask reproto to transcribe to proto2 syntax, while decompiling      \
+#    a FDP, even if the original syntax was proto3 or editions.                \
+#    This can be handy if your compile tools don't support (say) editions.     \
 
-# This is the --force-proto2-output option:
+# The option to use is --force-proto2-output:
 reproto \
     --desc-root alice/places \
     --proto-out alice/places-proto2 \
