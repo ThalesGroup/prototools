@@ -228,7 +228,9 @@ reproto \
 # reproto noticed the missing dependencies and worked around them.
 
 # How did it manage?
-view -d -R alice/places*/google/maps/places/v1/places_service.proto
+view -d -R \
+    alice/places/google/maps/places/v1/places_service.proto \
+    alice/places-incomplete/google/maps/places/v1/places_service.proto
 
 # \
 # 3. We can ask reproto to transcribe to proto2 syntax, while decompiling      \
