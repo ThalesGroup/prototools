@@ -1,7 +1,7 @@
 clear && header "S3NS"
 # \
 # S3NS is a French Thales × Google joint venture that operates a GCP region    \
-# as a Trusted Cloud service for European customers.                           \
+# as a Trusted Cloud platform for European customers.                          \
 
 # \
 # The platform is called PREMI3NS.                                             \
@@ -45,7 +45,7 @@ clear && header "prototools"
 
 
 # \
-# We will demonstrate prototools through a short fictional scenario 🎬.        \
+# We will demonstrate prototools through a toy fictional scenario 🎬.          \
 
 
 clear && header "The stage"
@@ -164,7 +164,7 @@ clear && header "8. Annexes"
 # \
 # A. Performance and scaling                                                   \
 # B. reproto deep-dive                                                         \
-# C. Protobuf anomaly taxonomy                                                 \
+# C. Anomaly taxonomy                                                          \
 
 
 clear && header "A. Performance and scaling"
@@ -172,13 +172,14 @@ clear && header "A. Performance and scaling"
 # \
 # bob/capture and bob/logfile are small protobufs.                             \
 # protolens handles large ones just as well.                                   \
-# Let's throw googleapis.desc at itself:                                       \
+# Let's throw googleapis.desc at itself (25MB descriptor set)                  \
 
+
+# The startup remains fast:
+time protolens --descriptor-set $PROTOTEXT_GOOGLEAPIS_SET $PROTOTEXT_GOOGLEAPIS_SET quit
+
+# And the navigation remains fluid
 protolens --descriptor-set $PROTOTEXT_GOOGLEAPIS_SET $PROTOTEXT_GOOGLEAPIS_SET
-
-time protolens --descriptor-set $PROTOTEXT_GOOGLEAPIS_SET $PROTOTEXT_GOOGLEAPIS_SET quit \
-# Navigation stays fluid and startup latency short:                                     \
-
 
 clear && header "B. reproto deep-dive"
 
@@ -189,7 +190,7 @@ clear && header "B. reproto deep-dive"
 # \
 # 1. We can ask reproto to decompile only a subset of an FDS.                  \
 
-# Here, let's decompile only the places v1 part from the google APIs:
+# Here, let's decompile only the "places v1" subset of the google APIs:
 reproto \
     --desc-root $PROTOTEXT_GOOGLEAPIS_SET \
     --proto-out alice/places \
@@ -206,10 +207,11 @@ view alice/places/google/maps/places/v1/places_service.proto
 # \
 # 2. We can also have reproto work on an incomplete FDS.                       \
 
-# For example, starting from the places v1 APIs:
-cp -r alice/places alice/places-incomplete
-# Remove polyline.pb:
-rm alice/places-incomplete/google/maps/places/v1/polyline.*
+# For example, let's make a copy the binary descriptors we just extracted:
+rsync -a --include="*/" --include="*.pb" --exclude="*" \
+  alice/places/ alice/places-incomplete/
+# Now remove polyline.pb from the copy:
+rm alice/places-incomplete/google/maps/places/v1/polyline.pb
 # And remove the TravelMode definition from travel_mode.pb:
 reproto \
     --desc-root alice/places-incomplete \
@@ -219,7 +221,7 @@ reproto \
     google/maps/places/v1/travel_mode.pb \
     --prune enum:google.maps.places.v1.TravelMode
 
-# Now run reproto on the pruned set
+# Finally, re-run the initial reproto command on the pruned set
 reproto \
     --desc-root alice/places-incomplete \
     --proto-out alice/places-incomplete \
@@ -227,7 +229,7 @@ reproto \
     --seed 'file:google/maps/places/v1/*.proto'
 # reproto noticed the missing dependencies and worked around them.
 
-# How did it manage?
+# How did it manage? Let's have a look at a diff:
 view -d -R \
     alice/places/google/maps/places/v1/places_service.proto \
     alice/places-incomplete/google/maps/places/v1/places_service.proto
@@ -237,7 +239,7 @@ view -d -R \
 #    a FDP, even if the original syntax was proto3 or editions.                \
 #    This can be handy if your compile tools don't support (say) editions.     \
 
-# The option to use is --force-proto2-output:
+# The relevant reproto option is --force-proto2-output:
 reproto \
     --desc-root alice/places \
     --proto-out alice/places-proto2 \
@@ -251,7 +253,7 @@ view -d -R \
 # Explicit proto3 optional labels have been translated into oneof constructs.
 
 
-clear && header "C. Protobuf anomaly taxonomy"
+clear && header "C. Anomaly taxonomy"
 
 # \
 # Not all protobuf anomalies are accidental.                                   \

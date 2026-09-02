@@ -39,6 +39,22 @@ steps:
     search: SearchTextRequest
 
   - text: |
+      protolens basics:
+      - navigate with arrow keys and the mouse
+      - fold/unfold nodes by pressing `z` or clicking the triangles
+      - press `w` to show the wire-level bytes
+      - hover over text for more information
+
+      👋 Fold the location_bias node and click the root node to step.
+
+    node: /
+    select_line: true
+    advance_when:
+      - node: /
+      - not:
+        - visible: /7/1
+
+  - text: |
       Hover over "SearchTextRequest".
 
       A score breakdown tooltip appears.
@@ -47,6 +63,7 @@ steps:
       👋 Press space to step.
 
     node: /
+    fold: ["/ 1"]
     select_line: true
     search: SearchTextRequest
 
@@ -61,6 +78,7 @@ steps:
       👋 Press space to step.
 
     node: /2
+    fold: ["/ 1"]
     select_line: true
     search: text_query
 
@@ -72,6 +90,7 @@ steps:
       👋 Press space to step.
 
     node: /2
+    fold: ["/ 1"]
     select_line: true
     search: repeated_singular
 
@@ -82,6 +101,7 @@ steps:
       👋 Press space to step.
 
     node: /1
+    fold: ["/ 1"]
     select_line: true
 
   - text: |
@@ -92,30 +112,18 @@ steps:
       👋 Press space to step.
 
     node: /1
+    fold: ["/ 1"]
     select_line: true
     search: shadowed_scalar
 
   - text: |
-      protolens basics:
-      - navigate with arrow keys
-      - hover over text for more information
-      - fold/unfold nodes by clicking their triangle
+      So bob/capture is a SearchTextRequest — with a non-canonical encoding 🤔.
 
-      👋 Fold `location_bias` to step.
-
-    node: /7
-    select_line: true
-    advance_when:
-      - not:
-        - visible: /7/1
-
-  - text: |
-      So bob/capture is a SearchTextRequest — with a non-canonical encoding.
-
-      Let's move on to the log file.
+      Let's have a look at the downloaded logfile.
 
       👋 Press Enter to quit.
 
-    node: /
-    fold: ["/7 0"]
+    node: /1
+    fold: ["/ 1"]
+    select_line: true
     command: quit
