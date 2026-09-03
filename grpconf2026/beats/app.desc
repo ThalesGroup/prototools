@@ -25,10 +25,10 @@ steps:
       bob/logfile, opened against alice/app.desc.
 
       This protobuf is larger, and protolens did not find an obvious type for it.
-      Instead of a type name, a generic wire-level `message` is displayed.
-      Let's fold it to get a complete view.
+      Instead of a type name, a generic `message` indication is displayed.
+      Let's fold it, so that all its top-level messages fit on screen.
 
-      👋 Press `1` to fold the top-level messages.
+      👋 Press `1` to fold the protobuf.
 
     node: /
     select_line: true
@@ -41,7 +41,7 @@ steps:
       The last one is flagged TRUNCATED —
       that is why protoc was not able to decode the log file.
 
-      Let's unfold the top-level messages.
+      Let's zoom a little bit.
 
       👋 Press `2` to see one level deeper.
 
@@ -68,10 +68,10 @@ steps:
   - text: |
       👍 The override is in place.
 
-      To go further, let's enable the heat cue system. protolens will highlight
-      all the messages where it recognizes types from the provided corpus.
+      To go further, let's enable the heat cue system.
 
-      The brighter the cue, the more confident the match.
+      protolens will highlight every message with a cue showing how well the corpus
+      can type it. The brighter the cue, the more confident the match.
 
       👋 Press `i` to enable the heat cues (Inferred types).
 
@@ -82,7 +82,7 @@ steps:
       - heat_cues: findings
 
   - text: |
-      Here we see a bright green cue for field number 5. Let's hover over it.
+      Here we see a bright heat cue for field number 5. Let's hover over it.
       protolens proposes two candidates —
       and field number 2, just above, names the one we want: SearchTextResponse.
 
@@ -98,9 +98,9 @@ steps:
       - type: /1/4 google.maps.places.v1.SearchTextResponse
 
   - text: |
-      👍 The contents seem to match (press `Z` to unfold the message)
+      👍 The content seems to match (press `Z` to unfold the message)
 
-      👋 Now click on field number 4 just above.
+      👋 Now click field number 4 just above.
 
     heat_cues: findings
     fold: ["/ 2"]
@@ -110,9 +110,9 @@ steps:
       - node: /1/3
 
   - text: |
-      Hovering over its heat cue gives us SearchTextRequest.
+      Hovering over the heat cue gives us SearchTextRequest.
 
-      This makes sense: an RPC request + response pair.
+      This makes sense: this is an RPC request/response pair.
 
       👋 Double-click the heat cue, and choose SearchTextRequest.
 

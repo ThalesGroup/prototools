@@ -34,9 +34,9 @@ steps:
       - visible: /3/4
 
   - text: |
-      protolens now has a bright green cue for field number 7.
+      protolens now has a bright heat cue for field number 7.
       ComputeRoutesResponse: that makes sense.
-      The app also calls the Routes API.
+      So the app also calls the Routes API.
 
       👋 Press `t`, commit ComputeRoutesResponse.
 
@@ -49,7 +49,7 @@ steps:
 
   - text: |
       Field number 6: ComputeRoutesRequest. Symmetric.
-      Pick version v2, like the response.
+      Pick version v2, so it matches the response field.
 
       👋 Press `t`, commit ComputeRoutesRequest v2.
 
@@ -118,8 +118,8 @@ steps:
 
   - text: |
       OK, this is the same repeated_singular that we saw earlier with the network capture.
-      Look: the shadowed text_query field has a bright green cue.
-      protolens believes it is a google.rpc.Status, not a mere string.
+      Look: the shadowed text_query field has a bright heat cue.
+      protolens believes it is a google.rpc.Status, not a simple string.
 
       👋 Press Enter to commit the proposed google.rpc.Status override.
 
