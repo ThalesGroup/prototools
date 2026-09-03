@@ -31,7 +31,7 @@ clear && header "prototools"
 
 # \
 # prototools has three command-line interfaces:                                \
-# - protoscan, for scanning any blob for binary protobuf schema descriptors    \
+# - protoscan, for scanning any blob for schema descriptors                    \
 # - reproto, for extracting, indexing, and decompiling schema descriptors      \
 #   back to .proto source files                                                \
 # - prototext, for converting protobufs between binary and text format —       \
@@ -70,7 +70,7 @@ ls -lh bob \
 
 
 # \
-# 👩 Alice is handed all three for analysis. Let's go 🚀                       \
+# 👩 Alice is handed all three files for analysis. Let's go 🚀                 \
 
 
 clear && header "2. protoc falls short"
@@ -94,7 +94,7 @@ clear && header "3. If only we had descriptors"
 # Let's check with our first prototool: protoscan.
 protoscan bob/app
 # Yes! It worked 🥹.
-# It looks like the app embeds a subset of the Google APIs descriptor set 💡.
+# It looks like the app embeds the Google Places API descriptor set 💡.
 
 # \
 # Let's process those descriptors with our second prototool, reproto, so that  \
@@ -104,9 +104,9 @@ reproto --desc-root bob/app --schema-db-out alice/app.desc  # 🤞
 
 ls -lhd alice/app.desc alice/app/* \
 # reproto delivered 💪:                                                        \
-# - app.desc:           extracted descriptor set                               \
-# - app/proto/:         decompiled .proto files                                \
-# - app/hopcroft.rkyv:  type-inference graph                                   \
+# - app.desc:           set of all extracted descriptors                       \
+# - app/hopcroft.rkyv:  associated type-inference graph                        \
+# - app/proto/:         all decompiled .proto files                            \
 # - app/index.rkyv:     fast-access index                                      \
 
 # For instance what's inside the decompiled places_service.proto?
