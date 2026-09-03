@@ -63,7 +63,7 @@ steps:
   - text: |
       👌 Perfect, the log file is fully typed.
 
-      But there are still amber cues: something is not quite right with the encoding.
+      But there are still amber warnings: something is not quite right with the encoding.
 
       👋 Unfold the compute_routes_request for a closer look 🔍.
 

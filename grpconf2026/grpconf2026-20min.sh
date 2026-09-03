@@ -2,7 +2,7 @@ clear && header "S3NS"
 # \
 # S3NS is a French company, a joint venture between Thales, a global           \
 # technology leader in aerospace, defense and security, and Google.            \
-# We provide a dedicated GCP region for European customers,                    \
+# We provide a dedicated GCP region for our European customers,                \
 # as a Trusted Cloud platform (SecNumCloud qualified).                         \
 
 # \
@@ -83,7 +83,7 @@ protoc --decode_raw < bob/capture \
 
 # Then Alice tries the same with the downloaded log file:
 protoc --decode_raw < bob/logfile
-# This time protoc did not deliver. 😭
+# This time protoc does not deliver. 😭
 
 clear && header "3. If only we had descriptors"
 
@@ -104,12 +104,12 @@ reproto --desc-root bob/app --schema-db-out alice/app.desc  # 🤞
 
 ls -lhd alice/app.desc alice/app/* \
 # reproto delivered 💪:                                                        \
-# - app.desc:           set of all extracted descriptors                       \
+# - app.desc:           set of extracted descriptors                           \
 # - app/hopcroft.rkyv:  associated type-inference graph                        \
 # - app/proto/:         all decompiled .proto files                            \
 # - app/index.rkyv:     fast-access index                                      \
 
-# For instance what's inside the decompiled places_service.proto?
+# Let's browse the decompiled places_service.proto, for instance:
 view alice/app/proto/google/maps/places/v1/places_service.proto
 # Confirmed: this is from the Google maps API indeed.
 
@@ -122,7 +122,7 @@ clear && header "4. Descriptors to the help"
 prototext --descriptor-set alice/app.desc list-schemas bob/capture \
   | bat -l yaml --style=plain
 # \
-# Yes! prototext found one type match for the network capture:                 \
+# Yes! prototext found one type matching the network capture:                  \
 #                                                                              \
 #       👉 google.maps.places.v1.SearchTextRequest 🏅                          \
 
