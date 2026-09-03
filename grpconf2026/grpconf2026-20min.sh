@@ -172,8 +172,8 @@ clear && header "7. Three takeaways"
 #    guess a schema — reproto gives you the .proto back.                       \
 
 # \
-# 2. A corpus can type a message it has never seen, node by node, because      \
-#    that message is built out of messages you already know. That is what      \
+# 2. A corpus can type a message it has never seen, piece by piece, because    \
+#    that message is built out of messages it does know. That is what          \
 #    protolens's heat cues are for.                                            \
 
 # \

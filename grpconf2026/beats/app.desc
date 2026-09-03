@@ -28,7 +28,7 @@ steps:
       Instead of a type name, a generic wire-level `message` is displayed.
       Let's fold it to get a complete view.
 
-      👋 Press `1` to fold the top-level nodes.
+      👋 Press `1` to fold the top-level messages.
 
     node: /
     select_line: true

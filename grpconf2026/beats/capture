@@ -41,11 +41,11 @@ steps:
   - text: |
       Cheat sheet:
       - navigate with arrow keys and the mouse
-      - fold/unfold nodes by pressing `z` or clicking the triangles
+      - fold/unfold messages by pressing `z` or clicking the triangles
       - press `w` to show the wire-level bytes
       - hover over text for more information
 
-      👋 Exercise: fold the location_bias node and click the root node to step.
+      👋 Exercise: fold the location_bias message and click the root node to step.
 
     node: /
     select_line: true
