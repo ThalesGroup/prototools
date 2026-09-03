@@ -1,24 +1,22 @@
 clear && header "S3NS"
 # \
-# S3NS is a French Thales × Google joint venture that operates a GCP region    \
-# as a Trusted Cloud platform for European customers.                          \
+# S3NS is a French company, a joint venture between Thales, a global           \
+# technology leader in aerospace, defense and security, and Google.            \
+# We provide a dedicated GCP region for European customers,                    \
+# as a trusted Cloud platform (SecNumCloud qualified).                         \
 
 # \
-# The platform is called PREMI3NS.                                             \
+# The platform is hosted in French data centers and operated by our own        \
+# French personnel.                                                            \
 
 # \
-# PREMI3NS is hosted in French data centers and operated by S3NS French        \
-# personnel, autonomously.                                                     \
+# Google supplies software updates on a continuous basis, and we inspect       \
+# them — also on a continuous basis — before they reach our production.        \
 
 # \
-# Google supplies continuous software updates for the platform.                \
-# S3NS inspects every update before it reaches production:                     \
-# - Static analysis of software and configuration packages                     \
-# - Dynamic assessment in an isolated quarantine environment                   \
-
-# \
-# As part of those inspection activities, we built tooling to audit protobufs, \
-# which are ubiquitous in the Google infrastructure.                           \
+# As part of that inspection work, we developed prototools: a software         \
+# suite for auditing protobufs, which are ubiquitous in Google's               \
+# infrastructure.                                                              \
 
 
 clear && header "prototools"
@@ -26,29 +24,35 @@ clear && header "prototools"
 #                                                                              \
 #           https://github.com/ThalesGroup/prototools                          \
 #                                                                              \
-#           MIT License                                                        \
-#                                                                              \
 
 # \
-# prototools is 3 Command-Line Interfaces and 1 Text-based User Interface      \
-# for working with protobufs, including for reverse-engineering.               \
+# We have open-sourced prototools under the MIT license, in the hope that      \
+# others will find it useful.                                                  \
 
 # \
-# The CLIs:                                                                    \
-# - protoscan: extracts FileDescriptorProto descriptors from binaries          \
-# - reproto:   decompiles and analyzes FileDescriptor sets                     \
-# - prototext: lossless serialization / deserialization with schema inference  \
-
+# prototools has three command-line interfaces:                                \
+# - protoscan, for scanning any blob for binary protobuf schema descriptors    \
+# - reproto, for extracting, indexing, and decompiling schema descriptors      \
+#   back to .proto source files                                                \
+# - prototext, for converting protobufs between binary and text format --      \
+#   AND guaranteeing a byte-for-byte round trip. And if you give it a corpus   \
+#   of schema descriptors, prototext will infer the type of a protobuf         \
+#   automatically as it converts it to text.                                   \
+ 
 # \
-# The TUI:                                                                     \
-# - protolens: prototext "on steroids" — the interactive version               \
-
-
+# and one text-based user interface:                                           \
+# - protolens, the interactive version of prototext. protolens will help you   \
+#   recover the type of an unknown protobuf even when your corpus of schema    \
+#   descriptors is incomplete.                                                 \
+ 
 # \
 # We will demonstrate prototools through a toy fictional scenario 🎬.          \
 
 
-clear && header "The stage"
+clear && header "1. Setting the stage"
+
+# \
+# The scenario goes as follows:                                                \
 
 # \
 # 👨 Bob downloaded an unknown executable and an associated log file.          \
@@ -56,83 +60,95 @@ clear && header "The stage"
 # Bob captured one of its network calls.                                       \
 
 ls -lh bob \
-# Three files:                                                                 \
+# So we have three files of interest:                                          \
 # - bob/app       the downloaded executable                                    \
 # - bob/logfile   the associated log file                                      \
 # - bob/capture   the network capture Bob made                                 \
 
+# \
+# Bob believes the app communicates over gRPC, using protobufs.                \
+
 
 # \
-# Bob suspects gRPC calls and protobuf logs.                                   \
-
-
-# \
-# 👩 Alice is handed the lot for analysis. Let's go 🚀                         \
+# 👩 Alice is handed all three for analysis. Let's go 🚀                       \
 
 
 clear && header "2. protoc falls short"
 
-# Alice's first reflex: protoc --decode_raw.
-protoc --decode_raw < bob/capture   | view_textproto
+# Alice attempts to decode the network capture with protoc:
+protoc --decode_raw < bob/capture \
+  | view_textproto
 # This is protobuf indeed 🙂
-# But field numbers without names mean nothing 🤔
+# But field numbers without names are difficult to interpret 🤔
 
-# Let's try the logfile:
+# Then Alice tries the same with the downloaded log file:
 protoc --decode_raw < bob/logfile
-# Outright failure 😭
+# This time protoc did not deliver. 😭
 
 clear && header "3. If only we had descriptors"
 
-# Can we find descriptors in the binary itself?
+# \
+# Together with Alice, we wish we had schema descriptors to interpret the      \
+# network capture. Maybe we can find some embedded in the downloaded app?      \
+
+# Let's check with our first prototool: protoscan.
 protoscan bob/app
+# Yes! It worked 🥹.
+# It looks like the app embeds a subset of the Google APIs descriptor set 💡.
 
 # \
-# So bob/app contains reflected descriptors 🥹                                 \
-# Interesting: they look like a subset of the Google APIs 💡.                  \
+# Let's process those descriptors with our second prototool, reproto, so that  \
+# we can take a look at them in the clear and enable type inference.           \
 
-# Let's extract, decompile, and index them:
 reproto --desc-root bob/app --schema-db-out alice/app.desc  # 🤞
 
 ls -lhd alice/app.desc alice/app/* \
 # reproto delivered 💪:                                                        \
-# - app.desc:           descriptor set                                         \
+# - app.desc:           extracted descriptor set                               \
+# - app/proto/:         decompiled .proto files                                \
 # - app/hopcroft.rkyv:  type-inference graph                                   \
 # - app/index.rkyv:     fast-access index                                      \
-# - app/proto/:         decompiled .proto files                                \
 
-
-# What's inside the decompiled places_service.proto?
+# For instance what's inside the decompiled places_service.proto?
 view alice/app/proto/google/maps/places/v1/places_service.proto
-# Confirmed: this is from the Google maps API.
+# Confirmed: this is from the Google maps API indeed.
 
 clear && header "4. Descriptors to the help"
 
-# Now prototext can infer the type of an unknown protobuf:
+# \
+# Now that we have a corpus of schema descriptors, we can use it to infer      \
+# the type of the network capture, with our third prototool: prototext.        \
+
 prototext --descriptor-set alice/app.desc list-schemas bob/capture \
   | bat -l yaml --style=plain
+# \
+# Yes! prototext found one type match for the network capture:                 \
+#                                                                              \
+#       👉 google.maps.places.v1.SearchTextRequest 🏅                          \
 
-# One match: google.maps.places.v1.SearchTextRequest 🏅
-# (Score is negative — we will come back to that.)
-
-# Given the type, protoc will now happily decode the protobuf 🍀:
+# Let's use that with protoc:
 \
 protoc --descriptor_set_in=alice/app.desc \
        --decode=google.maps.places.v1.SearchTextRequest \
-    < bob/capture   | view_textproto
+    < bob/capture \
+  | view_textproto
+# Good! Now we have field names instead of numbers 🍀.
 
-# But protolens shows more:
-protolens --descriptor-set alice/app.desc bob/capture   --script beats/capture
+# Our fourth prototool, protolens, will give more detailed information:
+protolens --descriptor-set alice/app.desc bob/capture \
+  --script beats/capture
 
 clear && header "5. On to the log file"
 
 # Now the logfile, same descriptor set:
-protolens --descriptor-set alice/app.desc bob/logfile   --script beats/app.desc
+protolens --descriptor-set alice/app.desc bob/logfile \
+  --script beats/app.desc
 
-# app.desc only gets us so far.
-# The googleapis descriptor set covers the full Google API surface:
-ls -lh $PROTOTEXT_GOOGLEAPIS_SET
-# ~25 MB, ~8 000 files.
-# Let's reopen the logfile against it:
+# We happen to have the Google APIs descriptor set handy.
+# It is a big one:
+ls -lh $PROTOTEXT_GOOGLEAPIS_SET # ~25 MB, ~8 000 files.
+
+# Let's reopen the log file against it:
 \
 protolens --descriptor-set $PROTOTEXT_GOOGLEAPIS_SET bob/logfile \
   --load-overrides alice/overrides \
@@ -141,28 +157,40 @@ protolens --descriptor-set $PROTOTEXT_GOOGLEAPIS_SET bob/logfile \
 clear && header "6. Reporting to Bob"
 
 # The exported prototext preserves everything we uncovered:
-view_textproto alice/logfile.all.node.pb
+view_textproto alice/logfile
 
 # And it round-trips faithfully to the original binary:
-cmp bob/logfile <(prototext encode alice/logfile.all.node.pb)   && echo Identical 👍
+cmp bob/logfile <(prototext encode alice/logfile) \
+  && echo Identical 👍
 
 # When Bob sees this report, I suspect he will uninstall the app 😬
 
-clear && header "7. Conclusion"
+clear && header "7. Three takeaways"
 
 # \
-# - Descriptors are often hiding in the binary itself                          \
-# - protobuf is not opaque if you have the right tools                         \
-# - prototools is open source — pull requests welcome 🙂                       \
+# 1. Descriptors are usually hiding in the binary itself. You rarely have to   \
+#    guess a schema — reproto gives you the .proto back.                       \
 
+# \
+# 2. A corpus can type a message it has never seen, node by node, because      \
+#    that message is built out of messages you already know. That is what      \
+#    protolens's heat cues are for.                                            \
+
+# \
+# 3. What your decoder normalizes away is evidence. The enriched prototext     \
+#    format preserves it, all the way back to the original bytes.              \
+
+
+# https://github.com/ThalesGroup/prototools — pull requests welcome 🙂
 
 # Thank you 👋
 
 
-clear && header "8. Annexes"
+
+clear && header "Annexes"
 
 # \
-# A. Performance and scaling                                                   \
+# A. Performance                                                               \
 # B. reproto deep-dive                                                         \
 # C. Anomaly taxonomy                                                          \
 

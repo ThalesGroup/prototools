@@ -25,12 +25,12 @@ title: What is bob/capture?
 
 steps:
   - text: |
-      protolens opened without a type name and found one anyway:
+      bob/capture, opened against alice/app.desc.
 
-        👉 SearchTextRequest.
-
-      What you see is prototext format:
-      textproto enriched with #@ annotations.
+      As you can see, protolens renders the capture as textproto format,
+      enriched with annotations (press `a` to hide/show them).
+      
+      It also correctly inferred the type of the protobuf.
 
       👋 Press space to step.
 
@@ -39,13 +39,13 @@ steps:
     search: SearchTextRequest
 
   - text: |
-      protolens basics:
+      Cheat sheet:
       - navigate with arrow keys and the mouse
       - fold/unfold nodes by pressing `z` or clicking the triangles
       - press `w` to show the wire-level bytes
       - hover over text for more information
 
-      👋 Fold the location_bias node and click the root node to step.
+      👋 Exercise: fold the location_bias node and click the root node to step.
 
     node: /
     select_line: true
@@ -55,10 +55,9 @@ steps:
         - visible: /7/1
 
   - text: |
-      Hover over "SearchTextRequest".
-
-      A score breakdown tooltip appears.
-      Note the 20-point penalty for "non-canonical encoding".
+      Hover over the root type and we get the full type name and a score:
+      the protobuf has 12 wire-level fields matching the type,
+      but takes a 20-point penalty for a non-canonical encoding.
 
       👋 Press space to step.
 
@@ -68,12 +67,9 @@ steps:
     search: SearchTextRequest
 
   - text: |
-      The culprit: text_query.
-      The schema declares it singular — check the decompiled source (`v`).
-      But it appears twice at wire level.
-
-      The first instance is shadowed by the second.
-      Most tools, including protoc, silently drop it.
+      Indeed, there is a problem with the text_query field: in the decompiled
+      .proto it is not declared as a repeated field (press `v` for the viewer),
+      yet it has two instances in the protobuf.
 
       👋 Press space to step.
 
@@ -83,9 +79,8 @@ steps:
     search: text_query
 
   - text: |
-      protolens flags the repeated instance:
-      - amber diamond
-      - `repeated_singular` annotation
+      protolens flags the second instance with an amber diamond
+      and a `repeated_singular` annotation.
 
       👋 Press space to step.
 
@@ -95,8 +90,10 @@ steps:
     search: repeated_singular
 
   - text: |
-      The dropped instance is flagged too:
-      - hollow amber diamond
+      The first instance is shadowed by the second:
+      a standard decoder like protoc will silently drop it.
+
+      protolens flags it with a hollow amber diamond...
 
       👋 Press space to step.
 
@@ -105,9 +102,11 @@ steps:
     select_line: true
 
   - text: |
-      The dropped instance is flagged too:
-      - hollow amber diamond
-      - `shadowed_scalar` annotation
+      The first instance is shadowed by the second:
+      a standard decoder like protoc will silently drop it.
+
+      protolens flags it with a hollow amber diamond
+      and a `shadowed_scalar` annotation.
 
       👋 Press space to step.
 
@@ -119,7 +118,7 @@ steps:
   - text: |
       So bob/capture is a SearchTextRequest — with a non-canonical encoding 🤔.
 
-      Let's have a look at the downloaded logfile.
+      Let's have a look at the downloaded log file.
 
       👋 Press Enter to quit.
 

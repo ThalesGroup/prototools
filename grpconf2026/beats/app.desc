@@ -24,9 +24,9 @@ steps:
   - text: |
       bob/logfile, opened against alice/app.desc.
 
-      Larger than bob/capture.
-      The root type is unknown — app.desc has no schema for the envelope.
-      What we see is raw field numbers.
+      This protobuf is larger, and protolens did not find an obvious type for it.
+      Instead of a type name, a generic wire-level `message` is displayed.
+      Let's fold it to get a complete view.
 
       👋 Press `1` to fold the top-level nodes.
 
@@ -37,11 +37,11 @@ steps:
         - visible: /1/1
 
   - text: |
-      Cleaner view.
+      We see four top-level messages with field number 1.
+      The last one is flagged TRUNCATED —
+      that is why protoc was not able to decode the log file.
 
-      Note the TRUNCATED_MESSAGE annotation.
-      The logging process was probably killed mid-write — 1024 bytes missing.
-      That is why protoc bailed out entirely.
+      Let's unfold the top level messages.
 
       👋 Press `2` to see one level deeper.
 
@@ -52,13 +52,11 @@ steps:
       - visible: /1/1
 
   - text: |
-      Each top-level field holds a similar submessage.
-      Log entries — one per RPC call.
+      The top-level messages do look like log entries.
+      For clarity, let's override the generic `message` indication
+      with a synthetic type, and call it Entry.
 
-      The prefilled command below declares a synthetic type "Entry",
-      marks field 1 as repeated, and names it "entries".
-
-      👋 Press Enter to commit.
+      👋 Press Enter to commit the prefilled override.
 
     fold: ["/ 2"]
     node: /
@@ -68,13 +66,14 @@ steps:
       - type: /1 Entry
 
   - text: |
-      👍 Entry is in place.
+      👍 The override is in place.
 
-      Now let's enable heat cues.
-      protolens will highlight where it recognizes known types.
-      The brighter the cue, the more confident.
+      To go further, let's enable the heat cue system. protolens will highlight
+      all the messages where it recognizes types from the provided corpus.
 
-      👋 Press `i`.
+      The brighter the cue, the more confident the match.
+
+      👋 Press `i` to enable the heat cues (Inferred types).
 
     fold: ["/ 2"]
     node: /
@@ -83,10 +82,11 @@ steps:
       - heat_cues: findings
 
   - text: |
-      Field 5 of the first entry has a bright heat cue.
-      Hover over it — two candidates.
-
-      SearchTextResponse matches what we saw in bob/capture.
+      Here we see a bright green cue for field number 5. Let's hover over it.
+      protolens proposes two candidates —
+      and field number 2, just above, names the one we want: SearchTextResponse.
+      
+      Let's choose it.
 
       👋 Double-click the heat cue, then double-click SearchTextResponse.
 
@@ -98,12 +98,23 @@ steps:
       - type: /1/4 google.maps.places.v1.SearchTextResponse
 
   - text: |
-      👍 SearchTextResponse locked in.
+      👍 The contents seem to match (press `Z` to unfold the message)
+      
+      👋 Now click on field number 4 just above.
 
-      Field 4 has an amber cue — one candidate.
-      SearchTextRequest. Makes sense: request + response pair.
+    heat_cues: findings
+    fold: ["/ 2"]
+    node: /1/4
+    select_line: true
+    advance_when:
+      - node: /1/3
 
-      👋 Double-click the heat cue, then press Enter.
+  - text: |
+      Hovering over its heat cue gives us SearchTextRequest.
+
+      This makes sense: an RPC request + response pair.
+
+      👋 Double-click the heat cue, and choose SearchTextRequest.
 
     heat_cues: findings
     fold: ["/ 2"]
@@ -113,12 +124,12 @@ steps:
       - type: /1/3 google.maps.places.v1.SearchTextRequest
 
   - text: |
-      👍 SearchTextRequest locked in.
+      👍 SearchTextRequest is locked in.
 
       Field 2: a string. Looks like the RPC method name.
-      Let's just rename it "rpc".
+      Let's just name it "rpc".
 
-      👋 Press Enter to commit the prefilled command.
+      👋 Press Enter to commit the prefilled override.
 
     heat_cues: findings
     fold: ["/ 2"]
@@ -129,7 +140,8 @@ steps:
       - field_name: /1/2 rpc
 
   - text: |
-      Field 1: hover the heat cue.
+      Field number 1? Hover over the heat cue...
+      Multiple choices... because it is such a small message.
       Timestamp — fits a log entry.
 
       👋 Press `t`, choose Timestamp, press Enter to commit.
@@ -142,13 +154,12 @@ steps:
       - type: /1/1 google.protobuf.Timestamp
 
   - text: |
-      👌 Perfect.
-
       Now look at the 3rd entry — fields 6 and 7.
-      Field 6 scores deeply negative 😨 and heat cues give nothing convincing 🤔.
+      Negative scores 😨 and unconvincing heat cues 🤔.
 
-      app.desc only knows the Places API.
-      Fields 6 and 7 look like a different service entirely.
+      Our corpus only knows the Places API, but hmm: `ComputeRoutes` —
+      that looks like another one of the the Google APIs.
+      We should reopen the protobuf against the full Google APIs corpus.
 
       👋 Press space to step.
 
@@ -158,21 +169,20 @@ steps:
     select_line: true
 
   - text: |
-      Before we go further, let's save our overrides.
+      Before we do that, let's save our overrides.
       We do not want to redo this work.
 
-      👋 Press Enter to save.
+      👋 Press `s` and save under alice/overrides.
 
     heat_cues: findings
     fold: ["/ 2", "/1/1 Z"]
     node: /3/3
-    command: save-overrides alice/overrides
     advance_when:
       - file_exists: alice/overrides
 
   - text: |
       All done.
-      
+
       👋 Press Enter to quit.
 
     heat_cues: findings
