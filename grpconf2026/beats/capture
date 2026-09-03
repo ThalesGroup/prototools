@@ -29,7 +29,7 @@ steps:
 
       As you can see, protolens renders the capture as textproto format,
       enriched with annotations (press `a` to hide/show them).
-      
+
       It also correctly inferred the type of the protobuf.
 
       👋 Press space to step.

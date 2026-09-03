@@ -3,7 +3,7 @@ clear && header "S3NS"
 # S3NS is a French company, a joint venture between Thales, a global           \
 # technology leader in aerospace, defense and security, and Google.            \
 # We provide a dedicated GCP region for European customers,                    \
-# as a trusted Cloud platform (SecNumCloud qualified).                         \
+# as a Trusted Cloud platform (SecNumCloud qualified).                         \
 
 # \
 # The platform is hosted in French data centers and operated by our own        \
@@ -34,17 +34,17 @@ clear && header "prototools"
 # - protoscan, for scanning any blob for binary protobuf schema descriptors    \
 # - reproto, for extracting, indexing, and decompiling schema descriptors      \
 #   back to .proto source files                                                \
-# - prototext, for converting protobufs between binary and text format --      \
-#   AND guaranteeing a byte-for-byte round trip. And if you give it a corpus   \
+# - prototext, for converting protobufs between binary and text format —       \
+#   and guaranteeing a byte-for-byte round trip. And if you give it a corpus   \
 #   of schema descriptors, prototext will infer the type of a protobuf         \
 #   automatically as it converts it to text.                                   \
- 
+
 # \
 # and one text-based user interface:                                           \
 # - protolens, the interactive version of prototext. protolens will help you   \
 #   recover the type of an unknown protobuf even when your corpus of schema    \
 #   descriptors is incomplete.                                                 \
- 
+
 # \
 # We will demonstrate prototools through a toy fictional scenario 🎬.          \
 

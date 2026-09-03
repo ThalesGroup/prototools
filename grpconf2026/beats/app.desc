@@ -41,7 +41,7 @@ steps:
       The last one is flagged TRUNCATED —
       that is why protoc was not able to decode the log file.
 
-      Let's unfold the top level messages.
+      Let's unfold the top-level messages.
 
       👋 Press `2` to see one level deeper.
 
@@ -85,7 +85,7 @@ steps:
       Here we see a bright green cue for field number 5. Let's hover over it.
       protolens proposes two candidates —
       and field number 2, just above, names the one we want: SearchTextResponse.
-      
+
       Let's choose it.
 
       👋 Double-click the heat cue, then double-click SearchTextResponse.
@@ -99,7 +99,7 @@ steps:
 
   - text: |
       👍 The contents seem to match (press `Z` to unfold the message)
-      
+
       👋 Now click on field number 4 just above.
 
     heat_cues: findings
@@ -158,7 +158,7 @@ steps:
       Negative scores 😨 and unconvincing heat cues 🤔.
 
       Our corpus only knows the Places API, but hmm: `ComputeRoutes` —
-      that looks like another one of the the Google APIs.
+      that looks like another one of the Google APIs.
       We should reopen the protobuf against the full Google APIs corpus.
 
       👋 Press space to step.

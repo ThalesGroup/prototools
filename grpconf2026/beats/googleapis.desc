@@ -64,7 +64,7 @@ steps:
       👌 Perfect, the log file is fully typed.
 
       But there are still amber cues: something is not quite right with the encoding.
-      
+
       👋 Unfold the compute_routes_request for a closer look 🔍.
 
     heat_cues: findings
@@ -76,7 +76,7 @@ steps:
 
   - text: |
       There it is: the travel_mode field has an amber diamond and is flagged ohb:
-      Over Hanging Bytes. This indicates a non-canonical encoding:
+      OverHangingBytes. This indicates a non-canonical encoding:
       the DRIVE value (1) is encoded with too many bytes.
 
       👋 Press `w` for wire-level detail.
@@ -89,7 +89,7 @@ steps:
       - wire: /3/3/3
 
   - text: |
-      Fives bytes at wire-level, where a single byte, 0x01, would be canonical.
+      Five bytes at wire-level, where a single byte, 0x01, would be canonical.
 
       That's weird...
 
@@ -134,7 +134,7 @@ steps:
   - text: |
       Indeed, this is a good match.
       And the shadowed field even seems to contain a Google API key 🚨.
-      
+
       That's bad 😠.
 
       👋 Press space to step.
@@ -149,7 +149,7 @@ steps:
       OK. We should report our findings.
 
       Let's export our annotated log file as prototext
-      so that we can send share it with Bob.
+      so that we can share it with Bob.
 
       👋 Navigate to the root node, press `x` (eXport), `p` (Prototext)
          and export as alice/logfile
@@ -163,8 +163,8 @@ steps:
       - file_exists: alice/logfile
 
   - text: |
-      Done!.
-      
+      Done!
+
       👋 Press Enter to quit.
 
     heat_cues: findings
