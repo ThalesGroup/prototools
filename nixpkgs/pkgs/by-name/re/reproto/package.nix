@@ -63,10 +63,15 @@ python3Packages.buildPythonApplication (finalAttrs: {
     installShellCompletion --cmd reproto --bash src/reproto/completions.sh
   ''
   + lib.optionalString (stdenv.buildPlatform.canExecute stdenv.hostPlatform) ''
-    $out/bin/reproto-gen-man $out/share/man/man1
+    REPROTO_GEN_MAN=$out/share/man/man1 $out/bin/reproto
   '';
 
   nativeInstallCheckInputs = [ versionCheckHook ];
+
+  # versionCheckHook checks mainProgram; the package's other program too.
+  postInstallCheck = ''
+    $out/bin/reproto-instantiate-schema --version | grep -F ${finalAttrs.version}
+  '';
 
   pythonImportsCheck = [ "reproto" ];
 

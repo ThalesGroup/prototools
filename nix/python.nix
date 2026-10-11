@@ -162,8 +162,17 @@ let
     doInstallCheck = true;
     pythonImportsCheck = [ "reproto" ];
     # Spec 0402 S8: `reproto --version` says the version Nix calls it
-    # (meta.mainProgram names the program).
+    # (meta.mainProgram names the program); spec 0413 S5: so does every
+    # other program the package installs.
     nativeInstallCheckInputs = [ pkgs.versionCheckHook ];
+    postInstallCheck = whenRunnable ''
+      for program in $out/bin/*; do
+        "$program" --version | grep -qF ${reprotoVersion} || {
+          echo "$program --version does not print ${reprotoVersion}" >&2
+          exit 1
+        }
+      done
+    '';
     passthru.tests = { inherit reprotoTests; };
 
     postInstall = ''
@@ -171,8 +180,8 @@ let
         --bash ${reprotoSrc}/src/reproto/completions.sh
 
     '' + whenRunnable ''
-      # Generate and install man page.
-      $out/bin/reproto-gen-man $out/share/man/man1
+      # Generate and install the man pages (spec 0413 S2).
+      REPROTO_GEN_MAN=$out/share/man/man1 $out/bin/reproto
     '';
   };
 

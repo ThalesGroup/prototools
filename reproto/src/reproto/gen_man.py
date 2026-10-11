@@ -2,20 +2,15 @@
 #
 # SPDX-License-Identifier: MIT
 
-"""reproto-gen-man — generate a man page from the live Click command definition.
+"""reproto's man pages, rendered from the live Click commands.
 
-Usage:
-    reproto-gen-man [<output-dir>]
-
-Generates:
-    <output-dir>/reproto.1
-
-Default output directory: man/man1
+``REPROTO_GEN_MAN=<dir> reproto`` writes ``reproto.1`` and
+``reproto-instantiate-schema.1`` into ``<dir>`` and exits (spec 0413 S2),
+as protoscan and protolens do with their own variables.
 """
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import click
@@ -43,12 +38,8 @@ def _render(cmd: click.Command) -> str:
 
     buf: list[str] = []
 
-    # Determine version lazily
-    import importlib.metadata
-    try:
-        version = importlib.metadata.version('prototext-reproto')
-    except importlib.metadata.PackageNotFoundError:
-        version = 'dev'
+    from reproto import version as reproto_version
+    version = reproto_version()
 
     buf.append(rf'.TH REPROTO 1 "2026" "reproto {version}" "User Commands"')
     buf.append(r'.SH NAME')
@@ -135,6 +126,10 @@ def _render(cmd: click.Command) -> str:
     buf.append(r'\fBREPROTO_VARIANT\fR')
     buf.append(r'Path to a variant YAML file used when \fB\-\-proto\-variant\fR is not given.')
     buf.append(r'.TP')
+    buf.append(r'\fBREPROTO_GEN_MAN\fR')
+    buf.append(r'When set to a directory, write the man pages of \fBreproto\fR and')
+    buf.append(r'\fBreproto\-instantiate\-schema\fR into it and exit.')
+    buf.append(r'.TP')
     buf.append(r'\fB_REPROTO_COMPLETE\fR')
     buf.append(
         r'When set to \fBbash_complete\fR, emit shell completion candidates and exit.'
@@ -198,17 +193,21 @@ def _render(cmd: click.Command) -> str:
     return '\n'.join(buf) + '\n'
 
 
-def main() -> None:
-    out_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("man/man1")
-    out_dir.mkdir(parents=True, exist_ok=True)
-
+def write_man_pages(out_dir: Path) -> list[Path]:
+    """Write reproto's two man pages into ``out_dir``, creating it, and
+    return their paths."""
     from reproto.cli import main as reproto_main
-    text = _render(reproto_main)
+    from reproto.gen_man_instantiate import render as render_instantiate
+    from reproto.instantiate_cli import main as instantiate_main
 
-    dest = out_dir / "reproto.1"
-    dest.write_text(text, encoding="utf-8")
-    print(f"wrote {dest}", file=sys.stderr)
-
-
-if __name__ == "__main__":
-    main()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    pages = {
+        'reproto.1': _render(reproto_main),
+        'reproto-instantiate-schema.1': render_instantiate(instantiate_main),
+    }
+    written = []
+    for name, text in pages.items():
+        dest = out_dir / name
+        dest.write_text(text, encoding='utf-8')
+        written.append(dest)
+    return written

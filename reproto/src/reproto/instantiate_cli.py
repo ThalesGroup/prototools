@@ -11,11 +11,15 @@ from pathlib import Path
 
 import click
 
+from . import version
 from .instantiate import generate_instance, load_pool
 
 
 @click.command()
-@click.version_option()
+@click.version_option(
+    version=version(),
+    prog_name='reproto-instantiate-schema',
+)
 @click.option(
     '--descriptor-set',
     'descriptor_path',

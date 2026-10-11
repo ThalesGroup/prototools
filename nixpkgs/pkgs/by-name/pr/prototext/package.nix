@@ -44,7 +44,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
       --bash <(PROTOTEXT_COMPLETE=bash $out/bin/prototext) \
       --zsh <(PROTOTEXT_COMPLETE=zsh $out/bin/prototext) \
       --fish <(PROTOTEXT_COMPLETE=fish $out/bin/prototext)
-    $out/bin/prototext-gen-man $out/share/man/man1
+    PROTOTEXT_GEN_MAN=$out/share/man/man1 $out/bin/prototext
   '';
 
   nativeInstallCheckInputs = [ versionCheckHook ];

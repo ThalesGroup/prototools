@@ -3,30 +3,30 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! `prototext-gen-man` — generate a man page from the live clap definition.
+//! Man page generation from the live clap definition (spec 0413 S3).
+//!
+//! Driven by an environment variable, as protoscan's and protolens's are,
+//! rather than a separate `prototext-gen-man` binary that users would never
+//! run.
 //!
 //! Usage:
-//!   cargo run -p prototext --bin prototext-gen-man [-- <output-dir>]
-//!
-//! Generates:
-//!   <output-dir>/prototext.1
-//!
-//! Default output directory: man/man1
+//!   PROTOTEXT_GEN_MAN=man/man1 prototext
 
 use std::path::PathBuf;
 
-fn main() {
-    let out_dir = PathBuf::from(
-        std::env::args()
-            .nth(1)
-            .unwrap_or_else(|| "man/man1".to_owned()),
-    );
-
+/// Write `<$PROTOTEXT_GEN_MAN>/prototext.1` and exit, or return if the
+/// variable is unset.
+///
+/// Called before `Cli::parse()`, so no subcommand has to be supplied to
+/// generate the page.
+pub fn generate_and_exit_if_requested() {
+    let Some(dir) = std::env::var_os("PROTOTEXT_GEN_MAN") else {
+        return;
+    };
+    let out_dir = PathBuf::from(dir);
     std::fs::create_dir_all(&out_dir).expect("cannot create output directory");
 
-    let cmd = prototext::command();
-
-    let man = clap_mangen::Man::new(cmd)
+    let man = clap_mangen::Man::new(prototext::command())
         .title("PROTOTEXT")
         .section("1")
         .source("prototext")
@@ -42,6 +42,7 @@ fn main() {
     std::fs::write(&dest, &buf).unwrap_or_else(|e| panic!("cannot write {}: {e}", dest.display()));
 
     eprintln!("wrote {}", dest.display());
+    std::process::exit(0);
 }
 
 const EXTRA_SECTIONS: &str = r#"
@@ -51,6 +52,10 @@ const EXTRA_SECTIONS: &str = r#"
 When set to \fBbash\fR, \fBzsh\fR, or \fBfish\fR, print a shell completion
 script to stdout and exit.
 Used by the shell completion setup described below.
+.TP
+\fBPROTOTEXT_GEN_MAN\fR
+When set to a directory, write this man page there as \fBprototext.1\fR
+and exit.
 .SH EXAMPLES
 .SS Decode a binary protobuf file (schemaless)
 .PP

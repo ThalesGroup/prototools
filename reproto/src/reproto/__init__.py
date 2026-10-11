@@ -56,6 +56,7 @@ __all__ = [
     "ReServiceDescriptorProto",
     "reproto",
     "short_ref", "shorten_type_name",
+    "version",
 ]
 
 _module_map = {
@@ -76,6 +77,21 @@ _module_map = {
     "short_ref":               ".utils",
     "shorten_type_name":       ".utils",
 }
+
+
+def version() -> str:
+    """reproto's version: the installed distribution's, or ``dev`` when it
+    runs from source, not installed (spec 0413 S1).
+
+    Only the distribution's absence falls back: any other failure is a bug
+    in the lookup and should be seen, not printed as ``dev``.
+    """
+    from importlib.metadata import PackageNotFoundError
+    from importlib.metadata import version as _distribution_version
+    try:
+        return _distribution_version('prototext-reproto')
+    except PackageNotFoundError:
+        return 'dev'
 
 
 def __getattr__(name: str) -> object:

@@ -204,12 +204,17 @@ let
       --zsh  <(PROTOTEXT_COMPLETE=zsh  $out/bin/prototext) \
       --fish <(PROTOTEXT_COMPLETE=fish $out/bin/prototext)
 
-    # Generate and install man page.
-    $out/bin/prototext-gen-man $out/share/man/man1
+    # Generate and install man page (spec 0413 S3).
+    PROTOTEXT_GEN_MAN=$out/share/man/man1 $out/bin/prototext
 
-    # Spec 0402 S8: the binary says the version Nix calls it (what
-    # versionCheckHook checks, for a derivation without its phase).
-    $out/bin/prototext --version | grep -qF ${prototextVersion}
+    # Spec 0402 S8, 0413 S5: every program says the version Nix calls it
+    # (what versionCheckHook checks, for a derivation without its phase).
+    for program in $out/bin/*; do
+      "$program" --version | grep -qF ${prototextVersion} || {
+        echo "$program --version does not print ${prototextVersion}" >&2
+        exit 1
+      }
+    done
   '';
 
   # Spec 0402 S4: what every installable output's meta shares.
@@ -288,7 +293,7 @@ let
   # every binary and every cdylib, the stub generators included, so
   # everything that ships is copied out of it:
   #
-  #   $out/bin/{prototext,prototext-gen-man,protolens,protoscan}
+  #   $out/bin/{prototext,protolens,protoscan}
   #   $out/wheels/<dist>-<version>-cp313-cp313-<platform>.whl
   #
   # The wheels are maturin's (spec 0409 S3), built from each extension's
@@ -335,7 +340,7 @@ let
     doNotPostBuildInstallCargoBinaries = true;
     installPhaseCommand                = ''
       mkdir -p $out/bin $out/wheels
-      cp ${profileDir}/prototext ${profileDir}/prototext-gen-man \
+      cp ${profileDir}/prototext \
          ${profileDir}/protolens ${profileDir}/protoscan $out/bin/
     '' + pkgs.lib.concatMapStrings (e:
       let
@@ -368,7 +373,7 @@ let
     passthru.tests    = { inherit rustTests; };
   } ''
     mkdir -p $out/bin
-    cp ${workspaceBuild}/bin/prototext ${workspaceBuild}/bin/prototext-gen-man $out/bin/
+    cp ${workspaceBuild}/bin/prototext $out/bin/
     ${prototextPostInstall}
   '';
 

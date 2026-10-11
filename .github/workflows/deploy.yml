@@ -41,14 +41,14 @@ jobs:
       # that would have made this fast.
 
       - name: Install Python dependencies for reproto
-        run: pip install --quiet click google-re2 lark protobuf pyvis pyyaml rapidfuzz rich
+        run: pip install --quiet click google-re2 protobuf pyvis pyyaml rapidfuzz rich
 
       - name: Generate man pages
         run: |
           mkdir -p man/man1
           # prototext and protoscan omitted — see comment above.
-          PYTHONPATH=reproto/src python3 -m reproto.gen_man man/man1
-          PYTHONPATH=reproto/src python3 -m reproto.gen_man_instantiate man/man1
+          # Spec 0413 S2: both of reproto's pages.
+          REPROTO_GEN_MAN=man/man1 PYTHONPATH=reproto/src python3 -m reproto
 
       - name: Copy docs into website/content
         run: |

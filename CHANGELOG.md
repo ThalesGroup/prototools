@@ -8,6 +8,22 @@ SPDX-License-Identifier: MIT
 
 ## [Unreleased]
 
+### Fixed
+
+- `reproto-instantiate-schema --version` crashed with `RuntimeError:
+  'reproto' is not installed`; it prints its version, like `reproto`
+  (spec 0413). The build now checks `--version` on every installed
+  program, not only the main one.
+
+### Removed
+
+- The `prototext-gen-man`, `reproto-gen-man` and
+  `reproto-instantiate-schema-gen-man` programs, which existed only to
+  write man pages, and took `--version` for a directory to write them
+  in. The man pages come from `PROTOTEXT_GEN_MAN=<dir> prototext` and
+  `REPROTO_GEN_MAN=<dir> reproto` instead, as protoscan's and protolens's
+  do (spec 0413).
+
 ## 0.3.2 — 2026-10-11
 
 ### Changed

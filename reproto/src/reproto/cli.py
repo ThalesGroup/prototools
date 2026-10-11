@@ -6,18 +6,15 @@ from __future__ import annotations
 
 import collections.abc
 import logging
+import os
 import sys
 from pathlib import Path
 
 import click
 
+from . import version
 from .lib.console import rprint
 
-try:
-    from importlib.metadata import version as _pkg_version
-    _reproto_version = _pkg_version('prototext-reproto')
-except Exception:
-    _reproto_version = 'dev'
 from click.shell_completion import CompletionItem
 
 logger = logging.getLogger()  # root logger
@@ -284,7 +281,7 @@ class _SectionedCommand(click.Command):
     ),
 )
 @click.version_option(
-    version=_reproto_version,
+    version=version(),
     prog_name='reproto',
 )
 # --- Input ---
@@ -1044,4 +1041,17 @@ def main(
         raise click.ClickException(f'{fdp_plugin}: {e}')
 
 if __name__ == '__main__':
+    main()
+
+
+def run() -> None:
+    """The ``reproto`` program. With ``REPROTO_GEN_MAN`` set to a directory,
+    write reproto's man pages there and exit, before any argument is parsed
+    (spec 0413 S2); otherwise, run the command line."""
+    out_dir = os.environ.get('REPROTO_GEN_MAN')
+    if out_dir:
+        from .gen_man import write_man_pages
+        for path in write_man_pages(Path(out_dir)):
+            print(f'wrote {path}', file=sys.stderr)
+        return
     main()

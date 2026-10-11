@@ -8,12 +8,16 @@ use clap_complete::CompleteEnv;
 
 use prototext::Cli;
 
+mod man;
 #[cfg(test)]
 pub mod protocraft;
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 fn main() {
+    // PROTOTEXT_GEN_MAN=<dir>: write the man page and exit (spec 0413 S3).
+    man::generate_and_exit_if_requested();
+
     // Dynamic shell completion — same model as Cargo.
     // When PROTOTEXT_COMPLETE=<shell> is set, print the completion script and exit.
     // Bash completes from the raw command line (spec 0406).

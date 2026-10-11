@@ -2,21 +2,11 @@
 #
 # SPDX-License-Identifier: MIT
 
-"""reproto-instantiate-schema-gen-man — generate a man page for reproto-instantiate-schema.
-
-Usage:
-    python -m reproto.gen_man_instantiate [<output-dir>]
-
-Generates:
-    <output-dir>/reproto-instantiate-schema.1
-
-Default output directory: man/man1
-"""
+"""The man page of reproto-instantiate-schema, rendered from its live Click
+command. reproto.gen_man writes it beside reproto's own, when the
+REPROTO_GEN_MAN variable names a directory (spec 0413 S2)."""
 
 from __future__ import annotations
-
-import sys
-from pathlib import Path
 
 import click
 
@@ -38,14 +28,11 @@ def _format_option_synopsis(param: click.Option) -> str:
     return term
 
 
-def _render(cmd: click.Command) -> str:
+def render(cmd: click.Command) -> str:
     buf: list[str] = []
 
-    import importlib.metadata
-    try:
-        version = importlib.metadata.version('prototext-reproto')
-    except importlib.metadata.PackageNotFoundError:
-        version = 'dev'
+    from reproto import version as reproto_version
+    version = reproto_version()
 
     buf.append(rf'.TH REPROTO\-INSTANTIATE\-SCHEMA 1 "2026" "reproto {version}" "User Commands"')
     buf.append(r'.SH NAME')
@@ -110,19 +97,3 @@ def _render(cmd: click.Command) -> str:
     buf.append(r'\fBprototext\fR(1), \fBreproto\fR(1)')
 
     return '\n'.join(buf) + '\n'
-
-
-def main() -> None:
-    out_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("man/man1")
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    from reproto.instantiate_cli import main as instantiate_main
-    text = _render(instantiate_main)
-
-    dest = out_dir / "reproto-instantiate-schema.1"
-    dest.write_text(text, encoding="utf-8")
-    print(f"wrote {dest}", file=sys.stderr)
-
-
-if __name__ == "__main__":
-    main()

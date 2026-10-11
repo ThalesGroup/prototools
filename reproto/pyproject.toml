@@ -31,9 +31,7 @@ dependencies = [
 ]
 
 [project.scripts]
-reproto = "reproto.cli:main"
-reproto-gen-man = "reproto.gen_man:main"
-reproto-instantiate-schema-gen-man = "reproto.gen_man_instantiate:main"
+reproto = "reproto.cli:run"
 reproto-instantiate-schema = "reproto.instantiate_cli:main"
 
 [tool.setuptools]

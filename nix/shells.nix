@@ -374,14 +374,14 @@ components = [\"rust-src\", \"rustfmt\", \"clippy\"]"
       _hook_man() {
         echo "[hook] man: generating man pages into man/man1/"
         mkdir -p man/man1
-        if command -v prototext-gen-man &>/dev/null; then
-          prototext-gen-man man/man1
+        if command -v prototext &>/dev/null; then
+          PROTOTEXT_GEN_MAN=man/man1 prototext
         fi
         if command -v protolens &>/dev/null; then
           PROTOLENS_GEN_MAN=man/man1 protolens
         fi
-        if python3 -c "import reproto.gen_man" 2>/dev/null; then
-          python3 -m reproto.gen_man man/man1
+        if python3 -c "import reproto" 2>/dev/null; then
+          REPROTO_GEN_MAN=man/man1 python3 -m reproto
         fi
         if command -v protoscan &>/dev/null; then
           PROTOSCAN_GEN_MAN=man/man1 protoscan

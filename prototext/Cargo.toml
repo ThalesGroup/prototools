@@ -33,10 +33,6 @@ targets = []
 name = "prototext"
 path = "src/main.rs"
 
-[[bin]]
-name = "prototext-gen-man"
-path = "src/gen_man.rs"
-
 [dependencies]
 prototext-core  = { workspace = true }
 prototext-graph = { workspace = true }
