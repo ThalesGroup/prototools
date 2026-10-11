@@ -83,10 +83,25 @@ let
   # which Python spells X.Y.Z.dev0 (PEP 440): a "-" in a wheel's version
   # would break its file name.
   pythonVersion = builtins.replaceStrings [ "-dev" ] [ ".dev0" ] workspaceVersion;
+  #
+  # A dependency on one of this repository's Python packages must require
+  # the same version, as `<name>>=<version>`: they are released together,
+  # and an older lower bound would let pip pair a new reproto with old
+  # extensions (spec 0411 S3).
   pyprojectVersion = dir:
-    let v = (pkgs.lib.importTOML (../. + "/${dir}/pyproject.toml")).project.version;
-    in if v == pythonVersion then v
-       else throw "${dir}/pyproject.toml has version ${v}; the workspace is ${workspaceVersion} (Cargo.toml), so ${pythonVersion}";
+    let
+      project  = (pkgs.lib.importTOML (../. + "/${dir}/pyproject.toml")).project;
+      v        = project.version;
+      internal = [ "fdp-scan" "prototext-codec" "prototext-graph" "tree-sitter-textproto" ];
+      nameOf   = d: builtins.head (builtins.match "([A-Za-z0-9_.-]+).*" d);
+      stale    = builtins.filter
+        (d: builtins.elem (nameOf d) internal && d != "${nameOf d}>=${pythonVersion}")
+        (project.dependencies or [ ]);
+    in if v != pythonVersion
+       then throw "${dir}/pyproject.toml has version ${v}; the workspace is ${workspaceVersion} (Cargo.toml), so ${pythonVersion}"
+       else if stale != [ ]
+       then throw "${dir}/pyproject.toml: ${builtins.concatStringsSep ", " stale}: this repository's packages are required as <name>>=${pythonVersion}"
+       else v;
   prototextVersion = workspaceVersion;
   protolensVersion = workspaceVersion;
 

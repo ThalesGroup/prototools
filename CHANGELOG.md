@@ -16,6 +16,17 @@ SPDX-License-Identifier: MIT
   handles `:`, `=` and quotes (spec 0406), zsh and fish completions, a man
   page and `--version`. Install it with `cargo install protoscan`; the
   Python package `protoscan` is no longer published.
+- **The PyPI wheels are built by maturin and setuptools** from each
+  package's `pyproject.toml` (specs 0409, 0411), instead of being
+  assembled by hand: they now carry their type stubs and complete
+  metadata. The macOS wheels are tagged `macosx_14_0`, the macOS version
+  they are built for; they had claimed `macosx_11_0`.
+- **`prototext-reproto` declares its dependencies** (spec 0411): the
+  three extensions, `tree-sitter`, and the textproto grammar, now
+  published as `tree-sitter-textproto` (module `tree_sitter_textproto`).
+  `pip install prototext-reproto` gives a working reproto; until now the
+  wheel installed and failed at import. `lark`, which it never used, is
+  no longer required.
 
 ### Deprecated
 

@@ -18,9 +18,8 @@ import prototext_codec_lib as _pt_codec
 from google.protobuf import text_format
 from google.protobuf.descriptor_pb2 import FileDescriptorProto, FileDescriptorSet
 from google.protobuf.message import DecodeError
+import tree_sitter_textproto as _textproto_mod
 from tree_sitter import Language, Node, Parser
-
-import textproto as _textproto_mod
 
 logger = logging.getLogger(__name__)
 

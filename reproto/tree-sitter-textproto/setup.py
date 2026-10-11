@@ -14,7 +14,7 @@ from setuptools import Extension, setup
 setup(
     ext_modules=[
         Extension(
-            "textproto.textproto",
+            "tree_sitter_textproto._binding",
             sources=["binding.c", "src/parser.c"],
             include_dirs=["src"],
         )

@@ -8,6 +8,6 @@
 `tree_sitter.Language` (spec 0408).
 """
 
-from .textproto import language
+from ._binding import language
 
 __all__ = ["language"]

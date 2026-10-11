@@ -11,15 +11,23 @@ name = "prototext-reproto"
 version = "0.3.1.dev0"
 description = "Reconstruct .proto source files from compiled .pb descriptor sets"
 authors = [{ name = "Frederic Ruget", email = "fred@atlant.is" }]
+# What reproto imports, and nothing else (spec 0411 S3). The four from
+# this repository are released together, at the workspace's version:
+# nix/rust.nix fails evaluation when a lower bound falls behind it.
 dependencies = [
     "click",
     "google-re2",
-    "lark",
     "protobuf",
     "pyvis",
     "pyyaml",
     "rapidfuzz",
     "rich",
+    # 0.22 takes a grammar as a capsule, as tree-sitter-textproto gives it.
+    "tree-sitter>=0.22",
+    "fdp-scan>=0.3.1.dev0",
+    "prototext-codec>=0.3.1.dev0",
+    "prototext-graph>=0.3.1.dev0",
+    "tree-sitter-textproto>=0.3.1.dev0",
 ]
 
 [project.scripts]

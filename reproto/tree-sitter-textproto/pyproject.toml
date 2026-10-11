@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 
 [build-system]
-requires      = ["setuptools>=64"]
+requires      = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -11,9 +11,14 @@ name            = "tree-sitter-textproto"
 version         = "0.3.1.dev0"
 description     = "The textproto tree-sitter grammar, for the Python tree_sitter library"
 requires-python = ">=3.8"
+# The parser is generated from Porter Matteo Haet's ISC grammar; the
+# binding is ours, MIT. LICENSE holds both notices, which ISC requires
+# every copy to carry (spec 0411 S2).
+license         = "ISC AND MIT"
+license-files   = ["LICENSE"]
 
 [tool.setuptools]
-packages = ["textproto"]
+packages = ["tree_sitter_textproto"]
 
 [tool.setuptools.package-data]
-textproto = ["*.pyi", "py.typed"]
+tree_sitter_textproto = ["*.pyi", "py.typed"]

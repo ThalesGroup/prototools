@@ -5,10 +5,11 @@
 name: nixpkgs staging
 
 # Spec 0405 S7: build the recipes staged for nixpkgs (nixpkgs/pkgs/), as
-# nixpkgs builds them, from the local tree. Each is a full buildRustPackage
-# that compiles every dependency again, so it runs apart from the everyday
-# Nix CI: when the recipes or the dependencies change, at every release tag,
-# and by hand. nixpkgs-staging-check (nixfmt, the version rule) stays in ci.
+# nixpkgs builds them, from the local tree. Each Rust application and pyo3
+# extension compiles every dependency again, so it runs apart from the
+# everyday Nix CI: when the recipes or the dependencies change, at every
+# release tag, and by hand. nixpkgs-staging-check (nixfmt, the version rule)
+# stays in ci.
 
 on:
   push:
@@ -19,6 +20,7 @@ on:
       - "nixpkgs/**"
       - "Cargo.lock"
       - "**/Cargo.toml"
+      - "**/pyproject.toml"
       - ".github/workflows/nixpkgs-staging.yml"
     tags: ["v*"]
   workflow_dispatch:

@@ -60,7 +60,9 @@ let
 
   # The textproto grammar's Python module (spec 0408 S4): a setuptools
   # package with one C extension, built from the committed parser
-  # (src/parser.c) and binding.c with a C compiler alone.
+  # (src/parser.c) and binding.c with a C compiler alone. Its module is
+  # tree_sitter_textproto, as tree-sitter names grammar bindings, and its
+  # wheel goes to PyPI with the others (spec 0411).
   treeSitterTextprotoPkg = pythonPkgs.buildPythonPackage {
     pname   = "tree-sitter-textproto";
     version = pyprojectVersion "reproto/tree-sitter-textproto";
@@ -74,29 +76,28 @@ let
         ../reproto/tree-sitter-textproto/setup.py
         ../reproto/tree-sitter-textproto/binding.c
         ../reproto/tree-sitter-textproto/src
-        ../reproto/tree-sitter-textproto/textproto
+        ../reproto/tree-sitter-textproto/tree_sitter_textproto
+        ../reproto/tree-sitter-textproto/LICENSE
       ];
     };
     pyproject = true;
     build-system = [ pythonPkgs.setuptools ];
-    pythonImportsCheck = [ "textproto" ];
+    pythonImportsCheck = [ "tree_sitter_textproto" ];
   };
 
   # Common Python dependencies for reproto.
   # reprotoPropagatedDeps: runtime deps only (no test tools, no codec).
-  # tree-sitter and tree-sitter-language-pack are runtime deps because
-  # split_fdps.py imports them at module load time (top-level imports).
+  # tree-sitter and the grammar are runtime deps because split_fdps.py
+  # imports them at module load time (top-level imports).
   reprotoPropagatedDeps = [
     pythonPkgs.click
     pythonPkgs.google-re2
-    pythonPkgs.lark
     pythonPkgs.protobuf
     pythonPkgs.pyvis
     pythonPkgs.pyyaml
     pythonPkgs.rapidfuzz
     pythonPkgs.rich
     pythonPkgs.tree-sitter
-    pythonPkgs.tree-sitter-language-pack
     treeSitterTextprotoPkg
   ];
 
@@ -121,7 +122,13 @@ let
   # pytest tools.  Used by reprotoTests, pythonLint, and dev-shell.
   # types-protobuf is typing stubs, for pyright: lint and dev-shell only,
   # never a runtime dependency (spec 0402 S5).
-  reprotoTestDeps = wktRkyvDeps ++ [ fdpScanLib pythonPkgs.types-protobuf ];
+  # tree-sitter-language-pack: the tests' second grammar, which reproto
+  # itself never imports.
+  reprotoTestDeps = wktRkyvDeps ++ [
+    fdpScanLib
+    pythonPkgs.tree-sitter-language-pack
+    pythonPkgs.types-protobuf
+  ];
 
   # Final reproto package — built from its source, with tests.
   reproto = pythonPkgs.buildPythonPackage {
@@ -246,6 +253,7 @@ let
         prototextGraphLib
         fdpScanLib
         pythonPkgs.pytest
+        pythonPkgs.tree-sitter-language-pack
         pythonPkgs.types-protobuf
       ]))
     ];
@@ -577,6 +585,7 @@ print('\n'.join(lines[:$N_EXTRA]))
 in {
   inherit
     reprotoSrc
+    treeSitterTextprotoPkg
     reprotoPropagatedDeps
     wktRkyvDeps
     reprotoTestDeps
