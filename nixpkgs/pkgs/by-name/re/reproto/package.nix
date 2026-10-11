@@ -1,5 +1,6 @@
 {
   lib,
+  stdenv,
   python3Packages,
   fetchFromGitHub,
   installShellFiles,
@@ -7,8 +8,9 @@
   buf,
   prototext,
   versionCheckHook,
+
+  # passthru
   nix-update-script,
-  stdenv,
 }:
 
 python3Packages.buildPythonApplication (finalAttrs: {
@@ -86,7 +88,7 @@ python3Packages.buildPythonApplication (finalAttrs: {
       decode messages without their original sources.
     '';
     homepage = "https://github.com/douzebis/prototools";
-    changelog = "https://github.com/douzebis/prototools/blob/v${finalAttrs.version}/CHANGELOG.md";
+    changelog = "https://github.com/douzebis/prototools/blob/${finalAttrs.src.rev}/CHANGELOG.md";
     license = lib.licenses.mit;
     maintainers = with lib.maintainers; [ douzebis ];
     mainProgram = "reproto";

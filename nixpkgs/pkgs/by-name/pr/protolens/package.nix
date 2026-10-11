@@ -1,14 +1,17 @@
 {
   lib,
+  stdenv,
   rustPlatform,
   fetchFromGitHub,
   installShellFiles,
   makeWrapper,
   versionCheckHook,
-  nix-update-script,
-  stdenv,
   neovim,
   buf,
+
+  # passthru
+  nix-update-script,
+
   # The editor key opens the descriptor in Neovim, which protolens finds
   # on PATH, and tells the user when it is missing. withNeovim puts one on
   # the wrapper's PATH instead.
@@ -21,7 +24,6 @@
 rustPlatform.buildRustPackage (finalAttrs: {
   pname = "protolens";
   version = "0.3.1";
-
   __structuredAttrs = true;
 
   src = fetchFromGitHub {
@@ -87,7 +89,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
       in Neovim; with buf installed, Neovim can then navigate the schema.
     '';
     homepage = "https://github.com/douzebis/prototools";
-    changelog = "https://github.com/douzebis/prototools/blob/v${finalAttrs.version}/CHANGELOG.md";
+    changelog = "https://github.com/douzebis/prototools/blob/${finalAttrs.src.rev}/CHANGELOG.md";
     license = lib.licenses.mit;
     maintainers = with lib.maintainers; [ douzebis ];
     mainProgram = "protolens";

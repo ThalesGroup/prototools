@@ -1,17 +1,18 @@
 {
   lib,
+  stdenv,
   rustPlatform,
   fetchFromGitHub,
   installShellFiles,
   versionCheckHook,
+
+  # passthru
   nix-update-script,
-  stdenv,
 }:
 
 rustPlatform.buildRustPackage (finalAttrs: {
   pname = "protoscan";
   version = "0.3.1";
-
   __structuredAttrs = true;
 
   src = fetchFromGitHub {
@@ -63,7 +64,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
       prototext decodes and reproto turns back into .proto sources.
     '';
     homepage = "https://github.com/douzebis/prototools";
-    changelog = "https://github.com/douzebis/prototools/blob/v${finalAttrs.version}/CHANGELOG.md";
+    changelog = "https://github.com/douzebis/prototools/blob/${finalAttrs.src.rev}/CHANGELOG.md";
     license = lib.licenses.mit;
     maintainers = with lib.maintainers; [ douzebis ];
     mainProgram = "protoscan";
