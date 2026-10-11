@@ -71,14 +71,21 @@ What `publish.yaml` relies on, outside the repository (spec 0412 S5):
 
 - **GitHub environments** `crates-io` and `pypi` (repository settings,
   Environments): required reviewer the maintainer; deployment branches
-  and tags restricted to the tag pattern `v*`.
+  and tags restricted to the tag pattern `v*`, as a **tag** rule (a
+  branch rule `v*` never matches a tag). They must exist before the first
+  tag: a job naming a missing environment creates it unprotected.
 - **crates.io**, each crate's Settings, Trusted Publishing: GitHub,
   repository `douzebis/prototools`, workflow `publish.yaml`, environment
-  `crates-io`. A crate must exist first: a crate's first release is
-  published with a token, once (`CARGO_REGISTRY_TOKEN=… scripts/publish-crates`
-  in the release shell, from the tagged checkout, before approving the
-  job, which then skips it); then revoke the token and add the trusted
-  publisher.
+  `crates-io`. A crate must exist first, and crates.io has no pending
+  publisher, so a new crate's first release takes a token restricted to
+  its name with the `publish-new` scope. crates.io refuses that token on
+  a crate that has a trusted publisher, so the job and a local run
+  alternate: approve the job, and when it stops at a new crate, run
+  `scripts/publish-crates` in the release shell from the tagged checkout,
+  with the token in `CARGO_REGISTRY_TOKEN` (`read -rs`, then `export`).
+  When it stops at an existing crate, re-run the job. Each run skips what
+  is published. Then revoke the token, and add the new crates' trusted
+  publishers (spec 0412 S5).
 - **PyPI**, each project's Publishing settings: GitHub, owner
   `douzebis`, repository `prototools`, workflow `publish.yaml`,
   environment `pypi`. A project not yet on PyPI gets a pending publisher

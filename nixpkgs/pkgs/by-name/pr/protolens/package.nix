@@ -30,10 +30,10 @@ rustPlatform.buildRustPackage (finalAttrs: {
     owner = "douzebis";
     repo = "prototools";
     tag = "v${finalAttrs.version}";
-    hash = lib.fakeHash;
+    hash = "sha256-wNeO5GUz0XkUpdiIGp4xWXf7Ol2pmfnqspCbeTAKmKs=";
   };
 
-  cargoHash = lib.fakeHash;
+  cargoHash = "sha256-4F/ZRjvaFPTJALcRZ0j8bMwIRAaTTghf4fCbx2+6z3M=";
 
   cargoBuildFlags = [
     "-p"

@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # 0412 — releases publish from CI
 
-Status: implemented, except S5 (the maintainer's setup) and test plan 5 (at v0.3.2)
+Status: implemented
 Implemented in: 2026-10-11
 App: the release process (crates.io, PyPI)
 Refs: docs/specs/0098-crates-io-publishing.md (S6: the `assemble` job and `publish.sh` this
@@ -88,12 +88,17 @@ trusted publishing (OIDC): no token is stored, anywhere.
     unapproved.
   - **crates.io** trusted publisher (repository douzebis/prototools,
     workflow `publish.yaml`, environment `crates-io`) on each crate.
-    Trusted publishing applies to crates that exist. Four of the seven do
-    not yet (`prototext-schema`, `prototools-complete`, `fdp-scan`,
-    `protoscan`), so their first release needs one token, once: run
-    `scripts/publish-crates` locally with `CARGO_REGISTRY_TOKEN` set,
-    before approving the job, which then skips all seven. Revoke the
-    token afterwards, then add the trusted publishers.
+    Trusted publishing applies to crates that exist, and crates.io offers
+    no pending publisher. A new crate's first release therefore needs a
+    token restricted to its name, with the `publish-new` scope, used
+    once. Once a crate has a trusted publisher, crates.io refuses token
+    uploads for it (403, "New versions of this crate can only be
+    published using Trusted Publishing"). So when new and existing crates
+    interleave in the dependency order, the CI job and a local
+    `scripts/publish-crates` alternate: each publishes what it can and
+    stops at the first crate it may not, and each re-run skips what is
+    already published. Afterwards, revoke the token and add the new
+    crates' trusted publishers.
   - **PyPI** trusted publisher on the four projects that exist, and a
     pending publisher for `tree-sitter-textproto`, which creates the
     project at its first upload.
@@ -158,6 +163,24 @@ Implemented 2026-10-11, up to the first release.
      which has no 0.2.1, stops: no token. Nothing was uploaded.
   4. `actionlint` passes on both workflows, `shellcheck` on both
      scripts.
+- **Test plan 5, v0.3.2 (2026-10-11):**
+  - The tag started the workflow. `check-version`, `crates` and the three
+    `wheels` builds passed, and both uploads waited for approval.
+  - **PyPI:** one approval uploaded the 13 wheels, creating
+    `tree-sitter-textproto` through its pending publisher.
+  - **crates.io:** four of the seven crates were new.
+    - The first local run, with a token scoped to all seven, was refused
+      on `prototext-core` (the 403 above), so the job and the local
+      script alternated as S5 now describes.
+    - The job published the three existing crates; the token published
+      the four new ones.
+    - The last run of the job skipped all seven and passed.
+  - A clean venv's `pip install prototext-reproto` from PyPI installs our
+    five packages at 0.3.2. `reproto` runs, and the grammar parses.
+  - **The setup** needed one correction. `pypi`'s deployment rule had
+    been entered as a branch rule `v*`, which a tag never matches, so the
+    job would have been refused. It became a tag rule before the tag was
+    pushed.
 - **Found on the way:**
   - crates.io and PyPI still serve 0.2.1: v0.3.0 and v0.3.1 were tagged,
     never uploaded.
