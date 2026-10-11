@@ -31,7 +31,6 @@
 , prototextExtensionArtifacts      # store path: $out/artifacts/ from prototext_codec ext
 , prototextGraphExtensionArtifacts # store path: $out/artifacts/ from prototext_graph ext
 , fdpScanExtensionArtifacts       # store path: $out/artifacts/ from fdp_scan ext
-, treeSitterTextproto
 }:
 
 let
@@ -68,24 +67,28 @@ let
         generated;
     };
 
-  # Wrap treeSitterTextproto (a bare .so store path) as a minimal Python
-  # package so it can appear in propagatedBuildInputs and propagates
-  # correctly to consumers.  The .so is installed directly into site-packages.
+  # The textproto grammar's Python module (spec 0408 S4): a setuptools
+  # package with one C extension, built from the committed parser
+  # (src/parser.c) and binding.c with a C compiler alone.
   treeSitterTextprotoPkg = pythonPkgs.buildPythonPackage {
-    pname   = "textproto";
-    # The grammar has no manifest of its own: it ships inside reproto.
-    version = reprotoVersion;
+    pname   = "tree-sitter-textproto";
+    version = pyprojectVersion "reproto/tree-sitter-textproto";
     meta = metaCommon // {
-      description = "Tree-sitter grammar for textproto, as a Python binding";
+      description = "The textproto tree-sitter grammar, for the Python tree_sitter library";
     };
-    pyproject = false;
-    src     = treeSitterTextproto;
-    installPhase = ''
-      site="$out/lib/${pythonPkgs.python.libPrefix}/site-packages"
-      mkdir -p "$site"
-      cp ${treeSitterTextproto}/textproto*.so "$site/"
-      cp ${treeSitterTextproto}/textproto.pyi "$site/"
-    '';
+    src = pkgs.lib.fileset.toSource {
+      root    = ../reproto/tree-sitter-textproto;
+      fileset = pkgs.lib.fileset.unions [
+        ../reproto/tree-sitter-textproto/pyproject.toml
+        ../reproto/tree-sitter-textproto/setup.py
+        ../reproto/tree-sitter-textproto/binding.c
+        ../reproto/tree-sitter-textproto/src
+        ../reproto/tree-sitter-textproto/textproto
+      ];
+    };
+    pyproject = true;
+    build-system = [ pythonPkgs.setuptools ];
+    pythonImportsCheck = [ "textproto" ];
   };
 
   # Common Python dependencies for reproto.

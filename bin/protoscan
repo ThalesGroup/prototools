@@ -1,4 +1,7 @@
-#!/usr/bin/env python
-from protoscan.cli import main
-if __name__ == "__main__":
-    main()
+#!/usr/bin/env bash
+#
+# Thin wrapper — delegates to the compiled protoscan binary in target/release/
+# (a Rust binary since spec 0407, built by the dev-shell's cargo hook).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+exec "$REPO_ROOT/target/release/protoscan" "$@"

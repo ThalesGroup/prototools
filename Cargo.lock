@@ -1863,6 +1863,7 @@ version = "0.3.1-dev"
 dependencies = [
  "arboard",
  "base64",
+ "cc",
  "clap",
  "clap_complete",
  "clap_mangen",

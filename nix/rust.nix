@@ -35,7 +35,6 @@
 , pythonExecutable
 , depsSrc
 , workspaceSrc
-, treeSitterTextprotoRustLib   # static lib + queries/highlights.scm for protolens's build.rs
 , buf               # narrow-pinned buf (newer than the main nixpkgs pin's 1.59.0; see default.nix)
 }:
 
@@ -103,8 +102,6 @@ let
     nativeBuildInputs = [ pkgs.cargo pkgs.rustc pythonBin ];
     buildInputs       = [ pythonBin ];
     env.PYO3_PYTHON   = pythonExecutable;
-    env.TREE_SITTER_TEXTPROTO_LIB_DIR     = "${treeSitterTextprotoRustLib}/lib";
-    env.TREE_SITTER_TEXTPROTO_QUERIES_DIR = "${treeSitterTextprotoRustLib}/queries";
   };
 
   # protoc for prototext's roundtrip tests, which compare with it. The

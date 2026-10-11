@@ -2,30 +2,32 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! Build script: link the Nix-built `tree-sitter-textproto` static library.
+//! Build script: compile the textproto grammar's committed parser.
 //!
-//! `nix/rust.nix`'s `commonArgs.env` (Nix builds) and `nix/shells.nix`'s
-//! `_hook_rust` (manual `nix-shell` builds) both export
-//! `TREE_SITTER_TEXTPROTO_LIB_DIR`/`TREE_SITTER_TEXTPROTO_QUERIES_DIR`,
-//! pointing at `treeSitterTextprotoRustLib`'s `lib/`/`queries/` output
-//! (spec 0116 §7). This script never compiles C or runs `tree-sitter
-//! generate` itself — that already happened in Nix; it only emits the
-//! linker flags and forwards the queries dir to `colorize.rs` via
-//! `env!()`.
+//! `reproto/tree-sitter-textproto/src/parser.c` is generated from
+//! `grammar.js` and committed (spec 0408), so building it takes a C compiler
+//! and nothing else: no tree-sitter CLI, no Nix derivation, no environment
+//! variable. `default.nix`'s `tree-sitter-textproto-check` keeps the
+//! committed parser in step with the grammar. `colorize.rs` embeds the
+//! highlights query from the same directory.
+
+use std::path::PathBuf;
 
 fn main() {
-    let lib_dir = std::env::var("TREE_SITTER_TEXTPROTO_LIB_DIR")
-        .expect("TREE_SITTER_TEXTPROTO_LIB_DIR not set — see nix/rust.nix / nix/shells.nix");
-    let queries_dir = std::env::var("TREE_SITTER_TEXTPROTO_QUERIES_DIR")
-        .expect("TREE_SITTER_TEXTPROTO_QUERIES_DIR not set — see nix/rust.nix / nix/shells.nix");
+    let grammar =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../reproto/tree-sitter-textproto");
+    let src = grammar.join("src");
 
-    println!("cargo:rustc-link-search=native={lib_dir}");
-    println!("cargo:rustc-link-lib=static=tree-sitter-textproto");
+    cc::Build::new()
+        .include(&src)
+        .file(src.join("parser.c"))
+        // Generated code: its warnings are not ours to fix.
+        .warnings(false)
+        .compile("tree-sitter-textproto");
 
-    // Forwarded to compile-time `env!()` so `colorize.rs` can
-    // `include_str!(concat!(env!("TREE_SITTER_TEXTPROTO_QUERIES_DIR"), "/highlights.scm"))`.
-    println!("cargo:rustc-env=TREE_SITTER_TEXTPROTO_QUERIES_DIR={queries_dir}");
-
-    println!("cargo:rerun-if-env-changed=TREE_SITTER_TEXTPROTO_LIB_DIR");
-    println!("cargo:rerun-if-env-changed=TREE_SITTER_TEXTPROTO_QUERIES_DIR");
+    println!("cargo:rerun-if-changed={}", src.display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        grammar.join("highlights.scm").display()
+    );
 }

@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0408 — the textproto grammar ships its parser
 
-Status: draft
+Status: implemented
+Implemented in: 2026-10-11
 App: tree-sitter-textproto (used by reproto and protolens)
 Refs: docs/specs/0405-prototools-in-nixpkgs-one-small-pr-at-a-time.md
       (S9 steps 3 and 4: both reproto's and protolens's nixpkgs recipes
@@ -70,8 +71,10 @@ reproto uses (0.25.2), and protolens's Rust crate (0.26.11).
 - **S1. Commit the generated sources** that `tree-sitter generate`
   writes: `src/parser.c`, `src/tree_sitter/parser.h` and the other
   headers it writes, `src/grammar.json` and `src/node-types.json`, under
-  `reproto/tree-sitter-textproto/src/`. Their licensing goes in
-  `REUSE.toml`, as generated from our MIT `grammar.js`.
+  `reproto/tree-sitter-textproto/src/`. They are generated from
+  `grammar.js`, which is vendored and modified from PorterAtGoogle's
+  tree-sitter-textproto under ISC (spec 0121), so `REUSE.toml` annotates
+  them like it: ISC, Porter Matteo Haet's copyright.
 - **S2. A freshness check** in `ci`: a derivation runs the pinned
   `tree-sitter generate` on `grammar.js` and compares its output with the
   committed `src/`. When they differ, it prints the diff and the refresh
@@ -131,4 +134,46 @@ wheel stops being pure Python, and the grammar's other consumer
 
 ## Measured outcome
 
-Filled in at implementation.
+Implemented 2026-10-11.
+
+- **S1:** `reproto/tree-sitter-textproto/src/`, 172 KB, is committed:
+  `parser.c`, `grammar.json`, `node-types.json`, and three headers in
+  `src/tree_sitter/`. These are what the pinned `tree-sitter generate`
+  (0.26.8) writes; it uses ABI 14, as before, since the grammar has no
+  `tree-sitter.json`. `REUSE.toml` annotates them as ISC, Porter Matteo
+  Haet, like `grammar.js`: the draft had said MIT, wrongly.
+- **S2:** `tree-sitter-textproto-check` (in `ci`) diffs the committed
+  `src/` against `tree-sitter-textproto-generated`.
+  - With `document: $ => repeat1(...)` in place of `repeat(...)` and no
+    refresh, it fails with a 20-line diff and the refresh command.
+  - Restored, it passes.
+- **S3:** the highlight test compiles the committed parser. Before, it
+  regenerated one with a `tree-sitter.json` beside it, so it tested an
+  ABI 15 parser that the tools never shipped.
+- **S4:** the grammar's Python module is a setuptools package,
+  `tree-sitter-textproto`, built by `python.nix`. It has the extensions'
+  layout: a `textproto/` package re-exporting the C extension
+  `textproto.textproto`, with its stub moved beside it, and `py.typed`.
+  `binding.c` is unchanged. The `treeSitterTextproto` derivation and the
+  site-packages wrapper around it are gone.
+- **S5:** protolens's `build.rs` compiles the parser with `cc` 1.2.62, and
+  `colorize.rs` embeds `highlights.scm` by its path in the repository.
+  `treeSitterTextprotoRustLib` and both environment variables are gone
+  from `nix/rust.nix` and `nix/shells.nix`. `workspaceSrc` gains the
+  grammar's `src/` and `highlights.scm`.
+- **Tests:**
+  - protolens builds, and its 1,321 tests pass, without the two
+    variables;
+  - `ci` passes, with reproto's tests on the new package and pyright;
+  - the image passes 27 of 27 smoke checks;
+  - the dev-shell enters, `textproto.language()` returns its capsule, and
+    from a clean environment no tree-sitter variable is set.
+- **A 0407 leftover, fixed here:** `bin/protoscan`, the dev-shell's
+  launcher, still ran the deleted Python module, shadowed the Rust binary
+  on the dev-shell's `PATH`, and stopped the man page hook. It now
+  launches `target/release/protoscan`, as `bin/prototext` does for
+  prototext.
+- **Out of scope, noticed:** the reproto wheel on PyPI does not carry the
+  `textproto` module, so a `pip install prototext-reproto` lacks it. N2
+  keeps the grammar unpublished; spec 0409's wheel work is the place to
+  settle it.

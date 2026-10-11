@@ -29,13 +29,11 @@ fn language() -> Language {
     unsafe { tree_sitter_textproto() }
 }
 
-/// Compiled into the binary at build time from the Nix-built grammar's
-/// own committed query file — `build.rs` forwards
-/// `TREE_SITTER_TEXTPROTO_QUERIES_DIR` via `cargo:rustc-env` so this
-/// `env!()` resolves at compile time.
+/// Compiled into the binary from the grammar's committed query file, next
+/// to the parser `build.rs` compiles (spec 0408 S5).
 static HIGHLIGHTS_QUERY: &str = include_str!(concat!(
-    env!("TREE_SITTER_TEXTPROTO_QUERIES_DIR"),
-    "/highlights.scm"
+    env!("CARGO_MANIFEST_DIR"),
+    "/../reproto/tree-sitter-textproto/highlights.scm"
 ));
 
 /// One semantic role a rendered text span can have — one variant per

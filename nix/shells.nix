@@ -18,13 +18,10 @@
 #                                  PROTOTEXT_WKT_SET, PYO3_PYTHON, PATH, PYTHONPATH
 #               _hook_python     — writes python.env, pyrightconfig.json, ruff.toml
 #               _hook_codegen    — runs patch_reproto.sh (guarded)
-#               _hook_rust       — exports TREE_SITTER_TEXTPROTO_*;
-#                                  writes rust-toolchain.toml; rustup toolchain
+#               _hook_rust       — writes rust-toolchain.toml; rustup toolchain
 #                                  install
 #               _hook_cargo      — cargo build --release -p prototext / -p
 #                                  protolens / -p protoscan (guarded); runs after _hook_rust
-#                                  since protolens's build.rs requires
-#                                  TREE_SITTER_TEXTPROTO_LIB_DIR/QUERIES_DIR
 #               _hook_man        — generates man pages into man/man1/
 #               _hook_nvim       — writes .nvim/nvim/init.lua (desert + proto
 #                                  LSP via buf); exports XDG_CONFIG_HOME
@@ -41,8 +38,6 @@
 , reproto
 , reprotoSrc        # filtered reproto source (builtins.path)
 , reprotoTestDeps   # full Python dep list for the dev-shell
-, treeSitterTextproto
-, treeSitterTextprotoRustLib
 , protoscan
 , wktDb             # well-known-types schema DB; carries the PROTOTEXT_DESCRIPTOR_SET setup-hook
 , buf               # narrow-pinned buf (newer than the main nixpkgs pin's 1.59.0; see default.nix)
@@ -226,7 +221,7 @@ in
         # reprotoTestDeps: that list is also the dep set of reprotoTests,
         # googleapisTests and customTests, and nothing that runs under
         # `ci` needs a terminal emulator.
-        export PYTHONPATH="$PWD/reproto/src:${treeSitterTextproto}:${pythonPkgs.makePythonPath (reprotoTestDeps ++ devOnlyPyDeps)}:$PYTHONPATH"
+        export PYTHONPATH="$PWD/reproto/src:${pythonPkgs.makePythonPath (reprotoTestDeps ++ devOnlyPyDeps)}:$PYTHONPATH"
       }
 
       _hook_python() {
@@ -251,7 +246,10 @@ cfg = {
     'result*',
     'prototext-pyo3/prototext_codec_lib',
     'fdp-scan-pyo3/fdp_scan_lib',
-    'scoring-graph-pyo3/scoring_graph_lib',
+    'prototext-graph-pyo3/prototext_graph_lib',
+    # The grammar's Python module: a C extension known to pyright only by
+    # its stub, like the pyo3 packages above (spec 0408 S4).
+    'reproto/tree-sitter-textproto',
     'docs/mockup',
   ],
 }
@@ -368,13 +366,11 @@ RUFFEOF
       }
 
       _hook_rust() {
-        echo "[hook] rust: TREE_SITTER_TEXTPROTO_*, rust-toolchain.toml, rustup install"
+        echo "[hook] rust: rust-toolchain.toml, rustup install"
         # No RUSTFLAGS: libpython is linked per target by the pyo3 crates'
-        # build.rs (spec 0402 S6), in the shell as in the Nix build.
-        # TREE_SITTER_TEXTPROTO_LIB_DIR/QUERIES_DIR mirror commonArgs.env so
-        # that manual `cargo build -p protolens` aligns too (spec 0116 §7).
-        export TREE_SITTER_TEXTPROTO_LIB_DIR="${treeSitterTextprotoRustLib}/lib"
-        export TREE_SITTER_TEXTPROTO_QUERIES_DIR="${treeSitterTextprotoRustLib}/queries"
+        # build.rs (spec 0402 S6), in the shell as in the Nix build. No
+        # TREE_SITTER_TEXTPROTO_* either: protolens's build.rs compiles the
+        # committed grammar itself (spec 0408 S5).
 
         # Generate rust-toolchain.toml so rust-analyzer uses the same rustc
         # version as the nix-shell build.  Only written when the content

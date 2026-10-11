@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+#
+# SPDX-License-Identifier: MIT
+
+[build-system]
+requires      = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name            = "tree-sitter-textproto"
+version         = "0.3.1.dev0"
+description     = "The textproto tree-sitter grammar, for the Python tree_sitter library"
+requires-python = ">=3.8"
+
+[tool.setuptools]
+packages = ["textproto"]
+
+[tool.setuptools.package-data]
+textproto = ["*.pyi", "py.typed"]
