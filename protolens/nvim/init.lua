@@ -48,11 +48,20 @@ vim.api.nvim_create_autocmd("FileType", {
     local root = vim.fs.root(args.buf, { "buf.yaml", "buf.work.yaml", ".git" })
         or vim.env.PROTOTEXT_PROTO_ROOT
 
-    vim.lsp.start({
-      name = "buf",
-      cmd = { "buf", "lsp", "serve" },
-      root_dir = root,
-    })
+    -- buf is optional (spec 0410 S2): without it the file still opens,
+    -- highlighted, and only navigation (gd, gr, K) is missing. Say so
+    -- once per session, rather than letting each .proto fail to start
+    -- the server.
+    if vim.fn.executable("buf") == 1 then
+      vim.lsp.start({
+        name = "buf",
+        cmd = { "buf", "lsp", "serve" },
+        root_dir = root,
+      })
+    elseif not vim.g.protolens_buf_notice_shown then
+      vim.g.protolens_buf_notice_shown = true
+      vim.notify("buf not found: go-to-definition unavailable", vim.log.levels.WARN)
+    end
   end,
 })
 

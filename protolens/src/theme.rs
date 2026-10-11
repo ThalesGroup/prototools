@@ -106,7 +106,25 @@ fn style_for_in(role: SyntaxRole, theme: ThemeKind, rgb: bool) -> Style {
 /// terminfo capability probe (`terminfo_reports_rgb`, cached) for
 /// terminals that don't answer the live query.
 fn supports_rgb() -> bool {
+    #[cfg(test)]
+    if let Some(rgb) = RGB_OVERRIDE.with(std::cell::Cell::get) {
+        return rgb;
+    }
     colorterm_reports_truecolor() || xtgettcap_reports_rgb() || terminfo_reports_rgb()
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The color depth a test draws with (spec 0410 S1). `None`, the
+    /// default, leaves `supports_rgb` probing the terminal; a test whose
+    /// assertions hold for one palette only sets it, so it passes under any
+    /// terminal `cargo test` runs in, or none (the nixpkgs build sandbox).
+    /// The `_in` seam above serves the tests that call the theme directly;
+    /// this one reaches the drawing code, which asks `supports_rgb` itself.
+    /// Thread-local: a test draws on its own thread, so parallel tests never
+    /// see each other's choice.
+    pub(crate) static RGB_OVERRIDE: std::cell::Cell<Option<bool>> =
+        const { std::cell::Cell::new(None) };
 }
 
 fn colorterm_reports_truecolor() -> bool {

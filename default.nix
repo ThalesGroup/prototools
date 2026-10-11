@@ -659,7 +659,8 @@ let
   # else, so editing reproto rebuilds neither), with the vendored
   # dependencies of the local Cargo.lock and the version the tree carries
   # (for the version checks).
-  #   prototext (PR 1), protoscan (PR 2, spec 0407 S8): Rust applications;
+  #   prototext (PR 1), protoscan (PR 2, spec 0407 S8), protolens (PR 4,
+  #   spec 0410 S4): Rust applications;
   #   the four Python libraries and reproto (PR 3, spec 0411 S6).
   stagedBuild = src: version: drv: drv.overrideAttrs (old: {
     inherit src version;
@@ -670,6 +671,7 @@ let
   stagedRust = {
     prototext = ./nixpkgs/pkgs/by-name/pr/prototext/package.nix;
     protoscan = ./nixpkgs/pkgs/by-name/pr/protoscan/package.nix;
+    protolens = ./nixpkgs/pkgs/by-name/pr/protolens/package.nix;
   };
   # Python libraries, with the directory whose pyproject.toml gives the
   # version.
@@ -681,8 +683,18 @@ let
   };
   stagedReproto = ./nixpkgs/pkgs/by-name/re/reproto/package.nix;
 
+  # protolens's recipe also installs its Neovim config, which no crate
+  # reads: in workspaceSrc, editing it would rebuild every Rust derivation.
+  stagedRustSrc = {
+    protolens = pkgs.lib.fileset.toSource {
+      root    = ./.;
+      fileset = pkgs.lib.fileset.union
+        (pkgs.lib.fileset.fromSource workspaceSrc) ./protolens/nvim/init.lua;
+    };
+  };
   stagedRustBuilds = builtins.mapAttrs
-    (_: file: stagedBuild workspaceSrc rust.workspaceVersion (pkgs.callPackage file { }))
+    (name: file: stagedBuild (stagedRustSrc.${name} or workspaceSrc)
+      rust.workspaceVersion (pkgs.callPackage file { }))
     stagedRust;
   # The pinned Python, its package set extended with the staged libraries,
   # as nixpkgs's python-packages.nix will list them.
@@ -722,6 +734,22 @@ let
     if nextRelease != rust.workspaceVersion
     then builtins.compareVersions version nextRelease <= 0
     else version == rust.workspaceVersion;
+  # Spec 0410 S3: protolens's wrapper puts on PATH exactly what its two
+  # options ask for, and no PATH entry at all when neither is set. Checked
+  # on each combination's postInstall: building all four would be four Rust
+  # builds for one shell line, and nixpkgsStaging builds the default.
+  protolensWrapperFailures = pkgs.lib.concatMap ({ withNeovim, withBuf }:
+    let
+      postInstall = (pkgs.callPackage stagedRust.protolens { inherit withNeovim withBuf; }).postInstall;
+      # A comparison of text: the store paths' context is not wanted.
+      has = s: pkgs.lib.hasInfix (builtins.unsafeDiscardStringContext s)
+        (builtins.unsafeDiscardStringContext postInstall);
+      ok = has "${pkgs.neovim}/bin" == withNeovim
+        && has "${pkgs.buf}/bin" == withBuf
+        && has "--prefix PATH" == (withNeovim || withBuf);
+    in pkgs.lib.optional (!ok) "withNeovim=${pkgs.lib.boolToString withNeovim} withBuf=${pkgs.lib.boolToString withBuf}")
+    (pkgs.lib.cartesianProduct { withNeovim = [ false true ]; withBuf = [ false true ]; });
+
   nixpkgsStagingCheck = pkgs.runCommand "nixpkgs-staging-check" {
     strictDeps = true;
     nativeBuildInputs = [ pkgs.nixfmt ];
@@ -732,7 +760,10 @@ let
       echo "nixpkgs/: staged ${name} is ${version}, which does not fit" \
         "the workspace's ${rust.workspaceVersion} (equal at a release, at most ${nextRelease} during development)" >&2
       exit 1
-    '') stagedVersions) + ''
+    '') stagedVersions) + pkgs.lib.concatMapStrings (combo: ''
+      echo "nixpkgs/: staged protolens with ${combo}: the wrapper's PATH is not what was asked" >&2
+      exit 1
+    '') protolensWrapperFailures + ''
     touch $out
   '');
 

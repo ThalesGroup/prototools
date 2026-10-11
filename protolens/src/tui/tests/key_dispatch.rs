@@ -707,7 +707,33 @@ fn open_editor_reports_a_missing_nvim_instead_of_crashing() {
     // `nvim` spawn failure itself doesn't propagate as an `Err` (the
     // actual crash reported) but is instead converted to a message.
     let _ = neovim::open_editor(&mut terminal, &mut app, req);
-    assert!(app.message.contains("cannot launch nvim"));
+    // Spec 0410 S2: not installed names the remedy.
+    assert_eq!(
+        app.message,
+        "nvim not found on PATH: install Neovim to use the editor key"
+    );
+    assert!(matches!(app.editor_state, neovim::EditorState::NotRunning));
+}
+
+/// Spec 0410 S2: a spawn that fails for another reason than a missing
+/// binary keeps the OS error, which is all there is to say. A directory
+/// as the program is refused with "permission denied".
+#[test]
+fn open_editor_reports_another_launch_failure_with_its_error() {
+    neovim::EDITOR_PROGRAM.set("/");
+    let mut app = empty_app();
+    let mut terminal = in_memory_crossterm_terminal();
+    let req = neovim::EditorRequest {
+        path: PathBuf::from("/tmp/protolens-test-does-not-exist.proto"),
+        line: 1,
+        col: 1,
+    };
+    let _ = neovim::open_editor(&mut terminal, &mut app, req);
+    assert!(
+        app.message.starts_with("cannot launch nvim: "),
+        "{:?}",
+        app.message
+    );
     assert!(matches!(app.editor_state, neovim::EditorState::NotRunning));
 }
 

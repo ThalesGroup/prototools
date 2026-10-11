@@ -1864,6 +1864,9 @@ fn the_box_names_the_anchor() {
 /// draws an amber square and an amber suffix word.
 #[test]
 fn a_negative_best_mismatch_is_amber() {
+    // The floor square's amber and green are distinct shades in RGB
+    // only, so this draws in RGB whatever the terminal (spec 0410 S1).
+    theme::RGB_OVERRIDE.with(|rgb| rgb.set(Some(true)));
     let mut app = message_node_app();
     app.splash = false;
     app.heat_cues = HeatCueMode::Findings;
@@ -1894,7 +1897,6 @@ fn a_negative_best_mismatch_is_amber() {
         "negative best: suffix must be flat amber, not green: {row:?}"
     );
     // Square is at t=0 (floor), so its color is heat_color(0.0, hue, theme).
-    // RGB is guaranteed by COLORTERM=truecolor in the Nix sandbox (rust.nix).
     let amber_floor = Some(theme::heat_color(0.0, theme::HeatHue::Amber, app.theme));
     let green_floor = Some(theme::heat_color(0.0, theme::HeatHue::Green, app.theme));
     assert_ne!(

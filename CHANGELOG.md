@@ -28,6 +28,12 @@ SPDX-License-Identifier: MIT
   wheel installed and failed at import. `lark`, which it never used, is
   no longer required.
 
+- **protolens's editor key works with whatever is installed** (spec
+  0410). Without Neovim, it says `nvim not found on PATH: install Neovim
+  to use the editor key`. Without buf, Neovim still opens the file,
+  highlighted, and shows one notice that go-to-definition is unavailable,
+  instead of failing to start buf's language server on every `.proto`.
+
 ### Deprecated
 
 - **protoscan `--proto_out`**: use `--proto-out`, spelled like every other

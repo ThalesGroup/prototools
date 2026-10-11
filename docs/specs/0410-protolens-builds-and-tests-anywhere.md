@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0410 — protolens builds and tests anywhere
 
-Status: draft
+Status: implemented
+Implemented in: 2026-10-11
 App: protolens
 Refs: docs/specs/0405-prototools-in-nixpkgs-one-small-pr-at-a-time.md
       (S9 step 4: protolens's nixpkgs PR); docs/specs/0408-the-textproto-grammar-ships-its-parser.md
@@ -73,10 +74,13 @@ the grammar (spec 0408):
     found", the message names the remedy instead: `nvim not found on
     PATH: install Neovim to use the editor key`.
   - **Neovim without buf:** `init.lua` starts the language server only if
-    `vim.fn.executable("buf") == 1`, and otherwise shows one notice, `buf
-    not found: go-to-definition unavailable`. protolens checks for `buf`
-    before launching, still opens the file, and says on its status line
-    that navigation needs buf. Viewing works; only navigation is missing.
+    `vim.fn.executable("buf") == 1`, and otherwise shows one notice per
+    Neovim session, `buf not found: go-to-definition unavailable`, when
+    the first `.proto` opens. Viewing works; only navigation is missing.
+    protolens itself does not check for buf: Neovim takes the whole
+    screen, so its status line would say so only after the user left
+    Neovim, and with a user's own Neovim config instead of `init.lua` it
+    would be wrong.
 - **S3. In nixpkgs, both tools are opt-in, separately.** The recipe takes
   two arguments, both off by default, named after what they add to the
   closure, as nixpkgs names such options (`withSystemd`, `withPCRE2`):
@@ -129,14 +133,53 @@ download, and nixpkgs names such arguments after the dependency.
 1. `env -i PATH=... cargo test -p protolens` passes (S1).
 2. With `nvim` absent from `PATH`, the editor key shows the message naming
    it. With Neovim but no `buf`, the file opens without a Neovim error,
-   the notice appears once, and protolens's status line says navigation
-   needs buf (S2).
-3. The staged recipe builds with each combination of `withNeovim` and
-   `withBuf`, and the wrapper's `PATH` holds exactly what was asked.
+   and the notice appears once (S2).
+3. For each combination of `withNeovim` and `withBuf`, the wrapper's
+   `PATH` holds exactly what was asked, and nothing when neither is.
 4. The staged protolens recipe builds in `nixpkgs-staging` on the three
    runners, and its binary's editor key works with Neovim on `PATH`.
 5. `ci`, the image and its smoke test pass.
 
 ## Measured outcome
 
-Filled in at implementation.
+Implemented 2026-10-11.
+
+- **S1:**
+  - Under `env -i`, the suite had one failure, the test the background
+    names, out of 1,321. It draws the heat-cue square, whose color the
+    drawing code picks through `supports_rgb()`, below the theme's `_in`
+    seam.
+  - A test-only `theme::RGB_OVERRIDE` (thread-local, `None` by default)
+    now takes precedence in `supports_rgb()`, and that test sets it.
+  - All 1,321 pass under `env -i`. `COLORTERM` is gone from
+    `nix/rust.nix`.
+- **S2:**
+  - **No Neovim:** a missing `nvim` now gives `nvim not found on PATH:
+    install Neovim to use the editor key`; any other spawn failure keeps
+    `cannot launch nvim: <error>`. A test covers each: a missing program,
+    and `/` as the program (permission denied).
+  - **No buf:** `init.lua` starts the language server only when `buf` is
+    on PATH. Run headless on two `.proto` files:
+    - without buf: one notice, no server, no error;
+    - with buf: the server starts.
+- **S3–S4:**
+  - `nixpkgs/pkgs/by-name/pr/protolens/package.nix` is staged at 0.3.1
+    and built by `nixpkgs-staging`. Its tests pass in the build sandbox
+    with no terminal variable, and so does its version check. The default
+    wrapper sets only `PROTOLENS_NVIM_CONFIG`.
+  - With neither option, the recipe passes no `--prefix PATH`: an empty
+    entry would put the current directory on PATH.
+  - **Test plan 3:** `nixpkgs-staging-check` checks the four
+    combinations' wrapper lines at evaluation: building each would be
+    four Rust builds for one shell line. Given a recipe whose `withBuf`
+    added nothing, it fails, naming the combination.
+  - The staged build takes `workspaceSrc` plus `protolens/nvim/init.lua`.
+    Putting the config in `workspaceSrc` would rebuild every Rust
+    derivation at each edit of it.
+- **Tests:**
+  - `ci` passes;
+  - the image passes 27 of 27 smoke checks;
+  - the dev-shell enters.
+- **Not tested:** the editor key interactively, in the staged build. This
+  session has no terminal. Test plan 4's runs on the three runners come
+  with the next push.

@@ -221,7 +221,13 @@ where
             let child = match child {
                 Ok(child) => child,
                 Err(e) => {
-                    app.message = format!("cannot launch nvim: {e}");
+                    // Not installed is the common case, and the one the
+                    // user can act on (spec 0410 S2): name the remedy.
+                    app.message = if e.kind() == io::ErrorKind::NotFound {
+                        "nvim not found on PATH: install Neovim to use the editor key".into()
+                    } else {
+                        format!("cannot launch nvim: {e}")
+                    };
                     enable_raw_mode_and_reenter(terminal)?;
                     return Ok(());
                 }

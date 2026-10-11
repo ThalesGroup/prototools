@@ -191,11 +191,9 @@ let
     CARGO_PROFILE  = "quick";
     cargoArtifacts = depsCacheTests;
     cargoExtraArgs = workspaceArgs;
-    # Tell supports_rgb() that RGB is available so color-sensitive tests
-    # exercise the RGB code path in the sandbox (no real terminal there).
-    # Extends commonArgs' env (`//` is shallow: a bare `env.COLORTERM`
-    # here would replace the whole set, PYO3_PYTHON included).
-    env            = protocArgs.env // { COLORTERM = "truecolor"; };
+    # No terminal variable: a test that depends on the color depth sets
+    # it itself (spec 0410 S1), so the suite passes in nixpkgs's sandbox
+    # as it does here.
   });
 
   # Common postInstall for both prototext variants.
@@ -439,11 +437,12 @@ let
     ${protolensPostInstall}
   '';
 
-  # `v`'s Neovim handoff (spec 0144 G5/G6) is a mandatory runtime dependency,
-  # not merely a dev-shell convenience — bundle a pinned Neovim and `buf`
-  # (for `buf lsp serve`) onto PATH so they resolve regardless of the user's
-  # own $PATH. A separate derivation from the compile (spec 0374 S2), so a
-  # different Neovim costs a shell script, not a Rust build.
+  # `v`'s Neovim handoff (spec 0144 G5/G6) works with whatever is on PATH,
+  # and says what is missing (spec 0410 S2). Our builds bundle a pinned
+  # Neovim and `buf` (for `buf lsp serve`) anyway, so the key works out of
+  # the box, in the workshop image above all; nixpkgs's recipe makes both
+  # opt-in (spec 0410 S3). A separate derivation from the compile (spec 0374
+  # S2), so a different Neovim costs a shell script, not a Rust build.
   bufFull = buf;
   wrapProtolens = { neovim, buf ? bufFull, name ? "protolens" }:
     pkgs.runCommand "${name}-${protolensVersion}" {
