@@ -191,5 +191,9 @@ Implemented 2026-10-11.
     reproto's runtime closure;
   - the dev-shell enters, and parses with the renamed grammar;
   - `reuse lint` passes.
-- **Not done here:** the darwin and aarch64-linux grammar wheels, which
-  CI's runners build at the next push.
+- **CI (the push of 2026-10-11):**
+  - the Nix workflow passes on its three runners;
+  - its release artifact holds 13 wheels, the grammar's among them as
+    `manylinux_2_34_x86_64`, `manylinux_2_34_aarch64` and
+    `macosx_14_0_arm64`;
+  - `nixpkgs-staging` builds the seven recipes natively on each runner.
