@@ -420,7 +420,7 @@ let
   '';
 
   protolensMeta = metaCommon // {
-    description = "Interactive TUI to decode, navigate, and extract raw bytes from a binary protobuf";
+    description = "Terminal viewer to decode, navigate and extract binary protobuf messages";
     mainProgram = "protolens";
   };
 

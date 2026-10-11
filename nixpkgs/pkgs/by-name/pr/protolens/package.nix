@@ -21,6 +21,10 @@
   withBuf ? false,
 }:
 
+let
+  # What the editor key needs on the wrapper's PATH: nothing by default.
+  editorPath = lib.optional withNeovim neovim ++ lib.optional withBuf buf;
+in
 rustPlatform.buildRustPackage (finalAttrs: {
   pname = "protolens";
   version = "0.3.2";
@@ -63,8 +67,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
         --set PROTOLENS_NVIM_CONFIG $out/share/protolens/nvim/init.lua ${
           # No --prefix when empty: an empty PATH entry means the
           # current directory.
-          lib.optionalString (withNeovim || withBuf)
-            "--prefix PATH : ${lib.makeBinPath (lib.optional withNeovim neovim ++ lib.optional withBuf buf)}"
+          lib.optionalString (editorPath != [ ]) "--prefix PATH : ${lib.makeBinPath editorPath}"
         }
     '';
 
@@ -81,7 +84,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
   };
 
   meta = {
-    description = "Interactive TUI to decode, navigate, and extract raw bytes from a binary protobuf";
+    description = "Terminal viewer to decode, navigate and extract binary protobuf messages";
     longDescription = ''
       protolens shows a binary protobuf message as a tree, decoded with or
       without its schema, and lets you navigate it, inspect each field's
