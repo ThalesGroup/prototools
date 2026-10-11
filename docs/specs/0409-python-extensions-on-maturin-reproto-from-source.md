@@ -187,12 +187,17 @@ Implemented 2026-10-11.
     neither the stub nor any metadata, are gone.
   - `pythonLint` sees the installed packages instead of three artifact
     directories.
-  - Linux: maturin checks each extension against manylinux_2_34.
+  - Linux: maturin checks each extension against manylinux_2_34. CI's
+    x86_64 and aarch64 runners pass it (`manylinux_2_34_x86_64`,
+    `manylinux_2_34_aarch64`).
   - Darwin: the tag is the deployment target the pin builds for, 14.0
     (`darwinMinVersion`). The hand-made wheels claimed `macosx_11_0`, the
-    darwin counterpart of the manylinux mislabel fixed on 2026-10-10. Not
-    built here, so CI will show it.
-  - The cross path (`--target`, a named interpreter) is untested.
+    darwin counterpart of the manylinux mislabel fixed on 2026-10-10. CI's
+    macos-15 runner builds `macosx_14_0_arm64`.
+  - The cross path (`--target`, a named interpreter) is untested, and
+    left out of scope: building it here means building a cross rustc from
+    source, and nothing that ships takes it, since CI builds each platform
+    natively.
 - **S4:**
   - 11 descriptors, 64 KB, are committed; `src/resources/` is gone, and
     the installed reproto no longer has a top-level `resources` package.
