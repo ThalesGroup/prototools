@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+#
+# SPDX-License-Identifier: MIT
+
+# The crates published on crates.io, in dependency order: each depends only
+# on crates above it. Sourced by check-crates and publish-crates (spec
+# 0412 S3); nix/crates-io.nix packages the same list.
+crates=(
+    prototext-core
+    prototext-graph
+    prototext-schema
+    prototools-complete
+    prototext
+    fdp-scan
+    protoscan
+)

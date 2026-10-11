@@ -780,6 +780,13 @@ let
     python3 ${./prototools-complete/tests/tab_completion.py} bin | tee $out
   '';
 
+  # The release shell (spec 0412 S2): what scripts/check-crates and
+  # scripts/publish-crates need, in CI's publish workflow and locally.
+  releaseShell = pkgs.mkShell {
+    nativeBuildInputs = [ pkgs.cargo pkgs.rustc pkgs.curl ];
+    NIXSHELL_REPO = toString ./.;
+  };
+
   full-tests = pkgs.linkFarmFromDrvs "full-tests" [
     ci python.googleapisDb python.googleapisTests python.customDb python.customTests
   ];
@@ -819,6 +826,7 @@ in
   prototools-closure-check = prototoolsClosureCheck;
   user-shell           = shells.user-shell;
   dev-shell            = shells.dev-shell;
+  release-shell        = releaseShell;
   grehack2026-shell    = demoShells.grehack2026-shell;
   grpconf2026-shell    = demoShells.grpconf2026-shell;
   teleprompt           = demoShells.teleprompt;

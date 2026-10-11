@@ -16,8 +16,9 @@
 # outputs of the packages nix/python.nix builds.
 # protoscan is a Rust binary since spec 0407: no wheel, crates.io only.
 #
-# The derivation does not publish — publish.sh is assembled by the CI
-# assemble job (spec 0098 S6).
+# The derivation does not publish: at a release tag,
+# .github/workflows/publish.yaml builds it on each runner and uploads the
+# wheels to PyPI (spec 0412).
 
 { pkgs
 , pythonPkgs

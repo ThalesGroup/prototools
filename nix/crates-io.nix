@@ -7,8 +7,8 @@
 # Produces $out/ with one tarball per publishable workspace crate:
 #   prototext-core, prototext-graph, prototext-schema, prototools-complete,
 #   prototext, fdp-scan, protoscan
-# (that is also their dependency order, which publish.sh must follow —
-# see .github/workflows/nix.yml).
+# (that is also their dependency order: the list scripts/publishable-crates
+# gives the release scripts, which this one must match — spec 0412 S3).
 #
 # cargo package --no-verify assembles source tarballs without compiling.
 # External dependencies are vendored via crane.vendorCargoDeps so that
@@ -24,7 +24,8 @@
 # its registry cache there; the real paths are inaccessible inside the
 # Nix sandbox.
 #
-# The actual upload (cargo publish) happens outside the sandbox from publish.sh.
+# This is a packaging check on main. A release is packaged, verified and
+# published by .github/workflows/publish.yaml (spec 0412).
 
 { pkgs
 , crane

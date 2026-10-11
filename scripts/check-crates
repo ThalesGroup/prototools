@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+#
+# SPDX-License-Identifier: MIT
+
+# Package the published crates as crates.io will receive them (spec 0412
+# S1): `cargo package` builds each .crate and verifies it by compiling it
+# on its own, a crate being built against the packaged versions of those
+# above it. The .crate files are left in target/package/.
+#
+# Run from the repository root, with network access, in the release shell:
+#   nix-shell default.nix -A release-shell --run scripts/check-crates
+# Extra arguments go to `cargo package`, e.g. --allow-dirty to check a
+# working tree with uncommitted changes.
+
+set -euo pipefail
+
+if [ ! -f Cargo.toml ] || [ ! -d scripts ]; then
+    echo "check-crates: run from the repository root" >&2
+    exit 1
+fi
+
+source scripts/publishable-crates
+
+args=()
+for crate in "${crates[@]}"; do
+    args+=(-p "$crate")
+done
+cargo package --locked "${args[@]}" "$@"
