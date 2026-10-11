@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # 0405 — prototools in nixpkgs, one small PR at a time
 
-Status: implemented in part (S1–S7, 2026-10-10); S8 waits for the v0.3.0 tag, S9 for PR 1
+Status: implemented in part (S1–S8; PR 1 is NixOS/nixpkgs#572580, in review); S9 amended 2026-10-11
 App: nix packaging (prototext first; protoscan, reproto, protolens later)
 Refs: docs/specs/0406-bash-completion-from-the-raw-command-line.md
       (S3: done first, so the recipe installs completions unpatched);
@@ -245,43 +245,59 @@ on PyPI (ys1231/reproto). That is why our reproto ships on PyPI as
     automation/AI policy).
   - When PR 1 opens, #525997 is closed with a link to it, so its review
     history stays findable.
-- **S9. The order after prototext** (each its own spec section, written
-  when its turn comes):
-  2. **`protoscan`, rewritten in Rust (spec 0407, to be written).**
-     Today protoscan is about 40 lines of Python around
-     `fdp_scan_lib.scan`, a Rust function exposed through pyo3, plus
-     `descriptor_pb2` to read each blob's `name`. The rewrite:
-     - moves the scanner out of `fdp-scan-pyo3` into a plain Rust crate,
-       which the pyo3 wrapper and the new CLI both use;
-     - makes protoscan a Rust binary (clap, prost-types for `name`, the
-       same completions and man page as prototext).
-
-     Then PR 2 has exactly prototext's shape, and protoscan no longer
-     needs Python at all. **Moved ahead of the Python extensions:** with
-     protoscan in Rust, fdp-scan is needed only by reproto.
-
-     C2: the internal package does `import protoscan` in its import
-     check, and gets `fdp_scan_lib` through protoscan. Both change with
-     the rewrite; `fdp_scan_lib` still reaches it through reproto.
-  3. **`python3Packages.fdp-scan` and `python3Packages.prototext-codec`**
-     (one PR, or two if review prefers). Upstream first: both
-     `pyproject.toml` move to maturin, so each recipe is the standard
-     `buildPythonPackage` + `maturinBuildHook` + vendored Cargo
-     dependencies. Our own build (`makePyo3Extension`, `nix/pypi.nix`)
-     moves with them.
-  4. **`python3Packages.prototext-graph`**, then **`reproto`**. Upstream
-     first: the tree-sitter textproto grammar ships its generated
-     `parser.c`, as tree-sitter grammars conventionally do, and the
-     Python extension builds from the package's own build backend,
-     replacing today's separate `treeSitterTextproto` derivation. Its
-     name in nixpkgs, `reproto` (the program) or `prototext-reproto`
-     (its PyPI name), is decided then. The PyPI name exists only
-     because of the clash there.
-  5. **`protolens`**. Upstream first: `build.rs` compiles the committed
-     `parser.c` with the `cc` crate, instead of reading
-     `TREE_SITTER_TEXTPROTO_LIB_DIR`. How its editor key finds Neovim
-     and buf in nixpkgs (a wrapper, or `PATH` with a clear error) is
-     decided then.
+- **S9. The order after prototext** (each its own spec, written when its
+  turn comes; amended 2026-10-11):
+  2. **`protoscan`: done upstream (spec 0407).** protoscan is a Rust
+     binary on the `fdp-scan` crate, and its recipe is staged with
+     prototext's shape (`nixpkgs/pkgs/by-name/pr/protoscan/`). The PR
+     opens at the first release that ships it, after prototext's review.
+  3. **The Python libraries and reproto, in one PR:**
+     `python3Packages.prototext-codec`, `python3Packages.fdp-scan`,
+     `python3Packages.prototext-graph`, and `reproto`.
+     - **One PR, not one per library.** `pkgs/README.md` asks that a
+       library come with a dependent, "if possible ... in the same PR the
+       library is added in", or with a test program in `passthru.tests`.
+       reproto is the only dependent of all three, so it comes with them.
+       The PR is larger than the first two; splitting it would leave
+       libraries without a user, which reviewers ask about.
+     - **Upstream first:**
+       - **maturin.** The three pyo3 crates' `pyproject.toml` move from
+         hatchling to maturin. Each recipe is then the standard
+         `buildPythonPackage` + `rustPlatform.maturinBuildHook` + the
+         workspace's vendored Cargo dependencies. Our own build
+         (`makePyo3Extension`, `nix/pypi.nix`) moves with them. The
+         module names are already set (`tool.maturin.module-name`), and
+         the committed stubs stay the packaged ones, checked against the
+         generator.
+       - **reproto's resources committed.** Today reproto's build copies
+         protobuf's well-known `.proto` files into `src/resources/` and
+         compiles them to `.pb` with `protoc` (`reprotoSrcFull`,
+         `patch/patch_reproto.sh`). They are committed instead, with a
+         check against the pinned `protoc`, as for prototext's fixtures
+         (S1). reproto's recipe then builds its plain source.
+       - **The tree-sitter textproto grammar ships its generated
+         `parser.c`,** as tree-sitter grammars conventionally do, and its
+         Python binding is built by a package backend, not by a separate
+         derivation (`treeSitterTextproto`). Whether that is reproto's
+         own build or a small `tree-sitter-textproto` Python package
+         (the shape of the tree-sitter grammars already in nixpkgs) is
+         decided in that spec.
+       - **reproto's name in nixpkgs:** `reproto` (the program) or
+         `prototext-reproto` (its PyPI name, which exists only because
+         `reproto` is taken on PyPI).
+  4. **`protolens`.** Upstream first:
+     - `build.rs` compiles the committed `parser.c` (step 3) with the
+       `cc` crate, instead of reading `TREE_SITTER_TEXTPROTO_LIB_DIR`
+       and `TREE_SITTER_TEXTPROTO_QUERIES_DIR` from a Nix derivation;
+     - how its editor key finds Neovim and buf in nixpkgs is decided
+       then: a `wrapProgram --prefix PATH` with both (a common nixpkgs
+       pattern), or `PATH` alone with a clear error.
+     - its tests pass in an empty environment. Today one,
+       `tui::tests::heat_cue::a_negative_best_mismatch_is_amber`,
+       assumes a true-colour terminal and fails without `COLORTERM`
+       (checked 2026-10-11 with `env -i`), which is why `nix/rust.nix`
+       sets `COLORTERM=truecolor` for the tests. The test should set the
+       colour mode it checks, so neither recipe needs the variable.
 
   Each later package fetches nothing of its own. It takes
   `inherit (prototext) version src;` and, for Rust code, the same
