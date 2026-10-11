@@ -5,8 +5,8 @@ nixpkgs tree (spec 0405):
 
 | Here | In nixpkgs |
 |---|---|
-| `pkgs/by-name/pr/prototext/package.nix` | same path |
-| `pkgs/by-name/pr/protoscan/package.nix` | same path (PR 2, spec 0407; not yet submitted) |
+| `pkgs/by-name/pr/prototext/package.nix` | same path (PR 1: NixOS/nixpkgs#572580, merged 2026-10-11 at 0.3.0; staged here at the latest release, which the update to it follows) |
+| `pkgs/by-name/pr/protoscan/package.nix` | same path (PR 2, spec 0407: NixOS/nixpkgs#572904, opened 2026-10-11) |
 | `pkgs/development/python-modules/{prototext-codec,prototext-graph,fdp-scan,tree-sitter-textproto}/default.nix` | same paths, plus one `callPackage` line each in `pkgs/top-level/python-packages.nix` (PR 3, spec 0411; not yet submitted) |
 | `pkgs/by-name/re/reproto/package.nix` | same path (PR 3) |
 | `pkgs/by-name/pr/protolens/package.nix` | same path (PR 4, spec 0410; not yet submitted) |

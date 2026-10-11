@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # 0405 — prototools in nixpkgs, one small PR at a time
 
-Status: implemented in part (S1–S8; PR 1 is NixOS/nixpkgs#572580, in review); S9 amended 2026-10-11
+Status: implemented in part (S1–S8; PR 1, NixOS/nixpkgs#572580, merged 2026-10-11; PR 2, #572904, open); S9 amended 2026-10-11
 App: nix packaging (prototext first; protoscan, reproto, protolens later)
 Refs: docs/specs/0406-bash-completion-from-the-raw-command-line.md
       (S3: done first, so the recipe installs completions unpatched);

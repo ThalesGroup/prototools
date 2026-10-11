@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # 0407 — protoscan in Rust
 
-Status: implemented, except S7 (at the internal package's next pin update) and S8's PR (after prototext's review)
+Status: implemented, except S7 (at the internal package's next pin update)
 Implemented in: 2026-10-11
 App: protoscan, fdp-scan-pyo3
 Refs: docs/specs/0405-prototools-in-nixpkgs-one-small-pr-at-a-time.md
@@ -199,6 +199,11 @@ Implemented 2026-10-11.
     their own workflow, `nixpkgs-staging.yml`. It runs when the recipes
     or the dependencies change, at release tags, and by hand. The check
     stays in `ci`.
+  - **The PR:** NixOS/nixpkgs#572904 (`protoscan: init at 0.3.2`), opened
+    2026-10-11, once prototext's PR (#572580) had been reviewed and
+    merged. The recipe is the staged one at v0.3.2, with the review
+    conventions of #572580. Built from the nixpkgs checkout: 9 tests, the
+    version check, the completions, the man page.
 - **Test plan 7:** `ci`, `nixpkgs-staging` (both recipes), the image (27
   of 27 smoke checks), crates.io, PyPI and `bobapp` pass.
   - The first full run sank the VM into swap: five targets, twelve
