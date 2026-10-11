@@ -715,7 +715,7 @@ dependencies = [
 
 [[package]]
 name = "prototext-core"
-version = "0.3.1-dev"
+version = "0.3.1"
 dependencies = [
  "memchr",
  "prost",

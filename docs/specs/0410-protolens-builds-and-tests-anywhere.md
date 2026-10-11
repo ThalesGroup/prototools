@@ -180,6 +180,8 @@ Implemented 2026-10-11.
   - `ci` passes;
   - the image passes 27 of 27 smoke checks;
   - the dev-shell enters.
+- **CI (the push of 2026-10-11):** the Nix workflow and `nixpkgs-staging`
+  pass on the three runners, the staged protolens among them, with its
+  tests run in each sandbox and no terminal variable.
 - **Not tested:** the editor key interactively, in the staged build. This
-  session has no terminal. Test plan 4's runs on the three runners come
-  with the next push.
+  session has no terminal.
