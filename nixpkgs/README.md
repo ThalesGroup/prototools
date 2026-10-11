@@ -9,7 +9,7 @@ nixpkgs tree (spec 0405):
 | `pkgs/by-name/pr/protoscan/package.nix` | same path (PR 2, spec 0407: NixOS/nixpkgs#572904, opened 2026-10-11) |
 | `pkgs/development/python-modules/{prototext-codec,prototext-graph,fdp-scan,tree-sitter-textproto}/default.nix` | same paths, plus one `callPackage` line each in `pkgs/top-level/python-packages.nix` (PR 3, spec 0411; not yet submitted) |
 | `pkgs/by-name/re/reproto/package.nix` | same path (PR 3) |
-| `pkgs/by-name/pr/protolens/package.nix` | same path (PR 4, spec 0410; not yet submitted) |
+| `pkgs/by-name/pr/protolens/package.nix` | same path (spec 0410: NixOS/nixpkgs#572911, opened 2026-10-11 as a draft until #572904's review; it goes before the Python PR, swapping spec 0405 S9's PRs 3 and 4) |
 
 They are what a nixpkgs PR submits, copied verbatim: nixfmt-formatted, with
 no SPDX header (their licensing is declared in `REUSE.toml`).
