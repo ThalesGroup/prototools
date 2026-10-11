@@ -15,7 +15,7 @@
 
 python3Packages.buildPythonApplication (finalAttrs: {
   pname = "reproto";
-  version = "0.3.1";
+  version = "0.3.2";
   pyproject = true;
 
   src = fetchFromGitHub {

@@ -10,7 +10,7 @@ build-backend = "maturin"
 
 [project]
 name = "prototext-graph"
-version = "0.3.1"
+version = "0.3.2"
 description = "Scoring-graph builder Python extension via PyO3"
 requires-python = ">=3.8"
 

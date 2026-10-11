@@ -6,6 +6,17 @@ SPDX-License-Identifier: MIT
 
 # Changelog
 
+## 0.3.2 — 2026-10-11
+
+### Changed
+
+- **Releases are published from CI** (spec 0412): a release tag builds
+  the crates and wheels, and, once the maintainer approves, uploads them
+  to crates.io and PyPI with trusted publishing.
+- This is the first release on crates.io and PyPI since 0.2.1: 0.3.0 and
+  0.3.1 were tagged but never uploaded, so their changes, below, reach
+  the registries with this one.
+
 ## 0.3.1 — 2026-10-11
 
 ### Changed
