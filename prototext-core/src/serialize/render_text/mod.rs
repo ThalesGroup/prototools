@@ -1362,7 +1362,7 @@ mod tests {
     #[test]
     fn descriptor_fixture_renders_byte_for_byte() {
         let pb: &[u8] = include_bytes!("../../../fixtures/descriptor.pb");
-        let expected: &[u8] = include_bytes!("../../../fixtures/descriptor_protoc.txt");
+        let expected: &[u8] = include_bytes!("../../../fixtures/descriptor_protoc.txtpb");
         let schema = crate::parse_schema(pb, "google.protobuf.FileDescriptorSet")
             .expect("descriptor.pb is self-describing");
         let out = decode_and_render(

@@ -35,7 +35,6 @@ package-dir = { "" = "src" }
 where = ["src"]
 
 [tool.setuptools.package-data]
-"resources" = ["**/*.proto", "**/*.pb"]
 "reproto.variants" = ["*.yaml", "**/*.pb"]
 
 [tool.pytest.ini_options]

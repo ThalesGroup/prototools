@@ -21,7 +21,7 @@
 #            │  one `cargo build --release --workspace`
 #            ├──▶  prototext            (copied out, completions, man page)
 #            ├──▶  protolensUnwrapped  ──▶  protolens, protolensLean
-#            └──▶  prototextCodec, fdpScanLib, prototextGraphLib  (.so + .pyi)
+#            └──▶  prototextCodec, fdpScanLib, prototextGraphLib  (maturin's wheels)
 #
 # Every shipped crate embeds the WKT scoring graph committed under
 # prototext/wkt/prebuilt/ (S2); default.nix's wkt-prebuilt-check keeps that
@@ -219,17 +219,18 @@ let
   };
 
   # ---------------------------------------------------------------------------
-  # The three PyO3 extensions, as workspaceBuild installs them.
+  # The three PyO3 extensions, whose wheels workspaceBuild builds.
   #
   #   crateName    — Cargo package name, e.g. "prototext_codec_lib"
   #   crateDir     — the crate directory, relative to the workspace root; the
   #                  stub generator runs with it as CARGO_MANIFEST_DIR
-  #   libName      — cdylib base name (Cargo [[lib]] name); lib<libName>.so;
-  #                  also the Python module, and so the stub's name: each
-  #                  pyproject.toml names it in tool.maturin.module-name,
-  #                  which pyo3-stub-gen reads (without it, the generator
-  #                  falls back to the [project] name, and a stub refers to
-  #                  its own classes under that wrong module name)
+  #   libName      — cdylib base name (Cargo [[lib]] name), and the Python
+  #                  package; the compiled module inside it has the same
+  #                  name, which each pyproject.toml gives maturin and
+  #                  pyo3-stub-gen as tool.maturin.module-name
+  #                  (<libName>.<libName>; without it, the generator falls
+  #                  back to the [project] name, and a stub refers to its
+  #                  own classes under that wrong module name)
   #   postBuildBin — the stub-generator binary target
   # ---------------------------------------------------------------------------
   pyo3Extensions = {
@@ -253,10 +254,6 @@ let
     };
   };
 
-  # lib<libName>.so on Linux, .dylib on Darwin; installed as <libName>.so,
-  # the name Python imports.
-  libExt = if pkgs.stdenv.isDarwin then "dylib" else "so";
-
   # Spec 0402 S7: cross-safe. Cargo writes a cross build under the target
   # triple's own directory, and a binary built for another platform cannot
   # be run to generate completions, man pages or stubs.
@@ -278,12 +275,26 @@ let
   # every binary and every cdylib, the stub generators included, so
   # everything that ships is copied out of it:
   #
-  #   $out/bin/{prototext,prototext-gen-man,protolens}
-  #   $out/ext/<libName>/<libName>.{so,pyi}
+  #   $out/bin/{prototext,prototext-gen-man,protolens,protoscan}
+  #   $out/wheels/<dist>-<version>-cp313-cp313-<platform>.whl
   #
-  # The stub generators run here, with CARGO_MANIFEST_DIR set so
-  # pyo3-stub-gen finds pyproject.toml and writes the .pyi beside it (the
-  # NotPresent panic of spec 0038 was a missing CARGO_MANIFEST_DIR).
+  # The wheels are maturin's (spec 0409 S3), built from each extension's
+  # pyproject.toml as nixpkgs's maturinBuildHook builds them, on this
+  # build's target directory, so maturin recompiles little.
+  # - Linux: maturin checks the extension against manylinux_2_34, the
+  #   newest glibc it needs (Rust's std links symbols up to GLIBC_2.34),
+  #   and fails if it needs more. Tagged 2_28 until 2026-10-10, which let
+  #   pip install the wheels where the import then failed.
+  # - Darwin: the tag is the deployment target stdenv builds for
+  #   (MACOSX_DEPLOYMENT_TARGET), which maturin reads.
+  # - `env -u _PYTHON_HOST_PLATFORM`: nixpkgs's Python sets it to a
+  #   linux-<arch> placeholder, which maturin would take as the platform tag.
+  #
+  # The stub generators run first, with CARGO_MANIFEST_DIR set so
+  # pyo3-stub-gen finds pyproject.toml (the NotPresent panic of spec 0038
+  # was a missing CARGO_MANIFEST_DIR). They write into target/stubs/, never
+  # over the committed stub that maturin packages (spec 0409 S2), and a
+  # stale committed stub fails the build.
   #
   # doInstallCargoArtifacts = false: nothing builds on top of it, and an
   # installed target.tar.zst (with `.prev` pointing at depsCache and the
@@ -291,36 +302,46 @@ let
   # (spec 0374 S2). Crane's postInstall hook strips the vendored sources'
   # store paths rustc embeds as panic locations, for the same reason.
   # ---------------------------------------------------------------------------
+  maturinArgs =
+    if canRun
+    then "-i ${pythonExecutable}"
+    # Cross: maturin cannot run the host's interpreter; it knows CPython's
+    # configuration per target.
+    else "-i python${pythonPkgs.python.pythonVersion} --target ${pkgs.stdenv.hostPlatform.rust.rustcTarget}";
+  manylinuxArgs = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux
+    "--compatibility manylinux_2_34";
+
   workspaceBuild = crane.buildPackage (protocArgs // {
     src                                = workspaceSrc;
     pname                              = "prototools-workspace";
+    nativeBuildInputs                  = protocArgs.nativeBuildInputs ++ [ pkgs.maturin ];
     cargoArtifacts                     = depsCache;
     doCheck                            = false;
     doInstallCargoArtifacts            = false;
     buildPhaseCargoCommand             = "cargoWithProfile build ${workspaceArgs}";
     doNotPostBuildInstallCargoBinaries = true;
     installPhaseCommand                = ''
-      mkdir -p $out/bin
+      mkdir -p $out/bin $out/wheels
       cp ${profileDir}/prototext ${profileDir}/prototext-gen-man \
          ${profileDir}/protolens ${profileDir}/protoscan $out/bin/
-    '' + pkgs.lib.concatMapStrings (e: ''
-      mkdir -p $out/ext/${e.libName}
-      cp ${profileDir}/lib${e.libName}.${libExt} $out/ext/${e.libName}/${e.libName}.so
-    '' + (if canRun then ''
+    '' + pkgs.lib.concatMapStrings (e:
+      let
+        committed = "${e.crateDir}/${e.libName}/${e.libName}.pyi";
+        generated = "target/stubs/${e.crateDir}/${e.libName}/${e.libName}/__init__.pyi";
+      in whenRunnable ''
       CARGO_MANIFEST_DIR="$PWD/${e.crateDir}" ./${profileDir}/${e.postBuildBin}
-      # The committed stub is what a cross build ships: it must be what the
-      # generator writes.
-      if ! diff -u ${e.crateDir}/${e.libName}/${e.libName}.pyi ${e.crateDir}/${e.libName}.pyi >&2; then
-        echo "${e.crateDir}/${e.libName}/${e.libName}.pyi is stale (diff above). Refresh it with:" >&2
-        echo "  (cd ${e.crateDir} && CARGO_MANIFEST_DIR=\$PWD cargo run --release --bin ${e.postBuildBin}) && cp ${e.crateDir}/${e.libName}.pyi ${e.crateDir}/${e.libName}/" >&2
+      # The committed stub is what the wheel ships: it must be what the
+      # generator writes. (A cross build cannot run the generator, and
+      # relies on the native builds' comparison.)
+      if ! diff -u ${committed} ${generated} >&2; then
+        echo "${committed} is stale (diff above). Refresh it with:" >&2
+        echo "  (cd ${e.crateDir} && CARGO_MANIFEST_DIR=\$PWD cargo run --release --bin ${e.postBuildBin}) && cp ${generated} ${committed}" >&2
         exit 1
       fi
-      cp ${e.crateDir}/${e.libName}.pyi $out/ext/${e.libName}/${e.libName}.pyi
-    '' else ''
-      # Cross: the stub generator cannot run here; the committed stub, which
-      # every native build compares with the generator's, stands in.
-      cp ${e.crateDir}/${e.libName}/${e.libName}.pyi $out/ext/${e.libName}/${e.libName}.pyi
-    '')) (builtins.attrValues pyo3Extensions);
+    '' + ''
+      env -u _PYTHON_HOST_PLATFORM maturin build --release --offline \
+        -m ${e.crateDir}/Cargo.toml ${maturinArgs} ${manylinuxArgs} --out $out/wheels
+    '') (builtins.attrValues pyo3Extensions);
   });
 
   # ---------------------------------------------------------------------------
@@ -460,37 +481,35 @@ let
   # ---------------------------------------------------------------------------
   # PyO3 extensions — prototext_codec_lib, fdp_scan_lib, prototext_graph_lib.
   #
-  # Each is a buildPythonPackage that copies its .so and .pyi, built by
-  # workspaceBuild (S1), into the pyproject source tree beside __init__.py,
-  # where hatchling picks them up. `artifacts` exposes the same directory to
-  # pyright (pythonLint) and the PyPI wheels.
+  # Each installs the wheel maturin built in workspaceBuild (spec 0409 S3):
+  # the same wheel PyPI gets. nixpkgs builds the same pyproject.toml with
+  # maturinBuildHook, one Rust build per package; here the three share
+  # workspaceBuild's.
   # ---------------------------------------------------------------------------
   makePyo3Extension = e:
     let
-      artifacts = "${workspaceBuild}/ext/${e.libName}";
-      pkg = pythonPkgs.buildPythonPackage {
-        pname     = e.crateName;
-        version   = pyprojectVersion e.crateDir;
-        # Spec 0402 S5: pyproject = true with build-system, not the
-        # deprecated `format`; the install check imports the extension.
-        pyproject = true;
-        build-system = [ pythonPkgs.hatchling ];
-        src       = ../. + "/${e.crateDir}";
-        pythonImportsCheck = [ e.libName ];
-        postPatch = ''
-          cp ${artifacts}/${e.libName}.* ${e.libName}/
-        '';
-        meta = metaCommon // { inherit (e) description; };
-      };
-    in { inherit pkg artifacts; };
+      distName = builtins.replaceStrings [ "-" ] [ "_" ]
+        (pkgs.lib.importTOML (../. + "/${e.crateDir}/pyproject.toml")).project.name;
+    in pythonPkgs.buildPythonPackage {
+      pname   = e.crateName;
+      version = pyprojectVersion e.crateDir;
+      format  = "wheel";
+      src     = "${workspaceBuild}/wheels";
+      # wheelUnpackPhase copies $src, a single wheel; this one is a
+      # directory of three, each with its platform tag in its name. No
+      # postUnpack, as in wheelUnpackPhase: its hooks expect a sourceRoot.
+      unpackPhase = ''
+        runHook preUnpack
+        mkdir dist
+        cp $src/${distName}-*.whl dist/
+      '';
+      pythonImportsCheck = [ e.libName ];
+      meta = metaCommon // { inherit (e) description; };
+    };
 
-  _prototextCodecExt    = makePyo3Extension pyo3Extensions.prototextCodec;
-  _fdpScanLibExt        = makePyo3Extension pyo3Extensions.fdpScan;
-  _prototextGraphLibExt = makePyo3Extension pyo3Extensions.prototextGraph;
-
-  prototextCodec     = _prototextCodecExt.pkg;
-  fdpScanLib         = _fdpScanLibExt.pkg;
-  prototextGraphLib  = _prototextGraphLibExt.pkg;
+  prototextCodec    = makePyo3Extension pyo3Extensions.prototextCodec;
+  fdpScanLib        = makePyo3Extension pyo3Extensions.fdpScan;
+  prototextGraphLib = makePyo3Extension pyo3Extensions.prototextGraph;
 
 in {
   inherit
@@ -513,7 +532,4 @@ in {
     prototextCodec
     fdpScanLib
     prototextGraphLib;
-  prototextExtensionArtifacts      = _prototextCodecExt.artifacts;
-  fdpScanExtensionArtifacts        = _fdpScanLibExt.artifacts;
-  prototextGraphExtensionArtifacts = _prototextGraphLibExt.artifacts;
 }

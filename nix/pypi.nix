@@ -2,13 +2,15 @@
 #
 # SPDX-License-Identifier: MIT
 
-# nix/pypi.nix — Assemble per-platform .whl files for PyPI publishing.
+# nix/pypi.nix — the per-platform .whl files for PyPI publishing.
 #
 # Produces $out/ with one .whl per package:
-#   prototext_graph-0.2.1-cp313-cp313-<platform>.whl   (binary, PyO3, dist: prototext-graph)
-#   prototext_codec-0.2.1-cp313-cp313-<platform>.whl   (binary, PyO3, dist: prototext-codec)
-#   fdp_scan-0.2.1-cp313-cp313-<platform>.whl           (binary, PyO3, dist: fdp-scan)
-#   prototext_reproto-0.2.1-py3-none-any.whl             (pure Python, dist: prototext-reproto)
+#   prototext_graph-<v>-cp313-cp313-<platform>.whl   (binary, PyO3, dist: prototext-graph)
+#   prototext_codec-<v>-cp313-cp313-<platform>.whl   (binary, PyO3, dist: prototext-codec)
+#   fdp_scan-<v>-cp313-cp313-<platform>.whl          (binary, PyO3, dist: fdp-scan)
+#   prototext_reproto-<v>-py3-none-any.whl           (pure Python, dist: prototext-reproto)
+# The binary wheels are maturin's, built in workspaceBuild (spec 0409 S3),
+# which also chooses and checks their platform tags (see there).
 # protoscan is a Rust binary since spec 0407: no wheel, crates.io only.
 #
 # The derivation does not publish — publish.sh is assembled by the CI
@@ -17,43 +19,11 @@
 { pkgs
 , pythonPkgs
 , pyprojectVersion   # nix/rust.nix: a pyproject.toml's version, checked (spec 0405 S5)
-, workspaceSrc       # filtered Rust workspace source (for PyO3 .so files)
-, reprotoSrcFull     # enriched reproto source tree (from nix/python.nix)
-, prototextExtensionArtifacts       # $out/artifacts/ from prototext_codec ext
-, prototextGraphExtensionArtifacts  # $out/artifacts/ from prototext_graph ext
-, fdpScanExtensionArtifacts         # $out/artifacts/ from fdp_scan ext
+, workspaceBuild     # nix/rust.nix: $out/wheels/ holds the extensions' wheels
+, reprotoSrc         # reproto's source (from nix/python.nix)
 }:
 
 let
-  # ---------------------------------------------------------------------------
-  # Platform tag — computed at Nix eval time from stdenv.
-  #
-  # PyPI wheel filenames use a platform tag:
-  #   Linux x86_64:  manylinux_2_34_x86_64
-  #   Linux aarch64: manylinux_2_34_aarch64
-  #   macOS arm64:   macosx_11_0_arm64
-  #   macOS x86_64:  macosx_10_15_x86_64
-  #
-  # manylinux_2_34: the tag must name the newest glibc the extensions
-  # actually require, not the build's glibc. Linked against nixpkgs' glibc,
-  # Rust's std picks up symbols versioned up to GLIBC_2.34
-  # (pthread_key_create and friends; stat64 at 2.33, gettid at 2.30), on
-  # 25.11 and 26.05 alike. Tagged 2_28 until 2026-10-10, which let pip
-  # install the wheels on glibc 2.28-2.33 systems (RHEL 8, Debian 11),
-  # where the import then failed. Check with
-  #   objdump -T <ext>.so | grep -o 'GLIBC_[0-9.]*' | sort -V | tail -1
-  # For macOS we use conservative deployment targets (11.0 for arm64,
-  # 10.15 for x86_64) matching the GitHub Actions runner base.
-  # ---------------------------------------------------------------------------
-  platformTag =
-    if pkgs.stdenv.isLinux && pkgs.stdenv.isx86_64  then "manylinux_2_34_x86_64"
-    else if pkgs.stdenv.isLinux && pkgs.stdenv.isAarch64 then "manylinux_2_34_aarch64"
-    else if pkgs.stdenv.isDarwin && pkgs.stdenv.isAarch64  then "macosx_11_0_arm64"
-    else if pkgs.stdenv.isDarwin && pkgs.stdenv.isx86_64   then "macosx_10_15_x86_64"
-    else throw "Unsupported platform for PyPI wheel assembly";
-
-  pyVer = "cp313";  # CPython 3.13
-
   # ---------------------------------------------------------------------------
   # makeWheel — helper that zips up a pre-staged $wheelDir into a .whl file.
   #
@@ -83,7 +53,7 @@ let
     cat > "$DI/WHEEL" <<EOF
 Wheel-Version: 1.0
 Generator: nix-pypi (prototools)
-Root-Is-Purelib: false
+Root-Is-Purelib: true
 Tag: ${pyTag}-${abiTag}-${plTag}
 EOF
 
@@ -105,38 +75,6 @@ EOF
       echo "$DI/RECORD,,"
     ) > "$DI/RECORD"
   '';
-
-  # ---------------------------------------------------------------------------
-  # Binary PyO3 wheel helper.
-  #
-  # Takes:
-  #   pkgName    — PyPI distribution name, e.g. "prototext-graph" (dashes)
-  #   version    — version string
-  #   libName    — .so base name, e.g. "prototext_graph_lib"
-  #   artifacts  — store path containing <libName>.so and <libName>.pyi
-  #   initPy     — path to the __init__.py for the <libName>/ subpackage
-  # ---------------------------------------------------------------------------
-  makeBinaryWheel = { pkgName, version, libName, artifacts, initPy }:
-    pkgs.runCommand "${pkgName}-whl" {
-      strictDeps = true;
-      nativeBuildInputs = [ pkgs.zip pkgs.openssl pythonPkgs.python ];
-    } ''
-      set -euo pipefail
-      WORK=$(mktemp -d)
-      cd "$WORK"
-
-      # Package source tree: <libName>/__init__.py + <libName>.so
-      mkdir -p "${libName}"
-      cp "${initPy}"                      "${libName}/__init__.py"
-      cp "${artifacts}/${libName}.so"     "${libName}/${libName}.so"
-
-      ${makeDistInfoShell pkgName version pyVer pyVer platformTag}
-
-      mkdir -p "$out"
-      NORM_NAME=$(echo "${pkgName}" | tr '-' '_')
-      WHL="$NORM_NAME-${version}-${pyVer}-${pyVer}-${platformTag}.whl"
-      zip -r "$out/$WHL" "${libName}" "$DI"
-    '';
 
   # ---------------------------------------------------------------------------
   # Pure Python wheel helper.
@@ -178,35 +116,12 @@ in pkgs.runCommand "prototools-pypi" {
   set -euo pipefail
   mkdir -p "$out"
 
-  # Copy all wheels from the individual per-package derivations.
-  cp ${makeBinaryWheel {
-    pkgName   = "prototext-graph";
-    version   = versionOf "prototext-graph-pyo3";
-    libName   = "prototext_graph_lib";
-    artifacts = prototextGraphExtensionArtifacts;
-    initPy    = ../prototext-graph-pyo3/prototext_graph_lib/__init__.py;
-  }}/*.whl "$out/"
-
-  cp ${makeBinaryWheel {
-    pkgName   = "prototext-codec";
-    version   = versionOf "prototext-pyo3";
-    libName   = "prototext_codec_lib";
-    artifacts = prototextExtensionArtifacts;
-    initPy    = ../prototext-pyo3/prototext_codec_lib/__init__.py;
-  }}/*.whl "$out/"
-
-  cp ${makeBinaryWheel {
-    pkgName   = "fdp-scan";
-    version   = versionOf "fdp-scan-pyo3";
-    libName   = "fdp_scan_lib";
-    artifacts = fdpScanExtensionArtifacts;
-    initPy    = ../fdp-scan-pyo3/fdp_scan_lib/__init__.py;
-  }}/*.whl "$out/"
+  cp ${workspaceBuild}/wheels/*.whl "$out/"
 
   cp ${makePureWheel {
     pkgName = "prototext-reproto";
     version = versionOf "reproto";
-    src     = reprotoSrcFull;
+    src     = reprotoSrc;
     pkgDir  = "reproto";
   }}/*.whl "$out/"
 ''

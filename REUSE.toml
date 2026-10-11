@@ -42,6 +42,17 @@ path = [
 SPDX-FileCopyrightText = "Porter Matteo Haet"
 SPDX-License-Identifier = "ISC"
 
+# The well-known types' descriptors reproto ships, compiled from protobuf's
+# own .proto files (Copyright 2008 Google Inc., BSD-3-Clause), so licensed
+# like them (spec 0409 S4). default.nix's reproto-wkt-check keeps them in
+# step with the pinned protobuf.
+[[annotations]]
+path = [
+  "reproto/src/reproto/variants/google-protobuf/google/protobuf/*.pb",
+]
+SPDX-FileCopyrightText = "2008 Google Inc."
+SPDX-License-Identifier = "BSD-3-Clause"
+
 
 # Empty placeholders that keep the GreHack 2026 demo's per-character working
 # directories in git (spec 0388 S2).

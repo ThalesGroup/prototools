@@ -8,16 +8,15 @@
 #
 # Source pipeline:
 #
-#   ./reproto/  ──[lib.fileset]──▶  reprotoSrc   (src/, pyproject.toml, patch/)
-#                                          │
-#                                 [pkgs.runCommand]
-#                                          │
-#                                          ▼
-#                                   reprotoSrcFull
+#   ./reproto/  ──[lib.fileset]──▶  reprotoSrc   (src/, pyproject.toml)
 #                                          │
 #                           ┌──────────────┼──────────────┐
 #                           ▼              ▼              ▼
 #                        wktRkyv        reproto      reprotoTests …
+#
+# reproto builds from its source as committed: the well-known types'
+# descriptors it ships are committed, and default.nix's reproto-wkt-check
+# keeps them in step with the pinned protobuf (spec 0409 S4).
 
 { pkgs
 , metaCommon        # nix/rust.nix: homepage, license, maintainers, platforms
@@ -28,9 +27,6 @@
 , prototextCodec
 , fdpScanLib
 , prototextGraphLib
-, prototextExtensionArtifacts      # store path: $out/artifacts/ from prototext_codec ext
-, prototextGraphExtensionArtifacts # store path: $out/artifacts/ from prototext_graph ext
-, fdpScanExtensionArtifacts       # store path: $out/artifacts/ from fdp_scan ext
 }:
 
 let
@@ -46,25 +42,20 @@ let
   # reproto source pipeline
   # ---------------------------------------------------------------------------
 
-  # reprotoSrc — what the reproto package is built from: src/,
-  # pyproject.toml and patch/ (spec 0401 S7). README.md and
+  # reprotoSrc — what the reproto package is built from: src/ and
+  # pyproject.toml (spec 0401 S7). README.md, patch/ and
   # tree-sitter-textproto/ are left out, so editing them rebuilds nothing:
-  # reprotoSrcFull feeds wktRkyv, whose graph wkt-prebuilt-check compares.
-  # The .pb descriptors patch_reproto.sh writes into a working tree (the
-  # dev-shell's codegen hook) are left out too, the committed .golden.pb
-  # fixtures kept, and so are __pycache__ files.
+  # reprotoSrc feeds wktRkyv, whose graph wkt-prebuilt-check compares.
+  # __pycache__ files are left out too.
   reprotoSrc =
     let
       fs   = pkgs.lib.fileset;
       root = ../reproto;
-      generated = fs.fileFilter (f:
-        (f.hasExt "pb" && !(pkgs.lib.hasSuffix ".golden.pb" f.name))
-        || f.hasExt "pyc") (root + "/src");
     in fs.toSource {
       inherit root;
       fileset = fs.difference
-        (fs.unions [ (root + "/src") (root + "/pyproject.toml") (root + "/patch") ])
-        generated;
+        (fs.unions [ (root + "/src") (root + "/pyproject.toml") ])
+        (fs.fileFilter (f: f.hasExt "pyc") (root + "/src"));
     };
 
   # The textproto grammar's Python module (spec 0408 S4): a setuptools
@@ -132,30 +123,7 @@ let
   # never a runtime dependency (spec 0402 S5).
   reprotoTestDeps = wktRkyvDeps ++ [ fdpScanLib pythonPkgs.types-protobuf ];
 
-  # reprotoSrcFull — enriched source tree: copies reprotoSrc, seeds well-known
-  # .proto sources from pkgs.protobuf, then runs patch_reproto.sh to compile
-  # fixture .proto files into .pb descriptors. The script needs only protoc,
-  # so it runs straight from the source (spec 0401 S6).
-  # "Full" signals that this is the complete, ready-for-buildPythonPackage tree.
-  reprotoSrcFull = pkgs.runCommand "reproto-src-full" {
-    strictDeps = true;
-    nativeBuildInputs = [
-      pkgs.protobuf        # provides protoc and well-known .proto includes
-    ];
-  } ''
-    set -euo pipefail
-    cp -r ${reprotoSrc} $out
-    chmod -R u+w $out
-
-    # Seed well-known-type .proto sources from pkgs.protobuf.
-    mkdir -p $out/src/resources/google/protobuf
-    cp ${pkgs.protobuf}/include/google/protobuf/*.proto \
-       $out/src/resources/google/protobuf/
-
-    bash ${reprotoSrc}/patch/patch_reproto.sh "$out"
-  '';
-
-  # Final reproto package — built from the codegen output, with tests.
+  # Final reproto package — built from its source, with tests.
   reproto = pythonPkgs.buildPythonPackage {
     pname   = "reproto";
     version = reprotoVersion;
@@ -163,7 +131,7 @@ let
       description = "Reconstruct .proto sources and schema databases from protobuf descriptors";
       mainProgram = "reproto";
     };
-    src     = reprotoSrcFull;
+    src     = reprotoSrc;
     pyproject = true;
 
     # Spec 0402 S5: build-system, dependencies, and checks as nixpkgs
@@ -212,8 +180,8 @@ let
       (pythonPkgs.python.withPackages (_: reprotoTestDeps))
     ];
   } ''
-    export PYTHONPATH="${reprotoSrcFull}/src"
-    pytest -p no:cacheprovider ${reprotoSrcFull}/src/reproto/tests/ -x
+    export PYTHONPATH="${reprotoSrc}/src"
+    pytest -p no:cacheprovider ${reprotoSrc}/src/reproto/tests/ -x
     touch $out
   '';
 
@@ -254,10 +222,10 @@ let
   # ---------------------------------------------------------------------------
   # Python lint — pyright type checking for the reproto Python package.
   #
-  # Runs against reprotoSrcFull so the generated .pb descriptor files
-  # are present.  The extension artifacts are injected so pyright can
-  # resolve prototext_codec_lib, scoring_graph_lib and fdp_scan_lib
-  # imports via the generated .pyi stubs.
+  # The three extensions are installed in the environment, as
+  # reproto sees them, so pyright resolves prototext_codec_lib,
+  # prototext_graph_lib and fdp_scan_lib through the stubs their wheels
+  # ship.
   #
   # fdp_scan_lib is here even though it is banned from
   # reprotoPropagatedDeps (see the comment there).  The ban exists so
@@ -274,6 +242,9 @@ let
     nativeBuildInputs = [
       pkgs.pyright
       (pythonPkgs.python.withPackages (_: reprotoPropagatedDeps ++ [
+        prototextCodec
+        prototextGraphLib
+        fdpScanLib
         pythonPkgs.pytest
         pythonPkgs.types-protobuf
       ]))
@@ -284,11 +255,7 @@ let
     # pyright needs a writable working directory for its cache.
     cd "$TMPDIR"
 
-    # Make the prototext_codec_lib, scoring_graph_lib and fdp_scan_lib
-    # .pyi stubs visible to pyright.  tree-sitter, tree-sitter-language-pack,
-    # and treeSitterTextproto are now in reprotoPropagatedDeps and reach
-    # pyright via the Python env.
-    export PYTHONPATH="${reprotoSrcFull}/src:${prototextExtensionArtifacts}:${prototextGraphExtensionArtifacts}:${fdpScanExtensionArtifacts}"
+    export PYTHONPATH="${reprotoSrc}/src"
 
     # Write a hermetic pyrightconfig.json.
     cat > pyrightconfig.json <<EOF
@@ -297,10 +264,7 @@ let
   "pythonVersion": "3.13",
   "typeCheckingMode": "basic",
   "extraPaths": [
-    "${reprotoSrcFull}/src",
-    "${prototextExtensionArtifacts}",
-    "${prototextGraphExtensionArtifacts}",
-    "${fdpScanExtensionArtifacts}"
+    "${reprotoSrc}/src"
   ],
   "exclude": [
     "result*",
@@ -310,7 +274,7 @@ let
 EOF
 
     echo "--- pyright ---"
-    pyright ${reprotoSrcFull}/src/
+    pyright ${reprotoSrc}/src/
 
     touch $out
   '';
@@ -324,7 +288,7 @@ EOF
   } ''
     set -euo pipefail
     echo "--- ruff ---"
-    ruff check --no-cache --exclude docs/mockup ${reprotoSrcFull}/src/
+    ruff check --no-cache --exclude docs/mockup ${reprotoSrc}/src/
     touch $out
   '';
 
@@ -522,7 +486,7 @@ print('\n'.join(lines[:$N_EXTRA]))
     ];
   } ''
     set -euo pipefail
-    export PYTHONPATH="${reprotoSrcFull}/src"
+    export PYTHONPATH="${reprotoSrc}/src"
     export STRESS_DB="${googleapisDb}/googleapis.desc"
     pytest -p no:cacheprovider ${../tests/stress}/
     touch $out
@@ -553,7 +517,7 @@ print('\n'.join(lines[:$N_EXTRA]))
   } ''
     set -euo pipefail
 
-    FIXTURES="${reprotoSrcFull}/src/reproto/tests/fixtures"
+    FIXTURES="${reprotoSrc}/src/reproto/tests/fixtures"
     PB=$TMPDIR/pb
     mkdir -p "$PB"
 
@@ -604,7 +568,7 @@ print('\n'.join(lines[:$N_EXTRA]))
     ];
   } ''
     set -euo pipefail
-    export PYTHONPATH="${reprotoSrcFull}/src"
+    export PYTHONPATH="${reprotoSrc}/src"
     export CUSTOM_DB="${customDb}/custom.desc"
     pytest -p no:cacheprovider ${../tests/custom}/
     touch $out
@@ -613,7 +577,6 @@ print('\n'.join(lines[:$N_EXTRA]))
 in {
   inherit
     reprotoSrc
-    reprotoSrcFull
     reprotoPropagatedDeps
     wktRkyvDeps
     reprotoTestDeps

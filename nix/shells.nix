@@ -17,7 +17,6 @@
 #               _hook_env        — exports NIXSHELL_REPO, PROTOTEXT_DESCRIPTOR_SET,
 #                                  PROTOTEXT_WKT_SET, PYO3_PYTHON, PATH, PYTHONPATH
 #               _hook_python     — writes python.env, pyrightconfig.json, ruff.toml
-#               _hook_codegen    — runs patch_reproto.sh (guarded)
 #               _hook_rust       — writes rust-toolchain.toml; rustup toolchain
 #                                  install
 #               _hook_cargo      — cargo build --release -p prototext / -p
@@ -266,21 +265,6 @@ exclude = [
   "docs/mockup",
 ]
 RUFFEOF
-      }
-
-      _hook_codegen() {
-        # Seed well-known .proto sources and compile .pb descriptors into the
-        # working tree, mirroring what reprotoSrcFull does in the Nix build.
-        # Skipped if the descriptor files are already present.
-        if [[ ! -f "$PWD/reproto/src/resources/google/protobuf/descriptor.pb" ]]; then
-          echo "[hook] codegen: running patch_reproto.sh"
-          mkdir -p "$PWD/reproto/src/resources/google/protobuf"
-          cp ${pkgs.protobuf}/include/google/protobuf/*.proto \
-             "$PWD/reproto/src/resources/google/protobuf/"
-          bash "$PWD/reproto/patch/patch_reproto.sh" "$PWD/reproto"
-        else
-          echo "[hook] codegen: already done — skipping"
-        fi
       }
 
       _hook_cargo() {
@@ -559,7 +543,6 @@ LUAEOF
       # ── Run all hook steps in order ────────────────────────────────────────
       _hook_env
       _hook_python
-      _hook_codegen
       _hook_rust
       _hook_cargo
       _hook_man

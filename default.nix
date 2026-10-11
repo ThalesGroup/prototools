@@ -75,6 +75,11 @@ let
         || f.hasExt "script" || f.hasExt "license")
     dir;
 
+  # A Python package's sources, without the __pycache__ a working tree has.
+  pythonPackageFilter = dir: pkgs.lib.fileset.fileFilter
+    (f: f.hasExt "py" || f.hasExt "pyi")
+    dir;
+
   # workspaceSrc — all workspace crate sources + filtered fixture dirs, minus
   # target/ artefact trees.  Used by rustFmt, rustClippy, rustTests.
   workspaceSrc = pkgs.lib.fileset.toSource {
@@ -86,19 +91,20 @@ let
         # which protolens's build.rs compiles and embeds (spec 0408 S5).
         ./reproto/tree-sitter-textproto/src
         ./reproto/tree-sitter-textproto/highlights.scm
-        # The committed Python stubs: workspaceBuild compares the generator's
-        # output with them, and a cross build ships them.
-        ./prototext-pyo3/prototext_codec_lib/prototext_codec_lib.pyi
-        ./fdp-scan-pyo3/fdp_scan_lib/fdp_scan_lib.pyi
-        ./prototext-graph-pyo3/prototext_graph_lib/prototext_graph_lib.pyi
+        # The extensions' Python packages, __init__.py and committed stub:
+        # maturin packs them into the wheels, and workspaceBuild compares
+        # the stub generator's output with the committed stubs (spec 0409).
+        (pythonPackageFilter ./prototext-pyo3/prototext_codec_lib)
+        (pythonPackageFilter ./fdp-scan-pyo3/fdp_scan_lib)
+        (pythonPackageFilter ./prototext-graph-pyo3/prototext_graph_lib)
         (fixtureFilter ./prototext/fixtures)
         (fixtureFilter ./reproto/src/reproto/tests/fixtures)
         (fixtureFilter ./prototext-graph/tests/fixtures)
         (fixtureFilter ./tests/fixtures)
         # prototext-core/fixtures is taken wholesale rather than through
-        # fixtureFilter: `benches/codec.rs` include_bytes! the .txt protoc
+        # fixtureFilter: `benches/codec.rs` include_bytes! the .txtpb protoc
         # rendering, an extension fixtureFilter deliberately drops.  The
-        # directory holds nothing else — just descriptor.pb, that .txt, and
+        # directory holds nothing else — just descriptor.pb, that .txtpb, and
         # their two .license sidecars.  Omitting it broke `nix-build`
         # outright, since the spec-0163 test in
         # `prototext-core/src/serialize/render_text/mod.rs` include_bytes!
@@ -190,6 +196,37 @@ let
   # links it into its own stub generator and tests only, so the Python
   # extensions themselves never link it. PYO3_PYTHON (nix/rust.nix) is all
   # those build scripts need to find it.
+
+  # ---------------------------------------------------------------------------
+  # reproto's well-known types (spec 0409 S4).
+  #
+  # reproto ships the WKTs' descriptors in its built-in variant
+  # (reproto/src/reproto/variants/google-protobuf/), for the descriptor sets
+  # that leave them implicit. They are committed, so reproto builds from its
+  # source as it stands:
+  #
+  # reprotoWktGenerated — patch_reproto.sh run with the pinned protobuf:
+  #   its .proto files, compiled by its protoc. Input only to the check.
+  # reprotoWktCheck — fails `ci`, with the diff and the refresh command,
+  #   when the committed .pb differ from what the pinned protobuf compiles.
+  # ---------------------------------------------------------------------------
+
+  reprotoWktGenerated = pkgs.runCommand "reproto-wkt-generated" {
+    strictDeps = true;
+    nativeBuildInputs = [ pkgs.protobuf ];
+  } ''
+    bash ${./reproto/patch}/patch_reproto.sh ${pkgs.protobuf}/include $out
+  '';
+
+  reprotoWktCheck = pkgs.runCommand "reproto-wkt-check" { } ''
+    committed=${./reproto/src/reproto/variants/google-protobuf/google}
+    if ! diff -r $committed ${reprotoWktGenerated}/google >&2; then
+      echo "reproto/src/reproto/variants/google-protobuf/google/ is stale (diff above). Refresh it with:" >&2
+      echo "  cp -r \$(nix-build -A reproto-wkt-generated)/google/. reproto/src/reproto/variants/google-protobuf/google/ && chmod -R u+w reproto/src/reproto/variants/google-protobuf/google" >&2
+      exit 1
+    fi
+    touch $out
+  '';
 
   # ---------------------------------------------------------------------------
   # tree-sitter-textproto — the textproto grammar (spec 0408).
@@ -301,9 +338,7 @@ let
     inherit pkgs pythonPkgs pythonBin;
     inherit (rust) metaCommon pyprojectVersion;
     prototext = rust.prototext;
-    inherit (rust) prototextCodec fdpScanLib prototextGraphLib
-                   prototextExtensionArtifacts prototextGraphExtensionArtifacts
-                   fdpScanExtensionArtifacts;
+    inherit (rust) prototextCodec fdpScanLib prototextGraphLib;
   };
 
   cratesIo = import ./nix/crates-io.nix {
@@ -312,12 +347,9 @@ let
   };
 
   pypi = import ./nix/pypi.nix {
-    inherit pkgs pythonPkgs workspaceSrc;
-    inherit (rust) pyprojectVersion;
-    reprotoSrcFull = python.reprotoSrcFull;
-    inherit (rust) prototextExtensionArtifacts
-                   fdpScanExtensionArtifacts
-                   prototextGraphExtensionArtifacts;
+    inherit pkgs pythonPkgs;
+    inherit (rust) pyprojectVersion workspaceBuild;
+    reprotoSrc = python.reprotoSrc;
   };
 
   # The WKT scoring graph, generated by reproto from the code as it is.
@@ -336,7 +368,7 @@ let
   } ''
     set -euo pipefail
     mkdir -p "$out"
-    export PYTHONPATH="${python.reprotoSrcFull}/src"
+    export PYTHONPATH="${python.reprotoSrc}/src"
 
     # Compile WKT .proto files (from prototext/wkt/SOURCES) into one FDS.
     protoc \
@@ -572,6 +604,7 @@ let
     python.reprotoTests python.fdpScanTests python.prototextCodecTests
     python.pythonLint python.pythonRuff
     treeSitterTextprotoHighlightTest treeSitterTextprotoCheck
+    reprotoWktCheck
     wktDb wktPrebuiltCheck prototextFixturesCheck
     prototoolsClosureCheck
     completionTests
@@ -713,4 +746,6 @@ in
   tree-sitter-textproto-highlight-test = treeSitterTextprotoHighlightTest;
   tree-sitter-textproto-generated = treeSitterTextprotoGenerated;
   tree-sitter-textproto-check = treeSitterTextprotoCheck;
+  reproto-wkt-generated = reprotoWktGenerated;
+  reproto-wkt-check     = reprotoWktCheck;
 }

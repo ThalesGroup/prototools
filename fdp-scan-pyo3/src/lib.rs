@@ -46,10 +46,19 @@ fn fdp_scan_lib(m: &Bound<'_, PyModule>) -> PyResult<()> {
 /// different sandbox paths).  The installPhase sets CARGO_MANIFEST_DIR before
 /// invoking the binary.
 pub fn stub_info() -> pyo3_stub_gen::Result<pyo3_stub_gen::StubInfo> {
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
-        .expect("CARGO_MANIFEST_DIR must be set when running fdp_scan_post_build");
-    let pyproject = std::path::Path::new(&manifest_dir).join("pyproject.toml");
-    pyo3_stub_gen::StubInfo::from_pyproject_toml(pyproject)
+    let manifest_dir = std::path::PathBuf::from(
+        std::env::var("CARGO_MANIFEST_DIR")
+            .expect("CARGO_MANIFEST_DIR must be set when running fdp_scan_post_build"),
+    );
+    let mut info =
+        pyo3_stub_gen::StubInfo::from_pyproject_toml(manifest_dir.join("pyproject.toml"))?;
+    // Generate aside, into target/stubs/<crate dir>/, never over the
+    // committed stub; the Nix build compares the two (spec 0409 S2).
+    let crate_dir = manifest_dir
+        .file_name()
+        .expect("CARGO_MANIFEST_DIR has a final component");
+    info.python_root = manifest_dir.join("../target/stubs").join(crate_dir);
+    Ok(info)
 }
 
 // The unit tests are this library compiled as a test binary, which runs

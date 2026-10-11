@@ -55,7 +55,7 @@ static DESCRIPTOR_ROOT: &str = "google.protobuf.FileDescriptorSet";
 ///     --type google.protobuf.FileDescriptorSet fixtures/descriptor.pb
 ///
 /// 3062 lines.  Represents the `encode_text_to_binary` hot path.
-static DESCRIPTOR_PROTOC_TEXT: &[u8] = include_bytes!("../fixtures/descriptor_protoc.txt");
+static DESCRIPTOR_PROTOC_TEXT: &[u8] = include_bytes!("../fixtures/descriptor_protoc.txtpb");
 
 // ── Schema helper ─────────────────────────────────────────────────────────────
 

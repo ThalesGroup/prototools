@@ -2,12 +2,11 @@
 #
 # SPDX-License-Identifier: MIT
 
-# Auxiliary pyproject.toml for the prototext_graph Python extension.
-# Needed to support Python packaging tools and stub generation.
+# pyproject.toml for the prototext_graph Python extension, built by maturin.
 
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
 
 [project]
 name = "prototext-graph"
@@ -15,11 +14,14 @@ version = "0.3.1.dev0"
 description = "Scoring-graph builder Python extension via PyO3"
 requires-python = ">=3.8"
 
-[tool.hatch.build.targets.wheel]
-packages = ["prototext_graph_lib"]
-
 [tool.pyo3-stub-gen]
-# pyo3-stub-gen writes prototext_graph_lib.pyi next to this file (i.e. prototext-graph-pyo3/).
+# The generator writes into target/stubs/prototext-graph-pyo3/ (stub_info() in
+# src/lib.rs), never over the committed stub: the Nix build compares the
+# two (spec 0409 S2).
 
 [tool.maturin]
-module-name = "prototext_graph_lib"
+# Mixed layout: the compiled module sits inside the Python package that
+# re-exports it, next to its committed stub.
+module-name = "prototext_graph_lib.prototext_graph_lib"
+python-source = "."
+exclude = ["**/*.license"]

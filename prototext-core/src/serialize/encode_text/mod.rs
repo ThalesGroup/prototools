@@ -627,7 +627,7 @@ mod tests {
         for i in 0..500 {
             dense.extend_from_slice(format!("a {{  #@ {}\n}}\n", i % 100 + 1).as_bytes());
         }
-        let fixture = include_bytes!("../../../fixtures/descriptor_protoc.txt");
+        let fixture = include_bytes!("../../../fixtures/descriptor_protoc.txtpb");
 
         for (name, text) in [("message-dense", &dense[..]), ("descriptor", &fixture[..])] {
             let claimed = encoded_capacity(text);
