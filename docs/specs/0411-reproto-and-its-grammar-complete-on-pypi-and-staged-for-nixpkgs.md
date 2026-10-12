@@ -97,23 +97,41 @@ five recipes: the three extensions, the grammar, and reproto.
   output, which CI's `assemble` job collects with every wheel, and
   `publish.sh` uploads with `twine` like the others. Its version is the
   workspace's, already checked at evaluation (spec 0405 S5).
-- **S6. PR 3's recipes are staged** under `nixpkgs/pkgs/`, at nixpkgs's
-  paths:
-  - `development/python-modules/{prototext-codec,prototext-graph,fdp-scan,tree-sitter-textproto}/default.nix`:
-    `buildPythonPackage`, the three extensions with
-    `rustPlatform.maturinBuildHook` and `buildAndTestSubdir`, the grammar
-    with setuptools; each extension's pytest suite through
+- **S6. PR 3's recipes are staged** in one directory,
+  `by-name/re/reproto/` (amended 2026-10-12):
+  - `package.nix`: `python3Packages.buildPythonApplication`, with its test
+    suite;
+  - `prototext-codec.nix`, `prototext-graph.nix`, `fdp-scan.nix`: the
+    three extensions, with `rustPlatform.maturinBuildHook` and
+    `buildAndTestSubdir`, each extension's pytest suite through
     `pytestCheckHook` where it has one;
-  - `by-name/re/reproto/package.nix`: `python3Packages.buildPythonApplication`,
-    with its test suite.
+  - `tree-sitter-textproto.nix`: the grammar, with setuptools.
 
-  `nixpkgs-staging` builds them from the local tree through a Python
-  package set extended with the four libraries, so reproto's recipe finds
-  them as it will in nixpkgs. The Python recipes build from `stagingSrc`
-  (the workspace, `reproto/` and the extensions' tests); the Rust ones keep
-  `workspaceSrc`, so editing reproto does not rebuild them. The staging
-  workflow also runs when a `pyproject.toml` changes. `nixpkgs-staging-check` formats and
-  versions them like the others. `nixpkgs/README.md` lists them.
+  The four libraries are **private to reproto**:
+  - `package.nix` builds them with `python3Packages.callPackage`, from
+    reproto's own `src`, at its `version`, with the vendored Cargo
+    dependencies it declares as `passthru.cargoDeps`;
+  - they are not `python3Packages` entries.
+
+  **Why:**
+  - nixpkgs's merge bot lets a maintainer merge an update only for a
+    package in `pkgs/by-name`, which `python-modules` is not. In
+    `python3Packages`, every update of the four would need a committer.
+  - r-ryantm updates packages one at a time, while reproto's `>=` bounds
+    require the five at one version.
+  - As one package, an update changes one version and two hashes, and
+    `nix-update` makes all three.
+  - Nothing else in nixpkgs uses the libraries; they are on PyPI for
+    Python users.
+
+  `nixpkgs-staging` calls the recipe with the pinned Python's package set,
+  overriding its `src`, `version` and `passthru.cargoDeps` with the local
+  tree, which the libraries follow. The Python recipes build from
+  `stagingSrc` (the workspace, `reproto/` and the extensions' tests); the
+  Rust ones keep `workspaceSrc`, so editing reproto does not rebuild them.
+  The staging workflow also runs when a `pyproject.toml` changes.
+  `nixpkgs-staging-check` formats every file of the directory and checks
+  reproto's version. `nixpkgs/README.md` lists them.
 
 ## Alternatives considered
 
@@ -191,6 +209,13 @@ Implemented 2026-10-11.
     reproto's runtime closure;
   - the dev-shell enters, and parses with the renamed grammar;
   - `reuse lint` passes.
+- **S6, amended 2026-10-12:**
+  - The libraries moved from `python-modules` into reproto's directory,
+    private to it, and gained `__structuredAttrs`.
+  - Starting from the recipe at 0.3.2, nix-update 1.16.0 (from nixpkgs
+    master) found `v0.3.3` through the update script's version regex. It
+    set the version, the source hash and `passthru.cargoDeps`'s hash to
+    the values the release produced.
 - **CI (the push of 2026-10-11):**
   - the Nix workflow passes on its three runners;
   - its release artifact holds 13 wheels, the grammar's among them as

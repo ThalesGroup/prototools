@@ -666,27 +666,24 @@ let
   # (for the version checks).
   #   prototext (PR 1), protoscan (PR 2, spec 0407 S8), protolens (PR 4,
   #   spec 0410 S4): Rust applications;
-  #   the four Python libraries and reproto (PR 3, spec 0411 S6).
-  stagedBuild = src: version: drv: drv.overrideAttrs (old: {
-    inherit src version;
-  } // pkgs.lib.optionalAttrs (old ? cargoDeps) {
-    cargoDeps = pkgs.rustPlatform.importCargoLock { lockFile = ./Cargo.lock; };
-  });
+  #   reproto, which builds its four libraries from its own source, at its
+  #   version, with its passthru.cargoDeps (PR 3, spec 0411 S6).
+  stagedBuild = src: version: drv: drv.overrideAttrs (old:
+    let vendored = pkgs.rustPlatform.importCargoLock { lockFile = ./Cargo.lock; }; in
+    { inherit src version; }
+    // pkgs.lib.optionalAttrs (old ? cargoDeps) { cargoDeps = vendored; }
+    // pkgs.lib.optionalAttrs (old ? passthru.cargoDeps) {
+      passthru = old.passthru // { cargoDeps = vendored; };
+    });
 
   stagedRust = {
     prototext = ./nixpkgs/pkgs/by-name/pr/prototext/package.nix;
     protoscan = ./nixpkgs/pkgs/by-name/pr/protoscan/package.nix;
     protolens = ./nixpkgs/pkgs/by-name/pr/protolens/package.nix;
   };
-  # Python libraries, with the directory whose pyproject.toml gives the
-  # version.
-  stagedPythonModules = {
-    prototext-codec       = { file = ./nixpkgs/pkgs/development/python-modules/prototext-codec/default.nix;       dir = "prototext-pyo3"; };
-    prototext-graph       = { file = ./nixpkgs/pkgs/development/python-modules/prototext-graph/default.nix;       dir = "prototext-graph-pyo3"; };
-    fdp-scan              = { file = ./nixpkgs/pkgs/development/python-modules/fdp-scan/default.nix;              dir = "fdp-scan-pyo3"; };
-    tree-sitter-textproto = { file = ./nixpkgs/pkgs/development/python-modules/tree-sitter-textproto/default.nix; dir = "reproto/tree-sitter-textproto"; };
-  };
-  stagedReproto = ./nixpkgs/pkgs/by-name/re/reproto/package.nix;
+  # reproto's directory: package.nix and its four libraries' files.
+  stagedReprotoDir = ./nixpkgs/pkgs/by-name/re/reproto;
+  stagedReproto = stagedReprotoDir + "/package.nix";
 
   # protolens's recipe also installs its Neovim config, which no crate
   # reads: in workspaceSrc, editing it would rebuild every Rust derivation.
@@ -701,33 +698,23 @@ let
     (name: file: stagedBuild (stagedRustSrc.${name} or workspaceSrc)
       rust.workspaceVersion (pkgs.callPackage file { }))
     stagedRust;
-  # The pinned Python, its package set extended with the staged libraries,
-  # as nixpkgs's python-packages.nix will list them.
-  stagedPython = pythonPkgs.python.override {
-    self = stagedPython;
-    packageOverrides = pyself: _: builtins.mapAttrs
-      (_: m: stagedBuild stagingSrc (rust.pyprojectVersion m.dir) (pyself.callPackage m.file { }))
-      stagedPythonModules;
-  };
+  # The pinned Python's package set, as nixpkgs passes python3Packages.
   stagedReprotoBuild = stagedBuild stagingSrc (rust.pyprojectVersion "reproto")
     (pkgs.callPackage stagedReproto {
-      python3Packages = stagedPython.pkgs;
+      python3Packages = pythonPkgs;
       prototext       = stagedRustBuilds.prototext;
     });
 
   nixpkgsStaging = pkgs.linkFarmFromDrvs "nixpkgs-staging"
-    (builtins.attrValues stagedRustBuilds
-     ++ map (name: stagedPython.pkgs.${name}) (builtins.attrNames stagedPythonModules)
-     ++ [ stagedReprotoBuild ]);
+    (builtins.attrValues stagedRustBuilds ++ [ stagedReprotoBuild ]);
 
   # Every staged file, and the version each declares (callPackage'd as
   # nixpkgs calls it).
   stagedFiles = builtins.attrValues stagedRust
-    ++ map (m: m.file) (builtins.attrValues stagedPythonModules)
-    ++ [ stagedReproto ];
+    ++ map (name: stagedReprotoDir + "/${name}")
+      (builtins.attrNames (builtins.readDir stagedReprotoDir));
   stagedVersions =
     builtins.mapAttrs (_: file: (pkgs.callPackage file { }).version) stagedRust
-    // builtins.mapAttrs (_: m: (pythonPkgs.callPackage m.file { }).version) stagedPythonModules
     // { reproto = (pkgs.callPackage stagedReproto { inherit (rust) prototext; }).version; };
 
   # nixfmt, and the version rule: at a release every staged version equals

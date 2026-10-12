@@ -7,8 +7,7 @@ nixpkgs tree (spec 0405):
 |---|---|
 | `pkgs/by-name/pr/prototext/package.nix` | same path (PR 1: NixOS/nixpkgs#572580, merged 2026-10-11 at 0.3.0; NixOS/nixpkgs#573094 updates it to 0.3.3, by hand: the recipe changed, spec 0413) |
 | `pkgs/by-name/pr/protoscan/package.nix` | same path (PR 2, spec 0407: NixOS/nixpkgs#572904, opened 2026-10-11) |
-| `pkgs/development/python-modules/{prototext-codec,prototext-graph,fdp-scan,tree-sitter-textproto}/default.nix` | same paths, plus one `callPackage` line each in `pkgs/top-level/python-packages.nix` (spec 0411: NixOS/nixpkgs#572923, with reproto, opened 2026-10-11 as a draft until #572911's review) |
-| `pkgs/by-name/re/reproto/package.nix` | same path (NixOS/nixpkgs#572923, with the four libraries) |
+| `pkgs/by-name/re/reproto/{package.nix,prototext-codec.nix,prototext-graph.nix,fdp-scan.nix,tree-sitter-textproto.nix}` | same paths: reproto, with its four libraries private to it, built from its source at its version, so that one update moves all five (spec 0411 S6; NixOS/nixpkgs#572923, a draft until #572911's review) |
 | `pkgs/by-name/pr/protolens/package.nix` | same path (spec 0410: NixOS/nixpkgs#572911, opened 2026-10-11 as a draft until #572904's review; it goes before the Python PR, swapping spec 0405 S9's PRs 3 and 4) |
 
 They are what a nixpkgs PR submits, copied verbatim: nixfmt-formatted, with
@@ -17,10 +16,9 @@ no SPDX header (their licensing is declared in `REUSE.toml`).
 `nix-build -A nixpkgs-staging` builds each staged recipe from the local
 tree, through the same `callPackage`, with `src` and the vendored
 dependencies taken from here instead of the tag, so its tests and version
-check run on today's code. The Python recipes are called from the pinned
-Python's package set, extended with the four staged libraries as
-`python-packages.nix` will list them, so reproto's recipe finds them where
-nixpkgs will. `nix-build -A nixpkgs-staging-check` checks the
+check run on today's code. reproto's recipe is called with the pinned
+Python's package set, as nixpkgs passes `python3Packages`, and builds its
+four libraries itself. `nix-build -A nixpkgs-staging-check` checks the
 formatting and the version: at a release the staged `version` equals the
 workspace's (`Cargo.toml`, `workspace.package.version`); between releases
 the workspace carries the next version with a `-dev` suffix and the staged
@@ -30,7 +28,7 @@ workflow (`.github/workflows/nixpkgs-staging.yml`) when the recipes or the
 dependencies change, and at every release tag.
 
 The packages follow one PR at a time, in the order of spec 0405 S9:
-prototext, protoscan, the Python libraries with reproto, then protolens.
+prototext, protoscan, protolens, then reproto with its four libraries.
 
 `pr-description.md` and `pr-briefing.md` are the notes for the current PR:
 its description, and what to be ready to answer in review.

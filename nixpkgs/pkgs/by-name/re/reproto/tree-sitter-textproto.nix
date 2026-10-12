@@ -1,23 +1,22 @@
+# One of the four libraries reproto needs, private to it (spec 0411 S6):
+# built from reproto's own source, at its version, so that one update moves
+# all five.
 {
   lib,
   buildPythonPackage,
-  fetchFromGitHub,
   setuptools,
+  src,
+  version,
 }:
 
-buildPythonPackage (finalAttrs: {
+buildPythonPackage {
   pname = "tree-sitter-textproto";
-  version = "0.3.3";
+  inherit src version;
   pyproject = true;
 
-  src = fetchFromGitHub {
-    owner = "douzebis";
-    repo = "prototools";
-    tag = "v${finalAttrs.version}";
-    hash = "sha256-SDgv/vrm7mJs1fjKPsn5zrp9s7rDj3W5qPdNt5OU/PE=";
-  };
+  __structuredAttrs = true;
 
-  sourceRoot = "${finalAttrs.src.name}/reproto/tree-sitter-textproto";
+  sourceRoot = "${src.name}/reproto/tree-sitter-textproto";
 
   build-system = [ setuptools ];
 
@@ -34,11 +33,10 @@ buildPythonPackage (finalAttrs: {
       number as a field name.
     '';
     homepage = "https://github.com/douzebis/prototools";
-    changelog = "https://github.com/douzebis/prototools/blob/${finalAttrs.src.tag}/CHANGELOG.md";
     license = with lib.licenses; [
       isc
       mit
     ];
     maintainers = with lib.maintainers; [ douzebis ];
   };
-})
+}

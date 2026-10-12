@@ -1,26 +1,21 @@
+# One of the four libraries reproto needs, private to it (spec 0411 S6):
+# built from reproto's own source, at its version, with its vendored Cargo
+# dependencies, so that one update moves all five.
 {
   lib,
   buildPythonPackage,
-  fetchFromGitHub,
   rustPlatform,
+  src,
+  version,
+  cargoDeps,
 }:
 
-buildPythonPackage (finalAttrs: {
+buildPythonPackage {
   pname = "prototext-graph";
-  version = "0.3.3";
+  inherit src version cargoDeps;
   pyproject = true;
 
-  src = fetchFromGitHub {
-    owner = "douzebis";
-    repo = "prototools";
-    tag = "v${finalAttrs.version}";
-    hash = "sha256-SDgv/vrm7mJs1fjKPsn5zrp9s7rDj3W5qPdNt5OU/PE=";
-  };
-
-  cargoDeps = rustPlatform.fetchCargoVendor {
-    inherit (finalAttrs) pname version src;
-    hash = "sha256-DXbYSztud6x+xWDM2dgwkHr88p1MtBR+122Jxe8axls=";
-  };
+  __structuredAttrs = true;
 
   buildAndTestSubdir = "prototext-graph-pyo3";
 
@@ -36,8 +31,7 @@ buildPythonPackage (finalAttrs: {
   meta = {
     description = "Python bindings to the prototools scoring graph builder";
     homepage = "https://github.com/douzebis/prototools";
-    changelog = "https://github.com/douzebis/prototools/blob/${finalAttrs.src.tag}/CHANGELOG.md";
     license = lib.licenses.mit;
     maintainers = with lib.maintainers; [ douzebis ];
   };
-})
+}
