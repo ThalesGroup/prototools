@@ -13,7 +13,6 @@ buildPythonPackage {
   pname = "tree-sitter-textproto";
   inherit src version;
   pyproject = true;
-
   __structuredAttrs = true;
 
   sourceRoot = "${src.name}/reproto/tree-sitter-textproto";

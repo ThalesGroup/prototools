@@ -14,7 +14,6 @@ buildPythonPackage {
   pname = "prototext-graph";
   inherit src version cargoDeps;
   pyproject = true;
-
   __structuredAttrs = true;
 
   buildAndTestSubdir = "prototext-graph-pyo3";

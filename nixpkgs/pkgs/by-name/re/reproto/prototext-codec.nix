@@ -16,7 +16,6 @@ buildPythonPackage {
   pname = "prototext-codec";
   inherit src version cargoDeps;
   pyproject = true;
-
   __structuredAttrs = true;
 
   buildAndTestSubdir = "prototext-pyo3";

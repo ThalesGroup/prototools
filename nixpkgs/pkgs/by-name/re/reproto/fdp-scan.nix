@@ -16,7 +16,6 @@ buildPythonPackage {
   pname = "fdp-scan";
   inherit src version cargoDeps;
   pyproject = true;
-
   __structuredAttrs = true;
 
   buildAndTestSubdir = "fdp-scan-pyo3";
