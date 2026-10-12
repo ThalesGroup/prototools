@@ -511,7 +511,7 @@ fn a_node_owns_the_lines_it_renders() {
 /// PROTOLENS_CORPUS_BLOB=/path/to/googleapis.desc \
 /// PROTOLENS_CORPUS_DESCRIPTOR=/path/to/googleapis.desc \
 /// PROTOLENS_CORPUS_TYPE=google.protobuf.FileDescriptorSet \
-///   cargo test --release -p protolens --bin protolens \
+///   cargo test --release -p prototext-lens --bin protolens \
 ///     -- --ignored --nocapture the_arena_covers_a_real_corpus
 /// ```
 ///

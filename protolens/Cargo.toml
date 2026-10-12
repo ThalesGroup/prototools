@@ -3,12 +3,16 @@
 # SPDX-License-Identifier: MIT
 
 [package]
-name        = "protolens"
+# "protolens" on crates.io is another project's; the program keeps its name
+# through [[bin]] (spec 0414 S3).
+name        = "prototext-lens"
 version.workspace    = true
 edition     = "2021"
-description = "Interactive TUI to decode, navigate, and extract raw bytes from a binary protobuf"
+description = "Terminal viewer to decode, navigate and extract binary protobuf messages"
 license     = "MIT"
 repository.workspace = true
+# Working notes, not part of the published crate.
+exclude = ["todo.md"]
 
 [[bin]]
 name = "protolens"
@@ -44,6 +48,7 @@ serde_norway          = "0.9"
 sha2                  = "0.10"
 tree-sitter           = "0.26.11"
 tree-sitter-highlight = "0.26.11"
+tree-sitter-textproto = { workspace = true }
 terminal-light        = "1.9.0"
 terminfo              = "0.9.0"
 workspace-hack        = { version = "0.1", path = "../workspace-hack" }
@@ -64,6 +69,3 @@ signal-hook = "0.3"
 prost       = "0.14"
 prost-types = "0.14"
 
-[build-dependencies]
-# Compiles the textproto grammar's committed parser (spec 0408 S5).
-cc = "1.2"

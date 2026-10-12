@@ -5,8 +5,8 @@
 # nix/crates-io.nix — Package the publishable .crate tarballs.
 #
 # Produces $out/ with one tarball per publishable workspace crate:
-#   prototext-core, prototext-graph, prototext-schema, prototools-complete,
-#   prototext, fdp-scan, protoscan
+#   tree-sitter-textproto, prototext-core, prototext-graph, prototext-schema,
+#   prototools-complete, prototext, fdp-scan, protoscan, prototext-lens
 # (that is also their dependency order: the list scripts/publishable-crates
 # gives the release scripts, which this one must match — spec 0412 S3).
 #
@@ -65,6 +65,7 @@ in pkgs.stdenv.mkDerivation (commonArgs // {
     cat >> "$CARGO_HOME/config.toml" <<EOF
 
 [patch.crates-io]
+tree-sitter-textproto = { path = "$PWD/reproto/tree-sitter-textproto" }
 prototext-core   = { path = "$PWD/prototext-core" }
 prototext-graph  = { path = "$PWD/prototext-graph" }
 prototext-schema = { path = "$PWD/prototext-schema" }
@@ -77,6 +78,7 @@ EOF
 
   # In dependency order, so this list doubles as the publish order.
   buildPhase = ''
+    cargo package -p tree-sitter-textproto --no-verify
     cargo package -p prototext-core   --no-verify
     cargo package -p prototext-graph  --no-verify
     cargo package -p prototext-schema --no-verify
@@ -84,10 +86,12 @@ EOF
     cargo package -p prototext        --no-verify
     cargo package -p fdp-scan         --no-verify
     cargo package -p protoscan        --no-verify
+    cargo package -p prototext-lens   --no-verify
   '';
 
   installPhase = ''
     mkdir -p $out
+    cp target/package/tree-sitter-textproto-*.crate $out/
     cp target/package/prototext-core-*.crate   $out/
     cp target/package/prototext-graph-*.crate  $out/
     cp target/package/prototext-schema-*.crate $out/
@@ -95,6 +99,7 @@ EOF
     cp target/package/prototext-*.crate        $out/
     cp target/package/fdp-scan-*.crate         $out/
     cp target/package/protoscan-*.crate        $out/
+    cp target/package/prototext-lens-*.crate   $out/
   '';
 
   # No tests to run — cargo package --no-verify handles validation.

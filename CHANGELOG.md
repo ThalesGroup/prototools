@@ -8,6 +8,14 @@ SPDX-License-Identifier: MIT
 
 ## [Unreleased]
 
+### Added
+
+- **protolens on crates.io** (spec 0414), as `prototext-lens`, since the
+  `protolens` crate belongs to an unrelated project:
+  `cargo install prototext-lens` installs the `protolens` program. The
+  textproto grammar it uses is published too, as the `tree-sitter-textproto`
+  crate, as it is on PyPI.
+
 ### Fixed
 
 - `reproto-instantiate-schema --version` crashed with `RuntimeError:

@@ -318,8 +318,8 @@ RUFFEOF
           done
         fi
         if [[ "$stale2" -eq 1 ]]; then
-          echo "[hook] cargo: cargo build --release -p protolens"
-          cargo build --release --locked -p protolens
+          echo "[hook] cargo: cargo build --release -p prototext-lens"
+          cargo build --release --locked -p prototext-lens
         else
           echo "[hook] cargo: protolens binary up to date — skipping"
         fi

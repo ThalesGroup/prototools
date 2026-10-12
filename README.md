@@ -60,12 +60,17 @@ reproto --use-variant descriptor -O src/ -I extracted/ extracted/*.pb
 
 ## Installation
 
-### Rust CLIs (`prototext`, `protoscan`)
+### Rust CLIs (`prototext`, `protoscan`, `protolens`)
 
 ```shell
 cargo install prototext
 cargo install protoscan
+cargo install prototext-lens    # installs the protolens program
 ```
+
+`protolens` is published as `prototext-lens`: the `protolens` crate on
+crates.io is an unrelated project. Its editor key uses Neovim, and `buf`
+for navigation, if they are on your `PATH`.
 
 ### Python tools (`reproto`, …)
 

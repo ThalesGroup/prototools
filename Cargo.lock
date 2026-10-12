@@ -1858,43 +1858,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "protolens"
-version = "0.3.3-dev"
-dependencies = [
- "arboard",
- "base64",
- "cc",
- "clap",
- "clap_complete",
- "clap_mangen",
- "crossterm",
- "libc",
- "memchr",
- "nix 0.29.0",
- "prost",
- "prost-reflect",
- "prost-types",
- "prototext-core",
- "prototext-graph",
- "prototext-schema",
- "prototools-complete",
- "ratatui",
- "regex",
- "regex-cursor",
- "regex-syntax",
- "serde",
- "serde_norway",
- "sha2",
- "signal-hook",
- "terminal-light",
- "terminfo",
- "tree-sitter",
- "tree-sitter-highlight",
- "workspace-hack",
- "xterm-query",
-]
-
-[[package]]
 name = "protoscan"
 version = "0.3.3-dev"
 dependencies = [
@@ -1962,6 +1925,43 @@ dependencies = [
  "tempfile",
  "walkdir",
  "workspace-hack",
+]
+
+[[package]]
+name = "prototext-lens"
+version = "0.3.3-dev"
+dependencies = [
+ "arboard",
+ "base64",
+ "clap",
+ "clap_complete",
+ "clap_mangen",
+ "crossterm",
+ "libc",
+ "memchr",
+ "nix 0.29.0",
+ "prost",
+ "prost-reflect",
+ "prost-types",
+ "prototext-core",
+ "prototext-graph",
+ "prototext-schema",
+ "prototools-complete",
+ "ratatui",
+ "regex",
+ "regex-cursor",
+ "regex-syntax",
+ "serde",
+ "serde_norway",
+ "sha2",
+ "signal-hook",
+ "terminal-light",
+ "terminfo",
+ "tree-sitter",
+ "tree-sitter-highlight",
+ "tree-sitter-textproto",
+ "workspace-hack",
+ "xterm-query",
 ]
 
 [[package]]
@@ -3068,6 +3068,16 @@ name = "tree-sitter-language"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "009994f150cc0cd50ff54917d5bc8bffe8cad10ca10d81c34da2ec421ae61782"
+
+[[package]]
+name = "tree-sitter-textproto"
+version = "0.3.3-dev"
+dependencies = [
+ "cc",
+ "tree-sitter",
+ "tree-sitter-language",
+ "workspace-hack",
+]
 
 [[package]]
 name = "typenum"

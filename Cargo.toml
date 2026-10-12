@@ -26,6 +26,7 @@ members = [
     "prototext-graph-pyo3",
     "prototext-schema",
     "protolens",
+    "reproto/tree-sitter-textproto",
     "prototools-complete",
     "fdp-scan",
     "protoscan",
@@ -61,6 +62,7 @@ prototext-graph     = { path = "prototext-graph", version = "0.3.3-dev" }
 prototext-schema    = { path = "prototext-schema", version = "0.3.3-dev" }
 prototools-complete = { path = "prototools-complete", version = "0.3.3-dev" }
 fdp-scan            = { path = "fdp-scan", version = "0.3.3-dev" }
+tree-sitter-textproto = { path = "reproto/tree-sitter-textproto", version = "0.3.3-dev" }
 
 [profile.release]
 codegen-units   = 1

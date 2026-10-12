@@ -15,26 +15,13 @@ use std::sync::OnceLock;
 use tree_sitter::Language;
 use tree_sitter_highlight::{HighlightConfiguration, HighlightEvent, Highlighter};
 
-// The real symbol exported by the linked `tree-sitter-textproto` static
-// library (`build.rs`) — upstream's own `bindings/rust/lib.rs` is an
-// unfilled `tree-sitter-cli` scaffold template (never renamed from
-// `tree_sitter_YOUR_LANGUAGE_NAME`), so this crate declares its own
-// correctly-named `extern` binding directly, the same precedent already
-// set by this repo's own `reproto/tree-sitter-textproto/binding.c`.
-unsafe extern "C" {
-    fn tree_sitter_textproto() -> Language;
-}
-
+// The grammar's crate compiles its committed parser and carries its
+// highlights query (spec 0414 S2).
 fn language() -> Language {
-    unsafe { tree_sitter_textproto() }
+    tree_sitter_textproto::LANGUAGE.into()
 }
 
-/// Compiled into the binary from the grammar's committed query file, next
-/// to the parser `build.rs` compiles (spec 0408 S5).
-static HIGHLIGHTS_QUERY: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../reproto/tree-sitter-textproto/highlights.scm"
-));
+static HIGHLIGHTS_QUERY: &str = tree_sitter_textproto::HIGHLIGHTS_QUERY;
 
 /// One semantic role a rendered text span can have — one variant per
 /// capture name in `queries/highlights.scm`. `Copy`, tag-sized — kept

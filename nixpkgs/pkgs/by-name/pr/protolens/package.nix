@@ -39,13 +39,14 @@ rustPlatform.buildRustPackage (finalAttrs: {
 
   cargoHash = "sha256-4F/ZRjvaFPTJALcRZ0j8bMwIRAaTTghf4fCbx2+6z3M=";
 
+  # The crate is prototext-lens on crates.io; its program, protolens.
   cargoBuildFlags = [
     "-p"
-    "protolens"
+    "prototext-lens"
   ];
   cargoTestFlags = [
     "-p"
-    "protolens"
+    "prototext-lens"
   ];
 
   nativeBuildInputs = [

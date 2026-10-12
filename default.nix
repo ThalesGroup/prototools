@@ -88,9 +88,14 @@ let
       (pkgs.lib.fileset.unions [
         (crane.fileset.commonCargoSources ./.)
         # The textproto grammar's committed parser and highlights query,
-        # which protolens's build.rs compiles and embeds (spec 0408 S5).
+        # which its crate compiles and carries for protolens (specs 0408 S5,
+        # 0414 S2).
         ./reproto/tree-sitter-textproto/src
         ./reproto/tree-sitter-textproto/highlights.scm
+        # What the grammar's crate packages besides (spec 0414 S1): its
+        # license notices, and the grammar the parser is generated from.
+        ./reproto/tree-sitter-textproto/LICENSE
+        ./reproto/tree-sitter-textproto/grammar.js
         # The extensions' Python packages, __init__.py and committed stub:
         # maturin packs them into the wheels, and workspaceBuild compares
         # the stub generator's output with the committed stubs (spec 0409).

@@ -14,7 +14,7 @@
 # queue silently behind a long build.
 #
 # Usage: bin/bench -p prototext-graph --bench score
-#        BENCH_CPUS=4-7 bin/bench -p protolens --bench <name>
+#        BENCH_CPUS=4-7 bin/bench -p prototext-lens --bench <name>
 set -euo pipefail
 
 # The lock is machine-global, not per-tree: two worktrees share one set of

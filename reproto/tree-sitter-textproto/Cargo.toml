@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+#
+# SPDX-License-Identifier: MIT
+
+[package]
+name        = "tree-sitter-textproto"
+version.workspace    = true
+edition     = "2021"
+description = "The textproto (protobuf text format) tree-sitter grammar, for Rust"
+# The parser is generated from Porter Matteo Haet's ISC grammar; the
+# binding is ours, MIT. LICENSE holds both notices (specs 0411 S2, 0414 S1).
+license     = "ISC AND MIT"
+repository.workspace = true
+keywords    = ["tree-sitter", "textproto", "protobuf", "parser"]
+categories  = ["parsing", "text-editors"]
+# The generated parser, its query and its source grammar: the directory
+# also holds the Python package, which this crate does not ship.
+include = [
+    "Cargo.toml",
+    "LICENSE",
+    "build.rs",
+    "bindings/rust/*",
+    "grammar.js",
+    "highlights.scm",
+    "src/parser.c",
+    "src/tree_sitter/*.h",
+]
+
+[lib]
+path = "bindings/rust/lib.rs"
+
+[dependencies]
+tree-sitter-language = "0.1"
+workspace-hack        = { version = "0.1", path = "../../workspace-hack" }
+
+[build-dependencies]
+cc = "1.2"
+
+[dev-dependencies]
+tree-sitter = "0.26.11"

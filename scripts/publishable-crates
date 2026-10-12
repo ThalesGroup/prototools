@@ -6,6 +6,7 @@
 # on crates above it. Sourced by check-crates and publish-crates (spec
 # 0412 S3); nix/crates-io.nix packages the same list.
 crates=(
+    tree-sitter-textproto
     prototext-core
     prototext-graph
     prototext-schema
@@ -13,4 +14,5 @@ crates=(
     prototext
     fdp-scan
     protoscan
+    prototext-lens
 )
