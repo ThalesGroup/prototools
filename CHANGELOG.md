@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # Changelog
 
-## [Unreleased]
+## 0.3.3 — 2026-10-12
 
 ### Added
 
