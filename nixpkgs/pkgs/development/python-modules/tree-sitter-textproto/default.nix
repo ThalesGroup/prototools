@@ -34,7 +34,7 @@ buildPythonPackage (finalAttrs: {
       number as a field name.
     '';
     homepage = "https://github.com/douzebis/prototools";
-    changelog = "https://github.com/douzebis/prototools/blob/${finalAttrs.src.rev}/CHANGELOG.md";
+    changelog = "https://github.com/douzebis/prototools/blob/${finalAttrs.src.tag}/CHANGELOG.md";
     license = with lib.licenses; [
       isc
       mit

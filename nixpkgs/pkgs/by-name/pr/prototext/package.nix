@@ -50,8 +50,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
   nativeInstallCheckInputs = [ versionCheckHook ];
   doInstallCheck = true;
 
-  # Only v-prefixed release tags: the repository also has workshop tags
-  # (grehack2026-*), which are not versions.
+  # Only v-prefixed release tags
   passthru.updateScript = nix-update-script {
     extraArgs = [
       "--version-regex"
@@ -70,7 +69,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
       lossless.
     '';
     homepage = "https://github.com/douzebis/prototools";
-    changelog = "https://github.com/douzebis/prototools/blob/${finalAttrs.src.rev}/CHANGELOG.md";
+    changelog = "https://github.com/douzebis/prototools/blob/${finalAttrs.src.tag}/CHANGELOG.md";
     license = lib.licenses.mit;
     maintainers = with lib.maintainers; [ douzebis ];
     mainProgram = "prototext";

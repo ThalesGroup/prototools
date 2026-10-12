@@ -75,8 +75,7 @@ python3Packages.buildPythonApplication (finalAttrs: {
 
   pythonImportsCheck = [ "reproto" ];
 
-  # Only v-prefixed release tags: the repository also has workshop tags
-  # (grehack2026-*), which are not versions.
+  # Only v-prefixed release tags
   passthru.updateScript = nix-update-script {
     extraArgs = [
       "--version-regex"
@@ -93,7 +92,7 @@ python3Packages.buildPythonApplication (finalAttrs: {
       decode messages without their original sources.
     '';
     homepage = "https://github.com/douzebis/prototools";
-    changelog = "https://github.com/douzebis/prototools/blob/${finalAttrs.src.rev}/CHANGELOG.md";
+    changelog = "https://github.com/douzebis/prototools/blob/${finalAttrs.src.tag}/CHANGELOG.md";
     license = lib.licenses.mit;
     maintainers = with lib.maintainers; [ douzebis ];
     mainProgram = "reproto";

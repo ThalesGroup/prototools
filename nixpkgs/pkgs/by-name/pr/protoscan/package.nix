@@ -46,8 +46,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
   nativeInstallCheckInputs = [ versionCheckHook ];
   doInstallCheck = true;
 
-  # Only v-prefixed release tags: the repository also has workshop tags
-  # (grehack2026-*), which are not versions.
+  # Only v-prefixed release tags
   passthru.updateScript = nix-update-script {
     extraArgs = [
       "--version-regex"
@@ -56,15 +55,16 @@ rustPlatform.buildRustPackage (finalAttrs: {
   };
 
   meta = {
-    description = "Find the protobuf descriptors embedded in binaries";
+    description = "Find the protobuf descriptors embedded in any file";
     longDescription = ''
-      protoscan scans a binary (an executable, a shared library, a firmware
-      image) for the protobuf FileDescriptorProto records it embeds, prints
-      each one's file name, and can write them out as .pb files, which
-      prototext decodes and reproto turns back into .proto sources.
+      protoscan scans a file (an executable, a shared library, a firmware
+      image, an archive) for the protobuf FileDescriptorProto records it
+      embeds, prints each one's file name, and can write them out as .pb
+      files, which prototext decodes and reproto turns back into .proto
+      sources.
     '';
     homepage = "https://github.com/douzebis/prototools";
-    changelog = "https://github.com/douzebis/prototools/blob/${finalAttrs.src.rev}/CHANGELOG.md";
+    changelog = "https://github.com/douzebis/prototools/blob/${finalAttrs.src.tag}/CHANGELOG.md";
     license = lib.licenses.mit;
     maintainers = with lib.maintainers; [ douzebis ];
     mainProgram = "protoscan";

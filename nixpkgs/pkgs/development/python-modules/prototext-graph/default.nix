@@ -36,7 +36,7 @@ buildPythonPackage (finalAttrs: {
   meta = {
     description = "Python bindings to the prototools scoring graph builder";
     homepage = "https://github.com/douzebis/prototools";
-    changelog = "https://github.com/douzebis/prototools/blob/${finalAttrs.src.rev}/CHANGELOG.md";
+    changelog = "https://github.com/douzebis/prototools/blob/${finalAttrs.src.tag}/CHANGELOG.md";
     license = lib.licenses.mit;
     maintainers = with lib.maintainers; [ douzebis ];
   };
