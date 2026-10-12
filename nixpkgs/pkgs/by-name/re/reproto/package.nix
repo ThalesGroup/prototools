@@ -22,7 +22,7 @@ python3Packages.buildPythonApplication (finalAttrs: {
     owner = "douzebis";
     repo = "prototools";
     tag = "v${finalAttrs.version}";
-    hash = lib.fakeHash;
+    hash = "sha256-SDgv/vrm7mJs1fjKPsn5zrp9s7rDj3W5qPdNt5OU/PE=";
   };
 
   sourceRoot = "${finalAttrs.src.name}/reproto";
