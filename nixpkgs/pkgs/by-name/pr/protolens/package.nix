@@ -88,8 +88,9 @@ rustPlatform.buildRustPackage (finalAttrs: {
     longDescription = ''
       protolens shows a binary protobuf message as a tree, decoded with or
       without its schema, and lets you navigate it, inspect each field's
-      bytes, and extract them. Its editor key opens the field's declaration
-      in Neovim; with buf installed, Neovim can then navigate the schema.
+      bytes, and extract them. Given a set of schemas, it infers the
+      message's type: it ranks every candidate type by how well it fits the
+      bytes, and decodes with the best.
     '';
     homepage = "https://github.com/douzebis/prototools";
     changelog = "https://github.com/douzebis/prototools/blob/${finalAttrs.src.tag}/CHANGELOG.md";
