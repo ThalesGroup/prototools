@@ -271,7 +271,8 @@ second, different file under a name already loaded.
 
 Implemented 2026-10-13, on the `upb` branch.
 
-- **S1:** the additions. Declaration paths are tested against
+- **S1:** the additions, plus `Field::parent_file` and
+  `Field::is_group_like` (below). Declaration paths are tested against
   protoc's own locations: `tests/fixtures/nested.proto`, compiled with
   `--include_source_info`, places three levels of messages and enums,
   and each definition's path finds protoc's location at the line that
@@ -298,12 +299,20 @@ Implemented 2026-10-13, on the `upb` branch.
   worktree) and this build; the baseline is deterministic (an A/A run
   was identical). Neither expected difference occurred: no case has a
   group extension or a file upb refuses, and each is covered by a test
-  instead.
+  instead. prototext's own gate, re-run after the naming fix below:
+  1,516 of 1,516.
 - **Suite:** 1,351 protolens tests before the new ones, 1,356 with them;
-  the workspace, 1,782, all passing under `env -i`. clippy and rustfmt
+  the workspace, 1,784, all passing under `env -i`. clippy and rustfmt
   clean. `nix-build -A ci` passes, protolens, the completion test and
   `nixpkgs-staging-check` included; the ten publishable crates package
   and build from their `.crate` files.
+- **A prototext-core fix found here.** protoc names a group-framed field
+  by its type only when it is group-like (`IsGroupLike`); an editions
+  DELIMITED field that is not, such as `delimited_from_file`, goes by its
+  own name. Both prototext and protolens named every group by its type.
+  The renderer now follows protoc's rule, and protolens's splice path
+  applies the same rule when it patches an override's group header
+  (previously it never patched one). Recorded in spec 0415 too.
 
 ### S10, benchmarks
 

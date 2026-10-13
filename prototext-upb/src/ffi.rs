@@ -105,6 +105,7 @@ extern "C" {
     // ── Field ─────────────────────────────────────────────────────────────
     pub fn upb_FieldDef_Name(f: *const FieldDef) -> *const c_char;
     pub fn upb_FieldDef_FullName(f: *const FieldDef) -> *const c_char;
+    pub fn upb_FieldDef_File(f: *const FieldDef) -> *const FileDef;
     pub fn upb_FieldDef_Number(f: *const FieldDef) -> u32;
     pub fn upb_FieldDef_Type(f: *const FieldDef) -> FieldType;
     pub fn upb_FieldDef_IsRepeated(f: *const FieldDef) -> bool;
@@ -196,6 +197,7 @@ mod tests {
             super::upb_MessageDef_IsMapEntry as *const (),
             super::upb_FieldDef_Name as *const (),
             super::upb_FieldDef_FullName as *const (),
+            super::upb_FieldDef_File as *const (),
             super::upb_FieldDef_Number as *const (),
             super::upb_FieldDef_Type as *const (),
             super::upb_FieldDef_IsRepeated as *const (),

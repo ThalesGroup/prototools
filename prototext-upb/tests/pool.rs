@@ -558,3 +558,28 @@ fn an_enum_knows_its_file_and_message() {
         pool.get_message_by_name("nested.Outer.Middle")
     );
 }
+
+/// protoc's `IsGroupLike` on the editions fixture: none of its DELIMITED
+/// fields is named as its type lowercased, so text format names each by
+/// its own name.
+#[test]
+fn delimited_editions_fields_are_not_group_like_unless_written_so() {
+    let pool = Pool::new();
+    pool.load_set(EDITIONS);
+    for path in [
+        "ed2023.Fields.delimited",
+        "ed2024.Holder.delimited_from_file",
+    ] {
+        let (message, field) = path.rsplit_once('.').unwrap();
+        let f = pool
+            .get_message_by_name(message)
+            .unwrap()
+            .get_field_by_name(field)
+            .unwrap();
+        assert!(f.is_group() && !f.is_group_like(), "{path}");
+    }
+    let ext = pool
+        .get_extension_by_name("ed2024.delimited_extension")
+        .unwrap();
+    assert!(ext.is_group() && !ext.is_group_like());
+}

@@ -34,6 +34,11 @@ impl ParentFieldOrExt {
         self.0.is_extension()
     }
 
+    /// protoc's `IsGroupLike`: text format names the field by its type.
+    pub(super) fn is_group_like(&self) -> bool {
+        self.0.is_group_like()
+    }
+
     /// Regular field: bare field name. Extension field: its full
     /// (dotted) name — there is no bracket-wrapping here, unlike
     /// `prototext_core::FieldOrExt::display_name` (that one is for

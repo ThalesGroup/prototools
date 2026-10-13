@@ -923,6 +923,35 @@ impl Field {
     }
 
     /// For an extension declared inside a message, that message.
+    /// The file that declares the field (for an extension, the file of
+    /// the `extend` block, not the extendee's).
+    pub fn parent_file(&self) -> File {
+        // SAFETY: a valid definition; every field has a file.
+        let p = unsafe { ffi::upb_FieldDef_File(self.raw()) };
+        self.wrap(p).map(Into::into).expect("a field has a file")
+    }
+
+    /// protoc's `IsGroupLike`: a group-framed field written the way a
+    /// proto2 `group` declares one — named as its type lowercased, the type
+    /// declared in the same file and the same scope as the field. Text
+    /// format names such a field by its type (`MyGroup { … }`) and any
+    /// other by its own name. Every proto2 group is group-like; an editions
+    /// `DELIMITED` field is only if it was written to look like one.
+    pub fn is_group_like(&self) -> bool {
+        let Kind::Message(m) = self.kind() else {
+            return false;
+        };
+        let scope = if self.is_extension() {
+            self.extension_scope()
+        } else {
+            Some(self.containing_message())
+        };
+        self.is_group()
+            && self.name() == m.name().to_ascii_lowercase()
+            && m.parent_file() == self.parent_file()
+            && m.parent_message() == scope
+    }
+
     pub fn extension_scope(&self) -> Option<Message> {
         // SAFETY: a valid definition.
         self.wrap(unsafe { ffi::upb_FieldDef_ExtensionScope(self.raw()) })

@@ -751,15 +751,17 @@ impl Sink for TextSink {
                 let annotations = ANNOTATIONS.with(|c| c.get());
                 push_indent(&mut self.out);
                 if let Some(fs) = field_schema.filter(|fs| fs.is_group()) {
-                    if fs.is_extension() {
-                        // protoc names a group extension like any other:
-                        // `[pkg.field]`, not by its group type.
-                        fs.write_display_name(&mut self.out);
-                    } else if let Kind::Message(msg_desc) = fs.kind() {
-                        // A group field is named by its type (`MyGroup`).
-                        self.out.extend_from_slice(msg_desc.name().as_bytes());
-                    } else {
-                        write_dec_u64(field_number, &mut self.out);
+                    match fs.kind() {
+                        // protoc's text format names a group-like field
+                        // by its type (`MyGroup`): every proto2 group, and
+                        // an editions DELIMITED field written to look like
+                        // one. Any other delimited field goes by its own
+                        // name, and an extension by `[pkg.field]`, as
+                        // every other field does.
+                        Kind::Message(msg_desc) if !fs.is_extension() && fs.is_group_like() => {
+                            self.out.extend_from_slice(msg_desc.name().as_bytes());
+                        }
+                        _ => fs.write_display_name(&mut self.out),
                     }
                 } else {
                     write_dec_u64(field_number, &mut self.out);

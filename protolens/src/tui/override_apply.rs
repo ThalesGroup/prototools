@@ -1443,6 +1443,25 @@ impl App {
             }
         };
 
+        // What a group header is called (protoc's `IsGroupLike` rule, as
+        // `prototext-core`'s renderer applies it): a rename, or the field's
+        // own name when its parent declares it and it is not group-like
+        // (an editions DELIMITED field, or an extension); otherwise the
+        // group's type name, as for a proto2 group or a group no schema
+        // declares (a MessageSet `Item`). The wrapper's field, `_`, is
+        // never group-like, so the header always carries the placeholder.
+        let group_header_name = match &target_desc {
+            Some(decode::WrapperTarget::Message(m))
+                if !renamed
+                    && self
+                        .parent_field(idx)
+                        .is_none_or(|f| f.is_group_like() && !f.is_extension()) =>
+            {
+                m.name().to_string()
+            }
+            _ => header_field_name.clone(),
+        };
+
         // Decode `idx`'s own real tag+payload bytes directly (spec 0135
         // G1) — no synthetic tag prepended.
         //
@@ -1609,17 +1628,12 @@ impl App {
         // replacement of the synthetic field's placeholder name (`"_"`,
         // `register_wrapper`'s fixed literal) with the real display name
         // — the header line itself is otherwise already correct (spec
-        // 0135 G1). Nor for `Type::Group`: `TextSink::begin_nested` labels
-        // a group header with the group's own message type name, never
-        // the field's declared name — standard proto2 group text-format
-        // convention — so the `"_"` placeholder is never actually
-        // present there. Any group target that needs a display name
-        // other than its own type name must instead be named that way
-        // at the source (e.g. `register_message_set_item`'s synthetic
-        // shape is itself named `Item`, matching `prototext-core`'s own
-        // native MessageSet rendering convention) rather than patched
-        // here after the fact. For the raw (`target: None`) case, there
-        // is no synthetic field/placeholder to patch — the header
+        // 0135 G1). A group header carries the placeholder too, and takes
+        // `group_header_name` (above): the synthetic shape behind a
+        // MessageSet item is itself named `Item` so that this yields
+        // `prototext-core`'s own native MessageSet label. For the raw
+        // (`target: None`) case, there is no synthetic field/placeholder
+        // to patch — the header
         // already shows the node's own numeric field number straight off
         // the wire — except when an active override entry gives this
         // node its own rename (spec 0119 §G4), which must still show up
@@ -1644,9 +1658,8 @@ impl App {
         };
         for line in new_lines.iter_mut().take(patch_rows) {
             let patched = match field_type {
-                Some(ft) if ft != Type::Group => {
-                    decode::patch_synthetic_field_name(line, &header_field_name)
-                }
+                Some(Type::Group) => decode::patch_synthetic_field_name(line, &group_header_name),
+                Some(_) => decode::patch_synthetic_field_name(line, &header_field_name),
                 None if renamed => {
                     decode::patch_raw_field_name(line, u64::from(field_number), &field_name)
                 }

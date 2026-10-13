@@ -465,6 +465,79 @@ mod tests {
         assert_eq!(&*wire, blob, "the group extension round-trips");
     }
 
+    /// protoc names a group-framed field by its type only when the field
+    /// is group-like (its name is the type's lowercased, both declared in
+    /// one scope): every proto2 `group`. A group-framed field that is not,
+    /// such as an editions DELIMITED field, goes by its own name.
+    ///
+    ///   message Host {
+    ///     optional group Mygroup = 1 { optional int32 a = 1; }
+    ///     // Not writable in a .proto, but a valid descriptor: what an
+    ///     // editions `Mygroup other = 2 [features.message_encoding =
+    ///     // DELIMITED]` resolves to.
+    ///     Mygroup other = 2, group-framed;
+    ///   }
+    #[test]
+    fn a_group_framed_field_is_named_by_its_type_only_when_group_like() {
+        use super::descriptor::field_descriptor_proto::{Label, Type};
+
+        let group = |name: &str, number: i32| FieldDescriptorProto {
+            name: Some(name.into()),
+            number: Some(number),
+            label: Some(Label::Optional as i32),
+            r#type: Some(Type::Group as i32),
+            type_name: Some(".g.Host.Mygroup".into()),
+            ..Default::default()
+        };
+        let file = FileDescriptorProto {
+            name: Some("g.proto".into()),
+            package: Some("g".into()),
+            syntax: Some("proto2".into()),
+            message_type: vec![DescriptorProto {
+                name: Some("Host".into()),
+                field: vec![group("mygroup", 1), group("other", 2)],
+                nested_type: vec![DescriptorProto {
+                    name: Some("Mygroup".into()),
+                    field: vec![FieldDescriptorProto {
+                        name: Some("a".into()),
+                        number: Some(1),
+                        label: Some(Label::Optional as i32),
+                        r#type: Some(Type::Int32 as i32),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let bytes = FileDescriptorSet { file: vec![file] }.encode_to_vec();
+        let schema = parse_schema(&bytes, "g.Host").unwrap();
+        let host = schema.root_descriptor().unwrap();
+        assert!(host.get_field(1).unwrap().is_group_like());
+        assert!(!host.get_field(2).unwrap().is_group_like());
+
+        // group 1 { a = 1 }, then group 2 { a = 2 }.
+        let blob = b"\x0b\x08\x01\x0c\x13\x08\x02\x14";
+        let plain = crate::render_as_text(blob, Some(&host), crate::RenderOpts::default()).unwrap();
+        assert_eq!(
+            String::from_utf8(plain).unwrap(),
+            "Mygroup {\n a: 1\n}\nother {\n a: 2\n}\n"
+        );
+
+        let annotated = crate::render_as_text(
+            blob,
+            Some(&host),
+            crate::RenderOpts {
+                include_annotations: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let wire = crate::render_as_bytes(&annotated, crate::RenderOpts::default()).unwrap();
+        assert_eq!(&*wire, blob, "both groups round-trip");
+    }
+
     #[test]
     fn the_gate_refuses_a_file_with_a_malformed_top_level() {
         // A well-named file followed by a field whose length runs past the end.

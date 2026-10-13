@@ -125,6 +125,13 @@ impl FieldOrExt {
         self.is_group
     }
 
+    /// Whether text format names this group by its type rather than by
+    /// the field's own name: protoc's `IsGroupLike`. Asked of upb only
+    /// when a group header is written, which is rare enough not to cache.
+    pub(super) fn is_group_like(&self) -> bool {
+        self.field.is_group_like()
+    }
+
     /// Whether the schema *declares* this field packed (spec 0371 S1/S3).
     pub(super) fn declared_packed(&self) -> bool {
         self.declared_packed

@@ -503,5 +503,14 @@ the same commit.
   the field was an extension, a path no extension had reached before. It
   now writes `[g.ext]`, as protoc does, and a test pins both the text and
   the byte-exact round trip. No golden case has a group extension.
+- **A second naming bug, found during spec 0417.** Every group header was
+  named by its type. protoc does so only for a group-like field (its name
+  the type's lowercased, both declared in one scope, `IsGroupLike`): every
+  proto2 group, but not an editions DELIMITED field such as
+  `ed2023.Inner delimited_from_file = 1`, which protoc writes
+  `delimited_from_file {` and this branch wrote `Inner {`. The header now
+  follows protoc's rule (`Field::is_group_like`); tests pin both shapes
+  and the round trip. The golden corpora have no editions schema, and
+  were unchanged.
 - **Not done:** the ClusterFuzzLite setup (test plan 3), after the
   branch's second step; test plan 5 and 8, which are downstream.
