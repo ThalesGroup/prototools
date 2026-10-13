@@ -21,7 +21,7 @@
 
 use std::collections::HashMap;
 
-use prost_reflect::Cardinality;
+use prototext_core::schema::Cardinality;
 
 /// What one node's rendering came from: which override produced the text
 /// currently on screen, and under what field name it was rendered.

@@ -479,6 +479,20 @@ impl FieldDescriptorProto {
     pub fn number(&self) -> i32 {
         self.number.unwrap_or(0)
     }
+
+    /// The type, or `Double` when absent or unknown, as prost's getter.
+    pub fn r#type(&self) -> field_descriptor_proto::Type {
+        self.r#type
+            .and_then(|t| field_descriptor_proto::Type::try_from(t).ok())
+            .unwrap_or(field_descriptor_proto::Type::Double)
+    }
+
+    /// The label, or `Optional` when absent or unknown, as prost's getter.
+    pub fn label(&self) -> field_descriptor_proto::Label {
+        self.label
+            .and_then(|l| field_descriptor_proto::Label::try_from(l).ok())
+            .unwrap_or(field_descriptor_proto::Label::Optional)
+    }
 }
 
 impl Encode for FieldDescriptorProto {
@@ -545,6 +559,61 @@ pub mod field_descriptor_proto {
         Sint64 = 18,
     }
 
+    impl Type {
+        const ALL: [Type; 18] = [
+            Type::Double,
+            Type::Float,
+            Type::Int64,
+            Type::Uint64,
+            Type::Int32,
+            Type::Fixed64,
+            Type::Fixed32,
+            Type::Bool,
+            Type::String,
+            Type::Group,
+            Type::Message,
+            Type::Bytes,
+            Type::Uint32,
+            Type::Enum,
+            Type::Sfixed32,
+            Type::Sfixed64,
+            Type::Sint32,
+            Type::Sint64,
+        ];
+
+        /// The value's name in `descriptor.proto`, as prost spells it.
+        pub fn as_str_name(&self) -> &'static str {
+            match self {
+                Type::Double => "TYPE_DOUBLE",
+                Type::Float => "TYPE_FLOAT",
+                Type::Int64 => "TYPE_INT64",
+                Type::Uint64 => "TYPE_UINT64",
+                Type::Int32 => "TYPE_INT32",
+                Type::Fixed64 => "TYPE_FIXED64",
+                Type::Fixed32 => "TYPE_FIXED32",
+                Type::Bool => "TYPE_BOOL",
+                Type::String => "TYPE_STRING",
+                Type::Group => "TYPE_GROUP",
+                Type::Message => "TYPE_MESSAGE",
+                Type::Bytes => "TYPE_BYTES",
+                Type::Uint32 => "TYPE_UINT32",
+                Type::Enum => "TYPE_ENUM",
+                Type::Sfixed32 => "TYPE_SFIXED32",
+                Type::Sfixed64 => "TYPE_SFIXED64",
+                Type::Sint32 => "TYPE_SINT32",
+                Type::Sint64 => "TYPE_SINT64",
+            }
+        }
+    }
+
+    impl TryFrom<i32> for Type {
+        type Error = i32;
+
+        fn try_from(v: i32) -> Result<Self, i32> {
+            Type::ALL.into_iter().find(|t| *t as i32 == v).ok_or(v)
+        }
+    }
+
     /// `FieldDescriptorProto.Label`.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     #[repr(i32)]
@@ -552,6 +621,19 @@ pub mod field_descriptor_proto {
         Optional = 1,
         Required = 2,
         Repeated = 3,
+    }
+
+    impl TryFrom<i32> for Label {
+        type Error = i32;
+
+        fn try_from(v: i32) -> Result<Self, i32> {
+            match v {
+                1 => Ok(Label::Optional),
+                2 => Ok(Label::Required),
+                3 => Ok(Label::Repeated),
+                _ => Err(v),
+            }
+        }
     }
 }
 
@@ -663,6 +745,108 @@ impl Encode for EnumValueDescriptorProto {
     }
 }
 
+/// `google.protobuf.SourceCodeInfo`: where each definition of a file was
+/// declared.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SourceCodeInfo {
+    pub location: Vec<source_code_info::Location>,
+}
+
+impl SourceCodeInfo {
+    /// The `source_code_info` (field 9) of a serialized
+    /// `FileDescriptorProto`, if it has one. Read on its own, since
+    /// [`FileDescriptorProto`] does not keep it.
+    pub fn of_file(file: &[u8]) -> Result<Option<SourceCodeInfo>, DecodeError> {
+        let mut info = None;
+        for (n, v) in fields(file)? {
+            if n == 9 {
+                info = Some(SourceCodeInfo::read(bytes(v)?)?);
+            }
+        }
+        Ok(info)
+    }
+}
+
+impl Encode for SourceCodeInfo {
+    fn write(&self, out: &mut Vec<u8>) {
+        for l in &self.location {
+            put_msg(out, 1, l);
+        }
+    }
+
+    fn read(buf: &[u8]) -> Result<Self, DecodeError> {
+        let mut m = SourceCodeInfo::default();
+        for (n, v) in fields(buf)? {
+            if n == 1 {
+                m.location
+                    .push(source_code_info::Location::read(bytes(v)?)?);
+            }
+        }
+        Ok(m)
+    }
+}
+
+pub mod source_code_info {
+    use super::{fields, put_bytes, put_varint, read_varint, DecodeError, Encode, Value};
+
+    /// `google.protobuf.SourceCodeInfo.Location`, without comments.
+    #[derive(Debug, Clone, Default, PartialEq)]
+    pub struct Location {
+        pub path: Vec<i32>,
+        /// `[start line, start column, end line, end column]`, or three
+        /// values when the span ends on its start line; all zero-based.
+        pub span: Vec<i32>,
+    }
+
+    /// Append a repeated int32 read either packed or one value per record:
+    /// a parser must accept both.
+    fn push_int32s(out: &mut Vec<i32>, v: Value<'_>) -> Result<(), DecodeError> {
+        match v {
+            Value::Varint(n) => out.push(n as i32),
+            Value::Len(b) => {
+                let mut pos = 0;
+                while pos < b.len() {
+                    let Some(n) = read_varint(b, &mut pos) else {
+                        return Err(DecodeError("malformed packed varint".into()));
+                    };
+                    out.push(n as i32);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn put_packed(out: &mut Vec<u8>, number: u32, values: &[i32]) {
+        if values.is_empty() {
+            return;
+        }
+        let mut payload = Vec::new();
+        for v in values {
+            put_varint(&mut payload, i64::from(*v) as u64);
+        }
+        put_bytes(out, number, &payload);
+    }
+
+    impl Encode for Location {
+        fn write(&self, out: &mut Vec<u8>) {
+            put_packed(out, 1, &self.path);
+            put_packed(out, 2, &self.span);
+        }
+
+        fn read(buf: &[u8]) -> Result<Self, DecodeError> {
+            let mut m = Location::default();
+            for (n, v) in fields(buf)? {
+                match n {
+                    1 => push_int32s(&mut m.path, v)?,
+                    2 => push_int32s(&mut m.span, v)?,
+                    _ => {}
+                }
+            }
+            Ok(m)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::field_descriptor_proto::{Label, Type};
@@ -753,6 +937,100 @@ mod tests {
             .get_message_by_name("pkg.M.N")
             .unwrap()
             .is_message_set_wire_format());
+    }
+
+    #[test]
+    fn type_names_are_prosts() {
+        let names: Vec<&str> = (1..=18)
+            .map(|v| Type::try_from(v).unwrap().as_str_name())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "TYPE_DOUBLE",
+                "TYPE_FLOAT",
+                "TYPE_INT64",
+                "TYPE_UINT64",
+                "TYPE_INT32",
+                "TYPE_FIXED64",
+                "TYPE_FIXED32",
+                "TYPE_BOOL",
+                "TYPE_STRING",
+                "TYPE_GROUP",
+                "TYPE_MESSAGE",
+                "TYPE_BYTES",
+                "TYPE_UINT32",
+                "TYPE_ENUM",
+                "TYPE_SFIXED32",
+                "TYPE_SFIXED64",
+                "TYPE_SINT32",
+                "TYPE_SINT64",
+            ]
+        );
+        for v in 1..=18 {
+            assert_eq!(Type::try_from(v).unwrap() as i32, v);
+        }
+        assert_eq!(Type::try_from(0), Err(0));
+        assert_eq!(Type::try_from(19), Err(19));
+    }
+
+    #[test]
+    fn typed_getters_default_as_prosts() {
+        let f = FieldDescriptorProto {
+            r#type: Some(Type::Sint64 as i32),
+            label: Some(Label::Repeated as i32),
+            ..Default::default()
+        };
+        assert_eq!((f.r#type(), f.label()), (Type::Sint64, Label::Repeated));
+        let unset = FieldDescriptorProto::default();
+        assert_eq!(
+            (unset.r#type(), unset.label()),
+            (Type::Double, Label::Optional)
+        );
+        let unknown = FieldDescriptorProto {
+            r#type: Some(99),
+            label: Some(99),
+            ..Default::default()
+        };
+        assert_eq!(
+            (unknown.r#type(), unknown.label()),
+            (Type::Double, Label::Optional)
+        );
+    }
+
+    #[test]
+    fn source_code_info_reads_packed_and_expanded_paths() {
+        let packed = SourceCodeInfo {
+            location: vec![source_code_info::Location {
+                path: vec![4, 1, 3, 0],
+                span: vec![12, 2, -1],
+            }],
+        };
+        // The same location, one record per value.
+        let mut expanded = Vec::new();
+        for v in [4, 1, 3, 0] {
+            put_int32(&mut expanded, 1, &Some(v));
+        }
+        for v in [12, 2, -1] {
+            put_int32(&mut expanded, 2, &Some(v));
+        }
+        let mut info = Vec::new();
+        put_bytes(&mut info, 1, &expanded);
+        assert_eq!(SourceCodeInfo::decode(&info).unwrap(), packed);
+        assert_eq!(
+            SourceCodeInfo::decode(&packed.encode_to_vec()).unwrap(),
+            packed
+        );
+
+        // Found as field 9 of a file, and absent from one without it.
+        let mut file = FileDescriptorProto {
+            name: Some("a.proto".into()),
+            ..Default::default()
+        }
+        .encode_to_vec();
+        assert_eq!(SourceCodeInfo::of_file(&file).unwrap(), None);
+        put_msg(&mut file, 9, &packed);
+        assert_eq!(SourceCodeInfo::of_file(&file).unwrap(), Some(packed));
     }
 
     #[test]

@@ -308,8 +308,8 @@ mod tests {
         // synthetically in memory rather than read from a sibling
         // crate's fixture by relative path, which isn't available in a
         // sandboxed Nix build.
-        use prost_types::field_descriptor_proto::{Label, Type};
-        use prost_types::{
+        use prototext_core::schema::descriptor::field_descriptor_proto::{Label, Type};
+        use prototext_core::schema::descriptor::{
             DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
         };
 

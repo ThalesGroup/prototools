@@ -335,7 +335,7 @@ fn a_folded_body_is_represented_by_its_fold_header_row() {
 /// the rule under test never runs. `Deep` puts a plain level between
 /// the two. Returns `(app, m, h)`.
 fn shrinkable_chain_fixture() -> (App, usize, usize) {
-    use prost_types::field_descriptor_proto::{Label, Type};
+    use prototext_core::schema::descriptor::field_descriptor_proto::{Label, Type};
 
     let wraps = |name: &str, inner: &str| {
         message(

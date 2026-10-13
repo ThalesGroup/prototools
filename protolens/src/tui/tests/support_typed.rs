@@ -9,9 +9,13 @@
 use super::super::*;
 use super::support_build::{fixture_app, fixture_under, TempFile};
 use super::support_inspect::node_with_type;
-use prost_types::field_descriptor_proto::{Label, Type};
-use prost_types::{DescriptorProto, EnumDescriptorProto, EnumValueDescriptorProto};
-use prost_types::{FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet};
+use prototext_core::schema::descriptor::field_descriptor_proto::{Label, Type};
+use prototext_core::schema::descriptor::{
+    DescriptorProto, EnumDescriptorProto, EnumValueDescriptorProto,
+};
+use prototext_core::schema::descriptor::{
+    FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
+};
 
 use crate::decode::{decode, RootType};
 
@@ -145,15 +149,12 @@ pub(super) fn enum_field_fixture() -> (App, usize) {
             EnumValueDescriptorProto {
                 name: Some("EPHEMERAL".to_string()),
                 number: Some(0),
-                ..Default::default()
             },
             EnumValueDescriptorProto {
                 name: Some("PERSISTENT".to_string()),
                 number: Some(1),
-                ..Default::default()
             },
         ],
-        ..Default::default()
     };
     let outer_desc = DescriptorProto {
         name: Some("Outer3".to_string()),

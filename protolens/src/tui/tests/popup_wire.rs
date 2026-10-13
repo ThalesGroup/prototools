@@ -8,8 +8,8 @@ use super::super::popup::HoverTarget;
 use super::super::wire::{PackedCursor, Region, WireHit, WirePalette, WirePart};
 use super::super::*;
 use super::support::*;
-use prost_types::field_descriptor_proto::{Label, Type};
-use prost_types::FileDescriptorSet;
+use prototext_core::schema::descriptor::field_descriptor_proto::{Label, Type};
+use prototext_core::schema::descriptor::FileDescriptorSet;
 use ratatui::layout::Rect;
 
 /// How tall a box may be in these tests unless the test is *about* the

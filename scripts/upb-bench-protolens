@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# Time and measure a protolens binary on spec 0417's S10 cases.
+#
+# Usage: scripts/upb-bench-protolens PROTOLENS OUTDIR
+#
+# Environment: UPB_GOLDEN_GOOGLEAPIS, as for scripts/upb-golden-protolens.
+#
+# Pinned and exclusive as scripts/upb-bench: one E-core (BENCH_CPUS,
+# default 4) and the machine-wide bench lock. Writes OUTDIR/times.json
+# (hyperfine) and OUTDIR/rss.txt (peak resident size of one run of each
+# case, in KiB).
+set -euo pipefail
+
+pl=$(realpath "$1")
+out=$2
+ga=${UPB_GOLDEN_GOOGLEAPIS:?set UPB_GOLDEN_GOOGLEAPIS}
+cpus=${BENCH_CPUS:-4}
+repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+mkdir -p "$out"
+
+unset PROTOTEXT_DESCRIPTOR_SET PROTOTEXT_DEFAULT_DESCRIPTOR PROTOTEXT_MIN_SCORE
+
+# The eager case needs googleapis.desc without its sidecars beside it.
+eager=$out/eager
+mkdir -p "$eager"
+cp "$ga/googleapis.desc" "$eager/googleapis.desc"
+
+inst=$ga/instances/google/spanner/v1/PartitionQueryRequest.pb
+typ=google.spanner.v1.PartitionQueryRequest
+dpb=$repo/prototext-core/fixtures/descriptor.pb
+anom=$repo/tests/fixtures/anomalies.pb
+
+declare -A cases=(
+    [quit-lazy]="$pl --descriptor-set $ga/googleapis.desc $inst quit"
+    [quit-lazy-raw]="$pl --descriptor-set $ga/googleapis.desc --raw $inst quit"
+    [quit-eager]="$pl --descriptor-set $eager/googleapis.desc --type $typ $inst quit"
+    [export-desc]="$pl --descriptor-set $ga/googleapis.desc --type google.protobuf.FileDescriptorSet $ga/googleapis.desc export /"
+    [script]="$pl --descriptor-set $dpb --type google.protobuf.FileDescriptorProto $anom script"
+)
+names=(quit-lazy quit-lazy-raw quit-eager export-desc script)
+
+exec 8>/tmp/prototools-bench.lock
+flock -n 8 || { echo "upb-bench-protolens: a build or bench holds the lock" >&2; exit 1; }
+
+args=()
+for n in "${names[@]}"; do
+    args+=(-n "$n" "${cases[$n]} < /dev/null > /dev/null 2>&1")
+done
+taskset -c "$cpus" hyperfine --warmup 3 --min-runs 10 \
+    --export-json "$out/times.json" "${args[@]}"
+
+: > "$out/rss.txt"
+for n in "${names[@]}"; do
+    kib=$(taskset -c "$cpus" python3 -c '
+import resource, subprocess, sys
+subprocess.run(sys.argv[1], shell=True, stdin=subprocess.DEVNULL,
+               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+print(resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)' "${cases[$n]}")
+    printf '%-14s %s\n' "$n" "$kib" >> "$out/rss.txt"
+done
+cat "$out/rss.txt"

@@ -10,8 +10,8 @@
 
 use super::*;
 
-use prost_reflect::prost_types::field_descriptor_proto::{Label, Type};
-use prost_reflect::Cardinality;
+use prototext_core::schema::descriptor::field_descriptor_proto::{Label, Type};
+use prototext_core::schema::Cardinality;
 
 impl App {
     /// Builds the `ResolvedField` list for `export --descriptor-*` (spec
@@ -65,81 +65,82 @@ impl App {
                 Label::Optional
             };
 
-            let (r#type, type_name, referenced_file) =
-                match self.own_field_override(idx, g.field_number.into()) {
-                    // Tiers 1-2: an active PathField/FqdnField override.
-                    Some(None) => (Type::Bytes, None, None),
-                    Some(Some(fqdn)) => {
-                        if let Some(desc) = self.ctx.pool().get_message_by_name(&fqdn) {
-                            (
-                                Type::Message,
-                                Some(format!(".{fqdn}")),
-                                Some(desc.parent_file()),
-                            )
-                        } else if let Some(desc) = self.ctx.pool().get_enum_by_name(&fqdn) {
-                            (
-                                Type::Enum,
-                                Some(format!(".{fqdn}")),
-                                Some(desc.parent_file()),
-                            )
-                        } else {
-                            return Err(format!(
-                                "export --descriptor: override target '{fqdn}' not found"
-                            ));
+            let (r#type, type_name, referenced_file) = match self
+                .own_field_override(idx, g.field_number.into())
+            {
+                // Tiers 1-2: an active PathField/FqdnField override.
+                Some(None) => (Type::Bytes, None, None),
+                Some(Some(fqdn)) => {
+                    if let Some(desc) = self.ctx.pool().get_message_by_name(&fqdn) {
+                        (
+                            Type::Message,
+                            Some(format!(".{fqdn}")),
+                            Some(desc.parent_file()),
+                        )
+                    } else if let Some(desc) = self.ctx.pool().get_enum_by_name(&fqdn) {
+                        (
+                            Type::Enum,
+                            Some(format!(".{fqdn}")),
+                            Some(desc.parent_file()),
+                        )
+                    } else {
+                        return Err(format!(
+                            "export --descriptor: override target '{fqdn}' not found"
+                        ));
+                    }
+                }
+                // Tier 3: the child's own schema field (`natural_type`'s
+                // resolution, kept as a `Kind` here so the message/enum
+                // descriptor's own file is available for G6d's closure).
+                None => match parent_field_desc.map(|f| f.kind()) {
+                    Some(prototext_core::schema::Kind::Message(desc)) => (
+                        Type::Message,
+                        Some(format!(".{}", desc.full_name())),
+                        Some(desc.parent_file()),
+                    ),
+                    Some(prototext_core::schema::Kind::Enum(desc)) => (
+                        Type::Enum,
+                        Some(format!(".{}", desc.full_name())),
+                        Some(desc.parent_file()),
+                    ),
+                    Some(prototext_core::schema::Kind::Double) => (Type::Double, None, None),
+                    Some(prototext_core::schema::Kind::Float) => (Type::Float, None, None),
+                    Some(prototext_core::schema::Kind::Int32) => (Type::Int32, None, None),
+                    Some(prototext_core::schema::Kind::Int64) => (Type::Int64, None, None),
+                    Some(prototext_core::schema::Kind::Uint32) => (Type::Uint32, None, None),
+                    Some(prototext_core::schema::Kind::Uint64) => (Type::Uint64, None, None),
+                    Some(prototext_core::schema::Kind::Sint32) => (Type::Sint32, None, None),
+                    Some(prototext_core::schema::Kind::Sint64) => (Type::Sint64, None, None),
+                    Some(prototext_core::schema::Kind::Fixed32) => (Type::Fixed32, None, None),
+                    Some(prototext_core::schema::Kind::Fixed64) => (Type::Fixed64, None, None),
+                    Some(prototext_core::schema::Kind::Sfixed32) => (Type::Sfixed32, None, None),
+                    Some(prototext_core::schema::Kind::Sfixed64) => (Type::Sfixed64, None, None),
+                    Some(prototext_core::schema::Kind::Bool) => (Type::Bool, None, None),
+                    Some(prototext_core::schema::Kind::String) => (Type::String, None, None),
+                    Some(prototext_core::schema::Kind::Bytes) => (Type::Bytes, None, None),
+                    // Tier 4: no override, no schema — guess from the
+                    // (first) child's own effective wire type (a
+                    // packed-record child's effective wire type is its
+                    // reconstructed WT_LEN framing).
+                    None => {
+                        let wire_type = decode::effective_wire_type(&self.tree[child].span);
+                        match wire_type {
+                            WT_VARINT => (Type::Int64, None, None),
+                            WT_I32 => (Type::Fixed32, None, None),
+                            WT_I64 => (Type::Fixed64, None, None),
+                            WT_LEN => (Type::Bytes, None, None),
+                            WT_START_GROUP => {
+                                return Err(format!(
+                                    "export --descriptor: field {} is an untyped \
+                                         group — not supported",
+                                    g.field_number
+                                ));
+                            }
+                            _ => (Type::Bytes, None, None),
                         }
                     }
-                    // Tier 3: the child's own schema field (`natural_type`'s
-                    // resolution, kept as a `Kind` here so the message/enum
-                    // descriptor's own file is available for G6d's closure).
-                    None => match parent_field_desc.map(|f| f.kind()) {
-                        Some(prost_reflect::Kind::Message(desc)) => (
-                            Type::Message,
-                            Some(format!(".{}", desc.full_name())),
-                            Some(desc.parent_file()),
-                        ),
-                        Some(prost_reflect::Kind::Enum(desc)) => (
-                            Type::Enum,
-                            Some(format!(".{}", desc.full_name())),
-                            Some(desc.parent_file()),
-                        ),
-                        Some(prost_reflect::Kind::Double) => (Type::Double, None, None),
-                        Some(prost_reflect::Kind::Float) => (Type::Float, None, None),
-                        Some(prost_reflect::Kind::Int32) => (Type::Int32, None, None),
-                        Some(prost_reflect::Kind::Int64) => (Type::Int64, None, None),
-                        Some(prost_reflect::Kind::Uint32) => (Type::Uint32, None, None),
-                        Some(prost_reflect::Kind::Uint64) => (Type::Uint64, None, None),
-                        Some(prost_reflect::Kind::Sint32) => (Type::Sint32, None, None),
-                        Some(prost_reflect::Kind::Sint64) => (Type::Sint64, None, None),
-                        Some(prost_reflect::Kind::Fixed32) => (Type::Fixed32, None, None),
-                        Some(prost_reflect::Kind::Fixed64) => (Type::Fixed64, None, None),
-                        Some(prost_reflect::Kind::Sfixed32) => (Type::Sfixed32, None, None),
-                        Some(prost_reflect::Kind::Sfixed64) => (Type::Sfixed64, None, None),
-                        Some(prost_reflect::Kind::Bool) => (Type::Bool, None, None),
-                        Some(prost_reflect::Kind::String) => (Type::String, None, None),
-                        Some(prost_reflect::Kind::Bytes) => (Type::Bytes, None, None),
-                        // Tier 4: no override, no schema — guess from the
-                        // (first) child's own effective wire type (a
-                        // packed-record child's effective wire type is its
-                        // reconstructed WT_LEN framing).
-                        None => {
-                            let wire_type = decode::effective_wire_type(&self.tree[child].span);
-                            match wire_type {
-                                WT_VARINT => (Type::Int64, None, None),
-                                WT_I32 => (Type::Fixed32, None, None),
-                                WT_I64 => (Type::Fixed64, None, None),
-                                WT_LEN => (Type::Bytes, None, None),
-                                WT_START_GROUP => {
-                                    return Err(format!(
-                                        "export --descriptor: field {} is an untyped \
-                                         group — not supported",
-                                        g.field_number
-                                    ));
-                                }
-                                _ => (Type::Bytes, None, None),
-                            }
-                        }
-                    },
-                };
+                },
+            };
 
             fields.push(export_descriptor::ResolvedField {
                 number: g.field_number,

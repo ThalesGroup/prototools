@@ -543,6 +543,21 @@ from_handle!(Oneof, ffi::OneofDef);
 from_handle!(Enum, ffi::EnumDef);
 from_handle!(EnumValue, ffi::EnumValueDef);
 
+// Field numbers in `descriptor.proto` that a declaration path steps through.
+const FILE_MESSAGE_TYPE: i32 = 4;
+const FILE_ENUM_TYPE: i32 = 5;
+const MESSAGE_NESTED_TYPE: i32 = 3;
+const MESSAGE_ENUM_TYPE: i32 = 4;
+
+/// The position of `def` among `siblings`, which upb lists in declaration
+/// order.
+fn sibling_index<T: PartialEq>(mut siblings: impl Iterator<Item = T>, def: &T) -> i32 {
+    let i = siblings
+        .position(|s| s == *def)
+        .expect("a definition is among its parent's children");
+    i32::try_from(i).expect("upb counts children in an int")
+}
+
 /// Iterate `count` children of `$owner`, built by `$get(raw, i)`.
 macro_rules! children {
     ($owner:expr, $count:path, $get:path) => {{
@@ -652,6 +667,22 @@ impl Message {
         // SAFETY: a valid definition.
         self.wrap(unsafe { ffi::upb_MessageDef_ContainingType(self.raw()) })
             .map(Into::into)
+    }
+
+    /// The message's `SourceCodeInfo.Location.path` in its file: `[4, i]`
+    /// at top level, its parent's path then `[3, j]` when nested.
+    pub fn declaration_path(&self) -> Vec<i32> {
+        match self.parent_message() {
+            None => vec![
+                FILE_MESSAGE_TYPE,
+                sibling_index(self.parent_file().messages(), self),
+            ],
+            Some(m) => {
+                let mut path = m.declaration_path();
+                path.extend([MESSAGE_NESTED_TYPE, sibling_index(m.child_messages(), self)]);
+                path
+            }
+        }
     }
 
     /// Fields in declaration order (extensions excluded).
@@ -951,6 +982,35 @@ impl Enum {
     pub fn name(&self) -> &str {
         // SAFETY: a valid definition.
         upb_str(self, unsafe { ffi::upb_EnumDef_Name(self.raw()) })
+    }
+
+    pub fn parent_file(&self) -> File {
+        // SAFETY: a valid definition; every enum has a file.
+        let p = unsafe { ffi::upb_EnumDef_File(self.raw()) };
+        self.wrap(p).map(Into::into).expect("an enum has a file")
+    }
+
+    /// The message this enum is nested in, if any.
+    pub fn parent_message(&self) -> Option<Message> {
+        // SAFETY: a valid definition.
+        self.wrap(unsafe { ffi::upb_EnumDef_ContainingType(self.raw()) })
+            .map(Into::into)
+    }
+
+    /// The enum's `SourceCodeInfo.Location.path` in its file: `[5, i]` at
+    /// top level, its message's path then `[4, k]` when nested.
+    pub fn declaration_path(&self) -> Vec<i32> {
+        match self.parent_message() {
+            None => vec![
+                FILE_ENUM_TYPE,
+                sibling_index(self.parent_file().enums(), self),
+            ],
+            Some(m) => {
+                let mut path = m.declaration_path();
+                path.extend([MESSAGE_ENUM_TYPE, sibling_index(m.child_enums(), self)]);
+                path
+            }
+        }
     }
 
     /// A closed enum (proto2, or editions' `CLOSED`) rejects unknown values.

@@ -721,7 +721,7 @@ impl App {
                 continue;
             };
             let _ = decode::register_wrapper(
-                self.ctx.pool_mut(),
+                self.ctx.pool(),
                 field_number,
                 field_type,
                 target_desc,

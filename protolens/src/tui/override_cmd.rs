@@ -57,7 +57,7 @@ pub(super) struct OverrideArgs {
     /// Explicit cardinality (spec 0348 §S1): `None` defers to the
     /// schema-derived fallback; `Some(c)` forces `c` in
     /// `register_wrapper`/`splice_override`.
-    pub(super) cardinality: Option<prost_reflect::Cardinality>,
+    pub(super) cardinality: Option<prototext_core::schema::Cardinality>,
 }
 
 /// Parse `<origin>` and the two flags, in any order (spec 0237 S2).
@@ -71,7 +71,7 @@ pub(super) fn parse_override(args: &[&str]) -> Result<OverrideArgs, String> {
     let mut name: Option<String> = None;
     let mut declare = false;
     let mut saw_as = false;
-    let mut cardinality: Option<prost_reflect::Cardinality> = None;
+    let mut cardinality: Option<prototext_core::schema::Cardinality> = None;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match *arg {
@@ -124,11 +124,11 @@ pub(super) fn parse_override(args: &[&str]) -> Result<OverrideArgs, String> {
 }
 
 /// Parse a `--cardinality` value (spec 0348 §S2).
-fn parse_cardinality(s: &str) -> Result<prost_reflect::Cardinality, String> {
+fn parse_cardinality(s: &str) -> Result<prototext_core::schema::Cardinality, String> {
     match s {
-        "optional" => Ok(prost_reflect::Cardinality::Optional),
-        "repeated" => Ok(prost_reflect::Cardinality::Repeated),
-        "required" => Ok(prost_reflect::Cardinality::Required),
+        "optional" => Ok(prototext_core::schema::Cardinality::Optional),
+        "repeated" => Ok(prototext_core::schema::Cardinality::Repeated),
+        "required" => Ok(prototext_core::schema::Cardinality::Required),
         _ => {
             Err("override: --cardinality value must be optional, repeated, or required".to_string())
         }
@@ -136,11 +136,11 @@ fn parse_cardinality(s: &str) -> Result<prost_reflect::Cardinality, String> {
 }
 
 /// Format a `Cardinality` as the `--cardinality` token string.
-pub(super) fn cardinality_str(c: prost_reflect::Cardinality) -> &'static str {
+pub(super) fn cardinality_str(c: prototext_core::schema::Cardinality) -> &'static str {
     match c {
-        prost_reflect::Cardinality::Optional => "optional",
-        prost_reflect::Cardinality::Repeated => "repeated",
-        prost_reflect::Cardinality::Required => "required",
+        prototext_core::schema::Cardinality::Optional => "optional",
+        prototext_core::schema::Cardinality::Repeated => "repeated",
+        prototext_core::schema::Cardinality::Required => "required",
     }
 }
 

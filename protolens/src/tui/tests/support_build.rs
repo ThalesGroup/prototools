@@ -11,9 +11,11 @@
 //! Those three steps live here once.
 
 use super::super::*;
-use prost::Message as _;
-use prost_types::field_descriptor_proto::{Label, Type};
-use prost_types::{DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet};
+use prototext_core::schema::descriptor::field_descriptor_proto::{Label, Type};
+use prototext_core::schema::descriptor::Encode as _;
+use prototext_core::schema::descriptor::{
+    DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
+};
 
 use crate::decode::{decode, DescriptorContext, RootType};
 use prototext_graph::score::MinScore;

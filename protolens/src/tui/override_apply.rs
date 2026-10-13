@@ -2,14 +2,13 @@
 //
 // SPDX-License-Identifier: MIT
 
-use super::override_resolve::ParentFieldOrExt;
 use super::preview_truncate::{
     missing_bytes_for, reframe_to_actual_length, trunc_shape_for, truncate_interior, PreviewTier,
 };
 use super::*;
 
-use prost_reflect::prost_types::field_descriptor_proto::Type;
-use prost_reflect::Cardinality;
+use prototext_core::schema::descriptor::field_descriptor_proto::Type;
+use prototext_core::schema::Cardinality;
 use prototext_core::serialize::render_text::NodeSpan;
 use std::borrow::Cow;
 
@@ -1417,7 +1416,7 @@ impl App {
         // `synthetic_message_name`, which need a valid identifier) must
         // not see brackets.
         let header_field_name =
-            if !renamed && matches!(self.parent_field(idx), Some(ParentFieldOrExt::Ext(_))) {
+            if !renamed && self.parent_field(idx).is_some_and(|f| f.is_extension()) {
                 format!("[{field_name}]")
             } else {
                 field_name.clone()
@@ -1539,7 +1538,7 @@ impl App {
                 let wrapper_desc = match field_type {
                     Some(ft) => Some(
                         decode::register_wrapper(
-                            self.ctx.pool_mut(),
+                            self.ctx.pool(),
                             field_number,
                             ft,
                             target_desc,
@@ -1864,7 +1863,7 @@ impl App {
                     .ok_or_else(|| "parent's type is unresolved".to_string())?
                     .to_owned();
                 // Spec 0309 S1: the schema-free `message` synthetic
-                // (spec 0299) has a FQDN only because prost-reflect
+                // (spec 0299) has a FQDN only because a descriptor pool
                 // requires every descriptor to have one. It names no
                 // schema — it is what a reader picks when none fits —
                 // so `protolens_internal.message:1` would be an origin

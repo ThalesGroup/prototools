@@ -20,8 +20,8 @@ use super::support::*;
 /// raw interior. Returns the ready-to-splice `App` and `blob`'s own
 /// tree index, with `override_target` already set to it.
 fn preview_budget_fixture_bytes(payload: &[u8]) -> (App, usize) {
-    use prost_types::field_descriptor_proto::{Label, Type};
     use prototext_core::helpers::{write_tag, write_varint, WT_LEN};
+    use prototext_core::schema::descriptor::field_descriptor_proto::{Label, Type};
 
     let fds = proto3_fds(
         "test_preview_budget.proto",

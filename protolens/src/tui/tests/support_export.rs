@@ -7,8 +7,8 @@
 
 use super::super::*;
 use super::support_build::{field, field_of, fixture_under, message, proto3_fds};
-use prost_types::field_descriptor_proto::{Label, Type};
-use prost_types::{FileDescriptorProto, FileDescriptorSet};
+use prototext_core::schema::descriptor::field_descriptor_proto::{Label, Type};
+use prototext_core::schema::descriptor::{FileDescriptorProto, FileDescriptorSet};
 
 /// `test.Outer` (in `outer.proto`, package `test`) with schema fields
 /// covering `resolve_export_fields`'s G6c tiers, plus two live

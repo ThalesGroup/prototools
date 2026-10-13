@@ -2328,9 +2328,10 @@ impl App {
         // warning, but it is dismissed by the first key — a user who
         // starts typing straight away would never read it. The status
         // line survives until the next thing writes there.
-        let fallback_warning = match &ctx.fallback {
-            Some(fallback) => format!("warning: {}", fallback.message),
-            None => String::new(),
+        let fallback_warning = match (&ctx.fallback, ctx.skipped_summary()) {
+            (Some(fallback), _) => format!("warning: {}", fallback.message),
+            (None, Some(skipped)) => format!("warning: {skipped}"),
+            (None, None) => String::new(),
         };
         let tree_len = decoded.tree.len();
         let root_candidates = std::mem::take(&mut decoded.root_candidates);

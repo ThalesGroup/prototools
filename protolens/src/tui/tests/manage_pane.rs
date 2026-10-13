@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-use prost_reflect::Cardinality;
+use prototext_core::schema::Cardinality;
 
 use super::super::*;
 use super::support::*;
@@ -543,8 +543,8 @@ fn manage_pane_z_no_target_aborts_when_no_kind_applies() {
 /// (feedback, 2026-07-16).
 #[test]
 fn manage_pane_z_rotation_survives_a_concurrent_auto_seed_reshuffle() {
-    use prost_types::field_descriptor_proto::{Label, Type};
-    use prost_types::{FileDescriptorProto, FileDescriptorSet};
+    use prototext_core::schema::descriptor::field_descriptor_proto::{Label, Type};
+    use prototext_core::schema::descriptor::{FileDescriptorProto, FileDescriptorSet};
 
     let acme_file = FileDescriptorProto {
         name: Some("acme.proto".to_string()),

@@ -13,8 +13,8 @@ use super::super::bake::BakeStep;
 use super::super::*;
 use super::support::*;
 use crate::node_status::Status;
-use prost_types::field_descriptor_proto::{Label, Type};
-use prost_types::FileDescriptorSet;
+use prototext_core::schema::descriptor::field_descriptor_proto::{Label, Type};
+use prototext_core::schema::descriptor::FileDescriptorSet;
 
 /// `Root { Mid a = 1; Mid b = 2; }`, `Mid { Leaf x = 1; }`,
 /// `Leaf { int32 v = 1; }` — three levels below the wrapper, and two

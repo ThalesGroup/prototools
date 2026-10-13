@@ -14,10 +14,10 @@ use super::super::bake::BakeStep;
 use super::super::*;
 use super::support::*;
 use crate::override_pane::OverrideOrigin;
-use prost::Message as _;
-use prost_reflect::Cardinality;
-use prost_types::field_descriptor_proto::{Label, Type};
-use prost_types::FileDescriptorSet;
+use prototext_core::schema::descriptor::field_descriptor_proto::{Label, Type};
+use prototext_core::schema::descriptor::Encode as _;
+use prototext_core::schema::descriptor::FileDescriptorSet;
+use prototext_core::schema::Cardinality;
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 

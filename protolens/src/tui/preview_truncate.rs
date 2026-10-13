@@ -16,11 +16,11 @@
 //! budget bounds no bytes at all inside a packed run, where one record
 //! can produce millions of rows (spec 0317).
 
-use prost_reflect::prost_types::field_descriptor_proto::Type;
 use prototext_core::helpers::{
     encode_varint_bytes, parse_varint, parse_wiretag, WT_END_GROUP, WT_I32, WT_I64, WT_LEN,
     WT_START_GROUP, WT_VARINT,
 };
+use prototext_core::schema::descriptor::field_descriptor_proto::Type;
 
 /// Spec 0318 S5: how faithful a preview is to the node it stands for.
 ///

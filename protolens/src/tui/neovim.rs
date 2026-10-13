@@ -10,7 +10,8 @@ use std::process::{Command, Stdio};
 use nix::sys::signal::{killpg, signal, SigHandler, Signal};
 use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 use nix::unistd::{getpgrp, tcsetpgrp, Pid};
-use prost_reflect::DescriptorPool;
+use prototext_core::schema::descriptor::SourceCodeInfo;
+use prototext_core::schema::Pool;
 use ratatui::backend::Backend;
 use ratatui::Terminal;
 
@@ -29,8 +30,9 @@ pub(crate) struct EditorRequest {
 /// in — relative to the descriptor set's compile root, e.g.
 /// `path/to/my_package.proto`, which is `FileDescriptor::name()`'s
 /// documented format — and its 1-indexed declaration line/column, by
-/// matching `prost_reflect`'s `path()` against a linear scan of
-/// `source_code_info.location`.
+/// matching its `declaration_path()` against a linear scan of
+/// `source_code_info.location`. upb keeps no `source_code_info`; it is
+/// read from the file's own bytes, which the pool keeps (spec 0417 S7).
 ///
 /// `None` only when `fqdn` resolves to no message or enum in `pool` at
 /// all (G3's "unknown type" case; G2 already screens out primitives,
@@ -42,17 +44,20 @@ pub(crate) struct EditorRequest {
 /// `Location.span` is 0-indexed `[start_line, start_col, end_line]` or
 /// `[start_line, start_col, end_line, end_col]` (standard protoc
 /// convention).
-pub(crate) fn locate_declaration(pool: &DescriptorPool, fqdn: &str) -> Option<(PathBuf, u32, u32)> {
+pub(crate) fn locate_declaration(pool: &Pool, fqdn: &str) -> Option<(PathBuf, u32, u32)> {
     let (file, path) = if let Some(m) = pool.get_message_by_name(fqdn) {
-        (m.parent_file(), m.path().to_vec())
+        (m.parent_file(), m.declaration_path())
     } else if let Some(e) = pool.get_enum_by_name(fqdn) {
-        (e.parent_file(), e.path().to_vec())
+        (e.parent_file(), e.declaration_path())
     } else {
         return None;
     };
-    let (line, col) = file
-        .file_descriptor_proto()
-        .source_code_info
+    // A file whose `source_code_info` does not decode is treated as one
+    // without it: the fallback below, not an error.
+    let info = pool
+        .file_bytes(file.name())
+        .and_then(|bytes| SourceCodeInfo::of_file(&bytes).ok().flatten());
+    let (line, col) = info
         .as_ref()
         .and_then(|sci| sci.location.iter().find(|loc| loc.path == path))
         // The three- or four-element shape documented above is protoc's
@@ -313,6 +318,76 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use prototext_core::schema::descriptor::source_code_info::Location;
+    use prototext_core::schema::descriptor::{
+        DescriptorProto, Encode as _, EnumDescriptorProto, EnumValueDescriptorProto,
+        FileDescriptorProto,
+    };
+
+    /// A file declaring `pkg.Outer`, `pkg.Outer.Inner` and
+    /// `pkg.Outer.Inner.Kind`, with a `source_code_info` that places each
+    /// at its own line and column, as protoc writes it: field 9 of the
+    /// file, which the descriptor structures do not carry.
+    fn pool_with_source_info() -> Pool {
+        let kind = EnumDescriptorProto {
+            name: Some("Kind".into()),
+            value: vec![EnumValueDescriptorProto {
+                name: Some("KIND_ZERO".into()),
+                number: Some(0),
+            }],
+        };
+        let file = FileDescriptorProto {
+            name: Some("pkg/outer.proto".into()),
+            package: Some("pkg".into()),
+            syntax: Some("proto2".into()),
+            message_type: vec![DescriptorProto {
+                name: Some("Outer".into()),
+                nested_type: vec![DescriptorProto {
+                    name: Some("Inner".into()),
+                    enum_type: vec![kind],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let location = |path: Vec<i32>, span: Vec<i32>| Location { path, span };
+        let info = SourceCodeInfo {
+            location: vec![
+                location(vec![4, 0], vec![4, 0, 12, 1]),
+                location(vec![4, 0, 3, 0], vec![6, 2, 10, 3]),
+                location(vec![4, 0, 3, 0, 4, 0], vec![7, 4, 9, 5]),
+            ],
+        };
+        let mut bytes = file.encode_to_vec();
+        let info = info.encode_to_vec();
+        bytes.push(9 << 3 | 2);
+        bytes.push(u8::try_from(info.len()).unwrap());
+        bytes.extend_from_slice(&info);
+        let pool = prototext_core::new_pool();
+        pool.add_file(&bytes).unwrap();
+        pool
+    }
+
+    /// Spec 0417 S7: the line and column come from the file's own
+    /// `source_code_info`, one-based, for a top-level message, a nested
+    /// one and a nested enum.
+    #[test]
+    fn locate_declaration_reads_the_files_source_code_info() {
+        let pool = pool_with_source_info();
+        let at = |fqdn: &str| locate_declaration(&pool, fqdn).unwrap();
+        assert_eq!(at("pkg.Outer"), (PathBuf::from("pkg/outer.proto"), 5, 1));
+        assert_eq!(
+            at("pkg.Outer.Inner"),
+            (PathBuf::from("pkg/outer.proto"), 7, 3)
+        );
+        assert_eq!(
+            at("pkg.Outer.Inner.Kind"),
+            (PathBuf::from("pkg/outer.proto"), 8, 5)
+        );
+        assert_eq!(locate_declaration(&pool, "pkg.Missing"), None);
+    }
 
     #[test]
     fn socket_path_is_process_specific_and_in_temp_dir() {

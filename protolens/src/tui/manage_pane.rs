@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-use prost_reflect::Cardinality;
+use prototext_core::schema::Cardinality;
 
 use super::key_dispatch::{ctrl_or_alt, GChord};
 use super::override_cmd::cardinality_str;

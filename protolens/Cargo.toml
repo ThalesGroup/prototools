@@ -22,7 +22,6 @@ path = "src/main.rs"
 prototext-core        = { workspace = true }
 prototext-graph       = { workspace = true }
 prototext-schema      = { workspace = true }
-prost-reflect         = "0.16"
 clap                  = { version = "4.5", features = ["derive", "env"] }
 clap_complete         = { version = "4.5", features = ["unstable-dynamic"] }
 prototools-complete   = { workspace = true }
@@ -64,8 +63,4 @@ nix  = { version = "0.29", features = ["poll", "process", "sched", "signal", "te
 # can block in an untimed poll(2). Already in the lockfile via crossterm,
 # which uses it for the same purpose.
 signal-hook = "0.3"
-
-[dev-dependencies]
-prost       = "0.14"
-prost-types = "0.14"
 

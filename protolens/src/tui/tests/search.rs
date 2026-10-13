@@ -683,8 +683,8 @@ fn pane() -> Rect {
 /// `stepped_offset` exists for, and the only one in which a line's
 /// position inside its owner is expensive to name.
 fn packed_run_app(n: usize) -> App {
-    use prost_types::field_descriptor_proto::{Label, Type};
     use prototext_core::helpers::WT_LEN;
+    use prototext_core::schema::descriptor::field_descriptor_proto::{Label, Type};
 
     let fds = proto3_fds(
         "packed_run.proto",

@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+# Record what a protolens binary exports on a fixed corpus (spec 0417 S9).
+#
+# Usage: scripts/upb-golden-protolens PROTOLENS OUTDIR
+#
+# Environment (store paths of the corpora, kept fixed so that two runs
+# compare the binaries and nothing else):
+#   UPB_GOLDEN_GOOGLEAPIS  a googleapis-db output (googleapis.desc, its
+#                          sidecars, and instances/)
+#   UPB_GOLDEN_BOBAPP      a bobapp-desc output (bobapp.desc)
+#
+# Each case writes OUTDIR/<case>.out (stdout), .err (stderr) and .rc (exit
+# status), except cases marked big, which keep only the SHA-256 of stdout.
+# OUTDIR/MANIFEST lists every case with the SHA-256 of its three parts, so
+# `diff OUTDIR1/MANIFEST OUTDIR2/MANIFEST` names every case that changed.
+set -euo pipefail
+
+pl=$(realpath "$1")
+out=$2
+ga=${UPB_GOLDEN_GOOGLEAPIS:?set UPB_GOLDEN_GOOGLEAPIS}
+bob=${UPB_GOLDEN_BOBAPP:?set UPB_GOLDEN_BOBAPP}
+repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+
+mkdir -p "$out"
+: > "$out/MANIFEST"
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+
+# The built-in well-known types, not whatever the shell points at.
+unset PROTOTEXT_DESCRIPTOR_SET PROTOTEXT_DEFAULT_DESCRIPTOR \
+    PROTOTEXT_MIN_SCORE PROTOTEXT_PROTO_ROOT
+
+# googleapis.desc alone, without the sidecars beside it: the eager load.
+mkdir -p "$scratch/eager"
+cp "$ga/googleapis.desc" "$scratch/eager/googleapis.desc"
+ga_eager=$scratch/eager/googleapis.desc
+
+sha() { sha256sum < "$1" | cut -d' ' -f1; }
+
+# run CASE BIG CMD... : run CMD, record its outputs under CASE.
+run() {
+    local case=$1 big=$2
+    shift 2
+    local base="$out/$case"
+    mkdir -p "$(dirname "$base")"
+    local rc=0 h_out
+    if [[ $big == big ]]; then
+        set +e
+        "$@" < /dev/null 2> "$base.err" | sha256sum | cut -d' ' -f1 > "$base.out.sha256"
+        rc=${PIPESTATUS[0]}
+        set -e
+        h_out=$(cat "$base.out.sha256")
+    else
+        "$@" < /dev/null > "$base.out" 2> "$base.err" || rc=$?
+        h_out=$(sha "$base.out")
+    fi
+    echo "$rc" > "$base.rc"
+    printf '%s out=%s err=%s rc=%s\n' "$case" "$h_out" "$(sha "$base.err")" \
+        "$rc" >> "$out/MANIFEST"
+}
+
+# The type of an instance is its path under instances/, dotted.
+type_of() {
+    local rel=${1#*/instances/}
+    rel=${rel%.pb}
+    echo "${rel//\//.}"
+}
+
+# googleapis instances, on the lazy pool: typed, inferred, and the binary
+# round trip.
+instances=()
+while IFS= read -r f; do instances+=("$f"); done \
+    < <(find "$ga/instances" -name '*.pb' | sort)
+for f in "${instances[@]}"; do
+    t=$(type_of "$f")
+    run "ga-typed/$t" small "$pl" --descriptor-set "$ga/googleapis.desc" \
+        --type "$t" "$f" export /
+    run "ga-inferred/$t" small "$pl" --descriptor-set "$ga/googleapis.desc" \
+        "$f" export /
+    run "ga-binary/$t" small "$pl" --descriptor-set "$ga/googleapis.desc" \
+        --type "$t" "$f" export / --format binary
+done
+
+# The same pool loaded eagerly, on every tenth instance.
+for ((i = 0; i < ${#instances[@]}; i += 10)); do
+    f=${instances[$i]}
+    t=$(type_of "$f")
+    run "ga-eager-typed/$t" small "$pl" --descriptor-set "$ga_eager" \
+        --type "$t" "$f" export /
+done
+
+# googleapis.desc itself, read as a FileDescriptorSet.
+for d in "$ga/googleapis.desc" "$ga_eager"; do
+    kind=lazy
+    [[ $d == "$ga_eager" ]] && kind=eager
+    run "desc-$kind/prototext" big "$pl" --descriptor-set "$d" \
+        --type google.protobuf.FileDescriptorSet "$ga/googleapis.desc" export /
+    run "desc-$kind/binary" big "$pl" --descriptor-set "$d" \
+        --type google.protobuf.FileDescriptorSet "$ga/googleapis.desc" \
+        export / --format binary
+done
+run "desc-bobapp/prototext" small "$pl" \
+    --descriptor-set "$repo/prototext-core/fixtures/descriptor.pb" \
+    --type google.protobuf.FileDescriptorSet "$bob/bobapp.desc" export /
+
+# Startup, for its messages.
+first=${instances[0]}
+run "quit/lazy" small "$pl" --descriptor-set "$ga/googleapis.desc" "$first" quit
+run "quit/lazy-raw" small "$pl" --descriptor-set "$ga/googleapis.desc" --raw \
+    "$first" quit
+run "quit/eager" small "$pl" --descriptor-set "$ga_eager" "$first" quit
+run "quit/bobapp" small "$pl" --descriptor-set "$bob/bobapp.desc" \
+    "$bob/bobapp.desc" quit
+run "quit/bobapp-inferred" small "$pl" --descriptor-set "$bob/bobapp.desc" \
+    "$bob/bobapp.desc" export /
+
+# The anomaly fixture: its script, and the export it starts from.
+anom=$repo/tests/fixtures/anomalies.pb
+dpb=$repo/prototext-core/fixtures/descriptor.pb
+fdp=google.protobuf.FileDescriptorProto
+run "anomalies/script" small "$pl" --descriptor-set "$dpb" --type "$fdp" \
+    "$anom" script
+run "anomalies/export" small "$pl" --descriptor-set "$dpb" --type "$fdp" \
+    --no-script "$anom" export /
+run "anomalies/binary" small "$pl" --descriptor-set "$dpb" --type "$fdp" \
+    --no-script "$anom" export / --format binary
+
+# Overrides on it: a scalar, a message, a varint scalar, an enum and a
+# packed run, so that each kind of synthetic wrapper is registered,
+# rendered and exported (specs 0135, 0137). The target hashes are
+# deliberately wrong: the warning is part of the output.
+cat > "$scratch/overrides.yaml" <<'YAML'
+version: 1
+target:
+  blob_sha256: "x"
+  descriptor_set_sha256: "y"
+overrides:
+  - path: "/1"
+    type: bytes
+    active: true
+  - path: "/2"
+    type: google.protobuf.EnumDescriptorProto
+    active: true
+  - path: "/6/1/2"
+    type: sint32
+    active: true
+  - path: "/14/1/2"
+    type: google.protobuf.FieldDescriptorProto.Type
+    active: true
+  - path: "/16"
+    type: google.protobuf.FieldOptions
+    active: true
+  - path: "/18/1/1"
+    type: sint64
+    active: true
+YAML
+for fmt in prototext binary descriptor-prototext descriptor-binary; do
+    run "overrides/$fmt" small "$pl" --descriptor-set "$dpb" --type "$fdp" \
+        --no-script "$anom" export / --load-overrides "$scratch/overrides.yaml" \
+        --format "$fmt"
+done

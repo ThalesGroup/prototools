@@ -10,9 +10,9 @@ use super::support_build::{
     any_body, any_proto_file, bounded_fixture_under, field, field_of, fixture_app, fixture_under,
     message, wrap_len_field_1, wrapper_message, TempFile,
 };
-use prost_types::descriptor_proto::ExtensionRange;
-use prost_types::field_descriptor_proto::{Label, Type};
-use prost_types::{
+use prototext_core::schema::descriptor::descriptor_proto::ExtensionRange;
+use prototext_core::schema::descriptor::field_descriptor_proto::{Label, Type};
+use prototext_core::schema::descriptor::{
     DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet, MessageOptions,
 };
 
@@ -30,12 +30,10 @@ fn ms_test_fds(file_name: &str, buried_under: Vec<DescriptorProto>) -> FileDescr
         name: Some("TestMessageSet".to_string()),
         options: Some(MessageOptions {
             message_set_wire_format: Some(true),
-            ..Default::default()
         }),
         extension_range: vec![ExtensionRange {
             start: Some(1),
             end: Some(536870912),
-            ..Default::default()
         }],
         ..Default::default()
     };

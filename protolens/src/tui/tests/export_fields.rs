@@ -7,7 +7,7 @@
 
 use super::super::*;
 use super::support::*;
-use prost_reflect::prost_types::field_descriptor_proto::{Label, Type};
+use prototext_core::schema::descriptor::field_descriptor_proto::{Label, Type};
 
 // ── Spec 0156 G6c/G6d: `resolve_export_fields` ─────────────────────────────
 

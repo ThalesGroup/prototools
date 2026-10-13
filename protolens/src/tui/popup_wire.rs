@@ -301,7 +301,8 @@ impl App {
         if u32::from(self.tree[hit.pos.node].span.wire_type()) != WT_VARINT {
             return None;
         }
-        let prost_reflect::Kind::Enum(desc) = self.parent_field(hit.pos.node)?.kind() else {
+        let prototext_core::schema::Kind::Enum(desc) = self.parent_field(hit.pos.node)?.kind()
+        else {
             return None;
         };
         let number = decode_int32(parse_varint(&self.blob, hit.bytes.start).varint?);

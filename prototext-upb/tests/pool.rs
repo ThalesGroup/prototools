@@ -5,6 +5,7 @@
 //! The wrapper against real descriptor sets (spec 0415, test plan 1, 2
 //! and 4).
 
+use prototext_upb::descriptor::SourceCodeInfo;
 use prototext_upb::{Cardinality, Edition, Kind, Pool};
 
 /// `tests/fixtures/editions2024.proto` and the 2023 file it imports,
@@ -468,4 +469,92 @@ fn mutated_sets_load_or_report_and_never_crash() {
     // Most mutations damage something, but not all: some files load, so
     // the walk above exercised definitions upb built from damaged sets.
     assert!(loaded > 0);
+}
+
+// ── Declaration paths (spec 0417 S1, test plan 1) ───────────────────────────
+
+/// `tests/fixtures/nested.proto`, compiled by the pinned protoc with
+/// `--include_source_info`: protoc's own locations for every definition.
+const NESTED: &[u8] = include_bytes!("fixtures/nested.pb");
+const NESTED_SOURCE: &str = include_str!("fixtures/nested.proto");
+
+fn nested_pool() -> Pool {
+    let pool = Pool::new();
+    let report = pool.load_set(NESTED);
+    assert_eq!(report.loaded, ["nested.proto"], "{report:?}");
+    pool
+}
+
+/// The zero-based line on which `keyword name {` opens in the source.
+fn declared_on(keyword: &str, name: &str) -> i32 {
+    let opening = format!("{keyword} {name} {{");
+    let line = NESTED_SOURCE
+        .lines()
+        .position(|l| l.trim_start() == opening)
+        .unwrap_or_else(|| panic!("{opening} is in the source"));
+    i32::try_from(line).unwrap()
+}
+
+#[test]
+fn declaration_paths_find_protocs_locations() {
+    let pool = nested_pool();
+    let bytes = pool.file_bytes("nested.proto").unwrap();
+    let info = SourceCodeInfo::of_file(&bytes)
+        .unwrap()
+        .expect("source info");
+    let line_of = |path: &[i32]| {
+        info.location
+            .iter()
+            .find(|l| l.path == path)
+            .unwrap_or_else(|| panic!("protoc has a location at {path:?}"))
+            .span[0]
+    };
+
+    let messages = pool.all_messages();
+    let enums = pool.all_enums();
+    assert_eq!(messages.len(), 5);
+    assert_eq!(enums.len(), 5);
+    for m in &messages {
+        assert_eq!(
+            line_of(&m.declaration_path()),
+            declared_on("message", m.name()),
+            "{m:?}"
+        );
+    }
+    for e in &enums {
+        assert_eq!(
+            line_of(&e.declaration_path()),
+            declared_on("enum", e.name()),
+            "{e:?}"
+        );
+    }
+
+    // The shapes, spelled out once.
+    let path = |name: &str| pool.get_message_by_name(name).unwrap().declaration_path();
+    let enum_path = |name: &str| pool.get_enum_by_name(name).unwrap().declaration_path();
+    assert_eq!(path("nested.Outer"), [4, 1]);
+    assert_eq!(path("nested.Outer.Middle.Inner"), [4, 1, 3, 0, 3, 0]);
+    assert_eq!(path("nested.Outer.Sibling"), [4, 1, 3, 1]);
+    assert_eq!(enum_path("nested.LastEnum"), [5, 1]);
+    assert_eq!(enum_path("nested.Outer.SecondEnum"), [4, 1, 4, 1]);
+    assert_eq!(
+        enum_path("nested.Outer.Middle.MiddleEnum"),
+        [4, 1, 3, 0, 4, 0]
+    );
+}
+
+#[test]
+fn an_enum_knows_its_file_and_message() {
+    let pool = nested_pool();
+    let top = pool.get_enum_by_name("nested.TopEnum").unwrap();
+    assert_eq!(top.parent_file().name(), "nested.proto");
+    assert_eq!(top.parent_message(), None);
+    let nested = pool
+        .get_enum_by_name("nested.Outer.Middle.MiddleEnum")
+        .unwrap();
+    assert_eq!(nested.parent_file().name(), "nested.proto");
+    assert_eq!(
+        nested.parent_message(),
+        pool.get_message_by_name("nested.Outer.Middle")
+    );
 }

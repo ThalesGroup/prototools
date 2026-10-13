@@ -26,6 +26,7 @@ members = [
     "prototext-graph-pyo3",
     "prototext-schema",
     "prototext-upb",
+    "protolens",
     "reproto/tree-sitter-textproto",
     "prototools-complete",
     "fdp-scan",
@@ -41,12 +42,9 @@ members = [
 # `commonCargoSources` admits any .rs/.toml it finds regardless of this list.
 # grehack2026/game, the GreHack 2026 workshop's game of life, is excluded
 # for the same reasons (spec 0375 S1).
-# protolens is set aside on the `upb` branch until its own move to upb, the
-# branch's second step (spec 0415 N1).
 exclude = [
     "demo/bobapp",
     "grehack2026/game",
-    "protolens",
 ]
 
 # One version for every crate and Python package (spec 0405 S5). The

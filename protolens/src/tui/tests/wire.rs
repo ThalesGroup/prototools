@@ -15,7 +15,7 @@ use super::super::*;
 use super::support::*;
 use crate::decode::{decode, DescriptorContext, RootType};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use prost_types::field_descriptor_proto::{Label, Type};
+use prototext_core::schema::descriptor::field_descriptor_proto::{Label, Type};
 use ratatui::layout::Rect;
 
 /// Spec 0328 S5: the left margin of a wire row that carries no bar —

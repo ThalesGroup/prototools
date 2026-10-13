@@ -1276,8 +1276,8 @@ fn a_step_does_not_scroll_when_its_node_is_already_visible() {
 /// A message like the capture's StepRequest: a tall first field (`grid`,
 /// many rows) followed by small siblings. Returns the app.
 fn tall_first_field_app() -> App {
-    use prost_types::field_descriptor_proto::{Label, Type};
     use prototext_core::helpers::{write_tag, write_varint};
+    use prototext_core::schema::descriptor::field_descriptor_proto::{Label, Type};
     let fds = proto3_fds(
         "tall.proto",
         vec![

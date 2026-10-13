@@ -71,8 +71,8 @@ fn empty_tree_renders_and_handles_keys_without_panicking() {
 /// The document is built at the cap rather than at some comfortable
 /// depth: a limit is only a limit if something has stood at it.
 fn deeply_nested_app(depth: usize) -> App {
-    use prost_types::field_descriptor_proto::{Label, Type};
-    use prost_types::{FileDescriptorProto, FileDescriptorSet};
+    use prototext_core::schema::descriptor::field_descriptor_proto::{Label, Type};
+    use prototext_core::schema::descriptor::{FileDescriptorProto, FileDescriptorSet};
 
     // `Nest { Nest inner = 1; int32 leaf = 2; }` — self-recursive, so
     // one message type describes a document of any depth.
@@ -3162,7 +3162,7 @@ fn panning_changes_the_viewport_label_and_not_the_cursor_ruler() {
 /// Returned untouched — splash still up, status line still carrying the
 /// warning — because those two are exactly what the §S3 tests inspect.
 fn eager_fallback_app() -> App {
-    use prost_types::field_descriptor_proto::{Label, Type};
+    use prototext_core::schema::descriptor::field_descriptor_proto::{Label, Type};
 
     use crate::decode::{decode, RootType};
 
@@ -3344,7 +3344,7 @@ fn a_path_match_tints_only_the_current_row() {
 /// Build the two-occurrences fixture (field 1 twice) and drain the shadow
 /// sweep + bake, returning the app ready to draw.
 fn shadowed_leaf_app() -> App {
-    use prost_types::field_descriptor_proto::{Label, Type};
+    use prototext_core::schema::descriptor::field_descriptor_proto::{Label, Type};
     let fds = proto3_fds(
         "shadow_render.proto",
         vec![message(

@@ -1131,8 +1131,8 @@ fn an_anchor_climbs_out_of_a_flattened_subtree() {
 /// position it would have to restore, and `set_scroll_top`'s clamp,
 /// which S6 leaves with the last word, wins over the anchor.
 pub(super) fn opaque_items_fixture(n: usize) -> (App, Vec<usize>) {
-    use prost_types::field_descriptor_proto::{Label, Type};
     use prototext_core::helpers::{write_tag, write_varint};
+    use prototext_core::schema::descriptor::field_descriptor_proto::{Label, Type};
 
     let fds = proto3_fds(
         "test_opaque_items.proto",
@@ -1482,7 +1482,7 @@ fn a_binary_export_does_not_wait() {
 /// as a `FileDescriptorSet` used to come out with no fields at all.
 #[test]
 fn a_descriptor_export_of_a_stop_has_its_fields() {
-    use prost_reflect::prost::Message as _;
+    use prototext_core::schema::descriptor::Encode as _;
 
     let (mut app, items) = bounded_repeated_message_fixture(3);
     app.splash = false;
@@ -1491,7 +1491,8 @@ fn a_descriptor_export_of_a_stop_has_its_fields() {
 
     let bytes =
         exported(&mut app, "descriptor", &["--descriptor-binary"]).expect("the export must write");
-    let fds = prost_types::FileDescriptorSet::decode(&bytes[..]).expect("a descriptor set");
+    let fds = prototext_core::schema::descriptor::FileDescriptorSet::decode(&bytes[..])
+        .expect("a descriptor set");
     let message = &fds.file[0].message_type[0];
     assert_eq!(
         message.field.len(),
@@ -1579,9 +1580,9 @@ fn two_occurrences_blob() -> Vec<u8> {
 }
 
 /// Build a descriptor set for `Msg { int32 x = 1; }` in package `test`.
-fn two_occurrences_fds() -> prost_types::FileDescriptorSet {
+fn two_occurrences_fds() -> prototext_core::schema::descriptor::FileDescriptorSet {
     use super::support_build::{field, message, proto3_fds};
-    use prost_types::field_descriptor_proto::{Label, Type};
+    use prototext_core::schema::descriptor::field_descriptor_proto::{Label, Type};
     proto3_fds(
         "two_occurrences.proto",
         vec![message(

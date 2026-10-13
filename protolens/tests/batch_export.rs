@@ -10,18 +10,19 @@
 //! `prototext/tests/e2e.rs` (which pulls in `protocraft` via a `#[path]`
 //! include), these tests can't reach any of `protolens`'s own internal
 //! modules. Fixtures are therefore rebuilt from scratch here using
-//! `prost-types` (already a `[dev-dependencies]` entry), and the CLI is
+//! `prototext-core`'s descriptor structures, and the CLI is
 //! exercised purely as a subprocess via `CARGO_BIN_EXE_protolens`.
 
 use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use prost::Message as _;
-use prost_types::descriptor_proto::ExtensionRange;
-use prost_types::field_descriptor_proto::{Label, Type};
-use prost_types::{
+use prototext_core::schema::descriptor::descriptor_proto::ExtensionRange;
+use prototext_core::schema::descriptor::field_descriptor_proto::{Label, Type};
+use prototext_core::schema::descriptor::Encode as _;
+use prototext_core::schema::descriptor::{
     DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet, MessageOptions,
+    OneofDescriptorProto,
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────
@@ -150,12 +151,10 @@ fn message_set_fixture() -> (TempFile, TempFile) {
         name: Some("TestMessageSet".to_string()),
         options: Some(MessageOptions {
             message_set_wire_format: Some(true),
-            ..Default::default()
         }),
         extension_range: vec![ExtensionRange {
             start: Some(1),
             end: Some(536870912),
-            ..Default::default()
         }],
         ..Default::default()
     };
@@ -1142,5 +1141,105 @@ fn quit_accepts_the_root_options() {
     assert!(
         !stderr.contains("inferring root type"),
         "--raw skips the inference sweep: {stderr}"
+    );
+}
+
+// ── Spec 0417 S3: a schema file upb refuses ──────────────────────────────
+
+/// An eager load with one file upb refuses still starts: the file is
+/// reported on stderr, in batch mode too, and every other type works.
+#[test]
+fn an_unloadable_schema_file_is_reported_and_the_rest_is_usable() {
+    let (good, blob) = outer_inner_fixture();
+    let mut fds = FileDescriptorSet::decode(&std::fs::read(&good.0).unwrap()).unwrap();
+    // A oneof that declares no field: upb refuses the whole file.
+    fds.file.push(FileDescriptorProto {
+        name: Some("refused.proto".to_string()),
+        package: Some("refused".to_string()),
+        message_type: vec![DescriptorProto {
+            name: Some("Refused".to_string()),
+            oneof_decl: vec![OneofDescriptorProto {
+                name: Some("empty".to_string()),
+            }],
+            ..Default::default()
+        }],
+        syntax: Some("proto3".to_string()),
+        ..Default::default()
+    });
+    let descriptor = write_temp("refused-desc", &fds.encode_to_vec());
+
+    let out = run(&[
+        "--descriptor-set",
+        descriptor.path(),
+        "--type",
+        "test.Outer",
+        blob.path(),
+        "export",
+        "/",
+    ]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("protolens: warning: refused.proto: skipped ("),
+        "the refused file must be reported, got: {stderr}"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("x: 1"),
+        "the loaded types must render"
+    );
+}
+
+// ── Spec 0417 G1: editions ────────────────────────────────────────────────
+
+/// An editions 2023 schema loads, and its features resolve: a repeated
+/// scalar with no option is packed, 2023's default. prost-reflect, which
+/// protolens used before, panicked loading such a file.
+#[test]
+fn an_editions_schema_loads_with_its_defaults() {
+    let file = FileDescriptorProto {
+        name: Some("ed.proto".to_string()),
+        package: Some("ed".to_string()),
+        message_type: vec![DescriptorProto {
+            name: Some("M".to_string()),
+            field: vec![FieldDescriptorProto {
+                name: Some("v".to_string()),
+                number: Some(1),
+                label: Some(Label::Repeated as i32),
+                r#type: Some(Type::Int32 as i32),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+        syntax: Some("editions".to_string()),
+        edition: Some(1000),
+        ..Default::default()
+    };
+    let fds = FileDescriptorSet { file: vec![file] };
+    let descriptor = write_temp("editions-desc", &fds.encode_to_vec());
+    // `v: [1, 2]`, packed.
+    let blob = write_temp("editions-blob", &[0x0A, 0x02, 0x01, 0x02]);
+
+    let out = run(&[
+        "--descriptor-set",
+        descriptor.path(),
+        "--type",
+        "ed.M",
+        blob.path(),
+        "export",
+        "/",
+    ]);
+    assert!(
+        out.status.success() && out.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("v: 1  #@ repeated int32 [packed=true] = 1"),
+        "the field must render packed, as declared by default: {text}"
     );
 }

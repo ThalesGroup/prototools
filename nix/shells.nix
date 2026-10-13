@@ -301,9 +301,9 @@ RUFFEOF
         fi
 
         # Same staleness guard for protolens (depends on prototext-core and
-        # prototext-graph, but not on prototext itself). Skipped while it is
-        # out of the workspace: on the `upb` branch, until its own move to
-        # upb (spec 0415 N1).
+        # prototext-graph, but not on prototext itself). Skipped if it is
+        # ever out of the workspace again, as it was while prototext moved to
+        # upb alone (specs 0415 N1, 0417 S2).
         if cargo metadata --offline --no-deps --format-version 1 2>/dev/null \
             | grep -c '"name":"prototext-lens"' >/dev/null; then
           local bin2="$PWD/target/release/protolens"
@@ -328,7 +328,7 @@ RUFFEOF
             echo "[hook] cargo: protolens binary up to date — skipping"
           fi
         else
-          echo "[hook] cargo: protolens is not a workspace member (spec 0415 N1) — skipping"
+          echo "[hook] cargo: protolens is not a workspace member — skipping"
         fi
 
         # Same staleness guard for protoscan (spec 0407): its scanner,

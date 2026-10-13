@@ -3197,6 +3197,15 @@ impl App {
                 Style::default().fg(Color::Yellow),
             ));
         }
+        // Spec 0417 S3: schema files that could not be loaded, on the same
+        // channel.
+        if let Some(skipped) = self.ctx.skipped_summary() {
+            text.push(Line::from(""));
+            text.push(Line::styled(
+                format!("warning: {skipped}"),
+                Style::default().fg(Color::Yellow),
+            ));
+        }
         frame.render_widget(
             Paragraph::new(text)
                 .alignment(Alignment::Center)

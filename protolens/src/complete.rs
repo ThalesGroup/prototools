@@ -195,11 +195,14 @@ fn type_names_from_descriptor(path: &Path, prefix: &str) -> Vec<String> {
     let Ok(bytes) = read_descriptor_file(path) else {
         return vec![];
     };
-    let Ok(pool) = decode_pool(&bytes) else {
+    // Files that did not load are ignored, as everything but the names is
+    // (spec 0417 S3).
+    let Ok((pool, _)) = decode_pool(&bytes) else {
         return vec![];
     };
 
     pool.all_messages()
+        .into_iter()
         .map(|m| m.full_name().to_string())
         .filter(|name| name.starts_with(prefix))
         .collect()

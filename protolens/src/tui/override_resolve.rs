@@ -13,32 +13,25 @@
 
 use super::*;
 
-use prost_reflect::Cardinality;
+use prototext_core::schema::{Cardinality, Field};
 
-/// Unifies `FieldDescriptor` (regular field) and `ExtensionDescriptor`
-/// (extension field) for `parent_field`'s callers — mirrors
-/// `prototext_core`'s own (crate-private) `FieldOrExt` adapter, which
-/// can't be reused directly since it's `pub(super)` to that crate's
-/// `render_text` module. Only the accessors `parent_field`'s three
-/// call sites actually need are exposed.
-pub(super) enum ParentFieldOrExt {
-    Field(prost_reflect::FieldDescriptor),
-    Ext(prost_reflect::ExtensionDescriptor),
-}
+/// A regular field or an extension, for `parent_field`'s callers: one
+/// upb `Field` either way (spec 0417 S5), as `prototext_core`'s own
+/// `FieldOrExt` holds. Only the accessors `parent_field`'s call sites
+/// need are exposed.
+pub(super) struct ParentFieldOrExt(Field);
 
 impl ParentFieldOrExt {
-    pub(super) fn kind(&self) -> prost_reflect::Kind {
-        match self {
-            ParentFieldOrExt::Field(f) => f.kind(),
-            ParentFieldOrExt::Ext(e) => e.kind(),
-        }
+    pub(super) fn kind(&self) -> prototext_core::schema::Kind {
+        self.0.kind()
     }
 
     pub(super) fn cardinality(&self) -> Cardinality {
-        match self {
-            ParentFieldOrExt::Field(f) => f.cardinality(),
-            ParentFieldOrExt::Ext(e) => e.cardinality(),
-        }
+        self.0.cardinality()
+    }
+
+    pub(super) fn is_extension(&self) -> bool {
+        self.0.is_extension()
     }
 
     /// Regular field: bare field name. Extension field: its full
@@ -47,9 +40,10 @@ impl ParentFieldOrExt {
     /// prototext syntax output; this one feeds `field_name_for`'s plain
     /// status-line/override-pane name display).
     pub(super) fn name(&self) -> String {
-        match self {
-            ParentFieldOrExt::Field(f) => f.name().to_string(),
-            ParentFieldOrExt::Ext(e) => e.full_name().to_string(),
+        if self.0.is_extension() {
+            self.0.full_name().to_string()
+        } else {
+            self.0.name().to_string()
         }
     }
 }
@@ -73,12 +67,8 @@ impl App {
         let message = self.ctx.pool().get_message_by_name(fqdn)?;
         message
             .get_field(field_number)
-            .map(ParentFieldOrExt::Field)
-            .or_else(|| {
-                message
-                    .get_extension(field_number)
-                    .map(ParentFieldOrExt::Ext)
-            })
+            .or_else(|| message.get_extension(field_number))
+            .map(ParentFieldOrExt)
     }
 
     /// The cardinality `idx`'s own field is declared with on its parent's
@@ -128,7 +118,7 @@ impl App {
     /// scalar leaf once `rendered_as` is set (see `render_overrides`'s
     /// recursion-gating comment below).
     pub(super) fn natural_type(&self, idx: usize) -> Option<String> {
-        use prost_reflect::Kind;
+        use prototext_core::schema::Kind;
         match self.parent_field(idx)?.kind() {
             Kind::Message(desc) => Some(desc.full_name().to_string()),
             Kind::Enum(desc) => Some(desc.full_name().to_string()),
@@ -192,9 +182,8 @@ impl App {
     /// `MessageDescriptor`'s own options, and zero declared fields. Mirrors
     /// `prototext-core`'s own (private, unreachable from this crate)
     /// `is_message_set` heuristic — an independent replica, not a shared
-    /// helper, since protolens already has direct `prost_reflect`/
-    /// `ctx.pool()` access and needs no new plumbing (spec 0120's
-    /// assessment).
+    /// helper, since protolens already has direct `ctx.pool()` access and
+    /// needs no new plumbing (spec 0120's assessment).
     pub(super) fn is_message_set_typed(&self, idx: usize) -> bool {
         let Some(fqdn) = self.fqdns.get(self.tree[idx].span.type_fqdn) else {
             return false;
@@ -202,13 +191,7 @@ impl App {
         let Some(desc) = self.ctx.pool().get_message_by_name(fqdn) else {
             return false;
         };
-        let msf = desc
-            .descriptor_proto()
-            .options
-            .as_ref()
-            .and_then(|o| o.message_set_wire_format)
-            .unwrap_or(false);
-        msf && desc.fields().count() == 0
+        desc.is_message_set_wire_format() && desc.fields().count() == 0
     }
 
     /// The friendly, MessageSet-specific FQDN to show in place of the
@@ -331,7 +314,7 @@ impl App {
             && u32::from(self.tree[idx].span.wire_type()) == prototext_core::helpers::WT_START_GROUP
             && self.is_message_set_typed(parent)
         {
-            return decode::register_message_set_item(self.ctx.pool_mut())
+            return decode::register_message_set_item(self.ctx.pool())
                 .ok()
                 .map(|d| d.full_name().to_string());
         }
@@ -361,7 +344,7 @@ impl App {
                 self.ctx.load_extension(&grandparent_fqdn, type_id);
                 let extendee = self.ctx.pool().get_message_by_name(&grandparent_fqdn)?;
                 let ext = extendee.get_extension(type_id)?;
-                if let prost_reflect::Kind::Message(inner) = ext.kind() {
+                if let prototext_core::schema::Kind::Message(inner) = ext.kind() {
                     return Some(inner.full_name().to_string());
                 }
             }

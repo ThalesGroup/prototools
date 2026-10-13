@@ -154,9 +154,6 @@ let
         # grehack2026/game, the GreHack 2026 game of life, likewise (spec
         # 0375 S1): its own Cargo project, built by its own derivation.
         (pkgs.lib.fileset.maybeMissing ./grehack2026/game)
-        # protolens is out of the workspace on the `upb` branch until its own
-        # move to upb (spec 0415 N1); subtracted for the same reason.
-        ./protolens
       ]);
   };
 
@@ -530,9 +527,7 @@ let
   # ---------------------------------------------------------------------------
   prototools = pkgs.symlinkJoin {
     name   = "prototools";
-    # No protolens on the `upb` branch until its own move to upb (spec 0415
-    # N1).
-    paths  = [ rust.prototext python.reproto rust.protoscan wktDb ];
+    paths  = [ rust.prototext rust.protolens python.reproto rust.protoscan wktDb ];
   };
 
   # Fails when a store path whose name contains one of `deny` enters the
@@ -612,11 +607,9 @@ let
   # full-tests — ci plus stress tests and slow integration tests.
   #             Use: nix-build -A full-tests
   # ---------------------------------------------------------------------------
-  # No protolens on the `upb` branch until its own move to upb (spec 0415
-  # N1); it comes back to both lists with it.
   ci = pkgs.linkFarmFromDrvs "ci" [
     rust.rustFmt rust.rustClippy rust.rustTests
-    rust.prototext
+    rust.prototext rust.protolens
     rust.prototextCodec rust.fdpScanLib rust.prototextGraphLib
     rust.protoscan python.reproto
     python.reprotoTests python.fdpScanTests python.prototextCodecTests
@@ -635,7 +628,7 @@ let
   # Used on platforms where clippy is known to fail (e.g. macos-15-intel).
   ci-no-clippy = pkgs.linkFarmFromDrvs "ci-no-clippy" [
     rust.rustFmt rust.rustTests
-    rust.prototext
+    rust.prototext rust.protolens
     rust.prototextCodec rust.fdpScanLib rust.prototextGraphLib
     rust.protoscan python.reproto
     python.reprotoTests python.fdpScanTests python.prototextCodecTests
@@ -780,9 +773,8 @@ let
     nativeBuildInputs = [ pkgs.bashInteractive pkgs.python3 ];
   } ''
     mkdir bin
-    # No protolens on the `upb` branch (spec 0415 N1); the test checks the
-    # programs it finds.
-    ln -s ${rust.prototext}/bin/prototext ${rust.protoscan}/bin/protoscan bin/
+    ln -s ${rust.prototext}/bin/prototext ${rust.protolens}/bin/protolens \
+      ${rust.protoscan}/bin/protoscan bin/
     python3 ${./prototools-complete/tests/tab_completion.py} bin | tee $out
   '';
 

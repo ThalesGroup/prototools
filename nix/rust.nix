@@ -340,9 +340,8 @@ let
     doNotPostBuildInstallCargoBinaries = true;
     installPhaseCommand                = ''
       mkdir -p $out/bin $out/wheels
-      # No protolens on the `upb` branch: it is out of the workspace until
-      # its own move to upb (spec 0415 N1), and comes back here with it.
-      cp ${profileDir}/prototext ${profileDir}/protoscan $out/bin/
+      cp ${profileDir}/prototext \
+         ${profileDir}/protolens ${profileDir}/protoscan $out/bin/
     '' + pkgs.lib.concatMapStrings (e:
       let
         committed = "${e.crateDir}/${e.libName}/${e.libName}.pyi";

@@ -142,7 +142,7 @@ fn a_well_formed_payload_reads_the_same_either_way() {
 #[test]
 fn a_real_type_named_message_still_resolves_as_itself() {
     use crate::decode::WrapperTarget;
-    use prost_types::field_descriptor_proto::Type;
+    use prototext_core::schema::descriptor::field_descriptor_proto::Type;
 
     let mut bare = DescriptorContext::empty_for_test();
     let (target, field_type) = bare
@@ -557,7 +557,7 @@ fn a_truncated_record_reddens_every_node_above_it() {
 /// third whose length prefix says 9 with 3 present — `name: "c"` is
 /// there, six bytes are not.
 fn cut_entry_fixture() -> App {
-    use prost_types::field_descriptor_proto::{Label, Type};
+    use prototext_core::schema::descriptor::field_descriptor_proto::{Label, Type};
     let fds = proto3_fds(
         "test_0311.proto",
         vec![

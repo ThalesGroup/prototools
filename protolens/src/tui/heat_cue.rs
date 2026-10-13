@@ -598,8 +598,8 @@ impl App {
     /// asserts UTF-8 text, and a message that is also valid UTF-8 is a
     /// coincidence rather than a finding.
     pub(super) fn inference_applies(&self, idx: usize) -> bool {
-        use prost_reflect::Kind;
         use prototext_core::helpers::{WT_I32, WT_I64, WT_VARINT};
+        use prototext_core::schema::Kind;
         // These bytes cannot be a nested message under any typing, so
         // the candidate list was empty before it was built. A packed
         // run whose slot still carries its element's wire type lands

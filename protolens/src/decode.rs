@@ -17,16 +17,21 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use prost_reflect::prost_types::field_descriptor_proto::{Label, Type};
-use prost_reflect::prost_types::{DescriptorProto, FieldDescriptorProto, FileDescriptorProto};
-use prost_reflect::{Cardinality, DescriptorPool, EnumDescriptor, MessageDescriptor};
+use prototext_core::schema::descriptor::field_descriptor_proto::{Label, Type};
+use prototext_core::schema::descriptor::{
+    DescriptorProto, Encode, FieldDescriptorProto, FieldOptions, FileDescriptorProto,
+};
+use prototext_core::schema::{
+    Cardinality, Enum as EnumDescriptor, Message as MessageDescriptor, Pool,
+};
 use prototext_core::serialize::render_text::NO_FQDN;
 use prototext_core::serialize::render_text::{
     decode_and_render_indexed, DecodeRenderOpts, FqdnTable, Label as SpanLabel, NodeKind, NodeSpan,
     NO_PACKED_RECORD,
 };
 use prototext_core::{
-    build_arena, decode_pool, render_as_bytes, set_ext_loader, Arena, ExtLoaderGuard, RenderOpts,
+    build_arena, decode_pool, new_pool, render_as_bytes, set_ext_loader, Arena, ExtLoaderGuard,
+    RenderOpts,
 };
 use prototext_graph::score::load::{load_graph, LoadedGraph};
 use prototext_graph::score::MinScore;
@@ -77,14 +82,12 @@ pub struct EagerFallback {
 /// first asked for; otherwise `pool` holds the whole descriptor set,
 /// decoded eagerly.
 ///
-/// **`App` must not hold a `MessageDescriptor` or `EnumDescriptor` across
-/// an event-loop iteration.** prost-reflect's `add_file_descriptor_proto`
-/// uses `Arc::make_mut`, so when a JIT load forks the pool, a descriptor
-/// obtained before it is blind to everything registered after
-/// (`prototext/src/run.rs:648-652`). Re-fetch at each use site.
+/// Every pool is upb's (spec 0417 S3): a file added later is visible
+/// through every handle already held, and an add never moves a definition,
+/// so a descriptor may be kept across a load.
 pub struct DescriptorContext {
     /// The eager branch's pool, and the schemaless empty pool.
-    pool: DescriptorPool,
+    pool: Pool,
     /// The on-demand branch. Its own `pool` field is the live one when set.
     lazy: Option<LazyPool>,
     /// `Arc` rather than a bare `LoadedGraph` (spec 0180 S2): protolens hands
@@ -100,6 +103,10 @@ pub struct DescriptorContext {
     source: Option<PathBuf>,
     /// Set when the on-demand path was declined; see `EagerFallback`.
     pub fallback: Option<EagerFallback>,
+    /// `(file, reason)` for each file of an eagerly loaded descriptor set
+    /// that could not be loaded (spec 0417 S3): the files upb or the gate
+    /// refused, and those that import one. Every other type is usable.
+    pub skipped: Vec<(String, String)>,
     /// The FQDNs the reader declared with `:override --as-new` (spec
     /// 0315), in creation order — which is the order the selection pane
     /// lists them in, and the order `:save` writes them.
@@ -129,20 +136,13 @@ impl DescriptorContext {
     /// that needs a specific type must JIT-load it first via
     /// [`message`](Self::message) / [`enumeration`](Self::enumeration)
     /// rather than reaching in here.
-    pub fn pool(&self) -> &DescriptorPool {
+    ///
+    /// A upb pool takes files through `&self`, so the synthetic
+    /// registrations (`register_wrapper` and the rest) go through this too.
+    pub fn pool(&self) -> &Pool {
         match &self.lazy {
             Some(lazy) => &lazy.pool,
             None => &self.pool,
-        }
-    }
-
-    /// Mutable pool access — needed by `tui.rs`'s `splice_override` (spec
-    /// 0118 §4) to call `register_wrapper` for an arbitrary target type,
-    /// mirroring `decode()`'s own (in-module, private-field) access.
-    pub(crate) fn pool_mut(&mut self) -> &mut DescriptorPool {
-        match &mut self.lazy {
-            Some(lazy) => &mut lazy.pool,
-            None => &mut self.pool,
         }
     }
 
@@ -155,6 +155,22 @@ impl DescriptorContext {
         }
         self.pool()
             .get_message_by_name(fqdn.trim_start_matches('.'))
+    }
+
+    /// Like [`message`](Self::message), but a file that fails to load is
+    /// an error to report, not a miss: for a type the reader named, which
+    /// would otherwise be called absent from a set that declares it (spec
+    /// 0417 G5, as `prototext` does for `--type`).
+    pub(crate) fn named_message(
+        &mut self,
+        fqdn: &str,
+    ) -> Result<Option<MessageDescriptor>, String> {
+        if let Some(lazy) = self.lazy.as_mut() {
+            lazy.get_message(fqdn).map_err(|e| e.to_string())?;
+        }
+        Ok(self
+            .pool()
+            .get_message_by_name(fqdn.trim_start_matches('.')))
     }
 
     /// Resolve an enum by name; see [`message`](Self::message).
@@ -188,9 +204,6 @@ impl DescriptorContext {
             // context through a reference while a render is calling this.
             let ctx = unsafe { &mut *ctx_ptr };
             ctx.load_extension(extendee, number);
-            // The lookup must restart from the pool: `prost_reflect` adds
-            // files with `Arc::make_mut`, so a descriptor obtained before the
-            // load above is blind to what the load registered.
             ctx.pool()
                 .get_message_by_name(extendee)
                 .and_then(|ed| ed.get_extension(number))
@@ -201,10 +214,23 @@ impl DescriptorContext {
         }
     }
 
+    /// One line saying which schema files could not be loaded (spec 0417
+    /// S3), for the splash and the status line; stderr lists them all.
+    /// `None` when every file loaded.
+    pub(crate) fn skipped_summary(&self) -> Option<String> {
+        let (file, why) = self.skipped.first()?;
+        Some(match self.skipped.len() {
+            1 => format!("schema file {file} skipped ({why})"),
+            n => format!("{n} schema files skipped, {file} first ({why}); the list is on stderr"),
+        })
+    }
+
     /// Every type name the schema knows, sorted: messages and enums,
     /// nested types included. On the lazy branch this reads `index.rkyv`'s
     /// `type_to_file` and decodes nothing; the two sources are equal sets
-    /// (spec 0197 §5).
+    /// (spec 0197 §5) when the eager load skipped no file (spec 0417 S3).
+    /// A type of a file upb refuses is listed here on the lazy branch, and
+    /// choosing it is a miss, as for any type that fails to load.
     pub(crate) fn all_type_fqdns(&self) -> Vec<String> {
         match &self.lazy {
             Some(lazy) => lazy.all_type_fqdns(),
@@ -248,11 +274,12 @@ impl DescriptorContext {
             match LazyPool::open(path, &index_path, &[]) {
                 Ok(lazy) => {
                     return Ok(DescriptorContext {
-                        pool: DescriptorPool::new(),
+                        pool: new_pool(),
                         lazy: Some(lazy),
                         graph,
                         source: Some(path.to_path_buf()),
                         fallback: None,
+                        skipped: Vec::new(),
                         created_types: Vec::new(),
                     })
                 }
@@ -265,7 +292,7 @@ impl DescriptorContext {
         };
 
         let bytes = read_descriptor_file(path)?;
-        let pool = decode_pool(&bytes)
+        let (pool, report) = decode_pool(&bytes)
             .map_err(|e| DecodeError::Schema(format!("descriptor '{}': {e}", path.display())))?;
 
         Ok(DescriptorContext {
@@ -274,6 +301,7 @@ impl DescriptorContext {
             graph,
             source: Some(path.to_path_buf()),
             fallback: fallback.map(|message| EagerFallback { message }),
+            skipped: report.skipped,
             created_types: Vec::new(),
         })
     }
@@ -318,11 +346,12 @@ impl DescriptorContext {
     /// separate so each call site's intent stays clear).
     pub(crate) fn schemaless() -> Self {
         DescriptorContext {
-            pool: DescriptorPool::new(),
+            pool: new_pool(),
             lazy: None,
             graph: None,
             source: None,
             fallback: None,
+            skipped: Vec::new(),
             created_types: Vec::new(),
         }
     }
@@ -490,11 +519,15 @@ pub fn determine_root_type_meanwhile<T>(
     match root_type {
         RootType::Named(fqdn) => {
             let meanwhile = meanwhile(0);
-            ctx.message(fqdn)
-                .map(|desc| (Some(desc), Vec::new(), meanwhile))
-                .ok_or_else(|| {
-                    DecodeError::Determination(format!("type '{fqdn}' not found in descriptor set"))
-                })
+            match ctx.named_message(fqdn) {
+                Ok(Some(desc)) => Ok((Some(desc), Vec::new(), meanwhile)),
+                Ok(None) => Err(DecodeError::Determination(format!(
+                    "type '{fqdn}' not found in descriptor set"
+                ))),
+                Err(e) => Err(DecodeError::Determination(format!(
+                    "loading type '{fqdn}': {e}"
+                ))),
+            }
         }
         RootType::Raw => Ok((None, Vec::new(), meanwhile(0))),
         RootType::Infer => {
@@ -1534,7 +1567,7 @@ impl DescriptorContext {
             return Some(existing);
         }
         register_synthetic(
-            self.pool_mut(),
+            self.pool(),
             SyntheticName {
                 package: Some("protolens_internal"),
                 full_name: SCHEMA_FREE_MESSAGE_FQDN,
@@ -1611,7 +1644,7 @@ impl DescriptorContext {
             None => (None, fqdn),
         };
         register_synthetic(
-            self.pool_mut(),
+            self.pool(),
             SyntheticName {
                 package,
                 full_name: fqdn,
@@ -1643,7 +1676,7 @@ pub(crate) enum Declared {
 
 /// Whether `name` is a dot-separated sequence of protobuf identifiers.
 ///
-/// Checked before `add_file_descriptor_proto` gets the name, because its
+/// Checked before the pool gets the name, because its
 /// own refusal describes a malformed file rather than a malformed name,
 /// and the reader typed the name.
 fn is_valid_fqdn(name: &str) -> bool {
@@ -1672,21 +1705,8 @@ fn is_valid_fqdn(name: &str) -> bool {
 /// primitive target; `Some` for a message/group/enum target, supplying
 /// both `type_name` (`.{fqdn}`) and the `dependency` file entry.
 /// `pub(crate)`: also called from `tui.rs`'s `splice_override`.
-///
-/// `target` is taken *by value*, not `&WrapperTarget` — deliberately,
-/// so it can be dropped (below) before `add_file_descriptor_proto` is
-/// called. `target` owns a `MessageDescriptor`/`EnumDescriptor`, which
-/// in turn owns its own clone of `pool`'s `Arc<DescriptorPoolInner>`;
-/// leaving it alive across the mutating call would make `pool`'s own
-/// `Arc` non-unique right when `add_file_descriptor_proto` needs to
-/// mutate it, forcing prost-reflect's internal `Arc::make_mut` to deep-
-/// clone the *entire* pool (every file/message/enum) on every
-/// not-yet-seen wrapper, which is enough to make a cursor move to a new
-/// override candidate visibly slow. Already-registered wrappers are
-/// unaffected (the early `get_message_by_name` return above never
-/// reaches the mutating call at all).
 pub(crate) fn register_wrapper(
-    pool: &mut DescriptorPool,
+    pool: &Pool,
     field_number: u32,
     field_type: Type,
     target: Option<WrapperTarget>,
@@ -1737,7 +1757,7 @@ pub(crate) fn register_wrapper(
         } as i32),
         r#type: Some(field_type as i32),
         type_name,
-        options: packed.then(|| prost_reflect::prost_types::FieldOptions {
+        options: packed.then(|| FieldOptions {
             packed: Some(true),
             ..Default::default()
         }),
@@ -1747,10 +1767,6 @@ pub(crate) fn register_wrapper(
         .as_ref()
         .map(|t| vec![t.parent_file_name()])
         .unwrap_or_default();
-    // See the doc comment above: drop the last `target` handle (and
-    // with it, its private clone of `pool`'s `Arc`) before mutating
-    // `pool`, so the mutation below never has to deep-clone it.
-    drop(target);
     register_synthetic(
         pool,
         SyntheticName {
@@ -1792,12 +1808,12 @@ struct SyntheticName<'a> {
 /// Registers a one-message file holding `fields` under `name`, and hands
 /// the new descriptor back.
 ///
-/// The "already registered?" early return stays with each caller. It is
-/// what keeps a repeat wrapper off the mutating path entirely — see
-/// `register_wrapper`'s doc comment for why that matters — and asking
-/// here would mean building the field list before finding out.
+/// The "already registered?" early return stays with each caller, and is
+/// required, not an optimization: upb refuses a second file of the same
+/// name (spec 0417 S3). Asking here would mean building the field list
+/// before finding out.
 fn register_synthetic(
-    pool: &mut DescriptorPool,
+    pool: &Pool,
     name: SyntheticName<'_>,
     dependency: Vec<String>,
     fields: Vec<FieldDescriptorProto>,
@@ -1815,7 +1831,7 @@ fn register_synthetic(
         }],
         ..Default::default()
     };
-    pool.add_file_descriptor_proto(file)
+    pool.add_file(&file.encode_to_vec())
         .map_err(|e| DecodeError::Schema(format!("registering {what} descriptor: {e}")))?;
     pool.get_message_by_name(name.full_name)
         .ok_or_else(|| DecodeError::Schema(format!("{what} descriptor registered but not found")))
@@ -2081,9 +2097,7 @@ pub(crate) fn message_set_item_display_fqdn(message_set_fqdn: &str) -> String {
 /// itself never varies, so the descriptor is registered once per pool
 /// and reused across every MessageSet occurrence in the document.
 /// `pub(crate)`: also called from `tui.rs`'s `auto_expand_type`.
-pub(crate) fn register_message_set_item(
-    pool: &mut DescriptorPool,
-) -> Result<MessageDescriptor, DecodeError> {
+pub(crate) fn register_message_set_item(pool: &Pool) -> Result<MessageDescriptor, DecodeError> {
     if let Some(existing) = pool.get_message_by_name(MESSAGE_SET_ITEM_FQDN) {
         return Ok(existing);
     }
@@ -2226,7 +2240,7 @@ pub fn render_resolved(
         Some(desc) => (
             Some(desc.full_name().to_string()),
             Some(register_wrapper(
-                ctx.pool_mut(),
+                ctx.pool(),
                 1,
                 Type::Message,
                 Some(WrapperTarget::Message(desc.clone())),
@@ -2367,10 +2381,8 @@ pub fn render_resolved(
 #[cfg(test)]
 pub(crate) fn ctx_from_fds(
     tag: &str,
-    fds: &prost_reflect::prost_types::FileDescriptorSet,
+    fds: &prototext_core::schema::descriptor::FileDescriptorSet,
 ) -> DescriptorContext {
-    use prost::Message as _;
-
     struct Remove(PathBuf);
     impl Drop for Remove {
         fn drop(&mut self) {

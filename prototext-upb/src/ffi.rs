@@ -128,6 +128,8 @@ extern "C" {
     // ── Enum ──────────────────────────────────────────────────────────────
     pub fn upb_EnumDef_FullName(e: *const EnumDef) -> *const c_char;
     pub fn upb_EnumDef_Name(e: *const EnumDef) -> *const c_char;
+    pub fn upb_EnumDef_File(e: *const EnumDef) -> *const FileDef;
+    pub fn upb_EnumDef_ContainingType(e: *const EnumDef) -> *const MessageDef;
     pub fn upb_EnumDef_IsClosed(e: *const EnumDef) -> bool;
     pub fn upb_EnumDef_ValueCount(e: *const EnumDef) -> c_int;
     pub fn upb_EnumDef_Value(e: *const EnumDef, i: c_int) -> *const EnumValueDef;
@@ -213,6 +215,8 @@ mod tests {
             super::upb_OneofDef_Field as *const (),
             super::upb_EnumDef_FullName as *const (),
             super::upb_EnumDef_Name as *const (),
+            super::upb_EnumDef_File as *const (),
+            super::upb_EnumDef_ContainingType as *const (),
             super::upb_EnumDef_IsClosed as *const (),
             super::upb_EnumDef_ValueCount as *const (),
             super::upb_EnumDef_Value as *const (),

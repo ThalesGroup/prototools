@@ -39,7 +39,7 @@ fn ctrl_down_up_alias_sibling_skip_move() {
 /// `extract::tests::extract_binary_message_round_trips_through_a_fresh_decode`.
 #[test]
 fn wrapper_offset_and_display_range_restore_pre_wrap_coordinates() {
-    use prost_types::field_descriptor_proto::{Label, Type};
+    use prototext_core::schema::descriptor::field_descriptor_proto::{Label, Type};
 
     let fds = proto3_fds(
         "test_wrapper_offset.proto",
@@ -97,7 +97,7 @@ fn wrapper_offset_and_display_range_restore_pre_wrap_coordinates() {
 /// unstripped, not the whole record's tag+length-stripped payload.
 #[test]
 fn display_range_strips_tag_and_length_for_scalars_including_packed() {
-    use prost_types::field_descriptor_proto::{Label, Type};
+    use prototext_core::schema::descriptor::field_descriptor_proto::{Label, Type};
 
     let fds = proto3_fds(
         "test_display_range_scalars.proto",

@@ -1,0 +1,47 @@
+// SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+//
+// SPDX-License-Identifier: MIT
+
+syntax = "proto2";
+
+package nested;
+
+enum TopEnum {
+  TOP_ZERO = 0;
+}
+
+message First {
+  optional int32 a = 1;
+}
+
+message Outer {
+  enum OuterEnum {
+    OUTER_ZERO = 0;
+  }
+
+  message Middle {
+    enum MiddleEnum {
+      MIDDLE_ZERO = 0;
+    }
+
+    message Inner {
+      optional MiddleEnum e = 1;
+    }
+
+    optional Inner inner = 1;
+  }
+
+  message Sibling {
+    optional int32 b = 1;
+  }
+
+  enum SecondEnum {
+    SECOND_ZERO = 0;
+  }
+
+  optional Middle middle = 1;
+}
+
+enum LastEnum {
+  LAST_ZERO = 0;
+}

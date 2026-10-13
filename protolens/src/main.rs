@@ -587,6 +587,12 @@ fn main() -> ExitCode {
             eprintln!("protolens: warning: {}", fallback.message);
         }
     }
+    // Spec 0417 S3: a schema file that could not be loaded is reported in
+    // batch mode too. Unlike the note above, it is something going wrong:
+    // its types are missing from the session.
+    for (file, why) in &ctx.skipped {
+        eprintln!("protolens: warning: {file}: skipped ({why})");
+    }
 
     let root_type = match (cli.raw, cli.r#type.as_deref()) {
         (true, _) => decode::RootType::Raw,

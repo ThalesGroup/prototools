@@ -10,7 +10,7 @@ use super::super::*;
 use super::support_build::{
     bounded_fixture_under, field, field_of, fixture_under, message, proto3_fds,
 };
-use prost_types::field_descriptor_proto::{Label, Type};
+use prototext_core::schema::descriptor::field_descriptor_proto::{Label, Type};
 
 /// `Outer { repeated int32 vals = 1; }`, packed, 3 elements (`5, 6,
 /// 7`) — the smallest packed run, returned with the node that draws it.
@@ -90,7 +90,7 @@ const REPEATED_MESSAGE_BLOB: &[u8] = &[
     0x0A, 0x02, 0x08, 0x07,
 ];
 
-fn repeated_message_fds() -> prost_types::FileDescriptorSet {
+fn repeated_message_fds() -> prototext_core::schema::descriptor::FileDescriptorSet {
     proto3_fds(
         "test_repeated_message.proto",
         vec![

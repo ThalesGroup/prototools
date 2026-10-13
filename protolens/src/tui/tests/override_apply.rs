@@ -20,7 +20,7 @@ use std::collections::HashMap;
 /// `splice_override` must never rely on it).
 #[test]
 fn apply_override_splices_tree_and_lines_repeatedly() {
-    use prost_types::field_descriptor_proto::{Label, Type};
+    use prototext_core::schema::descriptor::field_descriptor_proto::{Label, Type};
 
     let fds = proto3_fds(
         "test_apply_override.proto",
@@ -190,7 +190,7 @@ fn apply_override_splices_tree_and_lines_repeatedly() {
 /// here, in the header-patching path spec 0135 has since deleted).
 #[test]
 fn splice_override_on_an_incompatible_scalar_does_not_panic() {
-    use prost_types::field_descriptor_proto::{Label, Type};
+    use prototext_core::schema::descriptor::field_descriptor_proto::{Label, Type};
 
     let fds = proto3_fds_in(
         "incompat",
@@ -487,7 +487,7 @@ fn the_forward_and_backward_ordinal_walks_agree_across_a_packed_run() {
 /// naive `.replacen('_', ..)` produces `TYPEtype_idMISMATCH`.
 #[test]
 fn splice_override_on_a_varint_mismatch_does_not_corrupt_type_mismatch_annotation() {
-    use prost_types::field_descriptor_proto::{Label, Type};
+    use prototext_core::schema::descriptor::field_descriptor_proto::{Label, Type};
 
     let fds = proto3_fds_in(
         "varint_mismatch",
@@ -667,7 +667,7 @@ fn deactivating_override_reclamps_pan_offset_to_the_shrunk_content() {
 /// true visible width — over-clamping `pan_offset` too far left.
 #[test]
 fn deactivating_override_recomputes_the_pan_bound_against_the_post_splice_scroll_window() {
-    use prost_types::field_descriptor_proto::{Label, Type};
+    use prototext_core::schema::descriptor::field_descriptor_proto::{Label, Type};
 
     // The long field name is the fixture's whole point: once `inner`
     // reverts to its natural 4-line shape, this field's row must be
@@ -948,8 +948,8 @@ fn splice_override_raw_root_shows_the_field_number_in_the_header_line() {
 /// `decode_leaves_any_fields_unexpanded_with_real_type_url_and_value_spans`.
 #[test]
 fn splice_override_reactivating_root_type_still_expands_any_fields() {
-    use prost_types::field_descriptor_proto::{Label, Type};
-    use prost_types::{FileDescriptorProto, FileDescriptorSet};
+    use prototext_core::schema::descriptor::field_descriptor_proto::{Label, Type};
+    use prototext_core::schema::descriptor::{FileDescriptorProto, FileDescriptorSet};
 
     let acme_file = FileDescriptorProto {
         name: Some("acme.proto".to_string()),
@@ -1528,7 +1528,7 @@ fn an_override_keeps_the_repeated_qualifier() {
 /// registration and the splice would fail outright.
 #[test]
 fn an_override_keeps_the_required_qualifier() {
-    use prost_types::field_descriptor_proto::{Label, Type};
+    use prototext_core::schema::descriptor::field_descriptor_proto::{Label, Type};
 
     let fds = proto2_fds(
         "test_required_cardinality.proto",
@@ -1802,7 +1802,7 @@ fn a_commit_leaves_the_fold_set_exactly_as_it_found_it() {
 /// and zeroes it, which is the case that always worked.
 #[test]
 fn a_commit_on_an_open_node_keeps_the_rows_after_it() {
-    use prost_types::field_descriptor_proto::{Label, Type};
+    use prototext_core::schema::descriptor::field_descriptor_proto::{Label, Type};
 
     let leafy = |name: &str, number: i32| field(name, number, Label::Optional, Type::Int32);
     let fds = proto3_fds(

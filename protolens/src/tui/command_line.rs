@@ -978,7 +978,7 @@ impl App {
             export_descriptor::synthetic_message_name(&self.field_name_for(self.cursor));
         let fields = self.resolve_export_fields(self.cursor)?;
         let fds = export_descriptor::build(&message_name, fields);
-        use prost_reflect::prost::Message as _;
+        use prototext_core::schema::descriptor::Encode as _;
         let bytes = fds.encode_to_vec();
         if as_prototext {
             // The meta-schema is one specific message, not a namespace

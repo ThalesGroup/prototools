@@ -9,7 +9,7 @@
 #[cfg(test)]
 use std::sync::atomic::AtomicBool;
 
-use prost_reflect::{Cardinality, DescriptorPool};
+use prototext_core::schema::{Cardinality, Pool};
 use prototext_graph::build_scoring_graph::serial::ArchivedCompiledGraph;
 use prototext_graph::score::{score_one, ScoringOpts};
 use serde::{Deserialize, Serialize};
@@ -44,11 +44,16 @@ impl SortMode {
 /// 0137 §G2). Independent of range — computed once and reused for
 /// every override-pane invocation, every range, for the whole session
 /// (§6: "needs no per-range caching").
-pub fn all_type_fqdns(pool: &DescriptorPool) -> Vec<String> {
+pub fn all_type_fqdns(pool: &Pool) -> Vec<String> {
     let mut names: Vec<String> = pool
         .all_messages()
+        .into_iter()
         .map(|m| m.full_name().to_string())
-        .chain(pool.all_enums().map(|e| e.full_name().to_string()))
+        .chain(
+            pool.all_enums()
+                .into_iter()
+                .map(|e| e.full_name().to_string()),
+        )
         .collect();
     names.sort_unstable();
     names
@@ -1072,7 +1077,7 @@ mod tests {
 
     #[test]
     fn all_type_fqdns_of_an_empty_pool_is_empty() {
-        let pool = DescriptorPool::new();
+        let pool = prototext_core::new_pool();
         assert!(all_type_fqdns(&pool).is_empty());
     }
 

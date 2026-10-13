@@ -10,11 +10,11 @@
 //! (`descriptor.proto`'s `FileDescriptorSet` message) needed to render
 //! it as prototext.
 
-use prost_reflect::prost_types::field_descriptor_proto::{Label, Type};
-use prost_reflect::prost_types::{
+use prototext_core::schema::descriptor::field_descriptor_proto::{Label, Type};
+use prototext_core::schema::descriptor::{
     DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
 };
-use prost_reflect::{DescriptorPool, FileDescriptor};
+use prototext_core::schema::{File as FileDescriptor, Message as MessageDescriptor, Pool};
 use std::collections::HashSet;
 
 /// One resolved field for the synthetic message (spec 0156 G6c) —
@@ -126,11 +126,11 @@ pub fn build(message_name: &str, fields: Vec<ResolvedField>) -> FileDescriptorSe
 /// keyed to any one package (works for `google.protobuf.*`,
 /// `proto2.*`, or any other variant's canonized/uncanonized names).
 /// `None` when no such file/message pair is found (G7's hard-error
-/// case, raised by the caller).
-pub fn locate_file_descriptor_set_type(
-    pool: &DescriptorPool,
-) -> Option<prost_reflect::MessageDescriptor> {
+/// case, raised by the caller). The first such file in load order, which
+/// lists a file's imports before it.
+pub fn locate_file_descriptor_set_type(pool: &Pool) -> Option<MessageDescriptor> {
     pool.files()
+        .into_iter()
         .find(|f| f.name().ends_with("descriptor.proto"))
         .and_then(|f| {
             let has_fdp = f.messages().any(|m| m.name() == "FileDescriptorProto");
@@ -143,7 +143,7 @@ pub fn locate_file_descriptor_set_type(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use prost_reflect::prost::Message as _;
+    use prototext_core::schema::descriptor::Encode as _;
 
     #[test]
     fn synthetic_message_name_capitalizes_resolvable_field_name() {
@@ -175,9 +175,11 @@ mod tests {
         assert_eq!(synthetic_field_name("1"), "f1");
     }
 
-    fn pool_from(files: Vec<FileDescriptorProto>) -> DescriptorPool {
+    fn pool_from(files: Vec<FileDescriptorProto>) -> Pool {
         let fds = FileDescriptorSet { file: files };
-        DescriptorPool::decode(fds.encode_to_vec().as_slice()).unwrap()
+        let (pool, report) = prototext_core::decode_pool(&fds.encode_to_vec()).unwrap();
+        assert!(report.skipped.is_empty(), "{report:?}");
+        pool
     }
 
     fn message(name: &str) -> DescriptorProto {

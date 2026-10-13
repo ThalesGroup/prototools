@@ -10,9 +10,9 @@
 //! production items stayed there, `arena_gap` above all — it is called
 //! from `render_resolved`, which is not test code.
 
-use prost::Message as _;
-use prost_reflect::prost_types::FileDescriptorSet;
 use prototext_core::helpers::{write_tag, write_varint, WT_LEN};
+use prototext_core::schema::descriptor::Encode as _;
+use prototext_core::schema::descriptor::FileDescriptorSet;
 use prototext_graph::build_scoring_graph::build_from_strings;
 
 use super::*;
@@ -746,7 +746,7 @@ fn decode_leaves_any_fields_unexpanded_with_real_type_url_and_value_spans() {
 ///
 /// proto2 throughout: proto3 has no extension ranges.
 fn fixture_files() -> Vec<FileDescriptorProto> {
-    use prost_reflect::prost_types::{
+    use prototext_core::schema::descriptor::{
         descriptor_proto::ExtensionRange, EnumDescriptorProto, EnumValueDescriptorProto,
     };
 
@@ -767,7 +767,6 @@ fn fixture_files() -> Vec<FileDescriptorProto> {
             extension_range: vec![ExtensionRange {
                 start: Some(100),
                 end: Some(200),
-                ..Default::default()
             }],
             ..Default::default()
         }],
@@ -802,9 +801,7 @@ fn fixture_files() -> Vec<FileDescriptorProto> {
                 value: vec![EnumValueDescriptorProto {
                     name: Some("RED".to_string()),
                     number: Some(0),
-                    ..Default::default()
                 }],
-                ..Default::default()
             }],
             ..Default::default()
         }],
@@ -825,9 +822,7 @@ fn fixture_files() -> Vec<FileDescriptorProto> {
             value: vec![EnumValueDescriptorProto {
                 name: Some("CALM".to_string()),
                 number: Some(0),
-                ..Default::default()
             }],
-            ..Default::default()
         }],
         syntax: Some("proto2".to_string()),
         ..Default::default()
@@ -1013,6 +1008,7 @@ fn message_names(ctx: &DescriptorContext) -> Vec<String> {
     let mut names: Vec<String> = ctx
         .pool()
         .all_messages()
+        .into_iter()
         .map(|m| m.full_name().to_string())
         .collect();
     names.sort_unstable();
@@ -1197,7 +1193,7 @@ fn the_schemaless_context_has_no_lazy_branch_and_hashes_the_empty_string() {
 
     assert!(ctx.lazy.is_none());
     assert!(ctx.fallback.is_none());
-    assert!(ctx.pool().all_messages().next().is_none());
+    assert!(ctx.pool().all_messages().is_empty());
     assert_eq!(
         ctx.descriptor_sha256().unwrap(),
         crate::override_pane::sha256_hex(&[])
@@ -1206,10 +1202,9 @@ fn the_schemaless_context_has_no_lazy_branch_and_hashes_the_empty_string() {
 
 /// Spec 0197 test 14 (§S5, the staleness rule). Overriding a range to
 /// a type from outside the root's closure loads a file into a pool
-/// that already has live descriptors handed out of it, which is
-/// exactly when prost-reflect's `Arc::make_mut` forks it. The wrapper
+/// that already has live descriptors handed out of it. The wrapper
 /// registration and the re-render that follow must see the new
-/// symbol, not the pre-fork snapshot.
+/// symbol.
 #[test]
 fn a_type_loaded_after_the_root_can_still_be_rendered_through() {
     let fixture = Fixture::new("override-fresh-type").with_index();
@@ -1342,7 +1337,7 @@ fn a_blob_without_an_extension_leaves_the_declaring_file_unloaded() {
 fn two_cardinalities_are_two_wrappers() {
     let mut ctx = DescriptorContext::empty_for_test();
     let wrapper = |ctx: &mut DescriptorContext, packed, cardinality| {
-        register_wrapper(ctx.pool_mut(), 1, Type::Int32, None, packed, cardinality).unwrap()
+        register_wrapper(ctx.pool(), 1, Type::Int32, None, packed, cardinality).unwrap()
     };
 
     let optional = wrapper(&mut ctx, false, Cardinality::Optional);
@@ -1381,9 +1376,9 @@ fn two_cardinalities_are_two_wrappers() {
 /// the caller derived from the parent's schema.
 #[test]
 fn a_packed_wrapper_is_repeated_whatever_the_caller_asked_for() {
-    let mut ctx = DescriptorContext::empty_for_test();
+    let ctx = DescriptorContext::empty_for_test();
     let packed = register_wrapper(
-        ctx.pool_mut(),
+        ctx.pool(),
         1,
         Type::Int32,
         None,
@@ -1448,4 +1443,102 @@ fn pick_winner_accepts_the_threshold_itself() {
         pick_winner(&candidates, MinScore::AtLeast(-7)),
         Some("a.A".to_string())
     );
+}
+
+/// Spec 0417 S4: a wrapper keeps the name it had under prost-reflect, so
+/// a saved session that names one keeps resolving. Each value is
+/// `SHA-256` of the key with prost's `TYPE_*` spelling, computed
+/// independently of this code when the move to upb was made.
+#[test]
+fn wrapper_names_are_the_ones_prost_reflect_gave() {
+    let pinned = [
+        (Type::Double, "x750af29a9ead4205faf1147bacfdce06"),
+        (Type::Float, "x2e2e0fe50359cd0ee978ba5a417fa0ae"),
+        (Type::Int64, "x59ed414c2cd57e012aa7b52c73b2452c"),
+        (Type::Uint64, "x3a915ee54256430657df38663ad5ab10"),
+        (Type::Int32, "xb2e5e89800f100688344b0fcce35f576"),
+        (Type::Fixed64, "xca5451d244937871c711b395133841be"),
+        (Type::Fixed32, "xcbba431657fa14840ae6c30b78a307a0"),
+        (Type::Bool, "x7c419f2c992617bacbc0b950145da2a7"),
+        (Type::String, "xcd5b925fddbb4566cfa7549a3b8a1a17"),
+        (Type::Group, "xcca82abf37a0f728d774bdf8eaea0715"),
+        (Type::Message, "xf92c9e077d0b62ac30e6dcb8d721ae89"),
+        (Type::Bytes, "xdc44d73f59a70ed4adf42d125592fdb7"),
+        (Type::Uint32, "x9483001277a60e80608d3c52963d4089"),
+        (Type::Enum, "xceef6c2107258ef19bcc426eeed88399"),
+        (Type::Sfixed32, "x1140e26724774d5517b8c7ae56d7baf4"),
+        (Type::Sfixed64, "x5a87fe898000e5f384e53de4f858897e"),
+        (Type::Sint32, "x27629769baf59adaa2b31045aeb98314"),
+        (Type::Sint64, "xf63abce083a283f226365da735c7214c"),
+    ];
+    for (field_type, hex) in pinned {
+        let type_name = match field_type {
+            Type::Group | Type::Message => ".pkg.M",
+            Type::Enum => ".pkg.E",
+            _ => "",
+        };
+        assert_eq!(
+            synthetic_wrapper_name(7, field_type, type_name, false, Cardinality::Optional),
+            format!("protolens_internal.{hex}"),
+            "{field_type:?}"
+        );
+    }
+    assert_eq!(
+        synthetic_wrapper_name(3, Type::Sint64, "", true, Cardinality::Repeated),
+        "protolens_internal.xbe69589e450f952e352d3f8d7d2fc151"
+    );
+    assert_eq!(
+        synthetic_wrapper_name(2, Type::String, "", false, Cardinality::Required),
+        "protolens_internal.x00342b0298c7c19a8a9ba62bee8265a2"
+    );
+}
+
+/// Spec 0417 G5: on the lazy branch, a named type whose file upb refuses
+/// is reported as a load failure, not as a type the set does not
+/// declare; the other files stay usable.
+#[test]
+fn a_named_type_whose_file_is_refused_reports_why_on_the_lazy_branch() {
+    use prototext_core::schema::descriptor::OneofDescriptorProto;
+
+    let mut files = fixture_files();
+    // A oneof that declares no field: upb refuses the whole file.
+    files.push(FileDescriptorProto {
+        name: Some("refused.proto".to_string()),
+        package: Some("t".to_string()),
+        message_type: vec![DescriptorProto {
+            name: Some("Refused".to_string()),
+            oneof_decl: vec![OneofDescriptorProto {
+                name: Some("empty".to_string()),
+            }],
+            ..Default::default()
+        }],
+        syntax: Some("proto3".to_string()),
+        ..Default::default()
+    });
+    let dir = std::env::temp_dir().join("protolens-0417-refused-lazy");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("schema")).unwrap();
+    let pb = dir.join("schema.pb");
+    let (bytes, spans) = encode_fds(&files);
+    std::fs::write(&pb, bytes).unwrap();
+    let index = build_index(&files, spans);
+    prototext_graph::fds_index::write(&index, &dir.join("schema").join("index.rkyv")).unwrap();
+
+    let mut ctx = DescriptorContext::load(&pb).unwrap();
+    assert!(ctx.lazy.is_some());
+    let err = decode(
+        wrapped(ROOT_BLOB),
+        &mut ctx,
+        RootType::Named("t.Refused"),
+        2,
+    )
+    .err()
+    .expect("a refused file cannot be decoded through");
+    let msg = err.to_string();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        msg.starts_with("loading type 't.Refused': ") && msg.contains("refused.proto"),
+        "{msg}"
+    );
+    assert!(decode(wrapped(ROOT_BLOB), &mut ctx, RootType::Named("t.Root"), 2).is_ok());
 }
