@@ -279,9 +279,9 @@ RUFFEOF
         # (not `-nt` on the directory itself) so content edits to existing
         # files are detected, not just files being added/removed.
         local bin="$PWD/target/release/prototext"
-        local watch=(prototext/src prototext-core/src prototext-graph/src
-                     prototext/Cargo.toml prototext-core/Cargo.toml prototext-graph/Cargo.toml
-                     Cargo.lock)
+        local watch=(prototext/src prototext-core/src prototext-graph/src prototext-upb/src
+                     prototext-schema/src prototext/Cargo.toml prototext-core/Cargo.toml
+                     prototext-graph/Cargo.toml prototext-upb/Cargo.toml Cargo.lock)
         local stale=0
         if [[ ! -f "$bin" ]]; then
           stale=1
@@ -301,34 +301,41 @@ RUFFEOF
         fi
 
         # Same staleness guard for protolens (depends on prototext-core and
-        # prototext-graph, but not on prototext itself).
-        local bin2="$PWD/target/release/protolens"
-        local watch2=(protolens/src prototext-core/src prototext-graph/src
-                      protolens/Cargo.toml prototext-core/Cargo.toml prototext-graph/Cargo.toml
-                      Cargo.lock)
-        local stale2=0
-        if [[ ! -f "$bin2" ]]; then
-          stale2=1
+        # prototext-graph, but not on prototext itself). Skipped while it is
+        # out of the workspace: on the `upb` branch, until its own move to
+        # upb (spec 0415 N1).
+        if cargo metadata --offline --no-deps --format-version 1 2>/dev/null \
+            | grep -c '"name":"prototext-lens"' >/dev/null; then
+          local bin2="$PWD/target/release/protolens"
+          local watch2=(protolens/src prototext-core/src prototext-graph/src prototext-upb/src
+                        protolens/Cargo.toml prototext-core/Cargo.toml prototext-graph/Cargo.toml
+                        prototext-upb/Cargo.toml Cargo.lock)
+          local stale2=0
+          if [[ ! -f "$bin2" ]]; then
+            stale2=1
+          else
+            for p in "''${watch2[@]}"; do
+              if [[ -e "$p" && -n "$(find "$p" -newer "$bin2" -print -quit 2>/dev/null)" ]]; then
+                stale2=1
+                break
+              fi
+            done
+          fi
+          if [[ "$stale2" -eq 1 ]]; then
+            echo "[hook] cargo: cargo build --release -p prototext-lens"
+            cargo build --release --locked -p prototext-lens
+          else
+            echo "[hook] cargo: protolens binary up to date — skipping"
+          fi
         else
-          for p in "''${watch2[@]}"; do
-            if [[ -e "$p" && -n "$(find "$p" -newer "$bin2" -print -quit 2>/dev/null)" ]]; then
-              stale2=1
-              break
-            fi
-          done
-        fi
-        if [[ "$stale2" -eq 1 ]]; then
-          echo "[hook] cargo: cargo build --release -p prototext-lens"
-          cargo build --release --locked -p prototext-lens
-        else
-          echo "[hook] cargo: protolens binary up to date — skipping"
+          echo "[hook] cargo: protolens is not a workspace member (spec 0415 N1) — skipping"
         fi
 
         # Same staleness guard for protoscan (spec 0407): its scanner,
         # fdp-scan, scores against prototext's embedded graph.
         local bin3="$PWD/target/release/protoscan"
         local watch3=(protoscan/src fdp-scan/src prototext/src prototext-core/src
-                      prototext-graph/src prototools-complete/src
+                      prototext-graph/src prototext-upb/src prototools-complete/src
                       protoscan/Cargo.toml fdp-scan/Cargo.toml Cargo.lock)
         local stale3=0
         if [[ ! -f "$bin3" ]]; then

@@ -6,12 +6,10 @@
 use std::borrow::Cow;
 
 pub mod helpers;
-pub mod instantiate;
 pub mod schema;
 pub mod serialize;
 
-pub use prost_reflect::MessageDescriptor;
-pub use schema::{decode_pool, schema_from_pool, ParsedSchema, SchemaError};
+pub use schema::{decode_pool, new_pool, schema_from_pool, ParsedSchema, SchemaError};
 pub use serialize::render_text::{
     build_arena, clear_any_loader, is_prototext_text, set_any_loader, set_ext_loader, AnyLoader,
     Arena, ExtLoader, ExtLoaderGuard, NodeKind, Shape,
@@ -116,12 +114,11 @@ impl std::error::Error for CodecError {}
 /// annotation settings).  With `assume_binary: true` the data is always
 /// treated as raw binary wire bytes.
 ///
-/// `root_desc` is the already-resolved root message descriptor, if any.
-/// Callers that only have a `ParsedSchema` can pass
-/// `schema.root_descriptor().as_ref()`.
+/// `root_desc` is the already-resolved root message, if any. Callers that
+/// only have a `ParsedSchema` can pass `schema.root_descriptor().as_ref()`.
 pub fn render_as_text(
     data: &[u8],
-    root_desc: Option<&MessageDescriptor>,
+    root_desc: Option<&schema::Message>,
     opts: RenderOpts,
 ) -> Result<Vec<u8>, CodecError> {
     let binary;

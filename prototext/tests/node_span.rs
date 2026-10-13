@@ -11,13 +11,12 @@
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
+use prototext_core::schema::Message;
 use prototext_core::serialize::render_text::{
     decode_and_render_indexed, DecodeRenderOpts, FqdnTable, NodeKind, NodeSpan, NO_FQDN,
     NO_PACKED_RECORD,
 };
-use prototext_core::{
-    clear_any_loader, parse_schema, schema_from_pool, set_any_loader, MessageDescriptor,
-};
+use prototext_core::{clear_any_loader, parse_schema, schema_from_pool, set_any_loader};
 
 // ── Fixture helpers (duplicated per prototext/tests/*.rs convention — no
 // shared common.rs in this crate; see roundtrip.rs for the same pattern) ──────
@@ -109,15 +108,17 @@ const fn nibble(b: u8) -> u8 {
 /// `.google.protobuf.Any`), seeded from `descriptor.pb` in `OUT_DIR`
 /// (mirrors roundtrip.rs's `any_schema`).
 fn any_schema() -> prototext_core::ParsedSchema {
-    use prost::Message as _;
-    use prost_reflect::DescriptorPool;
-    use prost_types::{DescriptorProto, FieldDescriptorProto, FileDescriptorProto};
+    use prototext_core::schema::descriptor::Encode as _;
+    use prototext_core::schema::descriptor::{
+        DescriptorProto, FieldDescriptorProto, FileDescriptorProto,
+    };
 
     let descriptor_pb =
         std::fs::read(std::path::PathBuf::from(env!("OUT_DIR")).join("descriptor.pb"))
             .expect("cannot read descriptor.pb from OUT_DIR");
-    let mut pool =
-        DescriptorPool::decode(descriptor_pb.as_slice()).expect("cannot decode descriptor.pb");
+    let pool = prototext_core::decode_pool(descriptor_pb.as_slice())
+        .expect("cannot decode descriptor.pb")
+        .0;
 
     let any_msg = DescriptorProto {
         name: Some("Any".into()),
@@ -148,8 +149,13 @@ fn any_schema() -> prototext_core::ParsedSchema {
     };
     let mut any_file_bytes = Vec::new();
     any_file.encode(&mut any_file_bytes).unwrap();
-    pool.decode_file_descriptor_proto(any_file_bytes.as_slice())
-        .expect("cannot add google/protobuf/any.proto to pool");
+    // descriptor.pb already declares google/protobuf/any.proto, with the
+    // same Any; a pool refuses a second file of that name (spec 0415 S3),
+    // so this copy is added only to a pool that lacks it.
+    if pool.file("google/protobuf/any.proto").is_none() {
+        pool.add_file(any_file_bytes.as_slice())
+            .expect("cannot add google/protobuf/any.proto to pool");
+    }
 
     let payload_msg = DescriptorProto {
         name: Some("Payload".into()),
@@ -186,7 +192,7 @@ fn any_schema() -> prototext_core::ParsedSchema {
     };
     let mut acme_bytes = Vec::new();
     acme_file.encode(&mut acme_bytes).unwrap();
-    pool.decode_file_descriptor_proto(acme_bytes.as_slice())
+    pool.add_file(acme_bytes.as_slice())
         .expect("cannot add acme.proto to pool");
 
     schema_from_pool(pool, "acme.Container").expect("cannot build any_schema")
@@ -227,7 +233,7 @@ fn any_wire_bytes() -> Vec<u8> {
 /// against ids from the same table.
 fn render_indexed(
     buf: &[u8],
-    root_desc: Option<&MessageDescriptor>,
+    root_desc: Option<&Message>,
     opts: DecodeRenderOpts,
 ) -> (Vec<u8>, Vec<NodeSpan>, FqdnTable) {
     let mut fqdns = FqdnTable::new();
@@ -613,10 +619,11 @@ fn a_malformed_field_gets_its_own_one_line_span() {
 
 #[test]
 fn packed_repeated_field_gets_one_node_span_per_element() {
-    use prost::Message as _;
-    use prost_reflect::DescriptorPool;
-    use prost_types::field_descriptor_proto::{Label, Type};
-    use prost_types::{DescriptorProto, FieldDescriptorProto, FileDescriptorProto};
+    use prototext_core::schema::descriptor::field_descriptor_proto::{Label, Type};
+    use prototext_core::schema::descriptor::Encode as _;
+    use prototext_core::schema::descriptor::{
+        DescriptorProto, FieldDescriptorProto, FileDescriptorProto,
+    };
 
     let msg_desc = DescriptorProto {
         name: Some("Msg".to_string()),
@@ -638,8 +645,8 @@ fn packed_repeated_field_gets_one_node_span_per_element() {
     };
     let mut file_bytes = Vec::new();
     file.encode(&mut file_bytes).unwrap();
-    let mut pool = DescriptorPool::new();
-    pool.decode_file_descriptor_proto(file_bytes.as_slice())
+    let pool = prototext_core::new_pool();
+    pool.add_file(file_bytes.as_slice())
         .expect("cannot add test proto to pool");
     let schema = schema_from_pool(pool, "test.Msg").expect("cannot build schema");
 
@@ -676,10 +683,11 @@ fn packed_repeated_field_gets_one_node_span_per_element() {
 
 #[test]
 fn empty_packed_repeated_field_keeps_a_single_whole_record_span() {
-    use prost::Message as _;
-    use prost_reflect::DescriptorPool;
-    use prost_types::field_descriptor_proto::{Label, Type};
-    use prost_types::{DescriptorProto, FieldDescriptorProto, FileDescriptorProto};
+    use prototext_core::schema::descriptor::field_descriptor_proto::{Label, Type};
+    use prototext_core::schema::descriptor::Encode as _;
+    use prototext_core::schema::descriptor::{
+        DescriptorProto, FieldDescriptorProto, FileDescriptorProto,
+    };
 
     let msg_desc = DescriptorProto {
         name: Some("Msg".to_string()),
@@ -701,8 +709,8 @@ fn empty_packed_repeated_field_keeps_a_single_whole_record_span() {
     };
     let mut file_bytes = Vec::new();
     file.encode(&mut file_bytes).unwrap();
-    let mut pool = DescriptorPool::new();
-    pool.decode_file_descriptor_proto(file_bytes.as_slice())
+    let pool = prototext_core::new_pool();
+    pool.add_file(file_bytes.as_slice())
         .expect("cannot add test proto to pool");
     let schema = schema_from_pool(pool, "test.Msg").expect("cannot build schema");
 

@@ -79,11 +79,17 @@ or prefixed `_upb_`.
 
 ## Non-goals
 
-- **N1. protolens and protoscan.** They get only the mechanical changes
-  needed to build against `prototext-core`'s new API, with their tests
-  green. Their own move to upb, and the removal of prost from the whole
-  workspace, is a follow-up spec. Until then prost and prost-types stay
-  in their `Cargo.toml`.
+- **N1. protolens.** protolens builds its own schema pool and passes its
+  descriptors into `prototext-core`'s renderer, so it cannot stay on
+  prost-reflect once `prototext-core` moves, and moving it is not
+  mechanical. On the `upb` branch it is left out of the Cargo workspace
+  (its sources unchanged) and the dev shell skips building it; the Nix
+  outputs that include it are not built on the branch. Its move to upb
+  is the branch's second step, after this one succeeds, and must land
+  before the branch is merged.
+- **N1b. protoscan.** It uses `prost-types` only, to read descriptor
+  structures, and is unaffected. Its move off prost belongs with
+  protolens's.
 - **N2. reproto.** It stays Python. Its port to Rust on this wrapper is
   a later spec; S2 is shaped so that the wrapper can grow the message
   reflection reproto needs without a redesign.
@@ -113,6 +119,12 @@ or prefixed `_upb_`.
   nixpkgs pin, so that upb accepts every edition the pinned `protoc`
   produces. The newest edition prototext loads is the pin's; a newer one
   is a skipped file (S3), not an error.
+- Source: Google publishes upb's single-file build only inside the
+  `google-protobuf` crate (`libupb/`), and crates.io carries only its
+  0.36 releases. The pin is therefore protobuf v36.2, taken from
+  `google-protobuf` 0.36.2-release, newer than the nixpkgs pin (34.1),
+  which it accepts. The files are copied from the crate's tarball; the
+  crate itself is never a dependency.
 - REUSE: the vendored files are annotated BSD-3-Clause, Google LLC, in
   `REUSE.toml`.
 - The crate does not depend on `google-protobuf`: its bundled upb is an
@@ -122,14 +134,22 @@ or prefixed `_upb_`.
 
 - `extern "C"` declarations are written by hand (no `bindgen`), and only
   for public functions, never `_upb_…` or `UPB_PRIVATE` symbols. They
-  cover the pool, file, message, field, oneof and enum definitions, and
-  generic message reflection (decode, encode, get, set, iterate set
-  fields), which S5 needs.
-- What `upb.h` declares only inline (`UPB_INLINE`, `UPB_API_INLINE`) is
-  re-exported under `prototext_upb_` names by a C shim compiled with upb
-  (`prototext-upb/src/shim.c`). This includes parsing a serialized
-  `FileDescriptorProto` into an arena, which `upb_DefPool_AddFile`
-  requires. The exact list is fixed against the pinned `upb.h`.
+  cover the pool, file, message, field, oneof and enum definitions; no
+  message reflection (S5 needs none).
+- upb.c is compiled with `UPB_BUILD_API`, which makes upb's
+  `UPB_API_INLINE` functions real symbols, as Google's own Rust binding
+  does. Only upb.c may be: the header then *defines* those functions, and
+  a second translation unit including it would define them twice.
+- What `upb.h` declares `static inline` is re-exported by a C shim
+  (`prototext-upb/src/shim.c`), compiled separately, without
+  `UPB_BUILD_API`. It holds two functions:
+  - `prototext_upb_add_file`: parses a serialized `FileDescriptorProto`
+    into an arena (the generated parser is inline), adds it, and frees the
+    arena, so upb's arenas and status struct stay on the C side; upb
+    copies everything it keeps into the pool;
+  - `prototext_upb_message_set_wire_format`: the message option, read
+    through the generated accessor.
+- Both are compiled with `-fvisibility=hidden` (S10).
 - A test fails if any declaration has no linkable symbol, so an upgrade
   that turns a function inline is caught at once.
 - **Handles are owned, not borrowed.** `Pool` is an
@@ -148,26 +168,34 @@ or prefixed `_upb_`.
   from inside rendering (the Any and MessageSet loader), so the wrapper
   documents and tests that an add never invalidates a handle, and that a
   lookup is never made while the same thread holds the write lock.
-- Strings returned by upb are borrowed for the pool's lifetime or copied,
-  never assumed NUL-terminated beyond what `upb.h` states.
+- Names are borrowed for the handle's lifetime, not re-validated as
+  UTF-8 on each call: upb checks every identifier it builds to be
+  `[A-Za-z_][A-Za-z0-9_]*` joined by dots, and the one name it does not
+  check, a file's, is checked to be UTF-8 before the file reaches upb. A
+  debug assertion keeps the claim honest. `json_name`, which upb stores
+  unchecked, is converted lossily.
 
 ### S3 — Loading a set
 
-- `Pool::add_file(bytes) -> Result<File, LoadError>` adds one serialized
-  `FileDescriptorProto`. Its imports must be in the pool already; a
-  failed add leaves the pool unchanged. `LoadError` carries upb's status
-  message.
-- `Pool::load_set(bytes) -> (Pool, LoadReport)`:
-  1. split the `FileDescriptorSet` into files;
-  2. pass each through the gate (S4);
-  3. order them so every file follows its imports;
-  4. add them in that order;
-  5. skip a file the gate rejects, whose import is missing or was
-     skipped, or that upb refuses, and record `(name, reason)` in
-     `LoadReport.skipped`. Files on an import cycle are skipped together.
+- `Pool::add_file(&self, bytes) -> Result<File, LoadError>` adds one
+  serialized `FileDescriptorProto`. Its imports must be in the pool
+  already; a failed add leaves the pool unchanged. A second file of the
+  same name is refused, whatever its content (prost-reflect skipped it
+  silently, so a test could add a file it believed was its own and get
+  another). `LoadError` carries upb's status message.
+- `Pool::load_set(&self, bytes) -> LoadReport`:
+  1. split the `FileDescriptorSet` into files, reading only each file's
+     name and imports, in safe Rust;
+  2. order them so every file follows its imports, walking iteratively so
+     no chain of imports exhausts the stack;
+  3. add them in that order, each through the gate (S4);
+  4. skip a file whose name is unreadable or a duplicate, whose import is
+     missing or was skipped, or that the gate or upb refuses, and record
+     `(name, reason)` in `LoadReport.skipped`. Files on an import cycle
+     are skipped together.
 
-  It never fails as a whole: a set with nothing loadable gives an empty
-  pool and a full report.
+  It never fails as a whole: bytes that are not a `FileDescriptorSet` at
+  all set `LoadReport.set_error`, and nothing loads.
 - The pool keeps each loaded file's original bytes
   (`Pool::file_bytes(name)`): upb's definitions do not keep
   `source_code_info`, and the single-file build has no def-to-proto
@@ -176,55 +204,82 @@ or prefixed `_upb_`.
 
 ### S4 — The gate in front of upb
 
-Every file's bytes pass prototext's own wire parser before reaching
-upb's C parser. A file is admitted only if it parses as a message that
-consumes its bytes exactly, with no malformation (the probe rule of spec
-0266), within the depth cap of spec 0171. upb then parses only
-well-formed protobuf; what it still sees from a hostile source is
-adversarial content in well-formed messages, which its definition
-builder validates and Google fuzzes continuously (OSS-Fuzz).
+`prototext-upb` sits below `prototext-core`, whose wire parser the gate
+uses, so a pool takes its gate as a parameter (`Pool::with_gate`) and
+`prototext-core` supplies it (`schema::new_pool`): every pool it builds
+passes each file through spec 0266's probe before upb's parser sees it.
+A file is admitted only if it reads as one well-formed message: every
+top-level field framed, the bytes consumed exactly, no malformation, no
+forgiven tail cut.
+
+The probe checks one level: nested payloads are framed by lengths it
+checks, but what is inside them is upb's to parse. So upb never sees a
+broken top-level frame, but can see damaged bytes inside a field. Its
+parser is Google's most fuzzed code (OSS-Fuzz), and test plan 3 adds
+mutated sets of our own, with upb compiled under AddressSanitizer.
 
 ### S5 — Descriptor structures without prost
 
-Code that reads or writes descriptor structures (`FileDescriptorSet`,
-`FileDescriptorProto`, …) without reflection on them — splitting a set,
-completion (`complete.rs`), tests that build fixtures — moves from
-`prost-types` to a typed layer in `prototext-upb::descriptor`: readers
-and builders for the fields the workspace uses, implemented with upb
-message reflection over `descriptor.proto`'s own definitions. Unlike
-prost, upb keeps unknown fields and extensions, so a descriptor that
-passes through this layer loses nothing.
+Code that reads or writes descriptor structures without reflection —
+splitting a set, completion (`complete.rs`), the lazy pool's fallback
+files, tests that build fixtures — moves from `prost-types` to
+`prototext_upb::descriptor`: plain structs with `prost-types`' names and
+fields, for the parts of `descriptor.proto` the workspace uses, with
+`encode_to_vec`, `encode` and `decode` as prost spells them. Code moving
+off prost changes its imports and little else.
+
+The layer is pure Rust, not upb message reflection: building and reading
+a few fields needs no reflection, and keeping it out of C keeps the FFI
+surface to definitions. Decoding keeps the fields declared and skips the
+rest, so nothing round-trips through it: a descriptor that must stay
+whole reaches a pool as its original bytes (`descriptor::files_of_set`),
+and the pool keeps them (S3).
 
 ### S6 — The schema interface in `prototext-core`
 
-- `prototext-core` stops naming any protobuf crate's types. Its `schema`
-  module defines `Schema`, `Message`, `Field`, `Enum`, `Oneof`, `Kind`,
-  `Cardinality` as its own types, implemented on S2:
+- `prototext-core::schema` re-exports `prototext-upb`'s handles
+  (`Pool`, `File`, `Message`, `Field`, `Oneof`, `Enum`, `EnumValue`,
+  `Kind`, `Cardinality`, `LoadReport`) and its descriptor layer, so
+  callers name `prototext_core::schema::Message`, never a protobuf crate.
+  A second set of types wrapping the first would add a layer and nothing
+  else.
+- The handles keep the prost-reflect method names the renderer used
+  (`get_field`, `get_extension`, `kind`, `cardinality`, `is_group`,
+  `get_value`, …), so the renderer's change is mostly its imports:
 
-| Today (prost-reflect) | Interface | upb |
-|---|---|---|
-| `DescriptorPool::decode` | `Schema::load(fds)` + `LoadReport` | S3 |
-| `get_message_by_name`, `all_messages` | `Schema::message`, `messages` | `upb_DefPool_FindMessageByName`; the pool's files |
-| `MessageDescriptor::get_field`, `fields`, `full_name`, `name`, `parent_file` | `Message::field(n)`, `fields`, `full_name`, `name`, `file` | `upb_MessageDef_*` |
-| `get_extension` | `Schema::extension(extendee, n)` | `upb_DefPool_FindExtensionByNumber` |
-| `FieldDescriptor::kind` | `Field::kind` | `upb_FieldDef_Type`, `_MessageSubDef`, `_EnumSubDef` |
-| `cardinality` | `Field::cardinality` | `upb_FieldDef_IsRepeated`, `_IsRequired` |
-| `is_group` | `Field::is_group` | `upb_FieldDef_Type == kUpb_FieldType_Group` (covers delimited encoding) |
-| `is_packed` | `Field::is_packed` | `upb_FieldDef_IsPacked` (feature-resolved) |
-| `parent_file().syntax()` (presence, `render_text/mod.rs`) | `Field::has_presence` | `upb_FieldDef_HasPresence` |
-| `is_map`, `is_synthetic` | `Message::is_map_entry`, `Oneof::is_synthetic` | `upb_MessageDef_IsMapEntry`, `upb_OneofDef_IsSynthetic` |
-| `EnumDescriptor::get_value`, `values` | `Enum::value(n)`, `values` | `upb_EnumDef_FindValueByNumber`, `_Value` |
-| `options.message_set_wire_format` (`message_set_field.rs`) | `Message::is_message_set_wire_format` | message options, read through S2 |
+| prost-reflect | upb |
+|---|---|
+| `DescriptorPool::decode` | `schema::decode_pool` → `Pool::load_set` (S3), gated (S4) |
+| `get_message_by_name`, `all_messages` | `upb_DefPool_FindMessageByNameWithSize`; the pool's files, walked |
+| `MessageDescriptor::get_field`, `fields`, `full_name`, `name`, `parent_file` | `upb_MessageDef_*` |
+| `MessageDescriptor::get_extension` | `upb_DefPool_FindExtensionByNumber` |
+| `FieldDescriptor::kind` | `upb_FieldDef_Type`, `_MessageSubDef`, `_EnumSubDef` |
+| `cardinality` | `upb_FieldDef_IsRepeated`, `_IsRequired` |
+| `is_group` | `upb_FieldDef_Type == kUpb_FieldType_Group` (delimited encoding too) |
+| declared packing, from options and syntax (spec 0371) | `upb_FieldDef_IsPacked` (feature-resolved) |
+| `EnumDescriptor::get_value`, `values` | `upb_EnumDef_FindValueByNumber`, `_Value` |
+| `options.message_set_wire_format` | the shim (S2) |
 
+- The renderer's `FieldOrExt` holds one `Field` for a field or an
+  extension, the variant only choosing how it is named on a line; it
+  resolves kind, cardinality, framing and declared packing once, when
+  built, because each is a call into upb (S12). A group-typed extension
+  is now framed as a group; prost-reflect answered `false` for every
+  extension.
+- The gate (S4) is `prototext-core`'s: `schema::gate`, built on
+  `render_text::probes_as_message`, and `schema::new_pool`, which every
+  pool `prototext-core` builds uses.
 - The public API changes, so `prototext-core` goes to 0.4.0. `pub use
   prost_reflect::MessageDescriptor` (`lib.rs`) is removed;
   `render_as_text(data, root: Option<&schema::Message>, opts)` and
   `ParsedSchema::root_descriptor()` take the interface's type. Callers
   that only pass `root_descriptor().as_ref()` through need no change
   beyond the version. The release notes say so.
-- `parse_schema` keeps its signature and fails only when the root message
-  is missing or not loadable. Skipped files are in
-  `ParsedSchema::load_report()`.
+- `parse_schema` keeps its signature and fails only when the bytes are
+  not a set, or the root message is missing or not loadable; that error
+  lists the skipped files. Skipped files are in
+  `ParsedSchema::load_report()`. `decode_pool` returns the report beside
+  the pool.
 - The `prost-bug-workaround` feature goes: there is no prost-reflect left
   to work around.
 
@@ -357,25 +412,91 @@ evidence, and the branch gives the fallback.
    - an `EDITION_UNKNOWN` file, and an edition newer than the pin;
    - a file the gate rejects (truncated, malformed);
    - random bytes.
-3. **Fuzzing.** A `cargo-fuzz` target on `Pool::load_set`, run briefly in
-   CI and at length before merge.
+3. **Damaged input, with upb's C under AddressSanitizer.** 20,000
+   mutations of the editions fixture (bit flips, insertions, deletions,
+   truncations) and 2,000 random byte strings are loaded with no gate, so
+   upb parses all of it, and every definition that loads is walked.
+   `scripts/upb-asan` runs those tests with upb.c compiled with
+   `-fsanitize=address`, and checks the binaries are instrumented.
+   A `cargo-fuzz` target on `Pool::load_set` needs a nightly toolchain,
+   which the dev-shell does not have; it is left for when one is.
 4. **Handles.** A handle obtained before a later `add_file` stays valid
    and equal; handles are used from several threads at once.
 5. **The panic.** The set that made prost-reflect panic (kept
    downstream) loads, and its report lists what was skipped.
 6. **The gate (S11)** passes, with every difference listed.
-7. **Two upb copies.** A Python process imports `google.protobuf`, loads
-   a descriptor through it, imports `prototext_codec`, renders, and both
-   work; `nm -D` on the extension shows no `upb_` symbol.
+7. **Two upb copies.** A Python process uses `google.protobuf`'s pool,
+   then the extension's, then Python's again, and all three answer; the
+   extension's dynamic symbol table holds no `upb_` symbol, checked with
+   `ctypes` (which finds only exported symbols) in its pytest suite.
 8. **Downstream acceptance (outside this repository's CI).** On the
    production set above, an extension declared in an editions file
    renders by name, not by number.
 9. **Benchmarks (S12)** are run, and their results and explanations are
    recorded under "Measured outcome" for review.
-10. `ci`, `nixpkgs-staging`, `cargo package --verify` for each changed
-    crate, and `reuse lint` pass; protolens's and protoscan's tests pass
-    unchanged.
+10. `ci`, `cargo package --verify` for each publishable crate but
+    protolens, and `reuse lint` pass; protoscan's tests pass unchanged.
+    (`nixpkgs-staging` and protolens's tests belong to the branch's second
+    step, N1.)
 
 ## Measured outcome
 
-Filled in at implementation.
+Implemented 2026-10-13, up to the branch's second step (protolens, N1).
+Measured on the development VM (Intel Core Ultra 7 165U E-cores), pinned
+to one core with the bench lock, against the last prost-reflect build of
+the same commit.
+
+- **S1–S3:** `prototext-upb` vendors upb from protobuf v36.2 (1.5 MB,
+  241 KB as a `.crate`). 30 tests: the editions table of test plan 1
+  matches Python's upb on all 15 fields; every load-report case of test
+  plan 2; handles across adds and threads.
+- **S4–S9:** prost, prost-reflect and prost-types are gone from the
+  dependency trees of `prototext-upb`, `prototext-core`,
+  `prototext-schema`, `prototext` and `prototext_codec_lib` (checked with
+  `cargo tree`); `workspace-hack` was regenerated by cargo-hakari to
+  match. protoscan keeps `prost-types` (N1b).
+- **S10:** the extension exports no upb symbol; 12 of 12 extension tests
+  pass beside Python's protobuf.
+- **S11:** 1,516 of 1,516 golden cases byte-identical (stdout, stderr and
+  exit status): 375 googleapis instances decoded typed, typed without
+  annotations, inferred and scored; the repository's instances; three
+  descriptor sets decoded as descriptors; the anomaly fixture typed and
+  raw; a type that does not exist. No difference to explain.
+- **Tests:** 420 workspace tests pass (the 231 of the crates in scope
+  before the change, plus the wrapper's and two schema tests); clippy and
+  rustfmt clean; nine publishable crates package and build from their
+  `.crate` files; `reuse lint` passes.
+- **S12, reported for review:**
+
+| Benchmark | prost-reflect | upb | Change |
+|---|---|---|---|
+| eager load of googleapis.desc (CLI, no sidecar) | 2.070 s ± 0.048 | 0.703 s ± 0.034 | −66% |
+| its peak RSS | 722,860 KiB | 252,088 KiB | −65% |
+| lazy load of one root's closure | 6.6 ms ± 0.5 | 5.6 ms ± 0.8 | within noise |
+| decode with inference | 33.5 ms ± 1.3 | 33.6 ms ± 2.9 | within noise |
+| decode against the built-in WKT | 2.7 ms ± 1.1 | 2.7 ms ± 0.7 | within noise |
+| decode googleapis.desc (25.6 MB) as a set | 856.6 ms ± 33.0 | 815.5 ms ± 28.1 | −4.8% |
+| Criterion A1, no schema | 215.3 µs | 203.2 µs | −4.3% |
+| Criterion A2, schema and annotations | 370.0 µs | 390.1 µs | **+5.8%** |
+| Criterion B1, encode | 623.0 µs | 621.5 µs | no change |
+
+  - The 25.6 MB decode first measured +15% (988.9 ms). A profile put it in
+    per-occurrence calls into upb (`Field::kind` 7.8%, feature lookups
+    about 10%) and UTF-8 re-validation of names (6.5%); resolving a
+    field's properties once per occurrence (S6) and trusting upb's
+    identifier check (S2) turned it into −4.8%, golden cases unchanged.
+  - A2 renders a small document with many distinct fields, so the
+    remaining per-occurrence lookup dominates it. Unchanged schema-free
+    benchmarks drifted by 0 to +4% in the same run, so its true cost is
+    about 2 to 6%. Spec 0416 proposes a per-render field cache for it.
+- **A behaviour change, and a bug it exposed.** A group-typed extension
+  (`extend Host { optional group Ext = 100 {…} }`) rendered under
+  prost-reflect as an untyped `100 { … }` marked `TYPE_MISMATCH`, because
+  prost-reflect answers `is_group() == false` for every extension. upb
+  resolves the group, and the first upb build named it by its group type,
+  `Ext {`, where protoc writes `[g.ext] {`: the group header ignored that
+  the field was an extension, a path no extension had reached before. It
+  now writes `[g.ext]`, as protoc does, and a test pins both the text and
+  the byte-exact round trip. No golden case has a group extension.
+- **Not done:** the `cargo-fuzz` target (test plan 3: no nightly
+  toolchain); test plan 5 and 8, which are downstream.

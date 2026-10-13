@@ -46,9 +46,6 @@ clap_mangen     = "0.2"
 globset         = "0.4"
 serde           = { version = "1", features = ["derive"] }
 serde_yaml      = "0.9"
-prost           = "0.14"
-prost-reflect   = "0.16"
-prost-types     = "0.14"
 strsim          = "0.11"
 walkdir         = "2"
 workspace-hack = { version = "0.1", path = "../workspace-hack" }
@@ -57,16 +54,10 @@ workspace-hack = { version = "0.1", path = "../workspace-hack" }
 default      = ["wkt-db"]
 wkt-db       = []
 
-[build-dependencies]
-prost = "0.14"
-
 [[test]]
 name    = "protocraft"
 path    = "tests/protocraft.rs"
 harness = false
 
 [dev-dependencies]
-prost-reflect = "0.16"
 toml        = "0.8"
-prost       = "0.14"
-prost-types = "0.14"

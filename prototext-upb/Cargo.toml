@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+#
+# SPDX-License-Identifier: MIT
+
+[package]
+name        = "prototext-upb"
+version.workspace    = true
+edition     = "2021"
+description = "A safe Rust wrapper over upb, Google's C protobuf runtime: descriptor pools with editions support"
+# The wrapper is ours, MIT; the vendored upb is Google's, BSD-3-Clause
+# (vendor/LICENSE, spec 0415 S1).
+license     = "MIT AND BSD-3-Clause"
+repository.workspace = true
+keywords    = ["protobuf", "upb", "descriptor", "editions"]
+categories  = ["encoding", "api-bindings"]
+links       = "prototext_upb"
+include = [
+    "Cargo.toml",
+    "build.rs",
+    "src/**/*.rs",
+    "src/shim.c",
+    "tests/pool.rs",
+    "tests/fixtures/*",
+    "vendor/LICENSE",
+    "vendor/VERSION",
+    "vendor/upb/upb.c",
+    "vendor/upb/upb.h",
+    "vendor/utf8_range/*",
+]
+
+[lib]
+name = "prototext_upb"
+
+[dependencies]
+workspace-hack = { version = "0.1", path = "../workspace-hack" }
+
+[build-dependencies]
+cc = "1.2"

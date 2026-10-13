@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use prost::Message as ProstMessage;
+use prototext_core::schema::descriptor::Encode;
 use prototext_core::{
     clear_any_loader, parse_schema, render_as_bytes, render_as_text, set_any_loader, RenderOpts,
 };
@@ -1726,7 +1726,7 @@ fn packed_double_nan_matches_protoc_output() {
 //   value = 42              → varint  [0x2A]
 
 fn gadget_schema() -> prototext_core::ParsedSchema {
-    use prost_types::{
+    use prototext_core::schema::descriptor::{
         descriptor_proto::ExtensionRange, DescriptorProto, FieldDescriptorProto,
         FileDescriptorProto, FileDescriptorSet,
     };
@@ -1743,7 +1743,6 @@ fn gadget_schema() -> prototext_core::ParsedSchema {
         extension_range: vec![ExtensionRange {
             start: Some(1000),
             end: Some(2000),
-            ..Default::default()
         }],
         ..Default::default()
     };
@@ -1865,17 +1864,19 @@ fn extension_field_roundtrip() {
 //     field 1 LEN: 0x0a, len <any_len>, <any_bytes>
 
 fn any_schema() -> prototext_core::ParsedSchema {
-    use prost::Message as _;
-    use prost_reflect::DescriptorPool;
-    use prost_types::{DescriptorProto, FieldDescriptorProto, FileDescriptorProto};
+    use prototext_core::schema::descriptor::Encode as _;
+    use prototext_core::schema::descriptor::{
+        DescriptorProto, FieldDescriptorProto, FileDescriptorProto,
+    };
     use prototext_core::schema_from_pool;
 
     // Seed pool with WKTs from descriptor.pb (descriptor.proto only).
     let descriptor_pb =
         std::fs::read(std::path::PathBuf::from(env!("OUT_DIR")).join("descriptor.pb"))
             .expect("cannot read descriptor.pb from OUT_DIR");
-    let mut pool =
-        DescriptorPool::decode(descriptor_pb.as_slice()).expect("cannot decode descriptor.pb");
+    let pool = prototext_core::decode_pool(descriptor_pb.as_slice())
+        .expect("cannot decode descriptor.pb")
+        .0;
 
     // Add a minimal google/protobuf/any.proto — two fields: type_url and value.
     let any_msg = DescriptorProto {
@@ -1907,8 +1908,13 @@ fn any_schema() -> prototext_core::ParsedSchema {
     };
     let mut any_file_bytes = Vec::new();
     any_file.encode(&mut any_file_bytes).unwrap();
-    pool.decode_file_descriptor_proto(any_file_bytes.as_slice())
-        .expect("cannot add google/protobuf/any.proto to pool");
+    // descriptor.pb already declares google/protobuf/any.proto, with the
+    // same Any; a pool refuses a second file of that name (spec 0415 S3),
+    // so this copy is added only to a pool that lacks it.
+    if pool.file("google/protobuf/any.proto").is_none() {
+        pool.add_file(any_file_bytes.as_slice())
+            .expect("cannot add google/protobuf/any.proto to pool");
+    }
 
     // acme.Payload: message Payload { optional string label = 1; }
     let payload_msg = DescriptorProto {
@@ -1948,7 +1954,7 @@ fn any_schema() -> prototext_core::ParsedSchema {
 
     let mut acme_bytes = Vec::new();
     acme_file.encode(&mut acme_bytes).unwrap();
-    pool.decode_file_descriptor_proto(acme_bytes.as_slice())
+    pool.add_file(acme_bytes.as_slice())
         .expect("cannot add acme.proto to pool");
 
     schema_from_pool(pool, "acme.Container").expect("cannot build any_schema")
@@ -1999,16 +2005,18 @@ fn any_wire_bytes() -> Vec<u8> {
 /// installed by the test (see `any_field_jit_loaded_type_nested_field...`
 /// below), never via a pre-populated pool.
 fn container_only_schema() -> prototext_core::ParsedSchema {
-    use prost::Message as _;
-    use prost_reflect::DescriptorPool;
-    use prost_types::{DescriptorProto, FieldDescriptorProto, FileDescriptorProto};
+    use prototext_core::schema::descriptor::Encode as _;
+    use prototext_core::schema::descriptor::{
+        DescriptorProto, FieldDescriptorProto, FileDescriptorProto,
+    };
     use prototext_core::schema_from_pool;
 
     let descriptor_pb =
         std::fs::read(std::path::PathBuf::from(env!("OUT_DIR")).join("descriptor.pb"))
             .expect("cannot read descriptor.pb from OUT_DIR");
-    let mut pool =
-        DescriptorPool::decode(descriptor_pb.as_slice()).expect("cannot decode descriptor.pb");
+    let pool = prototext_core::decode_pool(descriptor_pb.as_slice())
+        .expect("cannot decode descriptor.pb")
+        .0;
 
     let any_msg = DescriptorProto {
         name: Some("Any".into()),
@@ -2039,8 +2047,13 @@ fn container_only_schema() -> prototext_core::ParsedSchema {
     };
     let mut any_file_bytes = Vec::new();
     any_file.encode(&mut any_file_bytes).unwrap();
-    pool.decode_file_descriptor_proto(any_file_bytes.as_slice())
-        .expect("cannot add google/protobuf/any.proto to pool");
+    // descriptor.pb already declares google/protobuf/any.proto, with the
+    // same Any; a pool refuses a second file of that name (spec 0415 S3),
+    // so this copy is added only to a pool that lacks it.
+    if pool.file("google/protobuf/any.proto").is_none() {
+        pool.add_file(any_file_bytes.as_slice())
+            .expect("cannot add google/protobuf/any.proto to pool");
+    }
 
     let container_msg = DescriptorProto {
         name: Some("Container".into()),
@@ -2064,7 +2077,7 @@ fn container_only_schema() -> prototext_core::ParsedSchema {
     };
     let mut acme_bytes = Vec::new();
     acme_file.encode(&mut acme_bytes).unwrap();
-    pool.decode_file_descriptor_proto(acme_bytes.as_slice())
+    pool.add_file(acme_bytes.as_slice())
         .expect("cannot add acme.proto to pool");
 
     schema_from_pool(pool, "acme.Container").expect("cannot build container_only_schema")
@@ -2076,8 +2089,10 @@ fn container_only_schema() -> prototext_core::ParsedSchema {
 /// mirroring `LazyPool::ensure_loaded`, which loads a type's whole
 /// declaring file (and therefore its siblings) atomically on first request.
 fn payload_with_sibling_file_bytes() -> Vec<u8> {
-    use prost::Message as _;
-    use prost_types::{DescriptorProto, FieldDescriptorProto, FileDescriptorProto};
+    use prototext_core::schema::descriptor::Encode as _;
+    use prototext_core::schema::descriptor::{
+        DescriptorProto, FieldDescriptorProto, FileDescriptorProto,
+    };
 
     let sibling_msg = DescriptorProto {
         name: Some("Sibling".into()),
@@ -2144,11 +2159,11 @@ fn any_field_jit_loaded_type_nested_field_renders_symbolically() {
     // (Payload *and* Sibling) into a pool that starts as a clone of the
     // Container-only pool — nothing beyond Container/Any is present when
     // `decode_and_render` takes its `schema_present` snapshot.
-    let mut pool = schema.pool().clone();
+    let pool = schema.pool().clone();
     let mut loaded = false;
     set_any_loader(Box::new(move |fqdn: &str| {
         if fqdn == "acme.Payload" && !loaded {
-            pool.decode_file_descriptor_proto(payload_with_sibling_file_bytes().as_slice())
+            pool.add_file(payload_with_sibling_file_bytes().as_slice())
                 .ok()?;
             loaded = true;
         }
@@ -2329,16 +2344,18 @@ fn any_field_unresolvable_type_url_renders_value_as_bytes() {
     // nested { } block — because the payload type cannot be resolved.
     // Build a schema that has Container+Any but NOT acme.Payload.
     let schema = {
-        use prost::Message as _;
-        use prost_reflect::DescriptorPool;
-        use prost_types::{DescriptorProto, FieldDescriptorProto, FileDescriptorProto};
+        use prototext_core::schema::descriptor::Encode as _;
+        use prototext_core::schema::descriptor::{
+            DescriptorProto, FieldDescriptorProto, FileDescriptorProto,
+        };
         use prototext_core::schema_from_pool;
 
         let descriptor_pb =
             std::fs::read(std::path::PathBuf::from(env!("OUT_DIR")).join("descriptor.pb"))
                 .expect("cannot read descriptor.pb from OUT_DIR");
-        let mut pool =
-            DescriptorPool::decode(descriptor_pb.as_slice()).expect("cannot decode descriptor.pb");
+        let pool = prototext_core::decode_pool(descriptor_pb.as_slice())
+            .expect("cannot decode descriptor.pb")
+            .0;
 
         let any_msg = DescriptorProto {
             name: Some("Any".into()),
@@ -2369,8 +2386,13 @@ fn any_field_unresolvable_type_url_renders_value_as_bytes() {
         };
         let mut any_file_bytes = Vec::new();
         any_file.encode(&mut any_file_bytes).unwrap();
-        pool.decode_file_descriptor_proto(any_file_bytes.as_slice())
-            .expect("cannot add google/protobuf/any.proto to pool");
+        // descriptor.pb already declares google/protobuf/any.proto, with the
+        // same Any; a pool refuses a second file of that name (spec 0415 S3),
+        // so this copy is added only to a pool that lacks it.
+        if pool.file("google/protobuf/any.proto").is_none() {
+            pool.add_file(any_file_bytes.as_slice())
+                .expect("cannot add google/protobuf/any.proto to pool");
+        }
 
         // Container only — acme.Payload is absent from the pool.
         let container_msg = DescriptorProto {
@@ -2395,7 +2417,7 @@ fn any_field_unresolvable_type_url_renders_value_as_bytes() {
         };
         let mut acme_bytes = Vec::new();
         acme_file.encode(&mut acme_bytes).unwrap();
-        pool.decode_file_descriptor_proto(acme_bytes.as_slice())
+        pool.add_file(acme_bytes.as_slice())
             .expect("cannot add acme.proto to pool");
 
         schema_from_pool(pool, "acme.Container").expect("cannot build schema")

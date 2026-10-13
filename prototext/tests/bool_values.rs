@@ -9,8 +9,8 @@
 //! Also the renderer/scorer parity the spec establishes (G3): no value the
 //! scorer accepts renders as `INVALID_PACKED_RECORDS` or `TYPE_MISMATCH`.
 
-use prost::Message as ProstMessage;
-use prost_types::{
+use prototext_core::schema::descriptor::Encode;
+use prototext_core::schema::descriptor::{
     field_descriptor_proto::{Label, Type},
     DescriptorProto, EnumDescriptorProto, EnumValueDescriptorProto, FieldDescriptorProto,
     FileDescriptorProto, FileDescriptorSet,
@@ -80,7 +80,6 @@ fn schema() -> ParsedSchema {
     let value = |name: &str, number| EnumValueDescriptorProto {
         name: Some(name.into()),
         number: Some(number),
-        ..Default::default()
     };
     let file = FileDescriptorProto {
         name: Some("p.proto".into()),
@@ -89,7 +88,6 @@ fn schema() -> ParsedSchema {
         enum_type: vec![EnumDescriptorProto {
             name: Some("C".into()),
             value: vec![value("A", 0), value("B", 1)],
-            ..Default::default()
         }],
         message_type: vec![DescriptorProto {
             name: Some("P".into()),

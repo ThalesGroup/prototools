@@ -1,0 +1,51 @@
+// SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+//
+// SPDX-License-Identifier: MIT
+
+// Feature resolution under edition 2023 (spec 0415, test plan 1): each
+// field's name says what upb must resolve for it.
+edition = "2023";
+
+package ed2023;
+
+// File level: every repeated scalar is expanded unless overridden.
+option features.repeated_field_encoding = EXPANDED;
+
+message Inner {
+  int32 a = 1;
+
+  extensions 100 to 199;
+}
+
+enum OpenEnum {
+  OPEN_ZERO = 0;
+}
+
+enum ClosedEnum {
+  option features.enum_type = CLOSED;
+  CLOSED_ONE = 1;
+}
+
+message Fields {
+  // Inherits the file's EXPANDED.
+  repeated int32 expanded_from_file = 1;
+  // Field level overrides the file.
+  repeated int32 packed_on_field = 2 [features.repeated_field_encoding = PACKED];
+  // Delimited encoding: a group on the wire.
+  Inner delimited = 3 [features.message_encoding = DELIMITED];
+  Inner length_prefixed = 4;
+  int32 legacy_required = 5 [features.field_presence = LEGACY_REQUIRED];
+  int32 implicit_presence = 6 [features.field_presence = IMPLICIT];
+  // 2023's default presence is EXPLICIT.
+  int32 explicit_presence = 7;
+  OpenEnum open_enum = 8;
+  ClosedEnum closed_enum = 9;
+}
+
+// Message level overrides the file, and fields inherit the message.
+message PackedMessage {
+  option features.repeated_field_encoding = PACKED;
+
+  repeated int32 packed_from_message = 1;
+  repeated int32 expanded_on_field = 2 [features.repeated_field_encoding = EXPANDED];
+}

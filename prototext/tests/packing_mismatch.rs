@@ -7,8 +7,8 @@
 //! The renderer marks it `packing_mismatch`, the scorer charges it `packing`,
 //! and the two must agree record for record (G3). Test plan items 2, 5 and 6.
 
-use prost::Message as ProstMessage;
-use prost_types::{
+use prototext_core::schema::descriptor::Encode;
+use prototext_core::schema::descriptor::{
     descriptor_proto::ExtensionRange,
     field_descriptor_proto::{Label, Type},
     DescriptorProto, FieldDescriptorProto, FieldOptions, FileDescriptorProto, FileDescriptorSet,
@@ -72,7 +72,6 @@ fn schema(message: &str) -> ParsedSchema {
             extension_range: vec![ExtensionRange {
                 start: Some(100),
                 end: Some(201),
-                ..Default::default()
             }],
             ..Default::default()
         }],

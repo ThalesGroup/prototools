@@ -303,7 +303,7 @@ pub(super) trait Sink {
 
 // ── `TextSink`: production text rendering ───────────────────────────────────
 
-use prost_reflect::{Cardinality, Kind};
+use crate::schema::{Cardinality, Kind};
 
 use crate::helpers::{
     decode_double, decode_fixed32, decode_fixed64, decode_float, decode_sfixed32, decode_sfixed64,
@@ -751,7 +751,12 @@ impl Sink for TextSink {
                 let annotations = ANNOTATIONS.with(|c| c.get());
                 push_indent(&mut self.out);
                 if let Some(fs) = field_schema.filter(|fs| fs.is_group()) {
-                    if let Kind::Message(msg_desc) = fs.kind() {
+                    if fs.is_extension() {
+                        // protoc names a group extension like any other:
+                        // `[pkg.field]`, not by its group type.
+                        fs.write_display_name(&mut self.out);
+                    } else if let Kind::Message(msg_desc) = fs.kind() {
+                        // A group field is named by its type (`MyGroup`).
                         self.out.extend_from_slice(msg_desc.name().as_bytes());
                     } else {
                         write_dec_u64(field_number, &mut self.out);
@@ -1699,7 +1704,7 @@ impl Sink for IndexingTextSink<'_> {
                         NodeKind::Bytes
                     }
                 }
-                Some(fs) if fs.kind() == prost_reflect::Kind::String => {
+                Some(fs) if fs.kind() == crate::schema::Kind::String => {
                     if std::str::from_utf8(data).is_ok() {
                         NodeKind::String
                     } else {

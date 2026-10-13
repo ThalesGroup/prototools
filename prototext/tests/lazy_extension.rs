@@ -17,14 +17,16 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use prost::Message;
-use prost_reflect::prost_types::field_descriptor_proto::{Label, Type};
-use prost_reflect::prost_types::{DescriptorProto, FieldDescriptorProto, FileDescriptorProto};
+use prototext_core::schema::descriptor::field_descriptor_proto::{Label, Type};
+use prototext_core::schema::descriptor::Encode;
+use prototext_core::schema::descriptor::{
+    DescriptorProto, FieldDescriptorProto, FileDescriptorProto,
+};
 
 /// `leaf.proto` / `root.proto` / `ext.proto`. proto2 throughout: proto3 has
 /// no extension ranges.
 fn fixture_files() -> Vec<FileDescriptorProto> {
-    use prost_reflect::prost_types::descriptor_proto::ExtensionRange;
+    use prototext_core::schema::descriptor::descriptor_proto::ExtensionRange;
 
     let leaf = FileDescriptorProto {
         name: Some("leaf.proto".to_string()),
@@ -41,7 +43,6 @@ fn fixture_files() -> Vec<FileDescriptorProto> {
             extension_range: vec![ExtensionRange {
                 start: Some(100),
                 end: Some(200),
-                ..Default::default()
             }],
             ..Default::default()
         }],

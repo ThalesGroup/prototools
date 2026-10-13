@@ -5,7 +5,7 @@
 
 use std::ops::Range;
 
-use prost_reflect::{Cardinality, Kind, MessageDescriptor};
+use crate::schema::{Cardinality, Kind, Message};
 
 use super::super::sink::{
     GroupCloseFacts, MalformedKind, NestedKind, ProbeSink, ScalarValue, Sink, TagFacts,
@@ -184,9 +184,7 @@ pub(in super::super) fn render_len_field<S: Sink>(
     // default choose what a *writer* emits; a reader must accept both
     // encodings in either direction (protobuf encoding guide, "Packed
     // Repeated Fields"), and the scorer already does (spec 0175). Asking
-    // `is_packed()` here would turn a legal record into a TYPE_MISMATCH —
-    // and would also inherit prost-reflect's wrong answer for proto3
-    // fields that carry options (docs/prototext/PROST-ISSUES.md §1).
+    // `is_packed()` here would turn a legal record into a TYPE_MISMATCH.
     if is_repeated && is_packable_kind {
         sink.scalar_field(
             field_number,
@@ -200,7 +198,7 @@ pub(in super::super) fn render_len_field<S: Sink>(
     }
 
     // ── Nested message ────────────────────────────────────────────────────────
-    // Note: groups are represented as Kind::Message in prost-reflect.  A GROUP
+    // Note: groups are represented as Kind::Message, with `is_group()`.  A GROUP
     // field received on a LEN wire record is a wire-type mismatch — fall
     // through to the generic String/Bytes/mismatch path below.  Intercepted
     // here (before that generic path) because Kind::Message on a LEN wire
@@ -256,7 +254,7 @@ pub(in super::super) fn render_len_field<S: Sink>(
                 return;
             }
 
-            let nested_schema: Option<&MessageDescriptor> = Some(&nested_msg_desc);
+            let nested_schema: Option<&Message> = Some(&nested_msg_desc);
 
             let mark = sink.begin_nested(
                 field_number,
@@ -361,7 +359,7 @@ pub(in super::super) fn render_group_field<S: Sink>(
     // and correct — no lookup needed (spec 0106 S1).  Mismatch/unknown-field
     // annotation details (field_decl, TYPE_MISMATCH, tag/close-tag modifiers)
     // are computed by `Sink::begin_nested`/`end_nested`'s own implementation.
-    let nested_msg_desc: Option<MessageDescriptor> = field_schema.and_then(|fs| {
+    let nested_msg_desc: Option<Message> = field_schema.and_then(|fs| {
         if fs.is_group() {
             if let Kind::Message(msg_desc) = fs.kind() {
                 Some(msg_desc)
@@ -372,7 +370,7 @@ pub(in super::super) fn render_group_field<S: Sink>(
             None
         }
     });
-    let nested_schema_opt: Option<&MessageDescriptor> = nested_msg_desc.as_ref();
+    let nested_schema_opt: Option<&Message> = nested_msg_desc.as_ref();
 
     let mark = sink.begin_nested(
         field_number,

@@ -15,27 +15,33 @@ publish = false
 
 ### BEGIN HAKARI SECTION
 [dependencies]
-bytes = { version = "1" }
+aho-corasick = { version = "1" }
+clap = { version = "4", features = ["derive", "env", "unstable-ext"] }
+clap_builder = { version = "4", default-features = false, features = ["color", "env", "help", "std", "suggestions", "unstable-ext", "usage"] }
 either = { version = "1", features = ["use_std"] }
+memchr = { version = "2" }
 num-integer = { version = "0.1", features = ["i128"] }
 num-traits = { version = "0.2", features = ["i128"] }
-once_cell = { version = "1" }
 phf_shared = { version = "0.11" }
-prost-reflect = { version = "0.16", default-features = false, features = ["miette", "text-format"] }
-rand = { version = "0.8", features = ["small_rng"] }
-regex-syntax = { version = "0.8" }
+regex = { version = "1", default-features = false, features = ["perf", "std", "unicode"] }
+regex-automata = { version = "0.4", default-features = false, features = ["dfa-onepass", "hybrid", "meta", "nfa", "perf", "std", "unicode"] }
+regex-syntax = { version = "0.8", default-features = false, features = ["std", "unicode"] }
+serde = { version = "1", features = ["alloc", "derive"] }
 serde_core = { version = "1", default-features = false, features = ["alloc", "result", "std"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+zerocopy = { version = "0.8", default-features = false, features = ["derive", "simd"] }
 
 [build-dependencies]
-bytes = { version = "1" }
 either = { version = "1", features = ["use_std"] }
+memchr = { version = "2" }
 num-integer = { version = "0.1", features = ["i128"] }
 num-traits = { version = "0.2", features = ["i128"] }
-once_cell = { version = "1" }
 phf_shared = { version = "0.11" }
-prost-reflect = { version = "0.16", default-features = false, features = ["miette", "text-format"] }
-rand = { version = "0.8", features = ["small_rng"] }
-regex-syntax = { version = "0.8" }
+proc-macro2 = { version = "1" }
+quote = { version = "1" }
+serde_core = { version = "1", default-features = false, features = ["alloc", "result", "std"] }
+serde_json = { version = "1", features = ["preserve_order"] }
 syn = { version = "2", features = ["extra-traits", "fold", "full", "visit-mut"] }
+zerocopy = { version = "0.8", default-features = false, features = ["derive", "simd"] }
 
 ### END HAKARI SECTION

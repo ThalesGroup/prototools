@@ -3,7 +3,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-use prost_reflect::Kind;
+use crate::schema::Kind;
 
 use super::{FieldOrExt, Shape};
 

@@ -236,3 +236,50 @@ def test_format_as_text_expands_any_field() -> None:
     )
     assert "value {" in text, f"expected expanded value block in Any expansion: {text}"
     assert "hello" in text, f"expected Payload.label value in Any expansion: {text}"
+
+
+# ---------------------------------------------------------------------------
+# Spec 0415 S10: two upb copies in one process
+# ---------------------------------------------------------------------------
+#
+# Python's protobuf runs on its own upb, and this extension now embeds
+# another (spec 0415 S1), possibly of a different version. Both must work
+# side by side, which holds only if the extension keeps its upb symbols to
+# itself: an exported `upb_*` symbol could bind Python's protobuf to our
+# copy, or our code to its.
+
+
+def test_works_beside_python_protobufs_own_upb() -> None:
+    """Python's upb and ours, used in turn in one process, both answer."""
+    from google.protobuf import descriptor_pool
+
+    pool = descriptor_pool.DescriptorPool()
+    fdp = FileDescriptorProto()
+    FileDescriptorProto.DESCRIPTOR.file.CopyToProto(fdp)
+    pool.Add(fdp)
+    assert pool.FindMessageTypeByName("google.protobuf.FileDescriptorProto")
+
+    handle = prototext_codec_lib.register_schema(
+        _fdp_schema_bytes(), "google.protobuf.FileDescriptorProto"
+    )
+    result = prototext_codec_lib.format_as_text(
+        _make_fdp_bytes("side/by_side.proto"), schema=handle
+    )
+    assert b'name: "side/by_side.proto"' in result, result
+
+    # And Python's pool still works after ours has.
+    assert pool.FindMessageTypeByName("google.protobuf.DescriptorProto")
+
+
+def test_exports_no_upb_symbol() -> None:
+    """The extension's dynamic symbol table holds no upb function."""
+    import ctypes
+
+    lib = ctypes.CDLL(prototext_codec_lib.prototext_codec_lib.__file__)
+    for symbol in ("upb_DefPool_New", "upb_Arena_New", "upb_Decode",
+                   "prototext_upb_add_file"):
+        try:
+            getattr(lib, symbol)
+        except AttributeError:
+            continue
+        raise AssertionError(f"the extension exports {symbol}")

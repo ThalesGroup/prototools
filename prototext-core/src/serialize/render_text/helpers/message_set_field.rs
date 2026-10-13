@@ -6,7 +6,7 @@
 
 use std::ops::Range;
 
-use prost_reflect::{Kind, MessageDescriptor};
+use crate::schema::{Kind, Message};
 
 use super::super::sink::{NestedKind, Sink, TagFacts};
 use super::super::{descend, enter_level, render_message, ANY_LOADER};
@@ -26,14 +26,8 @@ use crate::helpers::{
 ///
 /// No name check: multiple MessageSet-typed messages with different names can
 /// coexist in a single FileDescriptorSet and must each be handled independently.
-pub(in super::super) fn is_message_set(desc: &MessageDescriptor) -> bool {
-    let msf = desc
-        .descriptor_proto()
-        .options
-        .as_ref()
-        .and_then(|o| o.message_set_wire_format)
-        .unwrap_or(false);
-    msf && desc.fields().count() == 0
+pub(in super::super) fn is_message_set(desc: &Message) -> bool {
+    desc.is_message_set_wire_format() && desc.fields().count() == 0
 }
 
 // ── Wire scan ─────────────────────────────────────────────────────────────────
@@ -166,7 +160,7 @@ fn skip_field(buf: &[u8], mut pos: usize, wire_type: u32) -> Option<usize> {
 ///   as schemaless child lines.
 /// - Falls back to schemaless LENDEL cascade for unresolved items.
 pub(in super::super) fn render_message_set_expansion<S: Sink>(
-    msg_desc: &MessageDescriptor,
+    msg_desc: &Message,
     ctx: FieldCtx<'_>,
     schema_present: bool,
     raw_range: Range<usize>,
@@ -233,20 +227,18 @@ pub(in super::super) fn render_message_set_expansion<S: Sink>(
         // Sentinel key: "<extendee_fqdn>/<type_id>" (spec 0100 §5.2).
         //
         // The loader JIT-loads the FDP containing the extension into the lazy
-        // pool and returns the extension's payload MessageDescriptor from the
-        // updated pool.  We use that return value directly rather than calling
-        // msg_desc.get_extension() on the stale descriptor: prost-reflect uses
-        // Arc::make_mut when adding FDPs, so lazy.pool may have forked away
-        // from the Arc that msg_desc holds, making get_extension() blind to the
-        // newly-registered extension.
+        // pool and returns the extension's payload Message. Since spec 0415 a
+        // pool is shared, not forked, so `msg_desc.get_extension()` would see
+        // the new extension too; the loader's answer is used because it is
+        // the one lookup that also knows the extension's file.
         let sentinel_key = format!("{extendee_fqdn}/{type_id}");
-        let inner_msg_desc_opt: Option<MessageDescriptor> = ANY_LOADER
+        let inner_msg_desc_opt: Option<Message> = ANY_LOADER
             .with(|l| l.borrow_mut().as_mut().and_then(|f| f(&sentinel_key)))
             .map(|arc| (*arc).clone());
 
         // Fallback: if no loader is installed (eager pool path where the full
         // FDS was decoded upfront), look up via msg_desc directly.
-        let inner_msg_desc_opt: Option<MessageDescriptor> = if inner_msg_desc_opt.is_none() {
+        let inner_msg_desc_opt: Option<Message> = if inner_msg_desc_opt.is_none() {
             msg_desc.get_extension(type_id as u32).and_then(|ext| {
                 if let Kind::Message(inner) = ext.kind() {
                     Some(inner)

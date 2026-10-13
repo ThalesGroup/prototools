@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Time and measure a prototext binary on spec 0415's S12 cases.
+#
+# Usage: scripts/upb-bench PROTOTEXT OUTDIR
+#
+# Environment: UPB_GOLDEN_GOOGLEAPIS, as for scripts/upb-golden.
+#
+# Pinned and exclusive like bin/bench: one E-core (BENCH_CPUS, default 4)
+# and the machine-wide bench lock, so a build cannot overlap a measurement.
+# Writes OUTDIR/times.json (hyperfine) and OUTDIR/rss.txt (peak resident
+# size of one run of each case, in KiB).
+set -euo pipefail
+
+pt=$(realpath "$1")
+out=$2
+ga=${UPB_GOLDEN_GOOGLEAPIS:?set UPB_GOLDEN_GOOGLEAPIS}
+cpus=${BENCH_CPUS:-4}
+mkdir -p "$out"
+
+unset PROTOTEXT_DESCRIPTOR_SET PROTOTEXT_DEFAULT_DESCRIPTOR PROTOTEXT_MIN_SCORE
+
+# The eager case needs googleapis.desc without its sidecars beside it.
+eager=$out/eager
+mkdir -p "$eager"
+cp "$ga/googleapis.desc" "$eager/googleapis.desc"
+
+inst=$ga/instances/google/spanner/v1/PartitionQueryRequest.pb
+typ=google.spanner.v1.PartitionQueryRequest
+
+declare -A cases=(
+    [eager-load]="$pt --descriptor-set $eager/googleapis.desc decode --type $typ $inst"
+    [lazy-load]="$pt --descriptor-set $ga/googleapis.desc decode --type $typ $inst"
+    [inferred]="$pt --descriptor-set $ga/googleapis.desc decode $inst"
+    [wkt-typed]="$pt decode --type google.protobuf.FileDescriptorProto $(dirname "$0")/../tests/fixtures/anomalies.pb"
+    [big-decode]="$pt decode --type google.protobuf.FileDescriptorSet $ga/googleapis.desc"
+)
+names=(eager-load lazy-load inferred wkt-typed big-decode)
+
+exec 8>/tmp/prototools-bench.lock
+flock -n 8 || { echo "upb-bench: a build or bench holds the lock" >&2; exit 1; }
+
+args=()
+for n in "${names[@]}"; do
+    args+=(-n "$n" "${cases[$n]} > /dev/null")
+done
+taskset -c "$cpus" hyperfine --warmup 3 --min-runs 10 \
+    --export-json "$out/times.json" "${args[@]}"
+
+: > "$out/rss.txt"
+for n in "${names[@]}"; do
+    kib=$(taskset -c "$cpus" python3 -c '
+import resource, subprocess, sys
+subprocess.run(sys.argv[1], shell=True, stdout=subprocess.DEVNULL, check=True)
+print(resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)' "${cases[$n]}")
+    printf '%-12s %s\n' "$n" "$kib" >> "$out/rss.txt"
+done
+cat "$out/rss.txt"

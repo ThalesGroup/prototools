@@ -277,7 +277,7 @@ macro_rules! fixture {
 pub mod craft_a;
 
 #[cfg(test)]
-use prost_reflect::{DescriptorPool, Kind, MessageDescriptor};
+use prototext_core::schema::{Kind, Message as MessageDescriptor};
 
 // ── Core types ────────────────────────────────────────────────────────────────
 
@@ -697,7 +697,9 @@ fn encode_sint64(v: i64) -> u64 {
 #[cfg(test)]
 pub fn knife_descriptor() -> MessageDescriptor {
     let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/knife.pb"));
-    let pool = DescriptorPool::decode(bytes.as_ref()).expect("knife.pb decode failed");
+    let pool = prototext_core::decode_pool(bytes.as_ref())
+        .expect("knife.pb decode failed")
+        .0;
     pool.get_message_by_name("SwissArmyKnife")
         .expect("SwissArmyKnife not found in knife.pb")
 }
@@ -706,7 +708,9 @@ pub fn knife_descriptor() -> MessageDescriptor {
 #[cfg(test)]
 pub fn knife_rq_descriptor() -> MessageDescriptor {
     let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/knife.pb"));
-    let pool = DescriptorPool::decode(bytes.as_ref()).expect("knife.pb decode failed");
+    let pool = prototext_core::decode_pool(bytes.as_ref())
+        .expect("knife.pb decode failed")
+        .0;
     pool.get_message_by_name("SwissArmyKnifeRq")
         .expect("SwissArmyKnifeRq not found in knife.pb")
 }
@@ -715,7 +719,9 @@ pub fn knife_rq_descriptor() -> MessageDescriptor {
 #[cfg(test)]
 pub fn enum_collision_descriptor() -> MessageDescriptor {
     let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/enum_collision.pb"));
-    let pool = DescriptorPool::decode(bytes.as_ref()).expect("enum_collision.pb decode failed");
+    let pool = prototext_core::decode_pool(bytes.as_ref())
+        .expect("enum_collision.pb decode failed")
+        .0;
     pool.get_message_by_name("EnumCollision")
         .expect("EnumCollision not found in enum_collision.pb")
 }
@@ -724,7 +730,9 @@ pub fn enum_collision_descriptor() -> MessageDescriptor {
 #[cfg(test)]
 pub fn schema_simple_descriptor() -> MessageDescriptor {
     let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/knife.pb"));
-    let pool = DescriptorPool::decode(bytes.as_ref()).expect("knife.pb decode failed");
+    let pool = prototext_core::decode_pool(bytes.as_ref())
+        .expect("knife.pb decode failed")
+        .0;
     pool.get_message_by_name("SchemaSimple")
         .expect("SchemaSimple not found in knife.pb")
 }
@@ -733,7 +741,9 @@ pub fn schema_simple_descriptor() -> MessageDescriptor {
 #[cfg(test)]
 pub fn schema_overhang_descriptor() -> MessageDescriptor {
     let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/knife.pb"));
-    let pool = DescriptorPool::decode(bytes.as_ref()).expect("knife.pb decode failed");
+    let pool = prototext_core::decode_pool(bytes.as_ref())
+        .expect("knife.pb decode failed")
+        .0;
     pool.get_message_by_name("SchemaOverhang")
         .expect("SchemaOverhang not found in knife.pb")
 }
@@ -742,7 +752,9 @@ pub fn schema_overhang_descriptor() -> MessageDescriptor {
 #[cfg(test)]
 pub fn schema_interleaved_descriptor() -> MessageDescriptor {
     let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/knife.pb"));
-    let pool = DescriptorPool::decode(bytes.as_ref()).expect("knife.pb decode failed");
+    let pool = prototext_core::decode_pool(bytes.as_ref())
+        .expect("knife.pb decode failed")
+        .0;
     pool.get_message_by_name("SchemaInterleaved")
         .expect("SchemaInterleaved not found in knife.pb")
 }
@@ -751,7 +763,9 @@ pub fn schema_interleaved_descriptor() -> MessageDescriptor {
 #[cfg(test)]
 pub fn schema_hidden_descriptor() -> MessageDescriptor {
     let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/knife.pb"));
-    let pool = DescriptorPool::decode(bytes.as_ref()).expect("knife.pb decode failed");
+    let pool = prototext_core::decode_pool(bytes.as_ref())
+        .expect("knife.pb decode failed")
+        .0;
     pool.get_message_by_name("SchemaHidden")
         .expect("SchemaHidden not found in knife.pb")
 }
@@ -760,7 +774,9 @@ pub fn schema_hidden_descriptor() -> MessageDescriptor {
 #[cfg(test)]
 pub fn fdp_descriptor() -> MessageDescriptor {
     let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/descriptor.pb"));
-    let pool = DescriptorPool::decode(bytes.as_ref()).expect("descriptor.pb decode failed");
+    let pool = prototext_core::decode_pool(bytes.as_ref())
+        .expect("descriptor.pb decode failed")
+        .0;
     pool.get_message_by_name("google.protobuf.FileDescriptorProto")
         .expect("FileDescriptorProto not found in descriptor.pb")
 }

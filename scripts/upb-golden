@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# Record what a prototext binary renders on a fixed corpus (spec 0415 S11).
+#
+# Usage: scripts/upb-golden PROTOTEXT OUTDIR
+#
+# Environment (store paths of the corpora, kept fixed so that two runs
+# compare the binaries and nothing else):
+#   UPB_GOLDEN_GOOGLEAPIS  a googleapis-db output (googleapis.desc, its
+#                          sidecars, and instances/)
+#   UPB_GOLDEN_BOBAPP      a bobapp-desc output (bobapp.desc)
+#
+# Each case writes OUTDIR/<case>.out (stdout), .err (stderr) and .rc (exit
+# status), except cases marked big, which keep only the SHA-256 of stdout.
+# OUTDIR/MANIFEST lists every case with the SHA-256 of its three parts, so
+# `diff OUTDIR1/MANIFEST OUTDIR2/MANIFEST` names every case that changed.
+set -euo pipefail
+
+pt=$(realpath "$1")
+out=$2
+ga=${UPB_GOLDEN_GOOGLEAPIS:?set UPB_GOLDEN_GOOGLEAPIS}
+bob=${UPB_GOLDEN_BOBAPP:?set UPB_GOLDEN_BOBAPP}
+repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+
+mkdir -p "$out"
+: > "$out/MANIFEST"
+
+# The built-in well-known types, not whatever the shell points at.
+unset PROTOTEXT_DESCRIPTOR_SET PROTOTEXT_DEFAULT_DESCRIPTOR PROTOTEXT_MIN_SCORE
+
+# run CASE BIG CMD... : run CMD, record its outputs under CASE.
+run() {
+    local case=$1 big=$2
+    shift 2
+    local base="$out/$case"
+    mkdir -p "$(dirname "$base")"
+    local rc=0
+    if [[ $big == big ]]; then
+        set +e
+        "$@" 2> "$base.err" | sha256sum | cut -d' ' -f1 > "$base.out.sha256"
+        rc=${PIPESTATUS[0]}
+        set -e
+    else
+        "$@" > "$base.out" 2> "$base.err" || rc=$?
+    fi
+    echo "$rc" > "$base.rc"
+    local h_out
+    if [[ $big == big ]]; then
+        h_out=$(cat "$base.out.sha256")
+    else
+        h_out=$(sha256sum < "$base.out" | cut -d' ' -f1)
+    fi
+    printf '%s out=%s err=%s rc=%s\n' "$case" "$h_out" \
+        "$(sha256sum < "$base.err" | cut -d' ' -f1)" "$rc" >> "$out/MANIFEST"
+}
+
+# The type of an instance is its path under instances/, dotted.
+type_of() {
+    local rel=${1#*/instances/}
+    rel=${rel%.pb}
+    echo "${rel//\//.}"
+}
+
+# googleapis instances: typed, inferred, and scored.
+while IFS= read -r f; do
+    t=$(type_of "$f")
+    run "ga-typed/$t" small "$pt" --descriptor-set "$ga/googleapis.desc" \
+        decode --type "$t" "$f"
+    run "ga-typed-plain/$t" small "$pt" --descriptor-set "$ga/googleapis.desc" \
+        decode --no-annotations --type "$t" "$f"
+    run "ga-inferred/$t" small "$pt" --descriptor-set "$ga/googleapis.desc" \
+        decode "$f"
+    run "ga-score/$t" small "$pt" --descriptor-set "$ga/googleapis.desc" \
+        score --type "$t" "$f"
+done < <(find "$ga/instances" -name '*.pb' | sort)
+
+# The repository's own instances, against googleapis.
+while IFS= read -r f; do
+    t=$(type_of "$f")
+    run "repo-typed/$t" small "$pt" --descriptor-set "$ga/googleapis.desc" \
+        decode --type "$t" "$f"
+done < <(find "$repo/tests/fixtures/instances" -name '*.pb' | sort)
+
+# Descriptor sets read as descriptors: every descriptor.proto field, the
+# extensions declared on options, and the built-in well-known types.
+run ga-desc-as-fds big "$pt" --descriptor-set "$ga/googleapis.desc" \
+    decode --type google.protobuf.FileDescriptorSet "$ga/googleapis.desc"
+run ga-desc-as-fds-wkt big "$pt" \
+    decode --type google.protobuf.FileDescriptorSet "$ga/googleapis.desc"
+run bob-desc-as-fds small "$pt" \
+    decode --type google.protobuf.FileDescriptorSet "$bob/bobapp.desc"
+run bob-desc-as-fds-self small "$pt" --descriptor-set "$bob/bobapp.desc" \
+    decode --type google.protobuf.FileDescriptorSet "$bob/bobapp.desc"
+
+# The anomaly fixture, typed, raw, and with the prebuilt descriptor.
+anom=$repo/tests/fixtures/anomalies.pb
+run anomalies-typed small "$pt" \
+    decode --type google.protobuf.FileDescriptorProto "$anom"
+run anomalies-raw small "$pt" decode --raw "$anom"
+for d in "$repo"/prototext/fixtures/prebuilt/*.pb; do
+    run "prebuilt-as-fds/$(basename "$d" .pb)" small "$pt" \
+        decode --type google.protobuf.FileDescriptorSet "$d"
+done
+
+# Type lookups that fail must keep failing the same way.
+run missing-type small "$pt" --descriptor-set "$ga/googleapis.desc" \
+    decode --type no.such.Type "$anom"

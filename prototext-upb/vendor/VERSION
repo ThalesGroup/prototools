@@ -1,0 +1,10 @@
+protobuf v36.2 (upb single-file build), from crates.io google-protobuf 0.36.2-release
+Refresh with scripts/update-upb <google-protobuf version>.
+
+8b25b166318a224eaa6889321f09c4231ab1a5a69c9d907af5123d3ff68e9674  upb/upb.c  <- libupb/upb/upb.c
+e1012509f3c326edd597816e125e18b9d72a638cc8f2c01048af036f7e152b01  upb/upb.h  <- libupb/upb/upb.h
+f564d1f3bb9e1a477a30e683c4d994a113fb6efcd98b51b6ae95cbe9ee4c936b  utf8_range/utf8_range.c  <- libupb/third_party/utf8_range/utf8_range.c
+83350888877da6442cfa62448c360860285499db2aab57bfa4aa170b8eed539d  utf8_range/utf8_range.h  <- libupb/third_party/utf8_range/utf8_range.h
+af1bc2e251d9146a8dddccc98dfd9a74c52aa0c296dc45167bb59e8959e3552d  utf8_range/utf8_range_sse.inc  <- libupb/third_party/utf8_range/utf8_range_sse.inc
+c0b3252ac67eaf8a36fa2daae286243aba8942b78875286c7bcc3f0421cf0312  utf8_range/utf8_range_neon.inc  <- libupb/third_party/utf8_range/utf8_range_neon.inc
+6e5e117324afd944dcf67f36cf329843bc1a92229a8cd9bb573d7a83130fea7d  LICENSE  <- LICENSE

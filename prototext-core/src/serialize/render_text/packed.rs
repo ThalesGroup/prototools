@@ -5,7 +5,7 @@
 
 use std::ops::Range;
 
-use prost_reflect::Kind;
+use crate::schema::Kind;
 
 use super::FieldOrExt;
 

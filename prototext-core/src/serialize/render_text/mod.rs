@@ -14,7 +14,7 @@ mod varint;
 use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 
-use prost_reflect::{Cardinality, ExtensionDescriptor, FieldDescriptor, Kind, MessageDescriptor};
+use crate::schema::{Cardinality, Field, Kind, Message};
 use smallvec::SmallVec;
 
 use crate::helpers::{
@@ -24,7 +24,7 @@ use crate::helpers::{
 use crate::CodecError;
 
 use helpers::{render_group_field, render_len_field, scan_group_extent, FieldCtx};
-use sink::{IndexingTextSink, MalformedKind, ScalarValue, Sink, TagFacts, TextSink};
+use sink::{IndexingTextSink, MalformedKind, ProbeSink, ScalarValue, Sink, TagFacts, TextSink};
 
 pub use arena::{build_arena, Arena};
 pub use fqdn::{FqdnId, FqdnTable, NO_FQDN, UNINTERNED};
@@ -58,64 +58,81 @@ pub(super) fn is_packable_kind(kind: &Kind) -> bool {
     )
 }
 
-/// Unifies `FieldDescriptor` (regular field) and `ExtensionDescriptor`
-/// (extension field) for the subset of accessors used by the renderer.
-pub(super) enum FieldOrExt {
-    Field(FieldDescriptor),
-    Ext(ExtensionDescriptor),
+/// A regular field or an extension, with the properties the renderer asks
+/// of it resolved once.
+///
+/// One value is built per field occurrence on the wire, and the renderer
+/// asks its kind, cardinality and framing several times per occurrence.
+/// Each of those is a call into upb, and a kind that names a message or an
+/// enum is a new handle; resolving them here, once, is what kept the move
+/// to upb from costing 15% on a 25.6 MB decode (spec 0415 S12).
+pub(super) struct FieldOrExt {
+    field: Field,
+    /// An extension: named `[full.name]` on a line rather than `name`.
+    is_ext: bool,
+    kind: Kind,
+    cardinality: Cardinality,
+    is_group: bool,
+    declared_packed: bool,
 }
 
 impl FieldOrExt {
-    pub(super) fn kind(&self) -> Kind {
-        match self {
-            FieldOrExt::Field(f) => f.kind(),
-            FieldOrExt::Ext(e) => e.kind(),
+    fn new(field: Field, is_ext: bool) -> Self {
+        let kind = field.kind();
+        let cardinality = field.cardinality();
+        // Spec 0371 S1/S3: repeated, of a packable kind, and packed by its
+        // resolved features — `[packed = true]` in proto2, anything but
+        // `[packed = false]` in proto3, `repeated_field_encoding` in
+        // editions. upb resolves all three the way every Google runtime
+        // does (spec 0415). The scorer's graph is built from the same
+        // resolution, by `reproto` on Python's upb, which is what keeps a
+        // row's `packing_mismatch` and the score's `packing` counter in
+        // agreement (spec 0371 G3).
+        let declared_packed =
+            cardinality == Cardinality::Repeated && is_packable_kind(&kind) && field.is_packed();
+        FieldOrExt {
+            is_group: field.is_group(),
+            field,
+            is_ext,
+            kind,
+            cardinality,
+            declared_packed,
         }
+    }
+
+    /// A field of the message being rendered.
+    pub(super) fn field(field: Field) -> Self {
+        Self::new(field, false)
+    }
+
+    /// An extension of the message being rendered.
+    pub(super) fn ext(field: Field) -> Self {
+        Self::new(field, true)
+    }
+
+    pub(super) fn kind(&self) -> Kind {
+        self.kind.clone()
     }
 
     pub(super) fn cardinality(&self) -> Cardinality {
-        match self {
-            FieldOrExt::Field(f) => f.cardinality(),
-            FieldOrExt::Ext(e) => e.cardinality(),
-        }
+        self.cardinality
     }
 
-    /// Returns `true` only for regular group fields; extensions cannot be groups.
+    /// A proto2 group, or an editions field with delimited encoding, as upb
+    /// resolves it (spec 0415 S6). Extensions included: a group-typed
+    /// extension is framed by group tags like any other.
     pub(super) fn is_group(&self) -> bool {
-        match self {
-            FieldOrExt::Field(f) => f.is_group(),
-            FieldOrExt::Ext(_) => false,
-        }
+        self.is_group
     }
 
-    /// Whether the schema *declares* this field packed (spec 0371 S1/S3):
-    /// repeated, of a packable kind, and `[packed = true]` in proto2 or
-    /// anything but `[packed = false]` in proto3.
-    ///
-    /// Read from the raw descriptor rather than prost-reflect's
-    /// `is_packed()`, which answers `false` for a proto3 field carrying any
-    /// other option (docs/prototext/PROST-ISSUES.md section 1), and which
-    /// this wrapper used to hard-code to `false` for every extension. An
-    /// editions file never reaches here: prost-reflect 0.16 refuses its
-    /// syntax, and `reproto` rewrites editions to proto2 with an explicit
-    /// `[packed = true]` wherever features resolve to PACKED (spec 0371 N3).
-    ///
-    /// The scorer's graph is built from the same rule, by `reproto`, which
-    /// is what keeps a row's `packing_mismatch` and the score's `packing`
-    /// counter in agreement (spec 0371 G3).
+    /// Whether the schema *declares* this field packed (spec 0371 S1/S3).
     pub(super) fn declared_packed(&self) -> bool {
-        if self.cardinality() != Cardinality::Repeated || !is_packable_kind(&self.kind()) {
-            return false;
-        }
-        let (proto, syntax) = match self {
-            FieldOrExt::Field(f) => (f.field_descriptor_proto(), f.parent_file().syntax()),
-            FieldOrExt::Ext(e) => (e.field_descriptor_proto(), e.parent_file().syntax()),
-        };
-        let explicit = proto.options.as_ref().and_then(|o| o.packed);
-        match syntax {
-            prost_reflect::Syntax::Proto3 => explicit != Some(false),
-            _ => explicit == Some(true),
-        }
+        self.declared_packed
+    }
+
+    /// An extension, named `[full.name]` on its line.
+    pub(super) fn is_extension(&self) -> bool {
+        self.is_ext
     }
 
     /// Append the name to use in field-line output directly to `out`.
@@ -129,31 +146,18 @@ impl FieldOrExt {
     /// `fixtures/descriptor.pb`, under two doc comments that claimed the
     /// opposite.
     pub(super) fn write_display_name(&self, out: &mut Vec<u8>) {
-        match self {
-            FieldOrExt::Field(f) => out.extend_from_slice(f.name().as_bytes()),
-            FieldOrExt::Ext(e) => {
-                out.push(b'[');
-                out.extend_from_slice(e.full_name().as_bytes());
-                out.push(b']');
-            }
-        }
-    }
-
-    /// Returns the underlying `FieldDescriptor` if this is a regular field,
-    /// or `None` for extension fields.
-    ///
-    /// Used to pass to functions that still take `Option<&FieldDescriptor>`.
-    #[allow(dead_code)]
-    pub(super) fn as_field(&self) -> Option<&FieldDescriptor> {
-        match self {
-            FieldOrExt::Field(f) => Some(f),
-            FieldOrExt::Ext(_) => None,
+        if self.is_ext {
+            out.push(b'[');
+            out.extend_from_slice(self.field.full_name().as_bytes());
+            out.push(b']');
+        } else {
+            out.extend_from_slice(self.field.name().as_bytes());
         }
     }
 }
 
 /// Boxed JIT loader callback for `Any`/`MessageSet` type resolution (spec 0099).
-pub type AnyLoader = Box<dyn FnMut(&str) -> Option<Arc<MessageDescriptor>>>;
+pub type AnyLoader = Box<dyn FnMut(&str) -> Option<Arc<Message>>>;
 
 /// Boxed JIT loader callback for extension resolution (spec 0248).
 ///
@@ -161,7 +165,7 @@ pub type AnyLoader = Box<dyn FnMut(&str) -> Option<Arc<MessageDescriptor>>>;
 /// on the wire, only after both the schema's own fields and its already-known
 /// extensions have missed. The file declaring an extension is in nobody's
 /// dependency closure, so on a lazily loaded pool it is routinely absent.
-pub type ExtLoader = Box<dyn FnMut(&str, u32) -> Option<ExtensionDescriptor>>;
+pub type ExtLoader = Box<dyn FnMut(&str, u32) -> Option<Field>>;
 
 // ── Render-mode state ─────────────────────────────────────────────────────────
 //
@@ -398,6 +402,17 @@ pub fn is_prototext_text(data: &[u8]) -> bool {
     data.starts_with(PROTOTEXT_MAGIC)
 }
 
+/// Whether `payload` reads, with no schema, as one well-formed message:
+/// every field framed, the bytes consumed exactly, no malformation. The
+/// probe `render_len_field` asks of an unknown LEN payload (spec 0266),
+/// used as the gate in front of upb's parser (spec 0415 S4). A cut tail is
+/// never forgiven here: a file's bytes are all there or the file is not.
+pub fn probes_as_message(payload: &[u8]) -> bool {
+    let mut probe = ProbeSink::new(false);
+    let (next_pos, _) = render_message(payload, 0, None, false, None, false, &mut probe);
+    probe.says_message(next_pos, payload)
+}
+
 // ── Public entry point ────────────────────────────────────────────────────────
 
 /// Options for `decode_and_render`/`decode_and_render_indexed` (spec 0110
@@ -484,7 +499,7 @@ impl Default for DecodeRenderOpts {
 /// mode).
 pub fn decode_and_render(
     buf: &[u8],
-    root_desc: Option<&MessageDescriptor>,
+    root_desc: Option<&Message>,
     opts: DecodeRenderOpts,
 ) -> Vec<u8> {
     let DecodeRenderOpts {
@@ -581,7 +596,7 @@ pub struct IndexedRender {
 /// size fatal, just without saying so.
 pub fn decode_and_render_indexed(
     buf: &[u8],
-    root_desc: Option<&MessageDescriptor>,
+    root_desc: Option<&Message>,
     fqdns: &mut FqdnTable,
     opts: DecodeRenderOpts,
 ) -> Result<IndexedRender, CodecError> {
@@ -667,7 +682,7 @@ fn render_message<'a, S: Sink>(
     start: usize,
     my_group: Option<u64>,
     frame_ends_at_eof: bool,
-    schema: Option<&MessageDescriptor>,
+    schema: Option<&Message>,
     schema_present: bool,
     sink: &mut S,
 ) -> (usize, Option<WiretagResult<'a>>) {
@@ -733,9 +748,9 @@ fn render_message<'a, S: Sink>(
 
         let field_schema: Option<FieldOrExt> = schema.and_then(|s| {
             if let Some(f) = s.get_field(field_number as u32) {
-                Some(FieldOrExt::Field(f))
+                Some(FieldOrExt::field(f))
             } else if let Some(e) = s.get_extension(field_number as u32) {
-                Some(FieldOrExt::Ext(e))
+                Some(FieldOrExt::ext(e))
             } else {
                 // Spec 0248: the file declaring an extension is in nobody's
                 // dependency closure, so on a lazily loaded pool `s` routinely
@@ -748,7 +763,7 @@ fn render_message<'a, S: Sink>(
                             .as_mut()
                             .and_then(|load| load(s.full_name(), field_number as u32))
                     })
-                    .map(FieldOrExt::Ext)
+                    .map(FieldOrExt::ext)
             }
         });
 
@@ -1647,17 +1662,17 @@ mod tests {
     /// rooted at `root_msg_name`. Mirrors `schema.rs`'s own test-fixture
     /// convention.
     fn build_schema(
-        message_type: Vec<prost_types::DescriptorProto>,
+        message_type: Vec<crate::schema::descriptor::DescriptorProto>,
         root_msg_name: &str,
     ) -> crate::schema::ParsedSchema {
-        use prost::Message as ProstMessage;
-        let file = prost_types::FileDescriptorProto {
+        use crate::schema::descriptor::Encode;
+        let file = crate::schema::descriptor::FileDescriptorProto {
             name: Some("test_render_text.proto".into()),
             syntax: Some("proto2".into()),
             message_type,
             ..Default::default()
         };
-        let fds = prost_types::FileDescriptorSet { file: vec![file] };
+        let fds = crate::schema::descriptor::FileDescriptorSet { file: vec![file] };
         let mut buf = Vec::new();
         fds.encode(&mut buf).unwrap();
         crate::schema::parse_schema(&buf, root_msg_name).unwrap()
@@ -1735,8 +1750,8 @@ mod tests {
         // site is observable: `render_len_field` running at `MAX_WIRE_DEPTH`
         // must render its payload opaquely instead of opening one more
         // message.
-        use prost_types::field_descriptor_proto::{Label, Type};
-        use prost_types::{DescriptorProto, FieldDescriptorProto};
+        use crate::schema::descriptor::field_descriptor_proto::{Label, Type};
+        use crate::schema::descriptor::{DescriptorProto, FieldDescriptorProto};
 
         let node = DescriptorProto {
             name: Some("Node".into()),
@@ -1972,11 +1987,11 @@ mod tests {
     fn opt_field(
         name: &str,
         number: i32,
-        ty: prost_types::field_descriptor_proto::Type,
+        ty: crate::schema::descriptor::field_descriptor_proto::Type,
         type_name: Option<&str>,
-    ) -> prost_types::FieldDescriptorProto {
-        use prost_types::field_descriptor_proto::Label;
-        prost_types::FieldDescriptorProto {
+    ) -> crate::schema::descriptor::FieldDescriptorProto {
+        use crate::schema::descriptor::field_descriptor_proto::Label;
+        crate::schema::descriptor::FieldDescriptorProto {
             name: Some(name.into()),
             number: Some(number),
             r#type: Some(ty as i32),
@@ -1988,9 +2003,9 @@ mod tests {
 
     fn message(
         name: &str,
-        field: Vec<prost_types::FieldDescriptorProto>,
-    ) -> prost_types::DescriptorProto {
-        prost_types::DescriptorProto {
+        field: Vec<crate::schema::descriptor::FieldDescriptorProto>,
+    ) -> crate::schema::descriptor::DescriptorProto {
+        crate::schema::descriptor::DescriptorProto {
             name: Some(name.into()),
             field,
             ..Default::default()
@@ -2002,7 +2017,7 @@ mod tests {
     /// `Inner { string s = 1; int32 n = 2; }` — three spine depths, so a cut
     /// past the outer header truncates one frame at every level (G3).
     fn nested_schema() -> crate::schema::ParsedSchema {
-        use prost_types::field_descriptor_proto::Type;
+        use crate::schema::descriptor::field_descriptor_proto::Type;
         build_schema(
             vec![
                 message(
@@ -2048,10 +2063,10 @@ mod tests {
     /// field, a group, and an unknown field — beside the declared sub-message
     /// that it does change.
     fn mixed_schema() -> crate::schema::ParsedSchema {
-        use prost_types::field_descriptor_proto::{Label, Type};
-        let packed = prost_types::FieldDescriptorProto {
+        use crate::schema::descriptor::field_descriptor_proto::{Label, Type};
+        let packed = crate::schema::descriptor::FieldDescriptorProto {
             label: Some(Label::Repeated as i32),
-            options: Some(prost_types::FieldOptions {
+            options: Some(crate::schema::descriptor::FieldOptions {
                 packed: Some(true),
                 ..Default::default()
             }),
@@ -2087,7 +2102,7 @@ mod tests {
         ]
     }
 
-    fn annotated(blob: &[u8], root: Option<&prost_reflect::MessageDescriptor>) -> String {
+    fn annotated(blob: &[u8], root: Option<&crate::schema::Message>) -> String {
         let out = decode_and_render(
             blob,
             root,
@@ -2101,7 +2116,7 @@ mod tests {
     }
 
     /// Render with a header, so the result can be fed back to the encoder.
-    fn for_round_trip(blob: &[u8], root: Option<&prost_reflect::MessageDescriptor>) -> Vec<u8> {
+    fn for_round_trip(blob: &[u8], root: Option<&crate::schema::Message>) -> Vec<u8> {
         decode_and_render(
             blob,
             root,
@@ -2114,7 +2129,7 @@ mod tests {
     }
 
     /// Render `blob`, re-encode the rendering, and require the original bytes.
-    fn assert_round_trips(blob: &[u8], root: Option<&prost_reflect::MessageDescriptor>) -> String {
+    fn assert_round_trips(blob: &[u8], root: Option<&crate::schema::Message>) -> String {
         let rendered = for_round_trip(blob, root);
         let wire = crate::serialize::encode_text::encode_text_to_binary(&rendered);
         let text = String::from_utf8(rendered).unwrap();
@@ -2129,7 +2144,7 @@ mod tests {
     /// inside a length varint, inside a payload at every nesting depth, and
     /// exactly on a field boundary — where nothing is truncated and the sweep
     /// merely re-asserts the ordinary round trip.
-    fn sweep_prefixes(blob: &[u8], root: Option<&prost_reflect::MessageDescriptor>) {
+    fn sweep_prefixes(blob: &[u8], root: Option<&crate::schema::Message>) {
         for k in 1..=blob.len() {
             let cut = &blob[..k];
             let rendered = for_round_trip(cut, root);
@@ -2341,9 +2356,9 @@ mod tests {
     /// `Holder { google.protobuf.Any a = 1; }` plus a `Payload` for the
     /// `Any` to carry, in a second file so `Any` keeps its real package.
     fn any_schema() -> crate::schema::ParsedSchema {
-        use prost::Message as ProstMessage;
-        use prost_types::field_descriptor_proto::Type;
-        let any_file = prost_types::FileDescriptorProto {
+        use crate::schema::descriptor::field_descriptor_proto::Type;
+        use crate::schema::descriptor::Encode;
+        let any_file = crate::schema::descriptor::FileDescriptorProto {
             name: Some("google/protobuf/any.proto".into()),
             package: Some("google.protobuf".into()),
             syntax: Some("proto3".into()),
@@ -2356,7 +2371,7 @@ mod tests {
             )],
             ..Default::default()
         };
-        let test_file = prost_types::FileDescriptorProto {
+        let test_file = crate::schema::descriptor::FileDescriptorProto {
             name: Some("test_0311_any.proto".into()),
             syntax: Some("proto2".into()),
             dependency: vec!["google/protobuf/any.proto".into()],
@@ -2374,7 +2389,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        let fds = prost_types::FileDescriptorSet {
+        let fds = crate::schema::descriptor::FileDescriptorSet {
             file: vec![any_file, test_file],
         };
         let mut buf = Vec::new();

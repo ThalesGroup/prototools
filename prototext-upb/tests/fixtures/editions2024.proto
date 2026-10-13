@@ -1,0 +1,28 @@
+// SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+//
+// SPDX-License-Identifier: MIT
+
+// Feature resolution under edition 2024, importing a 2023 file: each
+// field's name says what upb must resolve for it.
+edition = "2024";
+
+package ed2024;
+
+import "editions2023.proto";
+
+// File level: messages are delimited unless overridden.
+option features.message_encoding = DELIMITED;
+
+message Holder {
+  // Inherits the file's DELIMITED.
+  ed2023.Inner delimited_from_file = 1;
+  ed2023.Inner length_prefixed_on_field = 2 [features.message_encoding = LENGTH_PREFIXED];
+  // 2024 keeps 2023's PACKED default for repeated scalars.
+  repeated sint64 packed_default = 3;
+  ed2023.ClosedEnum imported_closed_enum = 4;
+}
+
+extend ed2023.Inner {
+  // An extension in a 2024 file, delimited by the file's default.
+  Holder delimited_extension = 100;
+}

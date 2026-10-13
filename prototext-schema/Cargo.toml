@@ -18,7 +18,5 @@ crate-type = ["rlib"]
 prototext-graph = { workspace = true }
 memmap2         = "0.9"
 rkyv            = { version = "0.8", features = ["little_endian"] }
-prost           = "0.14"
-prost-reflect   = "0.16"
-prost-types     = "0.14"
+prototext-core  = { workspace = true }
 workspace-hack  = { version = "0.1", path = "../workspace-hack" }

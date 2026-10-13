@@ -22,6 +22,24 @@ path = [
 SPDX-FileCopyrightText = "cargo-hakari contributors"
 SPDX-License-Identifier = "MIT OR Apache-2.0"
 
+# upb, Google's C protobuf runtime, vendored unmodified from protobuf v36.2
+# (prototext-upb/vendor/VERSION; spec 0415 S1).
+[[annotations]]
+path = [
+  "prototext-upb/vendor/LICENSE",
+  "prototext-upb/vendor/upb/**",
+]
+SPDX-FileCopyrightText = "Google LLC"
+SPDX-License-Identifier = "BSD-3-Clause"
+
+# utf8_range, which upb depends on, vendored with it.
+[[annotations]]
+path = [
+  "prototext-upb/vendor/utf8_range/**",
+]
+SPDX-FileCopyrightText = "Google LLC"
+SPDX-License-Identifier = "MIT"
+
 # Vendored, locally-modified copy of upstream tree-sitter-textproto's
 # grammar.js (pinned commit 568471b80fd8793d37ed01865d8c2208a9fefd1b) — see
 # docs/specs/0121-tree-sitter-textproto-field-no-vendoring.md.

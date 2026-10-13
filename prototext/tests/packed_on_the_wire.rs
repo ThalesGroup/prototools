@@ -10,8 +10,8 @@
 //! default, `[packed=false]`, `[packed=true]`, present-but-empty
 //! `FieldOptions`) next to the bytes it feeds.
 
-use prost::Message as ProstMessage;
-use prost_types::{
+use prototext_core::schema::descriptor::Encode;
+use prototext_core::schema::descriptor::{
     descriptor_proto::ExtensionRange,
     field_descriptor_proto::{Label, Type},
     DescriptorProto, EnumDescriptorProto, EnumValueDescriptorProto, FieldDescriptorProto,
@@ -84,7 +84,6 @@ fn p2_message(name: &str, packing: Packing) -> DescriptorProto {
         extension_range: vec![ExtensionRange {
             start: Some(100),
             end: Some(201),
-            ..Default::default()
         }],
         ..Default::default()
     }
@@ -108,15 +107,12 @@ fn fds() -> Vec<u8> {
                 EnumValueDescriptorProto {
                     name: Some("A".into()),
                     number: Some(0),
-                    ..Default::default()
                 },
                 EnumValueDescriptorProto {
                     name: Some("B".into()),
                     number: Some(1),
-                    ..Default::default()
                 },
             ],
-            ..Default::default()
         }],
         message_type: vec![
             p2_message("Unp", Packing::Default),

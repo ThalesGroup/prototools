@@ -39,7 +39,7 @@ static DESCRIPTOR_ROOT: &str = "google.protobuf.FileDescriptorSet";
 #[inline(never)]
 fn profile_region(
     pb: &[u8],
-    root: Option<&prost_reflect::MessageDescriptor>,
+    root: Option<&prototext_core::schema::Message>,
     annotated: bool,
     iterations: usize,
 ) -> usize {

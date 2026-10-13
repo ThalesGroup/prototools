@@ -5,7 +5,7 @@
 # nix/crates-io.nix — Package the publishable .crate tarballs.
 #
 # Produces $out/ with one tarball per publishable workspace crate:
-#   tree-sitter-textproto, prototext-core, prototext-graph, prototext-schema,
+#   tree-sitter-textproto, prototext-upb, prototext-core, prototext-graph, prototext-schema,
 #   prototools-complete, prototext, fdp-scan, protoscan, prototext-lens
 # (that is also their dependency order: the list scripts/publishable-crates
 # gives the release scripts, which this one must match — spec 0412 S3).
@@ -79,6 +79,7 @@ EOF
   # In dependency order, so this list doubles as the publish order.
   buildPhase = ''
     cargo package -p tree-sitter-textproto --no-verify
+    cargo package -p prototext-upb    --no-verify
     cargo package -p prototext-core   --no-verify
     cargo package -p prototext-graph  --no-verify
     cargo package -p prototext-schema --no-verify
@@ -92,6 +93,7 @@ EOF
   installPhase = ''
     mkdir -p $out
     cp target/package/tree-sitter-textproto-*.crate $out/
+    cp target/package/prototext-upb-*.crate    $out/
     cp target/package/prototext-core-*.crate   $out/
     cp target/package/prototext-graph-*.crate  $out/
     cp target/package/prototext-schema-*.crate $out/

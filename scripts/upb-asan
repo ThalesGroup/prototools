@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Run prototext-upb's tests with upb's C compiled under AddressSanitizer
+# (spec 0415, test plan 3).
+#
+# Stable Rust cannot instrument Rust code, but the C side can be: upb.c is
+# compiled with -fsanitize=address and the runtime is linked and preloaded,
+# so an out-of-bounds read or a use-after-free inside upb, on the random and
+# mutated descriptor sets the tests feed it, aborts the run with a report.
+# Leak detection is off: only memory errors are looked for.
+#
+# Usage: scripts/upb-asan [extra cargo test args]
+set -euo pipefail
+
+target=${UPB_ASAN_TARGET:-/tmp/upb-asan-target}
+asan=$(gcc -print-file-name=libasan.so)
+
+export CFLAGS="-fsanitize=address -fno-omit-frame-pointer"
+export RUSTFLAGS="-C link-arg=-fsanitize=address -C link-arg=-lasan"
+
+bins=$(cargo test --profile quick -p prototext-upb --target-dir "$target" \
+           --no-run --message-format=json "$@" 2>/dev/null |
+       python3 -c '
+import json, sys
+for line in sys.stdin:
+    m = json.loads(line)
+    if m.get("reason") == "compiler-artifact" and m.get("executable") \
+            and m["target"].get("test") is not None and m["profile"]["test"]:
+        print(m["executable"])')
+
+status=0
+for bin in $bins; do
+    # Count rather than `grep -q`: an early exit would SIGPIPE nm, and
+    # pipefail would read that as "not instrumented".
+    if [[ $(nm "$bin" | grep -c __asan_report) -eq 0 ]]; then
+        echo "upb-asan: $bin is not instrumented" >&2
+        exit 1
+    fi
+    ASAN_OPTIONS=detect_leaks=0 LD_PRELOAD=$asan "$bin" || status=$?
+done
+exit "$status"

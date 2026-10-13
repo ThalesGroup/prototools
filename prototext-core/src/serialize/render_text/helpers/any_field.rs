@@ -7,7 +7,7 @@
 use std::ops::Range;
 use std::sync::Arc;
 
-use prost_reflect::MessageDescriptor;
+use crate::schema::Message;
 
 use super::super::sink::{NestedKind, Sink};
 use super::super::{descend, enter_level, render_message, ANY_LOADER, EXPAND_ANY};
@@ -155,7 +155,7 @@ pub(in super::super) fn render_any_expansion<S: Sink>(
     // JIT-load via ANY_LOADER (spec 0099); re-derives fresh from the
     // canonical pool on every call, never caches a value across calls
     // (spec 0106 S2 — the `all_schemas` snapshot fast path is gone).
-    let resolved_desc: Option<Arc<MessageDescriptor>> =
+    let resolved_desc: Option<Arc<Message>> =
         ANY_LOADER.with(|l| l.borrow_mut().as_mut().and_then(|f| f(fqdn)));
     let resolved_desc = match resolved_desc {
         Some(d) => d,

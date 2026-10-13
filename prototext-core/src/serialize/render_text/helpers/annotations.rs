@@ -3,7 +3,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-use prost_reflect::{Cardinality, Kind};
+use crate::schema::{Cardinality, Kind};
 
 use super::super::{FieldOrExt, Shape};
 use super::output::{write_dec_i32, write_dec_u64};
@@ -53,7 +53,7 @@ pub(in super::super) fn proto_type_str(kind: &Kind) -> &'static str {
         Kind::Fixed32 => "fixed32",
         Kind::Bool => "bool",
         Kind::String => "string",
-        Kind::Message(_) => "message", // groups also appear as Message in prost-reflect
+        Kind::Message(_) => "message", // groups also appear as Message, with `is_group()`
         Kind::Bytes => "bytes",
         Kind::Uint32 => "uint32",
         Kind::Enum(_) => "enum",

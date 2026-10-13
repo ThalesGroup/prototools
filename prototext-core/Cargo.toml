@@ -18,24 +18,14 @@ categories  = ["encoding", "parser-implementations"]
 name       = "prototext_core"
 crate-type = ["rlib"]
 
-[features]
-# No-op since spec 0370, kept so that dependents enabling it still build.
-# It used to work around prost-reflect's wrong is_packed() for proto3
-# fields with FieldOptions present (docs/prototext/PROST-ISSUES.md §1);
-# the renderer no longer asks is_packed() whether a LEN record is packed.
-prost-bug-workaround = []
-
 [dependencies]
-prost         = "0.14"
-prost-reflect = "0.16"
+# Schemas are read through upb, Google's C protobuf runtime (spec 0415).
+prototext-upb = { workspace = true }
 memchr        = "2"
-rand          = { version = "0.8", features = ["std", "std_rng"] }
-sha2          = "0.10"
 smallvec      = "1"
 workspace-hack = { version = "0.1", path = "../workspace-hack" }
 
 [dev-dependencies]
-prost-types = "0.14"
 criterion   = "0.5"
 
 [[bench]]

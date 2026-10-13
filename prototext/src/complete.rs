@@ -24,8 +24,8 @@ use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
 use clap_complete::engine::CompletionCandidate;
-use prost::Message as ProstMessage;
-use prost_types::{FileDescriptorProto, FileDescriptorSet};
+use prototext_core::schema::descriptor::Encode;
+use prototext_core::schema::descriptor::{DescriptorProto, FileDescriptorProto, FileDescriptorSet};
 
 use crate::EMBEDDED_DESCRIPTOR;
 
@@ -136,7 +136,7 @@ fn expand_shell_word(raw: &OsStr) -> OsString {
 /// Enumerate fully-qualified message type names from raw descriptor bytes
 /// (`FileDescriptorSet` or `FileDescriptorProto`).
 pub fn message_names_from_descriptor(bytes: &[u8]) -> Vec<String> {
-    fn collect(pkg_prefix: &str, messages: &[prost_types::DescriptorProto], out: &mut Vec<String>) {
+    fn collect(pkg_prefix: &str, messages: &[DescriptorProto], out: &mut Vec<String>) {
         for msg in messages {
             let name = msg.name.as_deref().unwrap_or("");
             let fqn = if pkg_prefix.is_empty() {

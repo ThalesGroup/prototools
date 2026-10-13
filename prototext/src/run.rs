@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
+use prototext_core::schema::{Kind, LoadReport, Message, Pool};
 use prototext_core::serialize::render_text::EXTRA_HEADER;
 use prototext_core::{
     clear_any_loader, decode_pool, is_prototext_text, render_as_bytes, render_as_text,
@@ -35,30 +36,26 @@ use crate::{Cli, Command, EMBEDDED_DESCRIPTOR};
 /// When a `<stem>/index.rkyv` sidecar is present, `lazy` holds a `LazyPool`
 /// that mmaps the FDS and decodes FDPs on demand; `pool` is `None`.  On the
 /// eager path (no sidecar) `pool` holds the fully-decoded pool and `lazy` is
-/// `None`.  Always use the `pool()` / `pool_mut()` accessors.
+/// `None`.  Always use the `pool()` accessor.
 pub struct DescriptorContext {
     /// Populated only on the eager path (no index.rkyv sidecar).
-    pool: Option<prost_reflect::DescriptorPool>,
+    pool: Option<Pool>,
     pub graph: Option<LoadedGraph>,
     pub lazy: Option<LazyPool>,
+    /// The files of an eagerly loaded set that could not be loaded (spec
+    /// 0415 S3); `run` warns about each.
+    pub report: LoadReport,
 }
 
 impl DescriptorContext {
-    /// The descriptor pool, regardless of which path was taken.
-    pub fn pool(&self) -> &prost_reflect::DescriptorPool {
+    /// The descriptor pool, regardless of which path was taken. A upb pool
+    /// is shared and takes files through `&self` (spec 0415 S2), so this is
+    /// all callers need, adding files included.
+    pub fn pool(&self) -> &Pool {
         if let Some(lazy) = &self.lazy {
             &lazy.pool
         } else {
             self.pool.as_ref().unwrap()
-        }
-    }
-
-    /// Mutable access to the descriptor pool.
-    pub fn pool_mut(&mut self) -> &mut prost_reflect::DescriptorPool {
-        if let Some(lazy) = &mut self.lazy {
-            &mut lazy.pool
-        } else {
-            self.pool.as_mut().unwrap()
         }
     }
 
@@ -79,11 +76,13 @@ impl DescriptorContext {
                 );
                 #[cfg(not(feature = "wkt-db"))]
                 let graph = None;
-                let pool = decode_pool(&bytes).map_err(|e| format!("embedded descriptor: {e}"))?;
+                let (pool, report) =
+                    decode_pool(&bytes).map_err(|e| format!("embedded descriptor: {e}"))?;
                 Ok(DescriptorContext {
                     pool: Some(pool),
                     graph,
                     lazy: None,
+                    report,
                 })
             }
             Some(p) => {
@@ -107,14 +106,17 @@ impl DescriptorContext {
                         pool: None,
                         graph,
                         lazy: Some(lazy),
+                        report: LoadReport::default(),
                     })
                 } else {
                     let bytes = read_descriptor_file(p)?;
-                    let pool = decode_pool(&bytes).map_err(|e| format!("descriptor: {e}"))?;
+                    let (pool, report) =
+                        decode_pool(&bytes).map_err(|e| format!("descriptor: {e}"))?;
                     Ok(DescriptorContext {
                         pool: Some(pool),
                         graph,
                         lazy: None,
+                        report,
                     })
                 }
             }
@@ -336,7 +338,7 @@ fn write_type_entry(w: &mut dyn Write, indent: &str, t: &InferredType, detailed_
 pub fn process(
     data: &[u8],
     decode: bool,
-    root_desc: Option<&prost_reflect::MessageDescriptor>,
+    root_desc: Option<&Message>,
     opts: RenderOpts,
 ) -> Result<Vec<u8>, String> {
     if decode {
@@ -464,6 +466,13 @@ pub fn run(mut cli: Cli) -> Result<(), String> {
 
     // Resolve the descriptor once up front.
     let mut desc_ctx = DescriptorContext::load(cli.descriptor.as_deref())?;
+    // A file the set could not load is a warning, not an error: the command
+    // fails only if the type it needs is in one (spec 0415 S8).
+    if !cli.quiet {
+        for (file, why) in &desc_ctx.report.skipped {
+            eprintln!("warning: {file}: skipped ({why})");
+        }
+    }
 
     match cli.command {
         // ── decode ────────────────────────────────────────────────────────────
@@ -691,14 +700,12 @@ fn validate_roots_not_same(
 /// On a miss, the error names the closest match in the pool by edit
 /// distance rather than dumping every message name (as
 /// `schema_from_pool`/`parse_schema` in `prototext-core` do).
-fn resolve_root_desc(
-    desc_ctx: &DescriptorContext,
-    lookup: &str,
-) -> Result<prost_reflect::MessageDescriptor, String> {
+fn resolve_root_desc(desc_ctx: &DescriptorContext, lookup: &str) -> Result<Message, String> {
     desc_ctx.pool().get_message_by_name(lookup).ok_or_else(|| {
         let closest = desc_ctx
             .pool()
             .all_messages()
+            .into_iter()
             .min_by_key(|m| strsim::levenshtein(m.full_name(), lookup));
         match closest {
             Some(m) => format!(
@@ -735,12 +742,10 @@ fn install_loaders(desc_ctx: &mut DescriptorContext) -> ExtLoaderGuard {
         //   1. JIT-load the relevant FDP into lazy.pool (no-op on eager path).
         //   2. Look up the descriptor from ctx.pool() and return it.
         //
-        // ctx.pool() always returns &lazy.pool on the lazy path, so after the
-        // JIT-load mutates lazy.pool it is the authoritative source.  We must
-        // NOT use a pre-existing MessageDescriptor for the post-load lookup:
-        // prost-reflect uses Arc::make_mut when adding FDPs, which forks the
-        // pool Arc whenever a clone exists (e.g. in ParsedSchema), making any
-        // descriptor obtained before the load blind to newly-registered symbols.
+        // ctx.pool() is &lazy.pool on the lazy path: the pool the JIT-load
+        // just grew. A upb pool is shared rather than forked on a load (spec
+        // 0415 S2), so a descriptor obtained earlier would see the new
+        // symbols too; going through the pool keeps one lookup path.
 
         if let Some(slash) = key.rfind('/') {
             // MessageSet extension sentinel: "extendee_fqdn/field_number" (spec 0100 §5.2).
@@ -754,7 +759,7 @@ fn install_loaders(desc_ctx: &mut DescriptorContext) -> ExtLoaderGuard {
                     .get_message_by_name(extendee)
                     .and_then(|ed| ed.get_extension(number))
                     .and_then(|ext| {
-                        if let prost_reflect::Kind::Message(inner) = ext.kind() {
+                        if let Kind::Message(inner) = ext.kind() {
                             Some(std::sync::Arc::new(inner))
                         } else {
                             None
@@ -772,8 +777,8 @@ fn install_loaders(desc_ctx: &mut DescriptorContext) -> ExtLoaderGuard {
 
     // Spec 0248. The extendee resolves from the root's closure; the file that
     // *declares* the extension is in nobody's closure, so on the lazy path it
-    // has to be pulled in here. The post-load lookup goes through `ctx.pool()`
-    // for the `Arc::make_mut` reason spelled out above.
+    // has to be pulled in here. The post-load lookup goes through
+    // `ctx.pool()`, as above.
     let ext_loader: ExtLoader = Box::new(move |extendee: &str, number: u32| {
         let ctx = unsafe { &mut *ctx_ptr };
         if let Some(lazy) = ctx.lazy.as_mut() {
@@ -910,7 +915,7 @@ fn run_decode(
     };
 
     // Resolve the root descriptor if a type was given explicitly.
-    let root_desc: Option<prost_reflect::MessageDescriptor> = if let Some(t) = type_name {
+    let root_desc: Option<Message> = if let Some(t) = type_name {
         let lookup = t.trim_start_matches('.');
         if let Some(lazy) = &mut desc_ctx.lazy {
             lazy.get_message(lookup)
@@ -1623,7 +1628,7 @@ fn run_batch_infer(
 fn run_batch(
     all_files: Vec<InputFile>,
     decode: bool,
-    root_desc: Option<&prost_reflect::MessageDescriptor>,
+    root_desc: Option<&Message>,
     opts: RenderOpts,
     in_place: bool,
     output_root: Option<&PathBuf>,
