@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# Record what a protoscan binary finds on a fixed corpus (spec 0418 S3).
+#
+# Usage: scripts/upb-golden-protoscan PROTOSCAN OUTDIR
+#
+# Environment (fixed inputs, so two runs compare the binaries only):
+#   UPB_GOLDEN_GOOGLEAPIS  a googleapis-db output (googleapis.desc)
+#   UPB_GOLDEN_BINARIES    space-separated binaries to scan (prototext,
+#                          bobapp, ...)
+#
+# Each case writes OUTDIR/<case>.out, .err and .rc; a case run with
+# --proto-out also writes OUTDIR/<case>.files, every file written with its
+# SHA-256. OUTDIR/MANIFEST lists every case with the SHA-256 of each part,
+# so `diff` of two MANIFESTs names every case that changed.
+set -euo pipefail
+
+ps=$(realpath "$1")
+out=$2
+ga=${UPB_GOLDEN_GOOGLEAPIS:?set UPB_GOLDEN_GOOGLEAPIS}
+binaries=${UPB_GOLDEN_BINARIES:-}
+repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+
+mkdir -p "$out"
+: > "$out/MANIFEST"
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+
+sha() { sha256sum < "$1" | cut -d' ' -f1; }
+
+# run CASE INPUT [--with-out]: scan INPUT, recording what protoscan said
+# and, with --with-out, what it wrote.
+run() {
+    local case=$1 input=$2 with_out=${3:-}
+    local base="$out/$case" rc=0
+    if [[ $with_out == --with-out ]]; then
+        rm -rf "$scratch/out"
+        "$ps" --proto-out "$scratch/out" "$input" > "$base.out" 2> "$base.err" || rc=$?
+        if [[ -d $scratch/out ]]; then
+            (cd "$scratch/out" && find . -type f -print0 | sort -z |
+                xargs -0 -r sha256sum) > "$base.files"
+        else
+            : > "$base.files"
+        fi
+    else
+        "$ps" "$input" > "$base.out" 2> "$base.err" || rc=$?
+    fi
+    echo "$rc" > "$base.rc"
+    local line
+    line="$case out=$(sha "$base.out") err=$(sha "$base.err") rc=$rc"
+    [[ -f $base.files ]] && line+=" files=$(sha "$base.files")"
+    echo "$line" >> "$out/MANIFEST"
+}
+
+run googleapis "$ga/googleapis.desc" --with-out
+i=0
+for b in $binaries; do
+    run "binary-$i-$(basename "$b")" "$b" --with-out
+    i=$((i + 1))
+done
+# Inputs with no descriptor, or not a protobuf at all.
+run readme "$repo/README.md"
+run anomalies "$repo/tests/fixtures/anomalies.pb"
+run missing /nonexistent/upb-golden/does-not-exist

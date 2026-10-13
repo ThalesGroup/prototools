@@ -19,8 +19,7 @@ use std::process::ExitCode;
 use clap::error::ErrorKind;
 use clap::{CommandFactory, Parser};
 use clap_complete::CompleteEnv;
-use prost::Message;
-use prost_types::FileDescriptorProto;
+use prototext_upb::descriptor::{Encode, FileDescriptorProto};
 
 /// Find the protobuf descriptors embedded in a binary.
 ///

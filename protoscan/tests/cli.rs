@@ -9,8 +9,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use prost::Message;
-use prost_types::FileDescriptorProto;
+use prototext_upb::descriptor::{Encode, FileDescriptorProto};
 
 /// A minimal serialised FileDescriptorProto.
 ///

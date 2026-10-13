@@ -23,6 +23,6 @@ prototools-complete = { workspace = true }
 clap                = { version = "4.5", features = ["derive"] }
 clap_complete       = { version = "4.5", features = ["unstable-dynamic"] }
 clap_mangen         = "0.2"
-prost               = "0.14"
-prost-types         = "0.14"
+# The descriptor layer, to read a found record's name (spec 0418 S1).
+prototext-upb       = { workspace = true }
 workspace-hack      = { version = "0.1", path = "../workspace-hack" }

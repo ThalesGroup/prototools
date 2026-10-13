@@ -418,8 +418,13 @@ evidence, and the branch gives the fallback.
    upb parses all of it, and every definition that loads is walked.
    `scripts/upb-asan` runs those tests with upb.c compiled with
    `-fsanitize=address`, and checks the binaries are instrumented.
-   A `cargo-fuzz` target on `Pool::load_set` needs a nightly toolchain,
-   which the dev-shell does not have; it is left for when one is.
+   Coverage-guided fuzzing goes to ClusterFuzzLite, Google's GitHub
+   Action, rather than a workflow of our own: a `cargo-fuzz` target on
+   `Pool::load_set` and `Pool::add_file`, run briefly on each change to
+   `prototext-upb` and at length on a weekly schedule that skips weeks
+   with no push, with its corpus kept between runs and crashes reported.
+   It brings the nightly toolchain and sanitizers in its own image, which
+   the dev-shell does not have. Set up after the branch's second step.
 4. **Handles.** A handle obtained before a later `add_file` stays valid
    and equal; handles are used from several threads at once.
 5. **The panic.** The set that made prost-reflect panic (kept
@@ -498,5 +503,5 @@ the same commit.
   the field was an extension, a path no extension had reached before. It
   now writes `[g.ext]`, as protoc does, and a test pins both the text and
   the byte-exact round trip. No golden case has a group extension.
-- **Not done:** the `cargo-fuzz` target (test plan 3: no nightly
-  toolchain); test plan 5 and 8, which are downstream.
+- **Not done:** the ClusterFuzzLite setup (test plan 3), after the
+  branch's second step; test plan 5 and 8, which are downstream.
