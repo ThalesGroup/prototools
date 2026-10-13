@@ -583,3 +583,24 @@ fn delimited_editions_fields_are_not_group_like_unless_written_so() {
         .unwrap();
     assert!(ext.is_group() && !ext.is_group_like());
 }
+
+/// Spec 0416 S1: the generation counts files added, not attempts, and a
+/// definition's id is the same through every handle to it.
+#[test]
+fn the_generation_counts_added_files_and_ids_follow_definitions() {
+    let pool = Pool::new();
+    assert_eq!(pool.generation(), 0);
+    let report = pool.load_set(EDITIONS);
+    assert_eq!(pool.generation(), report.loaded.len() as u64);
+
+    let before = pool.generation();
+    assert!(pool.add_file(b"\xff").is_err());
+    assert_eq!(pool.generation(), before, "a refused file is not counted");
+
+    let a = pool.get_message_by_name("ed2023.Fields").unwrap();
+    let b = pool.get_message_by_name("ed2023.Fields").unwrap();
+    let other = pool.get_message_by_name("ed2023.Inner").unwrap();
+    assert_eq!(a.id(), b.id());
+    assert_ne!(a.id(), other.id());
+    assert_eq!(a.pool_generation(), pool.generation());
+}

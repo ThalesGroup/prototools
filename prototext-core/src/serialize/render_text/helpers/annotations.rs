@@ -79,7 +79,7 @@ pub(in super::super) fn field_decl(
         Cardinality::Optional => "",
     };
     let kind = fi.kind();
-    let type_str = proto_type_str(&kind);
+    let type_str = proto_type_str(kind);
     let type_display = match &kind {
         Kind::Message(msg_desc) => msg_desc.name().to_string(),
         Kind::Enum(enum_desc) => enum_desc.name().to_string(),
@@ -243,7 +243,7 @@ impl AnnWriter {
         } else {
             let type_display = match &kind {
                 Kind::Message(msg_desc) => msg_desc.name().to_string(),
-                _ => proto_type_str(&kind).to_string(),
+                _ => proto_type_str(kind).to_string(),
             };
             out.extend_from_slice(type_display.as_bytes());
         }

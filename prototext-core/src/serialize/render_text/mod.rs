@@ -12,6 +12,9 @@ mod sink;
 mod varint;
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
+use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::schema::{Cardinality, Field, Kind, Message};
@@ -78,6 +81,8 @@ pub(super) struct FieldOrExt {
 
 impl FieldOrExt {
     fn new(field: Field, is_ext: bool) -> Self {
+        #[cfg(test)]
+        RESOLVED.with(|n| n.set(n.get() + 1));
         let kind = field.kind();
         let cardinality = field.cardinality();
         // Spec 0371 S1/S3: repeated, of a packable kind, and packed by its
@@ -110,8 +115,10 @@ impl FieldOrExt {
         Self::new(field, true)
     }
 
-    pub(super) fn kind(&self) -> Kind {
-        self.kind.clone()
+    /// Borrowed (spec 0416 S2): a kind that names a message or an enum
+    /// holds a handle, and a caller that keeps one clones it itself.
+    pub(super) fn kind(&self) -> &Kind {
+        &self.kind
     }
 
     pub(super) fn cardinality(&self) -> Cardinality {
@@ -160,6 +167,149 @@ impl FieldOrExt {
         } else {
             out.extend_from_slice(self.field.name().as_bytes());
         }
+    }
+}
+
+// ── Per-render field cache (spec 0416 S1) ─────────────────────────────────────
+
+/// What a field number resolves to in one message, as cached.
+enum Cached {
+    Found(Rc<FieldOrExt>),
+    /// Neither a field nor an extension, the extension loader tried, at
+    /// this generation of the message's pool. Trusted only while the pool
+    /// has not grown since: a file added later may declare the extension.
+    Missing(u64),
+}
+
+/// FxHash's multiply-rotate on the two words of a key: the keys are an
+/// address and a field number, not attacker-chosen, and SipHash's cost
+/// would be a measurable part of what the cache saves.
+#[derive(Default)]
+struct KeyHasher(u64);
+
+impl KeyHasher {
+    fn add(&mut self, word: u64) {
+        self.0 = (self.0.rotate_left(5) ^ word).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+    }
+}
+
+impl Hasher for KeyHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.add(u64::from(b));
+        }
+    }
+
+    fn write_u32(&mut self, n: u32) {
+        self.add(u64::from(n));
+    }
+
+    fn write_usize(&mut self, n: usize) {
+        self.add(n as u64);
+    }
+}
+
+#[derive(Default)]
+struct FieldCache {
+    /// Renders in progress on this thread. Only the outermost one's scope
+    /// clears the map, so a render nested in another keeps its answers.
+    depth: u32,
+    /// `(Message::id, field number)` to what it resolved to.
+    map: HashMap<(usize, u32), Cached, BuildHasherDefault<KeyHasher>>,
+}
+
+thread_local! {
+    static FIELD_CACHE: RefCell<FieldCache> = RefCell::new(FieldCache::default());
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many `FieldOrExt`s were built: what the cache saves (test plan 1).
+    pub(super) static RESOLVED: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Keeps the field cache in use for one render, and empties it when the
+/// outermost render returns, by whatever path, so no answer outlives the
+/// render that computed it.
+struct FieldCacheScope(());
+
+impl FieldCacheScope {
+    fn enter() -> Self {
+        FIELD_CACHE.with(|c| c.borrow_mut().depth += 1);
+        FieldCacheScope(())
+    }
+}
+
+impl Drop for FieldCacheScope {
+    fn drop(&mut self) {
+        FIELD_CACHE.with(|c| {
+            let mut c = c.borrow_mut();
+            c.depth -= 1;
+            if c.depth == 0 {
+                c.map.clear();
+            }
+        });
+    }
+}
+
+/// Resolve field `number` of `message`: a declared field, an extension in
+/// the pool, or one the extension loader (spec 0248) finds. Within a
+/// render, through the cache; outside one (a probe, a walker), directly.
+fn resolve_field(message: &Message, number: u32) -> Option<Rc<FieldOrExt>> {
+    let key = (message.id(), number);
+    let cached = FIELD_CACHE.with(|c| {
+        let c = c.borrow();
+        if c.depth == 0 {
+            return None;
+        }
+        Some(match c.map.get(&key) {
+            Some(Cached::Found(f)) => Some(Some(Rc::clone(f))),
+            Some(Cached::Missing(generation)) if *generation == message.pool_generation() => {
+                Some(None)
+            }
+            _ => None,
+        })
+    });
+    let in_scope = match cached {
+        Some(Some(hit)) => return hit,
+        Some(None) => true,
+        None => false,
+    };
+    // Not under the cache's borrow: the extension loader may add files.
+    let resolved = lookup_field(message, number).map(Rc::new);
+    if in_scope {
+        let entry = match &resolved {
+            Some(f) => Cached::Found(Rc::clone(f)),
+            None => Cached::Missing(message.pool_generation()),
+        };
+        FIELD_CACHE.with(|c| c.borrow_mut().map.insert(key, entry));
+    }
+    resolved
+}
+
+/// The uncached lookup behind [`resolve_field`].
+fn lookup_field(message: &Message, number: u32) -> Option<FieldOrExt> {
+    if let Some(f) = message.get_field(number) {
+        Some(FieldOrExt::field(f))
+    } else if let Some(e) = message.get_extension(number) {
+        Some(FieldOrExt::ext(e))
+    } else {
+        // Spec 0248: the file declaring an extension is in nobody's
+        // dependency closure, so on a lazily loaded pool `message`
+        // routinely does not have it yet. Only a render with a schema gets
+        // here, which is what keeps the schema-less walkers (`ProbeSink`,
+        // `ArenaSink`, raw mode) from ever calling the loader.
+        EXT_LOADER
+            .with(|l| {
+                l.borrow_mut()
+                    .as_mut()
+                    .and_then(|load| load(message.full_name(), number))
+            })
+            .map(FieldOrExt::ext)
     }
 }
 
@@ -521,6 +671,7 @@ pub fn decode_and_render(
         missing_payload_bytes: _, // not applicable to the non-indexed path
         header_repeated_singular: _, // likewise: only a splice re-renders alone
     } = opts;
+    let _field_cache = FieldCacheScope::enter();
     let capacity = buf.len() * 8;
     let mut sink = TextSink::new(capacity);
     sink.set_row_budget(row_budget);
@@ -625,6 +776,7 @@ pub fn decode_and_render_indexed(
         missing_payload_bytes,
         header_repeated_singular,
     } = opts;
+    let _field_cache = FieldCacheScope::enter();
     let capacity = buf.len() * 8;
     let mut sink = IndexingTextSink::new(capacity, fqdns);
     sink.set_row_budget(row_budget);
@@ -753,26 +905,8 @@ fn render_message<'a, S: Sink>(
 
         // ── Schema lookup ─────────────────────────────────────────────────────
 
-        let field_schema: Option<FieldOrExt> = schema.and_then(|s| {
-            if let Some(f) = s.get_field(field_number as u32) {
-                Some(FieldOrExt::field(f))
-            } else if let Some(e) = s.get_extension(field_number as u32) {
-                Some(FieldOrExt::ext(e))
-            } else {
-                // Spec 0248: the file declaring an extension is in nobody's
-                // dependency closure, so on a lazily loaded pool `s` routinely
-                // does not have it yet. Being inside `schema.and_then` is what
-                // keeps the schema-less walkers (`ProbeSink`, `ArenaSink`, raw
-                // mode) from ever reaching this.
-                EXT_LOADER
-                    .with(|l| {
-                        l.borrow_mut()
-                            .as_mut()
-                            .and_then(|load| load(s.full_name(), field_number as u32))
-                    })
-                    .map(FieldOrExt::ext)
-            }
-        });
+        let field_schema: Option<Rc<FieldOrExt>> =
+            schema.and_then(|s| resolve_field(s, field_number as u32));
 
         // ── Repeat check (spec 0343 A1/A2) ────────────────────────────────────
 
@@ -780,7 +914,7 @@ fn render_message<'a, S: Sink>(
         // repeated field is meant to recur, and a field no schema describes
         // has nobody to say which it is — so neither is registered, and
         // neither can ever be reported.
-        let repeated_singular = match field_schema.as_ref() {
+        let repeated_singular = match field_schema.as_deref() {
             Some(fs) if fs.cardinality() != Cardinality::Repeated => {
                 let bit = 1u64 << (field_number % 64);
                 if seen_mask & bit == 0 {
@@ -826,7 +960,7 @@ fn render_message<'a, S: Sink>(
 
                 sink.scalar_field(
                     field_number,
-                    field_schema.as_ref(),
+                    field_schema.as_deref(),
                     TagFacts {
                         tag_ohb,
                         tag_oor,
@@ -866,7 +1000,7 @@ fn render_message<'a, S: Sink>(
 
                 sink.scalar_field(
                     field_number,
-                    field_schema.as_ref(),
+                    field_schema.as_deref(),
                     TagFacts {
                         tag_ohb,
                         tag_oor,
@@ -910,11 +1044,11 @@ fn render_message<'a, S: Sink>(
                     // Spec 0312 S1 adds the field with no schema at all,
                     // where the cascade decides instead.
                     let missing = bytes_missing(pos, length, buflen);
-                    if descends_when_truncated(field_schema.as_ref(), length, sink) {
+                    if descends_when_truncated(field_schema.as_deref(), length, sink) {
                         render_len_field(
                             FieldCtx {
                                 field_number,
-                                field_schema: field_schema.as_ref(),
+                                field_schema: field_schema.as_deref(),
                                 tag: TagFacts {
                                     tag_ohb,
                                     tag_oor,
@@ -954,7 +1088,7 @@ fn render_message<'a, S: Sink>(
                 render_len_field(
                     FieldCtx {
                         field_number,
-                        field_schema: field_schema.as_ref(),
+                        field_schema: field_schema.as_deref(),
                         tag: TagFacts {
                             tag_ohb,
                             tag_oor,
@@ -1009,7 +1143,7 @@ fn render_message<'a, S: Sink>(
                     &mut pos,
                     FieldCtx {
                         field_number,
-                        field_schema: field_schema.as_ref(),
+                        field_schema: field_schema.as_deref(),
                         tag: TagFacts {
                             tag_ohb,
                             tag_oor,
@@ -1073,7 +1207,7 @@ fn render_message<'a, S: Sink>(
 
                 sink.scalar_field(
                     field_number,
-                    field_schema.as_ref(),
+                    field_schema.as_deref(),
                     TagFacts {
                         tag_ohb,
                         tag_oor,
@@ -2583,5 +2717,167 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ── The per-render field cache (spec 0416) ──────────────────────────────
+
+    fn field_cache_is_empty() -> bool {
+        FIELD_CACHE.with(|c| {
+            let c = c.borrow();
+            c.depth == 0 && c.map.is_empty()
+        })
+    }
+
+    fn int32(name: &str, number: i32) -> crate::schema::descriptor::FieldDescriptorProto {
+        use crate::schema::descriptor::field_descriptor_proto::{Label, Type};
+        crate::schema::descriptor::FieldDescriptorProto {
+            name: Some(name.into()),
+            number: Some(number),
+            label: Some(Label::Optional as i32),
+            r#type: Some(Type::Int32 as i32),
+            ..Default::default()
+        }
+    }
+
+    /// Test plan 1: a field seen many times is resolved once per render.
+    #[test]
+    fn a_field_seen_many_times_is_resolved_once() {
+        let schema = build_schema(
+            vec![crate::schema::descriptor::DescriptorProto {
+                name: Some("M".into()),
+                field: vec![int32("a", 1), int32("b", 2)],
+                ..Default::default()
+            }],
+            "M",
+        );
+        let mut blob = Vec::new();
+        for _ in 0..50 {
+            blob.extend_from_slice(&[0x08, 0x01]);
+        }
+        blob.extend_from_slice(&[0x10, 0x02]);
+        let before = RESOLVED.with(Cell::get);
+        let text = decode_and_render(
+            &blob,
+            schema.root_descriptor().as_ref(),
+            DecodeRenderOpts::default(),
+        );
+        assert_eq!(RESOLVED.with(Cell::get) - before, 2, "a and b, once each");
+        let text = String::from_utf8(text).unwrap();
+        assert_eq!(text.matches("a: 1").count(), 50);
+        assert!(text.contains("b: 2"));
+    }
+
+    /// Test plan 2: no answer outlives its render — not after a render
+    /// that returns, not after one refused with `CodecError`, and an inner
+    /// render's end does not empty the outer one's cache.
+    #[test]
+    fn the_field_cache_is_empty_outside_a_render() {
+        let schema = build_schema(
+            vec![crate::schema::descriptor::DescriptorProto {
+                name: Some("M".into()),
+                field: vec![int32("a", 1)],
+                ..Default::default()
+            }],
+            "M",
+        );
+        let root = schema.root_descriptor();
+        let mut fqdns = FqdnTable::new();
+        decode_and_render_indexed(
+            &VARINT_FIELD,
+            root.as_ref(),
+            &mut fqdns,
+            DecodeRenderOpts::default(),
+        )
+        .unwrap();
+        assert!(field_cache_is_empty());
+
+        let oversize = vec![0u8; MAX_INDEXED_BUFFER + 1];
+        decode_and_render_indexed(&oversize, None, &mut fqdns, DecodeRenderOpts::default())
+            .expect_err("over the cap");
+        assert!(field_cache_is_empty());
+
+        let outer = FieldCacheScope::enter();
+        resolve_field(root.as_ref().unwrap(), 1);
+        decode_and_render(&VARINT_FIELD, root.as_ref(), DecodeRenderOpts::default());
+        assert!(
+            FIELD_CACHE.with(|c| c.borrow().map.len()) == 1,
+            "the inner render must leave the outer one's entry"
+        );
+        drop(outer);
+        assert!(field_cache_is_empty());
+    }
+
+    /// Test plan 3: a miss is not retried while the pool is unchanged, and
+    /// is looked up again once the extension loader has added a file —
+    /// here, the file the loader adds for field 200 also declares 100.
+    #[test]
+    fn a_cached_miss_is_retried_after_a_file_is_added() {
+        use crate::schema::descriptor::{
+            descriptor_proto::ExtensionRange, DescriptorProto, Encode, FileDescriptorProto,
+            FileDescriptorSet,
+        };
+
+        let host = FileDescriptorProto {
+            name: Some("host.proto".into()),
+            package: Some("h".into()),
+            syntax: Some("proto2".into()),
+            message_type: vec![DescriptorProto {
+                name: Some("Host".into()),
+                extension_range: vec![ExtensionRange {
+                    start: Some(100),
+                    end: Some(300),
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let extension = |name: &str, number: i32| {
+            let mut f = int32(name, number);
+            f.extendee = Some(".h.Host".into());
+            f
+        };
+        let exts = FileDescriptorProto {
+            name: Some("exts.proto".into()),
+            package: Some("h".into()),
+            dependency: vec!["host.proto".into()],
+            syntax: Some("proto2".into()),
+            extension: vec![extension("ext100", 100), extension("ext200", 200)],
+            ..Default::default()
+        }
+        .encode_to_vec();
+        let (pool, _) =
+            crate::schema::decode_pool(&FileDescriptorSet { file: vec![host] }.encode_to_vec())
+                .unwrap();
+        let root = pool.get_message_by_name("h.Host").unwrap();
+
+        let calls = Rc::new(Cell::new(0));
+        let loader_calls = Rc::clone(&calls);
+        let loader_pool = pool.clone();
+        let _guard = set_ext_loader(Box::new(move |extendee: &str, number: u32| {
+            loader_calls.set(loader_calls.get() + 1);
+            if number != 200 {
+                return None;
+            }
+            loader_pool.add_file(&exts).ok()?;
+            loader_pool
+                .get_message_by_name(extendee)?
+                .get_extension(number)
+        }));
+
+        // 100 = 1, 100 = 2, 200 = 3, 100 = 4.
+        let blob = [
+            0xa0, 0x06, 0x01, 0xa0, 0x06, 0x02, 0xc0, 0x0c, 0x03, 0xa0, 0x06, 0x04,
+        ];
+        let text = decode_and_render(&blob, Some(&root), DecodeRenderOpts::default());
+        let text = String::from_utf8(text).unwrap();
+        assert_eq!(
+            text, "100: 1\n100: 2\n[h.ext200]: 3\n[h.ext100]: 4\n",
+            "100 is unknown until the loader adds its file, and known after"
+        );
+        assert_eq!(
+            calls.get(),
+            2,
+            "the second 100 is a cached miss; the last finds the added file"
+        );
     }
 }

@@ -29,6 +29,7 @@ use std::ffi::{c_char, CStr};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::ptr::NonNull;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 // ── Strings ─────────────────────────────────────────────────────────────────
@@ -78,6 +79,9 @@ struct PoolInner {
     raw: NonNull<ffi::DefPool>,
     gate: Option<Gate>,
     state: RwLock<PoolState>,
+    /// How many files have been added (spec 0416 S1). A lookup that missed
+    /// at one generation may hit at a later one; one that hit stays a hit.
+    generation: AtomicU64,
 }
 
 // SAFETY: the pool is only mutated under `state`'s write lock, and read
@@ -167,12 +171,19 @@ impl Pool {
                     files: Vec::new(),
                     bytes: HashMap::new(),
                 }),
+                generation: AtomicU64::new(0),
             }),
         }
     }
 
     fn raw(&self) -> *mut ffi::DefPool {
         self.inner.raw.as_ptr()
+    }
+
+    /// How many files have been added so far (spec 0416 S1): an answer
+    /// "not found" computed at one generation may change at a later one.
+    pub fn generation(&self) -> u64 {
+        self.inner.generation.load(Ordering::Acquire)
     }
 
     /// Add one serialized `FileDescriptorProto`. Its imports must already
@@ -202,6 +213,9 @@ impl Pool {
         };
         state.files.push(file);
         state.bytes.insert(name, Arc::from(bytes));
+        // Under the write lock, so a reader that sees the new generation
+        // finds the new file's definitions too.
+        self.inner.generation.fetch_add(1, Ordering::Release);
         Ok(File {
             pool: self.inner.clone(),
             ptr: file,
@@ -479,6 +493,19 @@ macro_rules! handle {
         impl $name {
             fn raw(&self) -> *const $raw {
                 self.ptr.as_ptr()
+            }
+
+            /// The definition's identity: equal for two handles to the same
+            /// definition, and stable for the pool's life, since an add
+            /// never moves a definition (spec 0416 S1). For keying a cache
+            /// without cloning the handle.
+            pub fn id(&self) -> usize {
+                self.ptr.as_ptr() as usize
+            }
+
+            /// [`Pool::generation`] of the pool the definition belongs to.
+            pub fn pool_generation(&self) -> u64 {
+                self.pool.generation.load(Ordering::Acquire)
             }
 
             /// Wrap a pointer upb returned, null meaning absent.

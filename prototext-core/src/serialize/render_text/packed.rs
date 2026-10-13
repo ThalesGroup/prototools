@@ -233,7 +233,7 @@ pub(super) fn decode_packed_elems(data: &[u8], foe: &FieldOrExt) -> Result<Vec<P
                 Kind::Double | Kind::Fixed64 | Kind::Sfixed64 => 8,
                 _ => 4,
             };
-            decode_packed_fixed_elems(data, elem_size, &foe.kind())
+            decode_packed_fixed_elems(data, elem_size, foe.kind())
         }
         _ => decode_packed_varint_elems(data, foe),
     }

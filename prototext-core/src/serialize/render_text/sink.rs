@@ -601,7 +601,7 @@ impl Sink for TextSink {
                             CBL_START.with(|c| c.set(self.out.len()));
                         }
                     }
-                    Some(fs) if fs.kind() == Kind::String => match std::str::from_utf8(data) {
+                    Some(fs) if *fs.kind() == Kind::String => match std::str::from_utf8(data) {
                         Ok(s) => {
                             wfl_prefix_n(field_number, Some(fs), false, &mut self.out);
                             self.out.push(b'"');
@@ -632,7 +632,7 @@ impl Sink for TextSink {
                             render_invalid(field_number, tag, "INVALID_STRING", data, self);
                         }
                     },
-                    Some(fs) if fs.kind() == Kind::Bytes => {
+                    Some(fs) if *fs.kind() == Kind::Bytes => {
                         wfl_prefix_n(field_number, Some(fs), false, &mut self.out);
                         self.out.push(b'"');
                         escape_bytes_into(data, &mut self.out);
@@ -1706,7 +1706,7 @@ impl Sink for IndexingTextSink<'_> {
                         NodeKind::Bytes
                     }
                 }
-                Some(fs) if fs.kind() == crate::schema::Kind::String => {
+                Some(fs) if *fs.kind() == crate::schema::Kind::String => {
                     if std::str::from_utf8(data).is_ok() {
                         NodeKind::String
                     } else {

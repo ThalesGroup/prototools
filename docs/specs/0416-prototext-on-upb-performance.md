@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0416 — prototext on upb: performance improvements
 
-Status: draft
+Status: implemented
+Implemented in: 2026-10-13
 App: prototext-core, prototext-upb
 Refs: docs/specs/0415-prototext-on-upb.md (S12: the benchmarks this
       answers; the `FieldOrExt` change it builds on);
@@ -67,7 +68,8 @@ the true cost is somewhere between about 2% and 6%.
 - **N2.** Link-time optimization across the C/Rust boundary
   (`-flto` with `linker-plugin-lto`): toolchain-dependent, and it would
   bind the build to one compiler pairing in nixpkgs.
-- **N3.** protolens, which is not on upb yet (0415 N1).
+- **N3.** protolens on its own: it renders through `prototext-core`, and
+  benefits from S1 there (spec 0417 N4) without changes of its own.
 
 ## Specification
 
@@ -137,4 +139,68 @@ occurrence; the cache removes all three for every repeat.
 
 ## Measured outcome
 
-Filled in at implementation.
+Implemented 2026-10-13, on the `upb` branch, after spec 0417.
+
+- **S1:** `Pool::generation` counts successful adds; handles gain `id()`
+  (the definition's address) and `pool_generation()`. The cache is a
+  thread-local map active only inside `decode_and_render` and
+  `decode_and_render_indexed`; a lookup outside a render (the probe,
+  the arena walker) goes to upb directly. Only the outermost render's
+  scope clears it, by drop, so an error or a nested render cannot leave
+  an answer behind or empty the outer render's. The key is hashed with
+  FxHash's multiply-rotate, not SipHash.
+- **S2:** `FieldOrExt::kind` returns `&Kind`; the nested-group path
+  borrows its message instead of cloning it.
+- **Tests:** test plan 1 to 3 in `render_text`'s tests (50 occurrences of
+  one field and one of another resolve two fields, not 51; the cache is
+  empty after a render and after an `InputTooLarge` refusal, and an inner
+  render keeps the outer one's entry; a miss is not retried while the
+  pool is unchanged, and is after the loader adds the file declaring it),
+  and the counter in `prototext-upb`'s pool tests. Workspace: 1,788 tests
+  pass.
+- **Test plan 4, the gates:** prototext 1,516 of 1,516 and protolens
+  1,180 of 1,180 cases byte-identical to the prost-reflect builds.
+
+### Test plan 5, benchmarks
+
+Same binary twice first (S3). Criterion, pinned, against a baseline
+saved from the code before this change:
+
+| Benchmark | A | A again (A/A) | B (A/B) |
+|---|---|---|---|
+| A1, no schema | 208.2 µs | +4.7% | −2.6% |
+| A2, schema + annotations | 389.9 µs | +1.7% | **−22.5%** (306.4 µs) |
+| B1, encode | 622.7 µs | 0.0% | +7.1% |
+
+The A/A spread reaches 4.7% on identical code, so A1 and B1 are no
+change: neither reaches the cache (A1 renders without a schema, B1
+encodes text without one), and their moves are this machine's noise or
+code-layout drift. A2 is well outside it, and is now below the
+prost-reflect build's 370.0 µs (spec 0415 S12).
+
+Instruction counts (callgrind, `bin/profile decode 50 1`: A2's workload,
+50 renders), deterministic:
+
+| | Before | After |
+|---|---|---|
+| Instructions | 183,903,093 | 166,054,058 (−9.7%) |
+| `FieldOrExt::new` calls | 125,000 | 2,750 (55 per render) |
+| `FieldOrExt::new`, inclusive | 18.7 M (10.1%) | 0.4 M (0.2%) |
+
+Wall time falls by more than the instructions do: what the cache
+removes is mostly calls into C and atomic reference counts, which cost
+more than their instruction count.
+
+The CLI, `scripts/upb-bench` (hyperfine, pinned), A twice then B:
+
+| Case | A | A again | B |
+|---|---|---|---|
+| big decode, googleapis.desc (25.6 MB) | 801.8 ± 22.0 ms | 809.1 ± 32.0 | **709.3 ± 29.3** |
+| eager load | 698.9 ± 39.7 | 689.9 ± 27.1 | 687.1 ± 24.2 |
+| inferred | 33.6 ± 1.6 | 34.7 ± 2.7 | 34.7 ± 2.1 |
+
+The big decode is 12% faster, 17% faster than prost-reflect's 856.6 ms;
+the others are unchanged (they decode little).
+
+G1 holds (a field seen again is one hashed lookup), G2 more than holds,
+and G3 holds.

@@ -178,7 +178,7 @@ pub(in super::super) fn render_len_field<S: Sink>(
     let is_repeated = fs.cardinality() == Cardinality::Repeated;
 
     // ── Packed repeated ───────────────────────────────────────────────────────
-    let is_packable_kind = super::super::is_packable_kind(&fs.kind());
+    let is_packable_kind = super::super::is_packable_kind(fs.kind());
     // Spec 0370 S1: a LEN record on a repeated packable scalar is a packed
     // run, whatever the field declares. The `packed` option and proto3's
     // default choose what a *writer* emits; a reader must accept both
@@ -236,10 +236,10 @@ pub(in super::super) fn render_len_field<S: Sink>(
             // is a MessageSet (structural heuristic), expand groups inline.
             if missing.is_none()
                 && EXPAND_MESSAGE_SET.with(|c| c.get())
-                && is_message_set(&nested_msg_desc)
+                && is_message_set(nested_msg_desc)
             {
                 render_message_set_expansion(
-                    &nested_msg_desc,
+                    nested_msg_desc,
                     FieldCtx {
                         field_number,
                         field_schema: Some(fs),
@@ -254,7 +254,7 @@ pub(in super::super) fn render_len_field<S: Sink>(
                 return;
             }
 
-            let nested_schema: Option<&Message> = Some(&nested_msg_desc);
+            let nested_schema: Option<&Message> = Some(nested_msg_desc);
 
             let mark = sink.begin_nested(
                 field_number,
@@ -359,7 +359,7 @@ pub(in super::super) fn render_group_field<S: Sink>(
     // and correct — no lookup needed (spec 0106 S1).  Mismatch/unknown-field
     // annotation details (field_decl, TYPE_MISMATCH, tag/close-tag modifiers)
     // are computed by `Sink::begin_nested`/`end_nested`'s own implementation.
-    let nested_msg_desc: Option<Message> = field_schema.and_then(|fs| {
+    let nested_msg_desc: Option<&Message> = field_schema.and_then(|fs| {
         if fs.is_group() {
             if let Kind::Message(msg_desc) = fs.kind() {
                 Some(msg_desc)
@@ -370,7 +370,7 @@ pub(in super::super) fn render_group_field<S: Sink>(
             None
         }
     });
-    let nested_schema_opt: Option<&Message> = nested_msg_desc.as_ref();
+    let nested_schema_opt: Option<&Message> = nested_msg_desc;
 
     let mark = sink.begin_nested(
         field_number,
