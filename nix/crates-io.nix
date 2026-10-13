@@ -66,6 +66,7 @@ in pkgs.stdenv.mkDerivation (commonArgs // {
 
 [patch.crates-io]
 tree-sitter-textproto = { path = "$PWD/reproto/tree-sitter-textproto" }
+prototext-upb    = { path = "$PWD/prototext-upb" }
 prototext-core   = { path = "$PWD/prototext-core" }
 prototext-graph  = { path = "$PWD/prototext-graph" }
 prototext-schema = { path = "$PWD/prototext-schema" }
