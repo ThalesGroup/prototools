@@ -69,8 +69,9 @@ cargo install prototext-lens    # installs the protolens program
 ```
 
 `protolens` is published as `prototext-lens`: the `protolens` crate on
-crates.io is an unrelated project. Its editor key uses Neovim, and `buf`
-for navigation, if they are on your `PATH`.
+crates.io is an unrelated project. Its editor key opens the declaration
+of a type in your `VISUAL` or `EDITOR`, as git does; a Neovim it starts is
+reused across presses.
 
 ### Python tools (`reproto`, …)
 

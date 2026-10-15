@@ -676,43 +676,68 @@ fn v_arms_pending_editor_open_when_the_proto_source_is_found() {
     assert_eq!(req.col, 1);
 }
 
-/// Glitch reported 2026-07-18: a missing `nvim` binary must not crash
-/// protolens — the failure is reported via `app.message` and the TUI
-/// keeps running.
+/// Runs `open_editor` with `command` as the editor, as if it were
+/// `EDITOR`, and returns the app afterwards.
 ///
-/// The absent binary is arranged by naming one, through
-/// `neovim::EDITOR_PROGRAM`, rather than by hoping this machine has no
-/// Neovim: the earlier version of this test probed `PATH` and returned
-/// early when it found one, which meant it never ran anywhere Neovim
-/// was installed — and spawning the real thing here would block on
-/// `waitpid` forever.
-#[test]
-fn open_editor_reports_a_missing_nvim_instead_of_crashing() {
-    neovim::EDITOR_PROGRAM.set("protolens-test-no-such-editor");
+/// The editor is named through `neovim::EDITOR_COMMAND` rather than read
+/// from the environment, so a test never runs the developer's own editor,
+/// and a missing one is arranged by naming it rather than by hoping this
+/// machine has none: an earlier version of the missing-editor test probed
+/// `PATH` and returned early when it found Neovim, so it never ran where
+/// Neovim was installed.
+///
+/// `open_editor`'s return value isn't asserted: `enable_raw_mode_and_
+/// reenter`, called on the way out, talks to the real stdout, which isn't
+/// a tty under `cargo test` and can legitimately fail here. What matters
+/// is that every failure becomes a message rather than an `Err` (the crash
+/// reported 2026-07-18).
+fn open_editor_with(command: &'static str) -> App {
+    neovim::EDITOR_COMMAND.set(command);
     let mut app = empty_app();
     // `open_editor` requires `io::Error: From<B::Error>` (it propagates
     // real I/O errors via `?`), which `TestBackend` cannot satisfy.
     let mut terminal = in_memory_crossterm_terminal();
     let req = neovim::EditorRequest {
         path: PathBuf::from("/tmp/protolens-test-does-not-exist.proto"),
-        line: 1,
-        col: 1,
+        line: 3,
+        col: 5,
     };
-    // The return value itself isn't asserted: `enable_raw_mode_and_reenter`
-    // (called on the way out, regardless of the branch below) talks to the
-    // *real* process stdout/stdin, which isn't a tty under `cargo test`
-    // and can legitimately fail here — a pre-existing, orthogonal
-    // limitation of this sandboxed test run, not something Glitch 1's fix
-    // is responsible for. What this test verifies is that the missing-
-    // `nvim` spawn failure itself doesn't propagate as an `Err` (the
-    // actual crash reported) but is instead converted to a message.
     let _ = neovim::open_editor(&mut terminal, &mut app, req);
-    // Spec 0410 S2: not installed names the remedy.
+    app
+}
+
+/// Spec 0420 S6: an editor that is not installed is named, with where it
+/// came from, and the remedy.
+#[test]
+fn open_editor_reports_a_missing_editor_instead_of_crashing() {
+    let app = open_editor_with("protolens-test-no-such-editor");
     assert_eq!(
         app.message,
-        "nvim not found on PATH: install Neovim to use the editor key"
+        "protolens-test-no-such-editor not found (from EDITOR): set VISUAL or EDITOR to your editor"
     );
     assert!(matches!(app.editor_state, neovim::EditorState::NotRunning));
+}
+
+/// The same for a missing Neovim, which takes the `--listen` path.
+#[test]
+fn open_editor_reports_a_missing_nvim_instead_of_crashing() {
+    let app = open_editor_with("/nonexistent/protolens-test/nvim");
+    assert_eq!(
+        app.message,
+        "/nonexistent/protolens-test/nvim not found (from EDITOR): set VISUAL or EDITOR to your editor"
+    );
+    assert!(matches!(app.editor_state, neovim::EditorState::NotRunning));
+}
+
+/// A command with arguments runs through `sh`, which reports a missing
+/// program as status 127 rather than as a spawn error: the same message.
+#[test]
+fn open_editor_reports_a_missing_editor_run_through_the_shell() {
+    let app = open_editor_with("protolens-test-no-such-editor --wait");
+    assert_eq!(
+        app.message,
+        "protolens-test-no-such-editor not found (from EDITOR): set VISUAL or EDITOR to your editor"
+    );
 }
 
 /// Spec 0410 S2: a spawn that fails for another reason than a missing
@@ -720,21 +745,30 @@ fn open_editor_reports_a_missing_nvim_instead_of_crashing() {
 /// as the program is refused with "permission denied".
 #[test]
 fn open_editor_reports_another_launch_failure_with_its_error() {
-    neovim::EDITOR_PROGRAM.set("/");
-    let mut app = empty_app();
-    let mut terminal = in_memory_crossterm_terminal();
-    let req = neovim::EditorRequest {
-        path: PathBuf::from("/tmp/protolens-test-does-not-exist.proto"),
-        line: 1,
-        col: 1,
-    };
-    let _ = neovim::open_editor(&mut terminal, &mut app, req);
+    let app = open_editor_with("/");
     assert!(
-        app.message.starts_with("cannot launch nvim: "),
+        app.message.starts_with("cannot launch /: "),
         "{:?}",
         app.message
     );
     assert!(matches!(app.editor_state, neovim::EditorState::NotRunning));
+}
+
+/// Spec 0420 S4: an editor other than Neovim runs to its end, and
+/// protolens carries on with no Neovim instance to remember.
+#[test]
+fn open_editor_waits_for_another_editor_to_exit() {
+    let before = empty_app().message;
+    let app = open_editor_with("true");
+    assert_eq!(app.message, before, "a clean exit says nothing");
+    assert!(matches!(app.editor_state, neovim::EditorState::NotRunning));
+}
+
+/// An editor that exits with a failure says so.
+#[test]
+fn open_editor_reports_an_editor_that_exits_with_a_failure() {
+    let app = open_editor_with("false");
+    assert_eq!(app.message, "false exited with exit status: 1");
 }
 
 // ── Spec 0156 G3: the `x<b|p|d<b|p>>` export chord ─────────────────────────

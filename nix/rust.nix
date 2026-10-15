@@ -20,7 +20,7 @@
 #     └──[buildPackage, cargoArtifacts=depsCache]──▶  workspaceBuild
 #            │  one `cargo build --release --workspace`
 #            ├──▶  prototext            (copied out, completions, man page)
-#            ├──▶  protolensUnwrapped  ──▶  protolens, protolensLean
+#            ├──▶  protolens           (copied out, completions, man page)
 #            └──▶  prototextCodec, fdpScanLib, prototextGraphLib  (maturin's wheels)
 #
 # Every shipped crate embeds the WKT scoring graph committed under
@@ -417,11 +417,6 @@ let
 
     # Spec 0402 S8, as for prototext.
     $out/bin/protolens --version | grep -qF ${protolensVersion}
-  '' + ''
-    # spec 0145 G5: a minimal Neovim config wiring `.proto` filetype/syntax
-    # and `buf lsp serve` navigation, loaded via `-u` by the wrapper below.
-    install -Dm444 ${../protolens/nvim/init.lua} \
-      "$out/share/protolens/nvim/init.lua"
   '';
 
   protolensMeta = metaCommon // {
@@ -429,10 +424,10 @@ let
     mainProgram = "protolens";
   };
 
-  # The binary, its completions, man page and Neovim config — copied out of
-  # workspaceBuild once, and wrapped below as many ways as needed (spec 0374
-  # S2/G7; spec 0401 S1).
-  protolensUnwrapped = pkgs.runCommand "protolens-unwrapped-${protolensVersion}" {
+  # The binary, its completions and man page, copied out of workspaceBuild.
+  # No wrapper: `v` opens the user's editor (spec 0420), so the package
+  # bundles no editor and no editor configuration; the demos bring theirs.
+  protolens = pkgs.runCommand "protolens-${protolensVersion}" {
     nativeBuildInputs = [ pkgs.installShellFiles ];
     meta              = protolensMeta;
     passthru.tests    = { inherit rustTests; };
@@ -442,60 +437,31 @@ let
     ${protolensPostInstall}
   '';
 
-  # `v`'s Neovim handoff (spec 0144 G5/G6) works with whatever is on PATH,
-  # and says what is missing (spec 0410 S2). Our builds bundle a pinned
-  # Neovim and `buf` (for `buf lsp serve`) anyway, so the key works out of
-  # the box, in the workshop image above all; nixpkgs's recipe makes both
-  # opt-in (spec 0410 S3). A separate derivation from the compile (spec 0374
-  # S2), so a different Neovim costs a shell script, not a Rust build.
-  bufFull = buf;
-  wrapProtolens = { neovim, buf ? bufFull, name ? "protolens" }:
-    pkgs.runCommand "${name}-${protolensVersion}" {
-      nativeBuildInputs = [ pkgs.makeWrapper ];
-      meta              = protolensMeta;
-    } ''
-      mkdir -p $out/bin
-      ln -s ${protolensUnwrapped}/share $out/share
-      makeWrapper ${protolensUnwrapped}/bin/protolens $out/bin/protolens \
-        --prefix PATH : ${pkgs.lib.makeBinPath [ neovim buf ]} \
-        --set PROTOLENS_NVIM_CONFIG ${protolensUnwrapped}/share/protolens/nvim/init.lua
-    '';
-
-  # The default Neovim: its wrapper keeps the Wayland clipboard provider
-  # (wl-clipboard), which desktop users want.
-  protolens = wrapProtolens { neovim = pkgs.neovim; };
-
-  # A lean Neovim for the workshop image (spec 0374 S2): no clipboard (there
-  # is no desktop clipboard in a container; wl-clipboard also brings perl),
-  # and no Ruby or Python providers, which protolens's init.lua — pure Lua and
-  # Neovim's built-in LSP client — never uses. 98 MiB instead of 407 MiB, and
+  # A lean Neovim for the demos and the workshop image (spec 0374 S2): no
+  # clipboard (there is no desktop clipboard in a container; wl-clipboard
+  # also brings perl), and no Ruby or Python providers, which the demo
+  # config — pure Lua and Neovim's built-in LSP client — never uses. 98 MiB instead of 407 MiB, and
   # no compilation: `wrapNeovimUnstable` only wraps the shared neovim-unwrapped.
   # (`pkgs.neovim.override { waylandSupport = false; }` does not evaluate: the
   # argument belongs to wrapNeovimUnstable, not to the `neovim` package.)
   #
   # wrapRc = false: the default wrapper exports VIMINIT pointing at a generated
-  # (here empty) init.lua, and with VIMINIT set Neovim never reads
-  # $XDG_CONFIG_HOME/nvim/init.lua — which is how teleprompt's config (desert
-  # theme, proto/textproto syntax, spec 0395) gets loaded. protolens passes its
-  # own config explicitly and is unaffected.
+  # (here empty) init.lua, which would override both ways the demos give it
+  # their config: VIMINIT in their environment (spec 0420 S8), and
+  # $XDG_CONFIG_HOME/nvim/init.lua in teleprompt's wrapper (spec 0395).
   neovimLean = pkgs.wrapNeovimUnstable pkgs.neovim-unwrapped {
     wrapRc         = false;
     waylandSupport = false;
     withRuby       = false;
     withPython3    = false;
   };
-  # buf for the image (spec 0375 S9): its `buf` binary alone, copied rather
-  # than linked so the full package leaves the closure. protolens runs only
-  # `buf lsp serve`; the two protoc-gen-buf-* plugins are 72 MiB unpacked.
+  # buf for the demos and the image (spec 0375 S9): its `buf` binary alone,
+  # copied rather than linked so the full package leaves the closure. The
+  # demo config runs only `buf lsp serve`; the two protoc-gen-buf-* plugins
+  # are 72 MiB unpacked.
   bufLean = pkgs.runCommand "buf-lean-${buf.version}" { } ''
     install -Dm755 ${buf}/bin/buf $out/bin/buf
   '';
-
-  protolensLean = wrapProtolens {
-    neovim = neovimLean;
-    buf    = bufLean;
-    name   = "protolens-lean";
-  };
 
   # ---------------------------------------------------------------------------
   # PyO3 extensions — prototext_codec_lib, fdp_scan_lib, prototext_graph_lib.
@@ -544,8 +510,6 @@ in {
     prototext
     protoscan
     protolens
-    protolensUnwrapped
-    protolensLean
     neovimLean
     bufLean
     prototextCodec

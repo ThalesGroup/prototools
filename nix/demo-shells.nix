@@ -18,7 +18,7 @@
 , grpconfTalk       # nix/grpconf2026-demo.nix: demoTools, demoEnv, deck
 , grehackRuntime    # grehack2026.runtime: the workshop image's tool set
 , prototext
-, protolensLean
+, protolens
 , reproto
 , protoscan
 , wktDb
@@ -57,7 +57,7 @@ in
   # the same definition the workshop image uses (spec 0404 S1, S2).
   grpconf2026-shell = pkgs.mkShell {
     name = "grpconf2026";
-    packages = [ prototext protolensLean reproto protoscan wktDb ]
+    packages = [ prototext protolens reproto protoscan wktDb ]
       ++ grpconfTalk.demoTools;
     shellHook = ''
       ${notDevShell}

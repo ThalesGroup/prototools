@@ -51,6 +51,9 @@ in
     PROTOTEXT_WKT_SET        = wktSet;
     PROTOTEXT_GOOGLEAPIS_SET = "${googleapisDb}/googleapis.desc";
     PROTOTEXT_GOOGLEAPIS_PBS = "${googleapisPbs}/googleapis.pb";
+    # As the GreHack demo's (spec 0420 S8): the same Neovim config.
+    EDITOR  = "nvim";
+    VIMINIT = "source ${./demo-nvim/init.lua}";
   };
 
   # The material plus Bob's files, as the deck expects them: bob/app,

@@ -1,4 +1,5 @@
--- Neovim config for the demo shells' teleprompt (spec 0395).
+-- Neovim config for the demos: teleprompt's (spec 0395), and protolens's
+-- `v`, through the demos' VIMINIT (spec 0420 S8).
 -- Shared with the dev-shell's _hook_nvim highlighting (nix/shells.nix).
 -- SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
 -- SPDX-License-Identifier: MIT

@@ -2,9 +2,12 @@
 //
 // SPDX-License-Identifier: MIT
 
+use std::ffi::{OsStr, OsString};
 use std::io;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use nix::sys::signal::{killpg, signal, SigHandler, Signal};
@@ -18,7 +21,7 @@ use super::terminal::{enable_raw_mode_and_reenter, restore_terminal};
 use super::App;
 
 /// A fully-resolved `v` target: an absolute `.proto` path plus a
-/// 1-indexed line/column, ready to hand to Neovim's `cursor()`.
+/// 1-indexed line/column, ready to hand to the editor.
 pub(crate) struct EditorRequest {
     pub(crate) path: PathBuf,
     pub(crate) line: u32,
@@ -69,12 +72,190 @@ pub(crate) fn locate_declaration(pool: &DescriptorPool, fqdn: &str) -> Option<(P
     Some((PathBuf::from(file.name()), line, col))
 }
 
-/// `v`'s Neovim handoff state (G5) — stored on `App` (`editor_state`,
-/// `mod.rs`) rather than a process-global `static`: `main.rs`
-/// constructs exactly one `App` for the process's entire lifetime, and
-/// this is a single-threaded event loop, so there is no concurrency to
-/// guard against and no risk of losing track of the handoff across
-/// `App` instances (see the Goals section G5 "State" note).
+// ── Which editor (spec 0420 S1, S2) ─────────────────────────────────────────
+
+/// Where the editor command came from, named in messages (spec 0420 S6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Source {
+    Visual,
+    Editor,
+    Default,
+}
+
+impl Source {
+    fn describe(self) -> &'static str {
+        match self {
+            Source::Visual => "from VISUAL",
+            Source::Editor => "from EDITOR",
+            Source::Default => "the default",
+        }
+    }
+}
+
+/// What protolens knows how to drive beyond "run it at a line" (S2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EditorKind {
+    /// Reused across `v` presses through its `--listen` socket (S3).
+    Neovim,
+    /// Positioned at the exact column with `+call cursor(L,C)` (S4).
+    Vim,
+    /// Anything else, `vi` included: positioned with `+LINE` (S4).
+    Other,
+}
+
+/// The editor `v` runs: a command, possibly with arguments, as the user
+/// wrote it in `VISUAL` or `EDITOR`.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Editor {
+    value: OsString,
+    source: Source,
+    kind: EditorKind,
+}
+
+/// git's list of shell metacharacters (`run-command.c`): a command holding
+/// none of them, and no space, is executed directly; any other goes
+/// through `sh` (spec 0420 S1).
+const SHELL_METACHARS: &[u8] = b"|&;<>()$`\\\"' \t\n*?[#~=%";
+
+/// `sh`'s exit status for a command it could not find.
+const SHELL_NOT_FOUND: i32 = 127;
+
+impl Editor {
+    /// The first word of the command: the program, for messages and for
+    /// Neovim's `--server` calls.
+    fn program(&self) -> &OsStr {
+        let bytes = self.value.as_bytes();
+        let word = bytes
+            .split(|b| b.is_ascii_whitespace())
+            .find(|w| !w.is_empty())
+            .unwrap_or(bytes);
+        OsStr::from_bytes(word)
+    }
+
+    /// The command with `args` after it, run as git runs an editor.
+    fn command(&self, args: &[OsString]) -> Command {
+        if self
+            .value
+            .as_bytes()
+            .iter()
+            .any(|b| SHELL_METACHARS.contains(b))
+        {
+            let mut script = self.value.clone();
+            script.push(" \"$@\"");
+            let mut cmd = Command::new("sh");
+            cmd.arg("-c").arg(script).arg(&self.value).args(args);
+            cmd
+        } else {
+            let mut cmd = Command::new(&self.value);
+            cmd.args(args);
+            cmd
+        }
+    }
+
+    /// The message for a command that is not there (S6).
+    fn not_found(&self) -> String {
+        format!(
+            "{} not found ({}): set VISUAL or EDITOR to your editor",
+            self.program().to_string_lossy(),
+            self.source.describe()
+        )
+    }
+}
+
+/// The kind of `value`, from the basename of its first word, without
+/// running anything (S2).
+fn kind_of(value: &OsStr) -> EditorKind {
+    let bytes = value.as_bytes();
+    let word = bytes
+        .split(|b| b.is_ascii_whitespace())
+        .find(|w| !w.is_empty())
+        .unwrap_or(bytes);
+    match Path::new(OsStr::from_bytes(word))
+        .file_name()
+        .map(OsStr::as_bytes)
+    {
+        Some(b"nvim") => EditorKind::Neovim,
+        Some(b"vim") => EditorKind::Vim,
+        _ => EditorKind::Other,
+    }
+}
+
+/// `VISUAL` if set and not empty, else `EDITOR`, else `nvim` when
+/// `nvim_on_path` says it is installed, else `vi` (S1). The variables are
+/// parameters so that tests need not touch the process environment.
+pub(crate) fn choose_editor(
+    visual: Option<OsString>,
+    editor: Option<OsString>,
+    nvim_on_path: impl FnOnce() -> bool,
+) -> Editor {
+    let (value, source) = match (visual, editor) {
+        (Some(v), _) if !v.is_empty() => (v, Source::Visual),
+        (_, Some(e)) if !e.is_empty() => (e, Source::Editor),
+        _ if nvim_on_path() => ("nvim".into(), Source::Default),
+        _ => ("vi".into(), Source::Default),
+    };
+    Editor {
+        kind: kind_of(&value),
+        value,
+        source,
+    }
+}
+
+/// Whether `name` is an executable file in a directory of `PATH`.
+fn on_path(name: &str) -> bool {
+    std::env::var_os("PATH").is_some_and(|path| {
+        std::env::split_paths(&path).any(|dir| {
+            std::fs::metadata(dir.join(name))
+                .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        })
+    })
+}
+
+// A `thread_local`, not a `static`: `cargo test` runs tests in parallel
+// threads of one process, and the spawn happens on the same thread as
+// the test that set this, so a thread-local override cannot be observed
+// by any other test and needs no lock.
+#[cfg(test)]
+thread_local! {
+    /// The editor command a test runs, as if it were `EDITOR`.
+    pub(super) static EDITOR_COMMAND: std::cell::Cell<&'static str> =
+        const { std::cell::Cell::new("protolens-test-no-editor-set") };
+}
+
+/// The editor `v` runs: from the environment, or, in a test, from
+/// `EDITOR_COMMAND`.
+///
+/// The override exists because the branch worth a regression test is
+/// the one where the spawn *fails*: that is where the 2026-07-18 crash
+/// lived. Reaching it means naming a binary that is not on `PATH`, and
+/// the test used to arrange that by probing for a real `nvim` and
+/// returning early if it found one — so on any machine with Neovim
+/// installed, which is most of them, the test skipped itself and
+/// reported a pass. Overriding the command instead exercises the branch
+/// everywhere, and never reads the developer's own `EDITOR`.
+fn editor() -> Editor {
+    #[cfg(test)]
+    {
+        let value = EDITOR_COMMAND.with(std::cell::Cell::get);
+        choose_editor(None, Some(value.into()), || false)
+    }
+    #[cfg(not(test))]
+    {
+        choose_editor(
+            std::env::var_os("VISUAL"),
+            std::env::var_os("EDITOR"),
+            || on_path("nvim"),
+        )
+    }
+}
+
+// ── The handoff ─────────────────────────────────────────────────────────────
+
+/// `v`'s Neovim handoff state (spec 0144 G5) — stored on `App`
+/// (`editor_state`, `mod.rs`) rather than a process-global `static`:
+/// `main.rs` constructs exactly one `App` for the process's entire
+/// lifetime, and this is a single-threaded event loop. Only Neovim is ever
+/// `Suspended`: any other editor runs to its end (spec 0420 S4).
 pub(crate) enum EditorState {
     NotRunning,
     Suspended { pgid: Pid, socket_path: PathBuf },
@@ -84,44 +265,12 @@ fn socket_path() -> PathBuf {
     std::env::temp_dir().join(format!("protolens-nvim-{}.sock", std::process::id()))
 }
 
-// A `thread_local`, not a `static`: `cargo test` runs tests in parallel
-// threads of one process, and the spawn happens on the same thread as
-// the test that set this, so a thread-local override cannot be observed
-// by any other test and needs no lock.
-#[cfg(test)]
-thread_local! {
-    pub(super) static EDITOR_PROGRAM: std::cell::Cell<&'static str> =
-        const { std::cell::Cell::new("nvim") };
-}
-
-/// The editor binary `open_editor` spawns — `"nvim"`, except that a
-/// test may point it elsewhere via `EDITOR_PROGRAM`.
-///
-/// The override exists because the branch worth a regression test is
-/// the one where the spawn *fails*: that is where the 2026-07-18 crash
-/// lived. Reaching it means naming a binary that is not on `PATH`, and
-/// the test used to arrange that by probing for a real `nvim` and
-/// returning early if it found one — so on any machine with Neovim
-/// installed, which is most of them, the test skipped itself and
-/// reported a pass. Overriding the name instead exercises the branch
-/// everywhere.
-fn editor_program() -> &'static str {
-    #[cfg(test)]
-    {
-        EDITOR_PROGRAM.with(std::cell::Cell::get)
-    }
-    #[cfg(not(test))]
-    {
-        "nvim"
-    }
-}
-
 /// Pure `WaitStatus -> EditorState` transition (G7): a `Stopped` result
 /// re-arms `Suspended` with the same `pgid`/`socket_path` (nothing else
 /// distinguishes one stop from the next); any other result — `Exited`,
 /// `Signaled`, or otherwise — collapses to `NotRunning`. `pgid` is
 /// passed in rather than read from `status` because `waitpid` is
-/// called directly on the leader `pgid` (see `open_editor` below, not
+/// called directly on the leader `pgid` (see `open_in_neovim` below, not
 /// the negated group-wide form), so the caller already knows it, and a
 /// `Stopped(pid, _)` result's `pid` is always that same `pgid` by
 /// construction — no reconciliation needed.
@@ -135,21 +284,13 @@ fn next_state(pgid: Pid, socket_path: PathBuf, status: WaitStatus) -> EditorStat
     }
 }
 
-/// `v`'s Neovim handoff (G5), called by `run_loop` right after the
-/// `handle_key` call that armed `app.pending_editor_open`. Mirrors
-/// `suspend`'s own shape — leave the terminal exactly as a normal exit
-/// would, hand off control, restore raw/alt-screen/mouse-capture on the
-/// way back (spec 0113 D31) — generalized to two cases: no Neovim
-/// running yet (fork/exec a fresh instance via `--listen`) or one
-/// already `Suspended` from an earlier `v` press (send it `--remote-
-/// tab`/`--remote-send` requests over its existing `--listen` socket
-/// instead of spawning a second instance, then `SIGCONT` it) — G5's
-/// "single instance" decision.
-///
-/// The `--remote-tab`/`--remote-send` flags and the `<C-\><C-N>`
-/// mode-escape prefix are verified against Neovim 0.11.5: a combined
-/// single-call `--remote-tab +cmd` does *not* apply `+cmd` to the newly
-/// opened tab, so two separate calls are required, as below.
+/// `v`'s editor handoff, called by `run_loop` right after the `handle_key`
+/// call that armed `app.pending_editor_open`. Leaves the terminal exactly
+/// as a normal exit would, hands it to the editor, and restores raw mode,
+/// the alternate screen and mouse capture on the way back (spec 0113 D31).
+/// Neovim is driven as spec 0144 G5 describes (`open_in_neovim`); any other
+/// editor is run to its end (`run_to_exit`, spec 0420 S4). A failure is a
+/// message, never an error: the TUI keeps running.
 pub(crate) fn open_editor<B: Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
@@ -158,8 +299,97 @@ pub(crate) fn open_editor<B: Backend>(
 where
     io::Error: From<B::Error>,
 {
+    let editor = editor();
     restore_terminal();
+    match editor.kind {
+        EditorKind::Neovim => open_in_neovim(app, &editor, req),
+        EditorKind::Vim | EditorKind::Other => run_to_exit(app, &editor, req),
+    }
+    enable_raw_mode_and_reenter(terminal)?;
+    Ok(())
+}
 
+/// Vim or any other editor (spec 0420 S4): run in protolens's own process
+/// group, so Ctrl-Z suspends both back to the shell, as `git commit` does,
+/// and wait for it to exit.
+fn run_to_exit(app: &mut App, editor: &Editor, req: EditorRequest) {
+    let goto = match editor.kind {
+        EditorKind::Vim => format!("+call cursor({},{})", req.line, req.col),
+        _ => format!("+{}", req.line),
+    };
+    let mut cmd = editor.command(&[goto.into(), req.path.into_os_string()]);
+    if let Some(proto_root) = &app.proto_root {
+        cmd.env("PROTOTEXT_PROTO_ROOT", proto_root);
+    }
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            app.message = launch_failure(editor, &e);
+            return;
+        }
+    };
+    // Ignored only once the editor has started, as git does: an ignored
+    // disposition survives exec, and the editor must keep its own Ctrl-C.
+    // From here until the restore, a Ctrl-C meant for the editor does not
+    // end protolens, which shares its process group.
+    // SAFETY: installing a signal disposition for our own process is
+    // always sound; neither takes captured state.
+    let (int, quit) = unsafe {
+        (
+            signal(Signal::SIGINT, SigHandler::SigIgn),
+            signal(Signal::SIGQUIT, SigHandler::SigIgn),
+        )
+    };
+    let status = child.wait();
+    // SAFETY: as above, putting back what was there.
+    unsafe {
+        if let Ok(previous) = int {
+            let _ = signal(Signal::SIGINT, previous);
+        }
+        if let Ok(previous) = quit {
+            let _ = signal(Signal::SIGQUIT, previous);
+        }
+    }
+    match status {
+        Ok(status) if status.code() == Some(SHELL_NOT_FOUND) => {
+            app.message = editor.not_found();
+        }
+        Ok(status) if !status.success() => {
+            app.message = format!(
+                "{} exited with {status}",
+                editor.program().to_string_lossy()
+            );
+        }
+        Ok(_) => {}
+        Err(e) => {
+            app.message = format!(
+                "cannot wait for {}: {e}",
+                editor.program().to_string_lossy()
+            );
+        }
+    }
+}
+
+/// The message for an editor that could not be started (S6): a missing
+/// one names the remedy; any other failure keeps the OS error.
+fn launch_failure(editor: &Editor, e: &io::Error) -> String {
+    if e.kind() == io::ErrorKind::NotFound {
+        editor.not_found()
+    } else {
+        format!("cannot launch {}: {e}", editor.program().to_string_lossy())
+    }
+}
+
+/// Neovim (spec 0144 G5, spec 0420 S3): no instance yet, start one with
+/// `--listen`; one already `Suspended` from an earlier `v` press, send it
+/// `--remote-tab`/`--remote-send` requests over that socket instead of
+/// starting a second instance, then `SIGCONT` it — G5's "single instance".
+///
+/// The `--remote-tab`/`--remote-send` flags and the `<C-\><C-N>`
+/// mode-escape prefix are verified against Neovim 0.11.5: a combined
+/// single-call `--remote-tab +cmd` does *not* apply `+cmd` to the newly
+/// opened tab, so two separate calls are required, as below.
+fn open_in_neovim(app: &mut App, editor: &Editor, req: EditorRequest) {
     // Reclaiming the terminal below (`tcsetpgrp(io::stdin(), getpgrp())`,
     // after `waitpid` returns) happens while protolens is itself a
     // background process group relative to the terminal — Neovim's pgid
@@ -174,62 +404,31 @@ where
     unsafe {
         let _ = signal(Signal::SIGTTOU, SigHandler::SigIgn);
     }
+    let program = editor.program().to_string_lossy().into_owned();
 
     let (pgid, socket_path, resuming) = match &app.editor_state {
         EditorState::NotRunning => {
             let socket_path = socket_path();
             let goto = format!("+call cursor({},{})", req.line, req.col);
-            // spec 0145 G6: load the bundled Lua config (`.proto`
-            // filetype/syntax + `buf lsp serve` navigation) when packaged
-            // via Nix; falls back to the user's own Neovim config in a
-            // non-Nix dev build (no error).
-            //
-            // A non-Nix dev build (`cargo run`/`cargo build`) has no
-            // wrapper to set PROTOLENS_NVIM_CONFIG, so fall back here to
-            // the repo-relative config baked in at compile time via
-            // CARGO_MANIFEST_DIR — only when unset (never overrides the
-            // Nix wrapper's own value) and only when that path actually
-            // exists (preserves the graceful degraded fallback if the
-            // binary is copied away from its source checkout).
-            //
-            // A local, not `std::env::set_var`: the heat worker is alive
-            // at this point (the Neovim handoff shuts down the *input
-            // reader*, nothing else), and mutating the process
-            // environment while another thread may be reading it is
-            // undefined behavior. Nothing downstream reads the variable
-            // anyway — it only ever fed the `-u` flag below.
-            let config = std::env::var_os("PROTOLENS_NVIM_CONFIG").or_else(|| {
-                let default_config = concat!(env!("CARGO_MANIFEST_DIR"), "/nvim/init.lua");
-                std::path::Path::new(default_config)
-                    .exists()
-                    .then(|| default_config.into())
-            });
-            let mut cmd = Command::new(editor_program());
-            if let Some(config) = config {
-                cmd.arg("-u").arg(config);
-            }
+            // The user's own configuration, with nothing of protolens's
+            // (spec 0420 S3): no `-u`.
+            let mut cmd = editor.command(&[
+                "--listen".into(),
+                socket_path.clone().into_os_string(),
+                goto.into(),
+                req.path.into_os_string(),
+            ]);
             if let Some(proto_root) = &app.proto_root {
                 cmd.env("PROTOTEXT_PROTO_ROOT", proto_root);
             }
             let child = cmd
-                .arg("--listen")
-                .arg(&socket_path)
-                .arg(goto)
-                .arg(&req.path)
                 .process_group(0) // new pgid, equal to the child's own pid
                 .spawn();
             let child = match child {
                 Ok(child) => child,
                 Err(e) => {
-                    // Not installed is the common case, and the one the
-                    // user can act on (spec 0410 S2): name the remedy.
-                    app.message = if e.kind() == io::ErrorKind::NotFound {
-                        "nvim not found on PATH: install Neovim to use the editor key".into()
-                    } else {
-                        format!("cannot launch nvim: {e}")
-                    };
-                    enable_raw_mode_and_reenter(terminal)?;
-                    return Ok(());
+                    app.message = launch_failure(editor, &e);
+                    return;
                 }
             };
             let pgid = Pid::from_raw(child.id() as i32);
@@ -237,7 +436,7 @@ where
         }
         EditorState::Suspended { pgid, socket_path } => {
             let goto = format!("cursor({},{})", req.line, req.col);
-            let _ = Command::new("nvim")
+            let _ = Command::new(editor.program())
                 .arg("--server")
                 .arg(socket_path)
                 .arg("--remote-tab")
@@ -246,7 +445,7 @@ where
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .status();
-            let _ = Command::new("nvim")
+            let _ = Command::new(editor.program())
                 .arg("--server")
                 .arg(socket_path)
                 .arg("--remote-send")
@@ -273,9 +472,8 @@ where
             tcsetpgrp(io::stdin(), getpgrp()).ok();
             let _ = std::fs::remove_file(&socket_path);
             app.editor_state = EditorState::NotRunning;
-            app.message = format!("cannot resume nvim: {e}");
-            enable_raw_mode_and_reenter(terminal)?;
-            return Ok(());
+            app.message = format!("cannot resume {program}: {e}");
+            return;
         }
     }
 
@@ -287,27 +485,27 @@ where
     let status = match status {
         Ok(status) => status,
         Err(e) => {
-            app.message = format!("cannot wait for nvim: {e}");
-            enable_raw_mode_and_reenter(terminal)?;
-            return Ok(());
+            app.message = format!("cannot wait for {program}: {e}");
+            return;
         }
     };
     let next = next_state(pgid, socket_path.clone(), status);
     if matches!(next, EditorState::NotRunning) {
         let _ = std::fs::remove_file(&socket_path);
-        if !matches!(status, WaitStatus::Exited(..) | WaitStatus::Signaled(..)) {
+        match status {
+            // Through `sh` (a command with arguments), a missing Neovim
+            // is `sh`'s status, not a spawn error.
+            WaitStatus::Exited(_, SHELL_NOT_FOUND) => app.message = editor.not_found(),
+            WaitStatus::Exited(..) | WaitStatus::Signaled(..) => {}
             // No dedicated logging mechanism exists in protolens (no
             // `log`/`tracing` dependency; `eprintln!` is used only
             // pre-TUI in main.rs) — an unexpected `waitpid` result
             // routes through the same auto-dismissing `app.message`
-            // notice every other failure in this spec already uses.
-            app.message = format!("nvim exited unexpectedly: {status:?}");
+            // notice every other failure here already uses.
+            _ => app.message = format!("{program} exited unexpectedly: {status:?}"),
         }
     }
     app.editor_state = next;
-
-    enable_raw_mode_and_reenter(terminal)?;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -357,5 +555,92 @@ mod tests {
             next_state(pgid, PathBuf::from("/tmp/x.sock"), status),
             EditorState::NotRunning
         ));
+    }
+
+    // ── Which editor (spec 0420 S1, S2) ─────────────────────────────────
+
+    fn os(s: &str) -> Option<OsString> {
+        Some(s.into())
+    }
+
+    #[test]
+    fn visual_wins_then_editor_then_the_default() {
+        let pick = |visual, editor, nvim| {
+            let e = choose_editor(visual, editor, || nvim);
+            (e.value.into_string().unwrap(), e.source)
+        };
+        assert_eq!(
+            pick(os("code --wait"), os("vim"), true),
+            ("code --wait".into(), Source::Visual)
+        );
+        assert_eq!(pick(None, os("vim"), true), ("vim".into(), Source::Editor));
+        assert_eq!(
+            pick(os(""), os("nano"), true),
+            ("nano".into(), Source::Editor),
+            "an empty VISUAL is unset"
+        );
+        assert_eq!(pick(None, os(""), true), ("nvim".into(), Source::Default));
+        assert_eq!(pick(None, None, false), ("vi".into(), Source::Default));
+    }
+
+    #[test]
+    fn the_kind_comes_from_the_first_words_basename() {
+        let kind = |v: &str| kind_of(OsStr::new(v));
+        assert_eq!(kind("nvim"), EditorKind::Neovim);
+        assert_eq!(kind("/usr/bin/nvim -p"), EditorKind::Neovim);
+        assert_eq!(kind("  vim"), EditorKind::Vim);
+        assert_eq!(kind("vi"), EditorKind::Other, "vi may be nvi or BusyBox vi");
+        assert_eq!(kind("nano"), EditorKind::Other);
+        assert_eq!(kind("nvim-qt"), EditorKind::Other);
+    }
+
+    fn argv(cmd: &Command) -> Vec<String> {
+        std::iter::once(cmd.get_program())
+            .chain(cmd.get_args())
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn a_plain_command_is_executed_and_one_with_arguments_goes_through_sh() {
+        let args = [OsString::from("+3"), OsString::from("a b.proto")];
+        let plain = choose_editor(None, os("nano"), || false);
+        assert_eq!(argv(&plain.command(&args)), ["nano", "+3", "a b.proto"]);
+        assert_eq!(plain.program(), "nano");
+
+        let with_args = choose_editor(None, os("code --wait"), || false);
+        assert_eq!(
+            argv(&with_args.command(&args)),
+            [
+                "sh",
+                "-c",
+                "code --wait \"$@\"",
+                "code --wait",
+                "+3",
+                "a b.proto"
+            ]
+        );
+        assert_eq!(with_args.program(), "code");
+    }
+
+    /// The default editor is `nvim` only when `on_path` finds it (S1).
+    #[test]
+    fn on_path_finds_an_installed_program_and_not_a_missing_one() {
+        assert!(on_path("sh"), "sh is on every PATH the tests run under");
+        assert!(!on_path("protolens-test-no-such-program"));
+    }
+
+    #[test]
+    fn a_missing_editor_is_named_with_its_source() {
+        let e = choose_editor(os("subl -w"), None, || false);
+        assert_eq!(
+            e.not_found(),
+            "subl not found (from VISUAL): set VISUAL or EDITOR to your editor"
+        );
+        let e = choose_editor(None, None, || false);
+        assert_eq!(
+            e.not_found(),
+            "vi not found (the default): set VISUAL or EDITOR to your editor"
+        );
     }
 }

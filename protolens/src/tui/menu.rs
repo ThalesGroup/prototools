@@ -114,7 +114,7 @@ impl App {
         }
         items.push(MenuItem::plain("Wire bytes for this line", 'w'));
         items.push(MenuItem::plain("Wire bytes for this subtree", 'W'));
-        // `v` is Unix-only (it hands off to a Neovim), and it needs a
+        // `v` is Unix-only (it hands the terminal to an editor), and it needs a
         // name under the caret to jump to — the same test `v` itself
         // makes before it reports "no declaration to jump to here".
         #[cfg(unix)]
