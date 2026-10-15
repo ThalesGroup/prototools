@@ -8,7 +8,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "prototext-reproto"
-version = "0.3.3"
+version = "0.3.4"
 description = "Reconstruct .proto source files from compiled .pb descriptor sets"
 authors = [{ name = "Frederic Ruget", email = "fred@atlant.is" }]
 # What reproto imports, and nothing else (spec 0411 S3). The four from
@@ -24,10 +24,10 @@ dependencies = [
     "rich",
     # 0.22 takes a grammar as a capsule, as tree-sitter-textproto gives it.
     "tree-sitter>=0.22",
-    "fdp-scan>=0.3.3",
-    "prototext-codec>=0.3.3",
-    "prototext-graph>=0.3.3",
-    "tree-sitter-textproto>=0.3.3",
+    "fdp-scan>=0.3.4",
+    "prototext-codec>=0.3.4",
+    "prototext-graph>=0.3.4",
+    "tree-sitter-textproto>=0.3.4",
 ]
 
 [project.scripts]

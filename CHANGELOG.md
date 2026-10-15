@@ -6,7 +6,10 @@ SPDX-License-Identifier: MIT
 
 # Changelog
 
-## 0.3.4 — unreleased
+## 0.3.4 — 2026-10-15
+
+protolens only: every other tool is unchanged, republished under the
+shared version.
 
 ### Changed
 

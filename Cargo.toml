@@ -50,19 +50,19 @@ exclude = [
 # pyproject.toml files cannot inherit it; nix/rust.nix fails evaluation when
 # one of them disagrees.
 [workspace.package]
-version    = "0.3.3"
+version    = "0.3.4"
 repository = "https://github.com/douzebis/prototools"
 
 [workspace.dependencies]
 # Internal crates, with the workspace version as their requirement (crates.io
 # needs one). Updated together with workspace.package.version at a release.
-prototext           = { path = "prototext", version = "0.3.3" }
-prototext-core      = { path = "prototext-core", version = "0.3.3", features = ["prost-bug-workaround"] }
-prototext-graph     = { path = "prototext-graph", version = "0.3.3" }
-prototext-schema    = { path = "prototext-schema", version = "0.3.3" }
-prototools-complete = { path = "prototools-complete", version = "0.3.3" }
-fdp-scan            = { path = "fdp-scan", version = "0.3.3" }
-tree-sitter-textproto = { path = "reproto/tree-sitter-textproto", version = "0.3.3" }
+prototext           = { path = "prototext", version = "0.3.4" }
+prototext-core      = { path = "prototext-core", version = "0.3.4", features = ["prost-bug-workaround"] }
+prototext-graph     = { path = "prototext-graph", version = "0.3.4" }
+prototext-schema    = { path = "prototext-schema", version = "0.3.4" }
+prototools-complete = { path = "prototools-complete", version = "0.3.4" }
+fdp-scan            = { path = "fdp-scan", version = "0.3.4" }
+tree-sitter-textproto = { path = "reproto/tree-sitter-textproto", version = "0.3.4" }
 
 [profile.release]
 codegen-units   = 1
