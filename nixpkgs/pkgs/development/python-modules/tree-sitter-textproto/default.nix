@@ -14,7 +14,7 @@ buildPythonPackage (finalAttrs: {
     owner = "douzebis";
     repo = "prototools";
     tag = "v${finalAttrs.version}";
-    hash = lib.fakeHash;
+    hash = "sha256-kM86xUE4yVaDTROjwwXAWh9J4lPVBTAbUfv1lHy+e+k=";
   };
 
   sourceRoot = "${finalAttrs.src.name}/reproto/tree-sitter-textproto";

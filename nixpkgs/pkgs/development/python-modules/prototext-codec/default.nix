@@ -16,12 +16,12 @@ buildPythonPackage (finalAttrs: {
     owner = "douzebis";
     repo = "prototools";
     tag = "v${finalAttrs.version}";
-    hash = lib.fakeHash;
+    hash = "sha256-kM86xUE4yVaDTROjwwXAWh9J4lPVBTAbUfv1lHy+e+k=";
   };
 
   cargoDeps = rustPlatform.fetchCargoVendor {
     inherit (finalAttrs) pname version src;
-    hash = lib.fakeHash;
+    hash = "sha256-XVwjHZGEEm5uCuXX9MPGuKmUg2zf5AdubQR0hz5fxwM=";
   };
 
   buildAndTestSubdir = "prototext-pyo3";

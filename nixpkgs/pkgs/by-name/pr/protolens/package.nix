@@ -19,10 +19,10 @@ rustPlatform.buildRustPackage (finalAttrs: {
     owner = "douzebis";
     repo = "prototools";
     tag = "v${finalAttrs.version}";
-    hash = lib.fakeHash;
+    hash = "sha256-kM86xUE4yVaDTROjwwXAWh9J4lPVBTAbUfv1lHy+e+k=";
   };
 
-  cargoHash = lib.fakeHash;
+  cargoHash = "sha256-XVwjHZGEEm5uCuXX9MPGuKmUg2zf5AdubQR0hz5fxwM=";
 
   # The crate is prototext-lens on crates.io; its program, protolens.
   cargoBuildFlags = [
