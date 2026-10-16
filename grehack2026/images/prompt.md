@@ -22,6 +22,6 @@ Image 5 (Alice): Alice alone at night, sitting cross-legged on a desk chair in a
 
 Image 6 (Alice, two technicians): Eve's server room from image 4, lights on. Two technicians in gloves carefully unplug Eve's server rack and attach a bright amber evidence tag to it. Alice stands nearby with her laptop, satisfied. Eve's chair is empty, her glasses left on the desk.
 
-Image 7 (Eve, Alice): Alice and Eve standing side by side, smiling at the viewer, like two presenters at the end of a lecture. Alice holds a slim wooden pointer stick like a teacher's, and both point down toward the bottom edge of the image. Keep the characters in the upper half of the frame, with an empty, dark lower half, as if pointing at something just below the picture.
+Image 7 (Eve, Alice): Alice and Eve standing side by side, smiling at the viewer, like two presenters at the end of a lecture. Alice holds a slim wooden pointer stick like a teacher's, and both point down toward the bottom edge of the image, as if pointing at something just below the picture.
 
 Image 8 (Bob, Eve, Alice): Alice, Bob and Eve standing together, smiling and waving goodbye to the viewer, as at the end of a show. A few green Game of Life cells float around them like confetti.
