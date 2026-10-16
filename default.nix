@@ -583,7 +583,7 @@ let
   grehack2026 = import ./nix/grehack2026.nix {
     inherit pkgs wktDb mkClosureCheck gitRevision grehackDemo grpconfTalk;
     life = grehackLife;
-    inherit (rust) prototext protolensLean;
+    inherit (rust) prototext protolens;
     inherit (python) reproto googleapisDb googleapisPbs;
     inherit (rust) protoscan;
   };
@@ -594,7 +594,7 @@ let
   demoShells = import ./nix/demo-shells.nix {
     inherit pkgs wktDb grehackDemo grpconfTalk;
     grehackRuntime = grehack2026.runtime;
-    inherit (rust) prototext protolensLean;
+    inherit (rust) prototext protolens;
     inherit (python) reproto;
     inherit (rust) protoscan;
   };
@@ -691,18 +691,8 @@ let
   stagedReprotoDir = ./nixpkgs/pkgs/by-name/re/reproto;
   stagedReproto = stagedReprotoDir + "/package.nix";
 
-  # protolens's recipe also installs its Neovim config, which no crate
-  # reads: in workspaceSrc, editing it would rebuild every Rust derivation.
-  stagedRustSrc = {
-    protolens = pkgs.lib.fileset.toSource {
-      root    = ./.;
-      fileset = pkgs.lib.fileset.union
-        (pkgs.lib.fileset.fromSource workspaceSrc) ./protolens/nvim/init.lua;
-    };
-  };
   stagedRustBuilds = builtins.mapAttrs
-    (name: file: stagedBuild (stagedRustSrc.${name} or workspaceSrc)
-      rust.workspaceVersion (pkgs.callPackage file { }))
+    (name: file: stagedBuild workspaceSrc rust.workspaceVersion (pkgs.callPackage file { }))
     stagedRust;
   # The pinned Python's package set, as nixpkgs passes python3Packages.
   stagedReprotoBuild = stagedBuild stagingSrc (rust.pyprojectVersion "reproto")
@@ -732,22 +722,6 @@ let
     if nextRelease != rust.workspaceVersion
     then builtins.compareVersions version nextRelease <= 0
     else version == rust.workspaceVersion;
-  # Spec 0410 S3: protolens's wrapper puts on PATH exactly what its two
-  # options ask for, and no PATH entry at all when neither is set. Checked
-  # on each combination's postInstall: building all four would be four Rust
-  # builds for one shell line, and nixpkgsStaging builds the default.
-  protolensWrapperFailures = pkgs.lib.concatMap ({ withNeovim, withBuf }:
-    let
-      postInstall = (pkgs.callPackage stagedRust.protolens { inherit withNeovim withBuf; }).postInstall;
-      # A comparison of text: the store paths' context is not wanted.
-      has = s: pkgs.lib.hasInfix (builtins.unsafeDiscardStringContext s)
-        (builtins.unsafeDiscardStringContext postInstall);
-      ok = has "${pkgs.neovim}/bin" == withNeovim
-        && has "${pkgs.buf}/bin" == withBuf
-        && has "--prefix PATH" == (withNeovim || withBuf);
-    in pkgs.lib.optional (!ok) "withNeovim=${pkgs.lib.boolToString withNeovim} withBuf=${pkgs.lib.boolToString withBuf}")
-    (pkgs.lib.cartesianProduct { withNeovim = [ false true ]; withBuf = [ false true ]; });
-
   nixpkgsStagingCheck = pkgs.runCommand "nixpkgs-staging-check" {
     strictDeps = true;
     nativeBuildInputs = [ pkgs.nixfmt ];
@@ -758,10 +732,7 @@ let
       echo "nixpkgs/: staged ${name} is ${version}, which does not fit" \
         "the workspace's ${rust.workspaceVersion} (equal at a release, at most ${nextRelease} during development)" >&2
       exit 1
-    '') stagedVersions) + pkgs.lib.concatMapStrings (combo: ''
-      echo "nixpkgs/: staged protolens with ${combo}: the wrapper's PATH is not what was asked" >&2
-      exit 1
-    '') protolensWrapperFailures + ''
+    '') stagedVersions) + ''
     touch $out
   '');
 

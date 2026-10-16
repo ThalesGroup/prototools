@@ -101,5 +101,10 @@ in
   # Spec 0403 S9: what both set.
   demoEnv = {
     PROTOTEXT_DESCRIPTOR_SET = "${wktDb}/share/prototools/wkt.desc";
+    # protolens's `v` opens $EDITOR (spec 0420): the demos' Neovim, with
+    # the demos' config through VIMINIT, which only Vim and Neovim read, so
+    # the presenter's other programs keep their own configuration (S8).
+    EDITOR  = "nvim";
+    VIMINIT = "source ${./demo-nvim/init.lua}";
   };
 }

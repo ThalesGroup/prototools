@@ -4,40 +4,25 @@
   rustPlatform,
   fetchFromGitHub,
   installShellFiles,
-  makeWrapper,
   versionCheckHook,
-  neovim,
-  buf,
 
   # passthru
   nix-update-script,
-
-  # The editor key opens the descriptor in Neovim, which protolens finds
-  # on PATH, and tells the user when it is missing. withNeovim puts one on
-  # the wrapper's PATH instead.
-  withNeovim ? false,
-  # buf's language server gives the editor go-to-definition, references and
-  # hover; without it the file opens, highlighted, without navigation.
-  withBuf ? false,
 }:
 
-let
-  # What the editor key needs on the wrapper's PATH: nothing by default.
-  editorPath = lib.optional withNeovim neovim ++ lib.optional withBuf buf;
-in
 rustPlatform.buildRustPackage (finalAttrs: {
   pname = "protolens";
-  version = "0.3.3";
+  version = "0.3.4";
   __structuredAttrs = true;
 
   src = fetchFromGitHub {
     owner = "douzebis";
     repo = "prototools";
     tag = "v${finalAttrs.version}";
-    hash = "sha256-SDgv/vrm7mJs1fjKPsn5zrp9s7rDj3W5qPdNt5OU/PE=";
+    hash = "sha256-kM86xUE4yVaDTROjwwXAWh9J4lPVBTAbUfv1lHy+e+k=";
   };
 
-  cargoHash = "sha256-DXbYSztud6x+xWDM2dgwkHr88p1MtBR+122Jxe8axls=";
+  cargoHash = "sha256-XVwjHZGEEm5uCuXX9MPGuKmUg2zf5AdubQR0hz5fxwM=";
 
   # The crate is prototext-lens on crates.io; its program, protolens.
   cargoBuildFlags = [
@@ -49,28 +34,15 @@ rustPlatform.buildRustPackage (finalAttrs: {
     "prototext-lens"
   ];
 
-  nativeBuildInputs = [
-    installShellFiles
-    makeWrapper
-  ];
+  nativeBuildInputs = [ installShellFiles ];
 
-  postInstall =
-    lib.optionalString (stdenv.buildPlatform.canExecute stdenv.hostPlatform) ''
-      installShellCompletion --cmd protolens \
-        --bash <(PROTOLENS_COMPLETE=bash $out/bin/protolens) \
-        --zsh <(PROTOLENS_COMPLETE=zsh $out/bin/protolens) \
-        --fish <(PROTOLENS_COMPLETE=fish $out/bin/protolens)
-      PROTOLENS_GEN_MAN=$out/share/man/man1 $out/bin/protolens
-    ''
-    + ''
-      install -Dm444 protolens/nvim/init.lua $out/share/protolens/nvim/init.lua
-      wrapProgram $out/bin/protolens \
-        --set PROTOLENS_NVIM_CONFIG $out/share/protolens/nvim/init.lua ${
-          # No --prefix when empty: an empty PATH entry means the
-          # current directory.
-          lib.optionalString (editorPath != [ ]) "--prefix PATH : ${lib.makeBinPath editorPath}"
-        }
-    '';
+  postInstall = lib.optionalString (stdenv.buildPlatform.canExecute stdenv.hostPlatform) ''
+    installShellCompletion --cmd protolens \
+      --bash <(PROTOLENS_COMPLETE=bash $out/bin/protolens) \
+      --zsh <(PROTOLENS_COMPLETE=zsh $out/bin/protolens) \
+      --fish <(PROTOLENS_COMPLETE=fish $out/bin/protolens)
+    PROTOLENS_GEN_MAN=$out/share/man/man1 $out/bin/protolens
+  '';
 
   nativeInstallCheckInputs = [ versionCheckHook ];
   doInstallCheck = true;

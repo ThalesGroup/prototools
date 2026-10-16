@@ -8,6 +8,27 @@ SPDX-License-Identifier: MIT
 
 ## [Unreleased]
 
+## 0.3.4 — 2026-10-15
+
+protolens only: every other tool is unchanged, republished under the
+shared version.
+
+### Changed
+
+- **protolens's editor key opens your editor** (spec 0420): `VISUAL`,
+  then `EDITOR`, then `nvim` if installed, else `vi`, run as git runs
+  it, with your own configuration. Neovim is reused across presses and
+  positioned at the line and column, as before; Vim at the line and
+  column; any other editor at the line. A Ctrl-C in the editor no longer
+  ends protolens.
+
+### Removed
+
+- protolens's bundled Neovim configuration and `PROTOLENS_NVIM_CONFIG`:
+  protolens no longer replaces your Neovim configuration with its own.
+  Language support for `.proto` files is your editor setup's, as for any
+  other file. The Nix package bundles no Neovim or buf.
+
 ## 0.3.3 — 2026-10-12
 
 ### Added

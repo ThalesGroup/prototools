@@ -8,7 +8,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name            = "tree-sitter-textproto"
-version         = "0.3.4.dev0"
+version         = "0.3.5.dev0"
 description     = "The textproto tree-sitter grammar, for the Python tree_sitter library"
 requires-python = ">=3.8"
 # The parser is generated from Porter Matteo Haet's ISC grammar; the

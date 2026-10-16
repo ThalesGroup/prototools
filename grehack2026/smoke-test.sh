@@ -103,24 +103,21 @@ EOF
 
 # ── protolens's editor path, headless (S7) ───────────────────────────────────
 
-# Neovim with protolens's init.lua, listening on a socket in /tmp as
-# protolens starts it, opens a googleapis .proto and waits for `buf lsp
-# serve` to attach. The Neovim and buf protolens runs are on its wrapper's
-# PATH only, so they are read from the wrapper. Run also as a uid with no
-# passwd entry, as Docker on Linux does with --user (S8), so $HOME must be
-# writable for any uid.
+# The editor protolens opens is $EDITOR (spec 0420): the image's Neovim,
+# with the demos' config through VIMINIT, both set image-wide (S8). Started
+# as protolens starts it, listening on a socket in /tmp, it opens a
+# googleapis .proto and waits for `buf lsp serve` to attach. Run also as a
+# uid with no passwd entry, as Docker on Linux does with --user (S8), so
+# $HOME must be writable for any uid.
 editor_check=$(cat <<'EOF'
 set -e
-wrapper=$(cat /bin/protolens)
-nvim_bin=$(grep -o "/nix/store/[a-z0-9]*-neovim-[^/']*/bin" <<<"$wrapper" | head -1)
-buf_bin=$(grep -o "/nix/store/[a-z0-9]*-buf-[^/']*/bin" <<<"$wrapper" | head -1)
-config=$(grep -o "PROTOLENS_NVIM_CONFIG='[^']*'" <<<"$wrapper" | cut -d"'" -f2)
-[ -n "$nvim_bin" ] && [ -n "$buf_bin" ] && [ -n "$config" ] \
-  || { echo "cannot read Neovim, buf and init.lua from the wrapper"; exit 1; }
-export PATH=$buf_bin:$nvim_bin:$PATH
+[ "$EDITOR" = nvim ] || { echo "EDITOR is '$EDITOR', not nvim"; exit 1; }
+[ -n "$VIMINIT" ] || { echo "VIMINIT is not set"; exit 1; }
+command -v nvim >/dev/null && command -v buf >/dev/null \
+  || { echo "Neovim and buf are not both on PATH"; exit 1; }
 PROTOTEXT_PROTO_ROOT=$(dirname "$PROTOTEXT_GOOGLEAPIS_SET")/googleapis/proto
 export PROTOTEXT_PROTO_ROOT
-timeout 120 nvim --headless -u "$config" \
+timeout 120 nvim --headless \
   --listen /tmp/protolens-smoke.sock \
   "$PROTOTEXT_PROTO_ROOT/google/type/date.proto" \
   +'lua local ok = vim.wait(60000, function()

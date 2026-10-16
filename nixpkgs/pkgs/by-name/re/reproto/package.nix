@@ -39,7 +39,7 @@ python3Packages.buildPythonApplication (
   in
   {
     pname = "reproto";
-    version = "0.3.3";
+    version = "0.3.4";
     pyproject = true;
     __structuredAttrs = true;
 
@@ -47,7 +47,7 @@ python3Packages.buildPythonApplication (
       owner = "douzebis";
       repo = "prototools";
       tag = "v${finalAttrs.version}";
-      hash = "sha256-SDgv/vrm7mJs1fjKPsn5zrp9s7rDj3W5qPdNt5OU/PE=";
+      hash = "sha256-kM86xUE4yVaDTROjwwXAWh9J4lPVBTAbUfv1lHy+e+k=";
     };
 
     sourceRoot = "${finalAttrs.src.name}/reproto";
@@ -106,7 +106,7 @@ python3Packages.buildPythonApplication (
       # The libraries' vendored Cargo dependencies: the source's Cargo.lock.
       cargoDeps = rustPlatform.fetchCargoVendor {
         inherit (finalAttrs) pname version src;
-        hash = "sha256-DXbYSztud6x+xWDM2dgwkHr88p1MtBR+122Jxe8axls=";
+        hash = "sha256-XVwjHZGEEm5uCuXX9MPGuKmUg2zf5AdubQR0hz5fxwM=";
       };
       inherit libraries;
       # Only v-prefixed release tags

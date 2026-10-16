@@ -9,16 +9,16 @@
 # them under one reference (.github/workflows/workshop-image.yml).
 #
 # Attributes (exported from default.nix as `grehack2026.*`):
-#   runtime      — the tools, lean: prototext, protolens with a lean Neovim
-#                  and buf, reproto, protoscan, the WKT schema database, and
-#                  the game of life with its tap (spec 0375)
+#   runtime      — the tools: prototext, protolens, reproto, protoscan, the
+#                  WKT schema database, and the game of life with its tap
+#                  (spec 0375); the demos' tools bring Neovim and buf
 #   life         — life-server, life-client, life-tap (spec 0375)
 #   image        — a streamLayeredImage script: `./result | docker load`
 #   closureCheck — fails when a denied store path enters the image
 #   publishTools — skopeo and crane, for the CI workflow
 { pkgs
 , prototext
-, protolensLean
+, protolens
 , reproto
 , protoscan
 , life
@@ -35,7 +35,7 @@ let
   lib = pkgs.lib;
 
   # The tools the image carries (spec 0374 S2): the regular bundle's
-  # members, but protolens wrapped with the lean Neovim.
+  # members. Neovim and buf come with the demos' tools (spec 0420 S8).
   runtime = pkgs.symlinkJoin {
     name  = "prototools-runtime";
     # wireshark-cli on the participants' PATH too, not only on life-tap's:
@@ -46,7 +46,7 @@ let
     # through the covert channel. life-client carries its own wrapped copy;
     # putting it here lets a participant run `fortune` by hand and compare
     # with what the client sends back.
-    paths = [ prototext protolensLean reproto protoscan wktDb life pkgs.wireshark-cli pkgs.fortune ];
+    paths = [ prototext protolens reproto protoscan wktDb life pkgs.wireshark-cli pkgs.fortune ];
   };
 
   uid = 1000;
