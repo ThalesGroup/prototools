@@ -37,7 +37,8 @@ use anyhow::{bail, Context, Result};
 use prost::Message;
 use prost_reflect::{DescriptorPool, DynamicMessage, MapKey, MessageDescriptor, Value};
 use prototext_core::{
-    render_as_bytes, render_as_text, serialize::common::escape::escape_bytes, RenderOpts,
+    parse_schema, render_as_bytes, render_as_text, serialize::common::escape::escape_bytes,
+    RenderOpts,
 };
 
 use crate::request;
@@ -133,9 +134,16 @@ fn round_trip(
     descriptor: &MessageDescriptor,
     edit: impl FnOnce(&str) -> Result<String>,
 ) -> Result<Vec<u8>> {
+    // prototext reads schemas through upb (spec 0415), not prost-reflect:
+    // bobapp's pool goes over as the descriptor set it was built from.
+    let schema = parse_schema(
+        &descriptor.parent_pool().encode_to_vec(),
+        descriptor.full_name(),
+    )
+    .context("loading the schema into prototext")?;
     let text = render_as_text(
         bytes,
-        Some(descriptor),
+        schema.root_descriptor().as_ref(),
         RenderOpts {
             assume_binary: true,
             include_annotations: true,

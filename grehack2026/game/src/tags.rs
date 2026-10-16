@@ -18,9 +18,8 @@
 //! are `cells` (a `CellState` enum), `generation`, and the `Range` scalars.
 //! The length-delimited headers (`Grid`/`Row`/`Rules`) are skipped.
 
-use prototext_core::{
-    parse_schema, render_as_bytes, render_as_text, MessageDescriptor, ParsedSchema, RenderOpts,
-};
+use prototext_core::schema::Message;
+use prototext_core::{parse_schema, render_as_bytes, render_as_text, ParsedSchema, RenderOpts};
 
 /// The two message roots the value channel reads and writes: requests, from the
 /// server's decode and the client's encode; responses, the other way round
@@ -135,7 +134,7 @@ fn schema(root: &str) -> &'static ParsedSchema {
     parsed
 }
 
-fn root_descriptor(root: &str) -> Option<MessageDescriptor> {
+fn root_descriptor(root: &str) -> Option<Message> {
     schema(root).root_descriptor()
 }
 
