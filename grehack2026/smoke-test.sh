@@ -103,7 +103,7 @@ EOF
 
 # ── protolens's editor path, headless (S7) ───────────────────────────────────
 
-# The editor protolens opens is $EDITOR (spec 0420): the image's Neovim,
+# The editor protolens opens is $VISUAL (spec 0420): the image's Neovim,
 # with the demos' config through VIMINIT, both set image-wide (S8). Started
 # as protolens starts it, listening on a socket in /tmp, it opens a
 # googleapis .proto and waits for `buf lsp serve` to attach. Run also as a
@@ -111,6 +111,7 @@ EOF
 # $HOME must be writable for any uid.
 editor_check=$(cat <<'EOF'
 set -e
+[ "$VISUAL" = nvim ] || { echo "VISUAL is '$VISUAL', not nvim"; exit 1; }
 [ "$EDITOR" = nvim ] || { echo "EDITOR is '$EDITOR', not nvim"; exit 1; }
 [ -n "$VIMINIT" ] || { echo "VIMINIT is not set"; exit 1; }
 command -v nvim >/dev/null && command -v buf >/dev/null \

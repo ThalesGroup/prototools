@@ -101,10 +101,14 @@ in
   # Spec 0403 S9: what both set.
   demoEnv = {
     PROTOTEXT_DESCRIPTOR_SET = "${wktDb}/share/prototools/wkt.desc";
-    # protolens's `v` opens $EDITOR (spec 0420): the demos' Neovim, with
-    # the demos' config through VIMINIT, which only Vim and Neovim read, so
-    # the presenter's other programs keep their own configuration (S8).
+    # protolens's `v` opens $VISUAL, else $EDITOR (spec 0420): the demos'
+    # Neovim, with the demos' config through VIMINIT, which only Vim and
+    # Neovim read, so the presenter's other programs keep their own
+    # configuration (S8). VISUAL too: a presenter's own VISUAL would win
+    # over EDITOR. The config is Lua, which Vim cannot source, hence the
+    # guard: a Vim started in the demo shell ignores it.
+    VISUAL  = "nvim";
     EDITOR  = "nvim";
-    VIMINIT = "source ${./demo-nvim/init.lua}";
+    VIMINIT = "if has('nvim') | source ${./demo-nvim/init.lua} | endif";
   };
 }

@@ -116,15 +116,18 @@ workspace.
 - **S8. The demos** provide what the wrapper did:
   - the GreHack and GRPConf demos' `demoEnv` (exported by their native
     shells, `nix/demo-shells.nix`, and by the workshop image,
-    `nix/grehack2026.nix`) gain `EDITOR=nvim` and `VIMINIT` sourcing
-    `nix/demo-nvim/init.lua`; their tools already include `neovimLean`
+    `nix/grehack2026.nix`) gain `VISUAL=nvim`, `EDITOR=nvim` and `VIMINIT`
+    sourcing `nix/demo-nvim/init.lua`; their tools already include `neovimLean`
     and `bufLean`, and `protolensLean` gives way to `protolens`.
     `VIMINIT` rather than a session-wide `XDG_CONFIG_HOME`: only Vim and
     Neovim read it, so `gh`, git and other programs in a demo shell keep
     the presenter's own configuration. `neovimLean` sets no `VIMINIT` of
     its own (`wrapRc = false`). teleprompt's wrapper keeps its
     `XDG_CONFIG_HOME`, which `VIMINIT` takes precedence over for Neovim,
-    with the same file;
+    with the same file. `VISUAL` as well as `EDITOR`, since a
+    presenter's own `VISUAL` would otherwise win (S1); and `VIMINIT` is
+    `if has('nvim') | source … | endif`, since Vim reads `VIMINIT` too
+    and cannot source the Lua config;
   - the dev shell's `_hook_nvim` already writes the config and exports
     `XDG_CONFIG_HOME`; it gains `EDITOR=nvim` only if unset.
   - `grehack2026/smoke-test.sh` reads Neovim and buf from the image's
