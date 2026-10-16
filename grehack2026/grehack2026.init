@@ -23,14 +23,36 @@ _wrapped="$(dirname "${_client}")/.life-client-wrapped"
 rm -f "${_init_dir}/life-client"
 cp "${_client}" "${_init_dir}/life-client"
 chmod u+w "${_init_dir}/life-client"
+# Waits for any key. A key that sends several bytes (an arrow, a function
+# key) is drained whole, so it reaches neither the next wait nor the deck's
+# prompt.
+#
+# Ctrl-C quits here: teleprompt traps INT so that it only interrupts a slide's
+# command, which would make it a key like any other. Ctrl-Z is ignored: a
+# resumed wait would not redraw its screen. Both traps, and the terminal, are
+# put back as they were on the way out.
+_any_key() {
+    local tty_state int_trap tstp_trap
+    tty_state=$(stty -g </dev/tty)
+    int_trap=$(trap -p INT)
+    tstp_trap=$(trap -p TSTP)
+    trap 'stty "$tty_state" </dev/tty; exit 130' INT
+    trap '' TSTP
+    stty -icanon -echo min 1 time 0 </dev/tty
+    read -rn1 _ </dev/tty
+    while read -rn1 -t 0.05 _ </dev/tty; do :; done
+    stty "$tty_state" </dev/tty
+    if [[ -n "$int_trap" ]]; then eval "$int_trap"; else trap - INT; fi
+    if [[ -n "$tstp_trap" ]]; then eval "$tstp_trap"; else trap - TSTP; fi
+}
 # The waiting screen, up while the audience settles: the S3NS logo alone,
-# filling the screen, until Enter. chafa draws the SVG itself; s3ns.svg
+# filling the screen, until any key. chafa draws the SVG itself; s3ns.svg
 # carries explicit width and height for it, without which its loader draws
 # the logo clipped. One row is left for the cursor.
 clear
 chafa --align mid,mid -s "$(tput cols)x$(( $(tput lines) - 1 ))" \
     "${_init_dir}/images/s3ns.svg"
-read -rs _ </dev/tty
+_any_key
 clear
 unset _init_dir _client _wrapped
 
@@ -49,15 +71,16 @@ echo "
             https://github.com/ThalesGroup/prototools
 
 
-            Frédéric RUGET
-            fred@s3ns.io
+            Frédéric RUGET            fred@s3ns.io
+            Aloïs DE SOUZA-COROLLER   alois.desouza-coroller@s3ns.io
 
 [0m
 
 
 "
 
-# The title slide stays up until Enter too; then the deck starts on a clean
+# The title slide stays up until any key too; then the deck starts on a clean
 # screen.
-read -rs _ </dev/tty
+_any_key
+unset -f _any_key
 clear

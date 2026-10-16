@@ -280,6 +280,7 @@ clear && header "5. Takeaways" && picture images/takeaways.jpeg 22
 clear && picture images/goodbye.jpeg 22
 # \
 # https://github.com/ThalesGroup/prototools — pull requests welcome 🙂         \
+# https://search.nixos.org/packages?channel=unstable&query=prototext           \
 #                                                                              \
 # Thank you 👋                                                                 \
 
