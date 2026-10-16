@@ -435,7 +435,8 @@ fn run(
         if event::poll(wait)? {
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    if !on_key(key, game, &mut ui) {
+                    let keep_running = on_key(key, game, &mut ui);
+                    if !keep_running {
                         return Ok(());
                     }
                 }

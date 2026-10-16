@@ -131,8 +131,7 @@ impl Tracker {
         let stream = field(3)
             .split(',')
             .filter_map(|s| s.parse::<u32>().ok())
-            .filter(|&s| s != 0)
-            .next_back()
+            .rfind(|&s| s != 0)
             .unwrap_or(0);
         let dir = if dport == self.port {
             Dir::Request
