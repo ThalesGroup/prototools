@@ -1,21 +1,22 @@
-# One of the four libraries reproto needs, private to it (spec 0411 S6):
-# built from reproto's own source, at its version, so that one update moves
-# all five.
 {
   lib,
   buildPythonPackage,
   setuptools,
-  src,
-  version,
+  reproto,
 }:
 
 buildPythonPackage {
   pname = "tree-sitter-textproto";
-  inherit src version;
+  inherit (reproto) src version;
   pyproject = true;
   __structuredAttrs = true;
 
-  sourceRoot = "${src.name}/reproto/tree-sitter-textproto";
+  # nixpkgs-update: no auto update
+  # Built from reproto's source, at its version, with its vendored crates:
+  # reproto needs all four of these libraries at exactly its version, so
+  # they move with it, in reproto's update.
+
+  sourceRoot = "${reproto.src.name}/reproto/tree-sitter-textproto";
 
   build-system = [ setuptools ];
 

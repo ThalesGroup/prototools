@@ -1,22 +1,22 @@
-# One of the four libraries reproto needs, private to it (spec 0411 S6):
-# built from reproto's own source, at its version, with its vendored Cargo
-# dependencies, so that one update moves all five.
 {
   lib,
   buildPythonPackage,
   rustPlatform,
   protobuf,
   pytestCheckHook,
-  src,
-  version,
-  cargoDeps,
+  reproto,
 }:
 
 buildPythonPackage {
   pname = "fdp-scan";
-  inherit src version cargoDeps;
+  inherit (reproto) src version cargoDeps;
   pyproject = true;
   __structuredAttrs = true;
+
+  # nixpkgs-update: no auto update
+  # Built from reproto's source, at its version, with its vendored crates:
+  # reproto needs all four of these libraries at exactly its version, so
+  # they move with it, in reproto's update.
 
   buildAndTestSubdir = "fdp-scan-pyo3";
 

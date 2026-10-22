@@ -672,8 +672,8 @@ let
   # (for the version checks).
   #   prototext (PR 1), protoscan (PR 2, spec 0407 S8), protolens (PR 4,
   #   spec 0410 S4): Rust applications;
-  #   reproto, which builds its four libraries from its own source, at its
-  #   version, with its passthru.cargoDeps (PR 3, spec 0411 S6).
+  #   reproto (PR 3, spec 0411 S6), with the four python3Packages libraries
+  #   that take its source, version and passthru.cargoDeps.
   stagedBuild = src: version: drv: drv.overrideAttrs (old:
     let vendored = pkgs.rustPlatform.importCargoLock { lockFile = ./Cargo.lock; }; in
     { inherit src version; }
@@ -687,31 +687,43 @@ let
     protoscan = ./nixpkgs/pkgs/by-name/pr/protoscan/package.nix;
     protolens = ./nixpkgs/pkgs/by-name/pr/protolens/package.nix;
   };
-  # reproto's directory: package.nix and its four libraries' files.
-  stagedReprotoDir = ./nixpkgs/pkgs/by-name/re/reproto;
-  stagedReproto = stagedReprotoDir + "/package.nix";
+  stagedReproto = ./nixpkgs/pkgs/by-name/re/reproto/package.nix;
+  # The four libraries, python3Packages entries in nixpkgs, which take their
+  # source, version and vendored crates from reproto (spec 0411 S6).
+  stagedReprotoLibs = pkgs.lib.genAttrs
+    [ "fdp-scan" "prototext-codec" "prototext-graph" "tree-sitter-textproto" ]
+    (name: ./nixpkgs/pkgs/development/python-modules + "/${name}/default.nix");
 
   stagedRustBuilds = builtins.mapAttrs
     (name: file: stagedBuild workspaceSrc rust.workspaceVersion (pkgs.callPackage file { }))
     stagedRust;
-  # The pinned Python's package set, as nixpkgs passes python3Packages.
+  # The pinned Python's package set, as nixpkgs passes python3Packages, with
+  # the four libraries in it. They read the staged reproto, and reproto
+  # depends on them: a fixpoint, which laziness resolves as in nixpkgs, since
+  # reproto's source, version and vendored crates do not depend on them.
+  stagedPythonPkgs = pythonPkgs // builtins.mapAttrs
+    (_: file: pythonPkgs.callPackage file { reproto = stagedReprotoBuild; })
+    stagedReprotoLibs;
   stagedReprotoBuild = stagedBuild stagingSrc (rust.pyprojectVersion "reproto")
     (pkgs.callPackage stagedReproto {
-      python3Packages = pythonPkgs;
+      python3Packages = stagedPythonPkgs;
       prototext       = stagedRustBuilds.prototext;
     });
 
   nixpkgsStaging = pkgs.linkFarmFromDrvs "nixpkgs-staging"
-    (builtins.attrValues stagedRustBuilds ++ [ stagedReprotoBuild ]);
+    (builtins.attrValues stagedRustBuilds ++ [ stagedReprotoBuild ]
+      ++ map (name: stagedPythonPkgs.${name}) (builtins.attrNames stagedReprotoLibs));
 
   # Every staged file, and the version each declares (callPackage'd as
   # nixpkgs calls it).
-  stagedFiles = builtins.attrValues stagedRust
-    ++ map (name: stagedReprotoDir + "/${name}")
-      (builtins.attrNames (builtins.readDir stagedReprotoDir));
+  stagedFiles = builtins.attrValues stagedRust ++ [ stagedReproto ]
+    ++ builtins.attrValues stagedReprotoLibs;
   stagedVersions =
     builtins.mapAttrs (_: file: (pkgs.callPackage file { }).version) stagedRust
-    // { reproto = (pkgs.callPackage stagedReproto { inherit (rust) prototext; }).version; };
+    // { reproto = (pkgs.callPackage stagedReproto {
+           python3Packages = stagedPythonPkgs;
+           inherit (rust) prototext;
+         }).version; };
 
   # nixfmt, and the version rule: at a release every staged version equals
   # the workspace's; between releases the workspace carries X.Y.Z-dev, and a
