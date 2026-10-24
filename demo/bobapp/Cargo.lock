@@ -655,7 +655,7 @@ dependencies = [
 
 [[package]]
 name = "prototext-core"
-version = "0.3.5"
+version = "0.3.6-dev"
 dependencies = [
  "memchr",
  "prototext-upb",
@@ -665,7 +665,7 @@ dependencies = [
 
 [[package]]
 name = "prototext-upb"
-version = "0.3.5"
+version = "0.3.6-dev"
 dependencies = [
  "cc",
  "workspace-hack",
