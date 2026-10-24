@@ -30,11 +30,10 @@ or deleted.
 
 2. **`main` green**: `Nix` (`ci`) and `nixpkgs staging`, both jobs.
 
-3. **Stacked or not.** The `nixpkgs staging` run reports whether reproto
-   builds with nixos-unstable's own prototext ("Build reproto with the
-   pin's own prototext"). If it fails, reproto's tests need this release's
-   prototext: the nixpkgs PRs will be stacked, prototext's bump under
-   reproto's.
+3. **Stacked or not.** The `nixpkgs staging` run also builds reproto with
+   nixos-unstable's own prototext. If that fails, the run's page shows a
+   warning, "Stack the nixpkgs PRs": reproto's tests need this release's
+   prototext, so prototext's bump goes under reproto's.
 
 4. **New crates.** `scripts/check-new-crates`. A crate crates.io does not
    have yet will stop the publish workflow before any upload; it is

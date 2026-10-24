@@ -75,8 +75,10 @@ jobs:
       - name: Build the staged nixpkgs recipes
         run: nix-build -A nixpkgs-staging-unstable
 
-      # Reported, not enforced (spec 0423 S6): a failure says that the
-      # release needs prototext's nixpkgs bump under reproto's.
+      # Reported, not enforced (spec 0423 S6): a failure is a warning on
+      # the run's page, saying the release needs prototext's nixpkgs bump
+      # under reproto's.
       - name: Build reproto with the pin's own prototext
-        continue-on-error: true
-        run: nix-build -A nixpkgs-staging-unstable-reproto-alone
+        run: >-
+          nix-build -A nixpkgs-staging-unstable-reproto-alone
+          || echo "::warning title=Stack the nixpkgs PRs::reproto's tests fail with nixos-unstable's own prototext: prototext's bump must go under reproto's (spec 0423 S6)"

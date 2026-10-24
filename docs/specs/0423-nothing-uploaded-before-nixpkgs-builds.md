@@ -118,7 +118,8 @@ release.
   - **Release.** The pin is moved by hand (`scripts/update-unstable-pin`,
     which writes `nix/unstable.json` from the current nixos-unstable)
     and pushed, so the push trigger checks the release against it.
-  - S6's target is reported, never enforced.
+  - S6's target is reported, never enforced: its failure is a warning
+    annotation on the run's page, not a red step.
 
 ### New crates (G4)
 
@@ -237,5 +238,9 @@ Implemented 2026-10-24, for v0.3.6.
   manual first publish moved from before the tag to the approval,
   which the first draft had wrong: before the tag, it would upload a
   crate ahead of the gate (G3).
-- **Plan 4, 5:** not yet; the workflows run once pushed, and v0.3.6 is
-  the procedure's first release.
+- **Plan 4:** on 15c9c69, `nixpkgs-unstable.yml`, run by hand, and the
+  new job of `nixpkgs-staging.yml` both passed: 293 reproto tests on
+  today's nixos-unstable and on the pin; `-reproto-alone` failed on the
+  editions test in both, as expected. That failure showed only in the
+  step's log under `continue-on-error`; it is now a warning annotation.
+- **Plan 5:** v0.3.6 is the procedure's first release.
