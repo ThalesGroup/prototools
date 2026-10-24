@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import collections.abc
+import importlib.resources
 import logging
 import os
 import sys
@@ -15,7 +16,13 @@ import click
 from . import version
 from .lib.console import rprint
 
-from click.shell_completion import CompletionItem
+from click.shell_completion import (
+    BashComplete,
+    CompletionItem,
+    FishComplete,
+    ZshComplete,
+    add_completion_class,
+)
 
 logger = logging.getLogger()  # root logger
 logger.setLevel(logging.INFO)
@@ -155,6 +162,37 @@ def complete_yaml_path(ctx: click.Context, param: click.Parameter, incomplete: s
 def complete_py_path(ctx: click.Context, param: click.Parameter, incomplete: str):
     '''Complete .py files and directories relative to cwd.'''
     return _complete_paths(incomplete, ['.'], suffixes=('.py',))
+
+
+# reproto's own completion scripts (spec 0422). The completers above answer
+# with two candidate types of their own, 'arg' and 'arg_I', which Click's
+# scripts drop; these classes print scripts that read them, under Click's
+# shell names, so `_REPROTO_COMPLETE=<shell>_source reproto` prints them.
+
+def _completion_script(name: str) -> str:
+    # Click prints a script with a newline of its own: leave out the file's.
+    text = importlib.resources.files('reproto').joinpath(name).read_text()
+    return text.removesuffix('\n')
+
+
+@add_completion_class
+class _BashComplete(BashComplete):
+    '''completions.sh, as is: it names reproto and its variable itself.'''
+
+    def source(self) -> str:
+        return _completion_script('completions.sh')
+
+
+@add_completion_class
+class _ZshComplete(ZshComplete):
+    def source(self) -> str:
+        return _completion_script('completions.zsh') % self.source_vars()
+
+
+@add_completion_class
+class _FishComplete(FishComplete):
+    def source(self) -> str:
+        return _completion_script('completions.fish') % self.source_vars()
 
 
 _USE_VARIANT_CHOICES = ('any', 'empty', 'timestamp', 'duration', 'struct',

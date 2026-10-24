@@ -81,3 +81,18 @@ path = [
 ]
 SPDX-FileCopyrightText = "Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)"
 SPDX-License-Identifier = "MIT"
+
+# reproto's zsh and fish completion scripts, derived from Click 8.3's own
+# (click/shell_completion.py) with reproto's candidate types added (spec
+# 0422). zsh reads `#compdef` on a script's first line, so the notice is
+# kept here rather than in a header.
+[[annotations]]
+path = [
+  "reproto/src/reproto/completions.zsh",
+  "reproto/src/reproto/completions.fish",
+]
+SPDX-FileCopyrightText = [
+  "2014 Pallets",
+  "Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)",
+]
+SPDX-License-Identifier = "MIT AND BSD-3-Clause"

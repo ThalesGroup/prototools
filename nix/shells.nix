@@ -546,8 +546,10 @@ LUAEOF
           source <(PROTOLENS_COMPLETE=bash protolens)
         fi
 
-        # bash completion for reproto (pre-built script, avoids slow click invocation)
-        eval "$(cat $PWD/reproto/src/reproto/completions.sh)"
+        # bash completion for reproto, as reproto prints it (spec 0422 S2)
+        if command -v reproto &>/dev/null; then
+          source <(_REPROTO_COMPLETE=bash_source reproto)
+        fi
 
         # bash completion for protoscan
         if command -v protoscan &>/dev/null; then

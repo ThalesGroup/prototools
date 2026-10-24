@@ -66,10 +66,11 @@ python3Packages.buildPythonApplication (finalAttrs: {
     tree-sitter-language-pack
   ]);
 
-  postInstall = ''
-    installShellCompletion --cmd reproto --bash src/reproto/completions.sh
-  ''
-  + lib.optionalString (stdenv.buildPlatform.canExecute stdenv.hostPlatform) ''
+  postInstall = lib.optionalString (stdenv.buildPlatform.canExecute stdenv.hostPlatform) ''
+    installShellCompletion --cmd reproto \
+      --bash <(_REPROTO_COMPLETE=bash_source $out/bin/reproto) \
+      --zsh <(_REPROTO_COMPLETE=zsh_source $out/bin/reproto) \
+      --fish <(_REPROTO_COMPLETE=fish_source $out/bin/reproto)
     REPROTO_GEN_MAN=$out/share/man/man1 $out/bin/reproto
   '';
 

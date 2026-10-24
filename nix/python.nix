@@ -175,11 +175,12 @@ let
     '';
     passthru.tests = { inherit reprotoTests; };
 
-    postInstall = ''
+    postInstall = whenRunnable ''
+      # reproto prints its own script for each shell (spec 0422).
       installShellCompletion --cmd reproto \
-        --bash ${reprotoSrc}/src/reproto/completions.sh
-
-    '' + whenRunnable ''
+        --bash <(_REPROTO_COMPLETE=bash_source $out/bin/reproto) \
+        --zsh <(_REPROTO_COMPLETE=zsh_source $out/bin/reproto) \
+        --fish <(_REPROTO_COMPLETE=fish_source $out/bin/reproto)
       # Generate and install the man pages (spec 0413 S2).
       REPROTO_GEN_MAN=$out/share/man/man1 $out/bin/reproto
     '';

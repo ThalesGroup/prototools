@@ -41,6 +41,7 @@ package-dir = { "" = "src" }
 where = ["src"]
 
 [tool.setuptools.package-data]
+"reproto" = ["completions.sh", "completions.zsh", "completions.fish"]
 "reproto.variants" = ["*.yaml", "**/*.pb"]
 
 [tool.pytest.ini_options]

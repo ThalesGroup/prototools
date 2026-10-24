@@ -132,8 +132,10 @@ def _render(cmd: click.Command) -> str:
     buf.append(r'.TP')
     buf.append(r'\fB_REPROTO_COMPLETE\fR')
     buf.append(
-        r'When set to \fBbash_complete\fR, emit shell completion candidates and exit.'
-        '\nUsed internally by the bash completion script.'
+        r'When set to \fBbash_source\fR, \fBzsh_source\fR or \fBfish_source\fR,'
+        '\nprint the completion script for that shell and exit. The scripts'
+        r' set it to \fBbash_complete\fR, \fBzsh_complete\fR or'
+        r' \fBfish_complete\fR to get the candidates.'
     )
 
     buf.append(r'.SH NOTES')
@@ -180,10 +182,14 @@ def _render(cmd: click.Command) -> str:
     buf.append(r'.nf')
     buf.append(r'reproto \-\-use\-variant descriptor \-I . \-O out/ phone_number.pb address_book.pb')
     buf.append(r'.fi')
-    buf.append(r'.SS Enable bash completion')
+    buf.append(r'.SS Enable shell completion')
+    buf.append(r'.PP')
+    buf.append(r'Packages usually install the scripts. Otherwise, in bash, zsh or fish:')
     buf.append(r'.PP')
     buf.append(r'.nf')
-    buf.append(r'source <(cat /path/to/reproto/completions.sh)')
+    buf.append(r'source <(_REPROTO_COMPLETE=bash_source reproto)')
+    buf.append(r'source <(_REPROTO_COMPLETE=zsh_source reproto)')
+    buf.append(r'_REPROTO_COMPLETE=fish_source reproto | source')
     buf.append(r'.fi')
 
     buf.append(r'.SH SEE ALSO')

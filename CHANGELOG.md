@@ -8,6 +8,14 @@ SPDX-License-Identifier: MIT
 
 ## [Unreleased]
 
+### Added
+
+- **reproto completes in zsh and fish**, as in bash (spec 0422): the
+  descriptor files relative to `-I` and an `-I` blob's members included.
+  reproto prints each shell's script, `_REPROTO_COMPLETE=bash_source`
+  (or `zsh_source`, `fish_source`), so a pip install has them too; the
+  Nix packages install all three.
+
 ### Changed
 
 - **prototext and protolens read schemas through upb**, Google's C

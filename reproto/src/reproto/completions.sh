@@ -82,9 +82,7 @@ _reproto_completion() {
     done
     cword=$new_cword
 
-    #echo "-> cword=$cword comp_words_str=$comp_words_str" >> /tmp/aaa
     response="$(env COMP_WORDS="$comp_words_str" COMP_CWORD=$cword _REPROTO_COMPLETE=bash_complete $1)"
-    #echo "<- $response" >> /tmp/aaa
 
     local has_arg=false
     local has_arg_I=false
@@ -137,7 +135,6 @@ _reproto_completion() {
         done
         $has_dir_I && compopt -o nospace
     fi
-    #echo "<-- ${COMPREPLY[@]}" >> /tmp/aaa
 
     return 0
 }
