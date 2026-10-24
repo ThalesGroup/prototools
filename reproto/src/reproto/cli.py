@@ -464,25 +464,24 @@ class _SectionedCommand(click.Command):
          'Without this flag, output syntax matches the input (polyglot mode).',
 )
 
-# Note: --schema-db-out forces --force-proto2-for-editions unconditionally
-# because prost-reflect does not yet support editions syntax in compiled graphs.
-# See upstream issue #1347.
 @click.option(
     '--force-proto2-for-editions',
     is_flag=True,
     default=False,
     help=(
         'Translate editions-syntax files to proto2 in output and binary '
-        'descriptors. Symmetric with --force-proto2-output but limited to '
-        'editions files only. --schema-db-out forces this unconditionally.'
+        'descriptors, the schema DB included. Symmetric with '
+        '--force-proto2-output but limited to editions files only. Use this '
+        'for readers that do not support editions, such as prost-reflect.'
     ),
 )
+# Kept for scripts that feed prost-reflect (spec 0421 S3).
 @click.option(
     '--prost-workaround',
     is_flag=True,
     default=False,
     hidden=True,
-    help='Deprecated alias for --force-proto2-for-editions.',
+    help='Alias for --force-proto2-for-editions.',
 )
 
 @click.option(

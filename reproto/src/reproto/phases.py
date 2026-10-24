@@ -45,12 +45,6 @@ from .topology import File, ReFile, Topology
 
 logger = logging.getLogger(__name__)
 
-# EDITIONS_COMPAT_REQUIRED: set to False once prost-reflect supports editions
-# syntax natively (upstream PR pending).  While True, _phase_build_schema_db
-# forces editions files to proto2 output unconditionally so that the emitted
-# descriptor.desc is consumable by prost-reflect.
-EDITIONS_COMPAT_REQUIRED = True
-
 
 class DescriptorProtoMissingError(Exception):
     """Raised when 'descriptor.proto' is missing."""
@@ -1426,21 +1420,14 @@ def _phase7_output(ctx: Context, out_repo: Path) -> None:
             need_render = not ctx.dry_run or ctx.binary or bool(ctx.build_schema_db)
             if need_render:
                 from .context import DescOut
-                from .syntax import fdp_syntax
 
                 need_slot = ctx.binary or bool(ctx.build_schema_db)
-                # For schema-db: temporarily force proto2 for editions files.
-                saved_force = ctx.force_proto2_for_editions
-                if ctx.build_schema_db and EDITIONS_COMPAT_REQUIRED:
-                    if fdp_syntax(re_fdp.this) == "editions":
-                        ctx.force_proto2_for_editions = True
                 slot = DescOut() if need_slot else None
                 ctx.out_desc = slot
                 try:
                     content = re_fdp.render(ctx)[0].flush(ctx)
                 except (KeyError, ValueError, TypeError, AttributeError) as e:
                     ctx.out_desc = None
-                    ctx.force_proto2_for_editions = saved_force
                     from .lib.warnings import get_collector
                     from .anomalies import _classify_exc
                     clean_msg, w4, w5 = _classify_exc(str(e))
@@ -1455,7 +1442,6 @@ def _phase7_output(ctx: Context, out_repo: Path) -> None:
                     advance()
                     continue
                 ctx.out_desc = None
-                ctx.force_proto2_for_editions = saved_force
 
                 # Write binary (.pb) if requested (skipped in dry-run mode)
                 if ctx.binary and not ctx.dry_run and not suppress_disk_output and slot is not None and slot.out is not None:
@@ -1529,7 +1515,6 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
     # Runs before the scoring-graph collection below so hopcroft.rkyv's file
     # coverage matches .desc's exactly, WKT promotion included (spec 0166 G2).
     from .context import DescOut as _DescOut
-    from .syntax import fdp_syntax as _fdp_syntax
 
     def _promote_subtree(node: Node) -> None:
         """Promote node and all contains-descendants to summoned+reachable."""
@@ -1545,9 +1530,6 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
         for extra_node in ctx.schema_db_extra_nodes:
             advance()
             _promote_subtree(extra_node)
-            saved_force = ctx.force_proto2_for_editions
-            if EDITIONS_COMPAT_REQUIRED and _fdp_syntax(extra_node.this) == "editions":
-                ctx.force_proto2_for_editions = True
             slot = _DescOut()
             ctx.out_desc = slot
             try:
@@ -1556,7 +1538,6 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
                 pass
             finally:
                 ctx.out_desc = None
-                ctx.force_proto2_for_editions = saved_force
             if slot.out is not None:
                 assert isinstance(slot.out, FileDescriptorProto)
                 ctx.schema_db_fdps.append(slot.out)

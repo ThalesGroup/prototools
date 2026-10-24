@@ -8,6 +8,31 @@ SPDX-License-Identifier: MIT
 
 ## [Unreleased]
 
+### Changed
+
+- **prototext and protolens read schemas through upb**, Google's C
+  protobuf runtime, instead of prost-reflect (specs 0415, 0417):
+  editions schemas load, where prost-reflect panicked on them. A schema
+  file that cannot be loaded is skipped and reported, instead of ending
+  the run. protoscan reads descriptor names without prost (spec 0418);
+  no tool depends on prost any more. Outputs are byte-identical on our
+  golden corpora; protolens starts 4 times faster on googleapis, in a
+  quarter of the memory.
+- **A schema database keeps editions files as editions** (spec 0421),
+  and so do the `.proto` files written beside it. `--schema-db-out`
+  converted them to proto2, which cannot express every editions
+  feature: a delimited message field that is not a group decoded as a
+  type mismatch. prototext and protolens 0.3.4 and older, on
+  prost-reflect, panic loading such a database: to build one for them,
+  pass `--force-proto2-for-editions`, as for any reader without
+  editions support, such as prost-reflect.
+
+### Fixed
+
+- A group's header is named by its type only when protoc does so
+  (spec 0415): an editions delimited field that is not group-like goes
+  by its own name, as in protoc's text format.
+
 ## 0.3.4 — 2026-10-15
 
 protolens only: every other tool is unchanged, republished under the
