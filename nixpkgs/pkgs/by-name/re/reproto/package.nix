@@ -16,7 +16,7 @@
 
 python3Packages.buildPythonApplication (finalAttrs: {
   pname = "reproto";
-  version = "0.3.5";
+  version = "0.3.6";
   pyproject = true;
   __structuredAttrs = true;
 

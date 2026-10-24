@@ -8,6 +8,8 @@ SPDX-License-Identifier: MIT
 
 ## [Unreleased]
 
+## 0.3.6 — 2026-10-24
+
 ### Fixed
 
 - reproto's completion scripts are printed as they are, whatever Click
