@@ -8,6 +8,8 @@ SPDX-License-Identifier: MIT
 
 ## [Unreleased]
 
+## 0.3.5 — 2026-10-24
+
 ### Added
 
 - **reproto completes in zsh and fish**, as in bash (spec 0422): the
