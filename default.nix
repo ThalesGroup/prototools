@@ -29,6 +29,15 @@
 # label (spec 0374 S5). CI passes `--argstr gitRevision "$GITHUB_SHA"`; a local
 # build leaves it out, and the image has no revision label.
 , gitRevision ? null
+# The nixpkgs the staged recipes are also checked against, as the nixpkgs
+# PRs build (spec 0423 S4): the nixos-unstable pin of nix/unstable.json,
+# moved by scripts/update-unstable-pin. The weekly check passes the
+# channel's current tarball instead (S7).
+, unstable ? (let pin = builtins.fromJSON (builtins.readFile ./nix/unstable.json); in
+    fetchTarball {
+      url = "https://github.com/NixOS/nixpkgs/archive/${pin.rev}.tar.gz";
+      inherit (pin) sha256;
+    })
 }:
 
 let
@@ -674,14 +683,6 @@ let
   #   spec 0410 S4): Rust applications;
   #   reproto (PR 3, spec 0411 S6), with the four python3Packages libraries
   #   that take its source, version and passthru.cargoDeps.
-  stagedBuild = src: version: drv: drv.overrideAttrs (old:
-    let vendored = pkgs.rustPlatform.importCargoLock { lockFile = ./Cargo.lock; }; in
-    { inherit src version; }
-    // pkgs.lib.optionalAttrs (old ? cargoDeps) { cargoDeps = vendored; }
-    // pkgs.lib.optionalAttrs (old ? passthru.cargoDeps) {
-      passthru = old.passthru // { cargoDeps = vendored; };
-    });
-
   stagedRust = {
     prototext = ./nixpkgs/pkgs/by-name/pr/prototext/package.nix;
     protoscan = ./nixpkgs/pkgs/by-name/pr/protoscan/package.nix;
@@ -694,25 +695,61 @@ let
     [ "fdp-scan" "prototext-codec" "prototext-graph" "tree-sitter-textproto" ]
     (name: ./nixpkgs/pkgs/development/python-modules + "/${name}/default.nix");
 
-  stagedRustBuilds = builtins.mapAttrs
-    (name: file: stagedBuild workspaceSrc rust.workspaceVersion (pkgs.callPackage file { }))
-    stagedRust;
-  # The pinned Python's package set, as nixpkgs passes python3Packages, with
-  # the four libraries in it. They read the staged reproto, and reproto
-  # depends on them: a fixpoint, which laziness resolves as in nixpkgs, since
-  # reproto's source, version and vendored crates do not depend on them.
-  stagedPythonPkgs = pythonPkgs // builtins.mapAttrs
-    (_: file: pythonPkgs.callPackage file { reproto = stagedReprotoBuild; })
-    stagedReprotoLibs;
-  stagedReprotoBuild = stagedBuild stagingSrc (rust.pyprojectVersion "reproto")
-    (pkgs.callPackage stagedReproto {
-      python3Packages = stagedPythonPkgs;
-      prototext       = stagedRustBuilds.prototext;
-    });
+  # The staged recipes built with a given nixpkgs and Python package set:
+  # the main pin's for nixpkgs-staging, the unstable pin's for
+  # nixpkgs-staging-unstable (spec 0423 S5).
+  mkStaging = sp: py:
+    let
+      stagedBuild = src: version: drv: drv.overrideAttrs (old:
+        let vendored = sp.rustPlatform.importCargoLock { lockFile = ./Cargo.lock; }; in
+        { inherit src version; }
+        // sp.lib.optionalAttrs (old ? cargoDeps) { cargoDeps = vendored; }
+        // sp.lib.optionalAttrs (old ? passthru.cargoDeps) {
+          passthru = old.passthru // { cargoDeps = vendored; };
+        });
+      rustBuilds = builtins.mapAttrs
+        (name: file: stagedBuild workspaceSrc rust.workspaceVersion (sp.callPackage file { }))
+        stagedRust;
+      # reproto, with the given prototext for its tests, and the Python
+      # package set, as nixpkgs passes python3Packages, with the four
+      # libraries in it. They read reproto, and reproto depends on them: a
+      # fixpoint, which laziness resolves as in nixpkgs, since reproto's
+      # source, version and vendored crates do not depend on them.
+      withPrototext = prototext:
+        let
+          pythonPkgs = py // builtins.mapAttrs
+            (_: file: py.callPackage file { inherit reproto; })
+            stagedReprotoLibs;
+          reproto = stagedBuild stagingSrc (rust.pyprojectVersion "reproto")
+            (sp.callPackage stagedReproto {
+              python3Packages = pythonPkgs;
+              inherit prototext;
+            });
+        in { inherit pythonPkgs reproto; };
+      # The staged prototext, as stacked PRs give it to reproto's tests.
+      staged = withPrototext rustBuilds.prototext;
+    in {
+      inherit rustBuilds;
+      inherit (staged) pythonPkgs reproto;
+      farm = name: sp.linkFarmFromDrvs name
+        (builtins.attrValues rustBuilds ++ [ staged.reproto ]
+          ++ map (lib: staged.pythonPkgs.${lib}) (builtins.attrNames stagedReprotoLibs));
+      # reproto with that nixpkgs' own prototext, as a reproto-only PR
+      # builds (spec 0423 S6): its failure says the PRs must be stacked.
+      reprotoAlone = (withPrototext sp.prototext).reproto;
+    };
 
-  nixpkgsStaging = pkgs.linkFarmFromDrvs "nixpkgs-staging"
-    (builtins.attrValues stagedRustBuilds ++ [ stagedReprotoBuild ]
-      ++ map (name: stagedPythonPkgs.${name}) (builtins.attrNames stagedReprotoLibs));
+  staging = mkStaging pkgs pythonPkgs;
+  stagedRustBuilds   = staging.rustBuilds;
+  stagedPythonPkgs   = staging.pythonPkgs;
+  stagedReprotoBuild = staging.reproto;
+  nixpkgsStaging     = staging.farm "nixpkgs-staging";
+
+  # Against the nixos-unstable pin, with its default Python, as nixpkgs
+  # builds the PRs (spec 0423 S4, S5).
+  unstablePkgs = import unstable { };
+  stagingUnstable = mkStaging unstablePkgs unstablePkgs.python3Packages;
+  nixpkgsStagingUnstable = stagingUnstable.farm "nixpkgs-staging-unstable";
 
   # Every staged file, and the version each declares (callPackage'd as
   # nixpkgs calls it).
@@ -815,6 +852,8 @@ in
   prototext-fixtures   = prototextFixtures;
   nixpkgs-staging      = nixpkgsStaging;
   nixpkgs-staging-check = nixpkgsStagingCheck;
+  nixpkgs-staging-unstable = nixpkgsStagingUnstable;
+  nixpkgs-staging-unstable-reproto-alone = stagingUnstable.reprotoAlone;
   prototext-fixtures-check = prototextFixturesCheck;
   protoscan            = rust.protoscan;
   fdp-scan-lib         = rust.fdpScanLib;

@@ -170,9 +170,9 @@ def complete_py_path(ctx: click.Context, param: click.Parameter, incomplete: str
 # shell names, so `_REPROTO_COMPLETE=<shell>_source reproto` prints them.
 
 def _completion_script(name: str) -> str:
-    # Click prints a script with a newline of its own: leave out the file's.
-    text = importlib.resources.files('reproto').joinpath(name).read_text()
-    return text.removesuffix('\n')
+    # As is: whether Click prints a newline after it varies across 8.x
+    # (spec 0423 S1).
+    return importlib.resources.files('reproto').joinpath(name).read_text()
 
 
 @add_completion_class

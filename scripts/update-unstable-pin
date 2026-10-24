@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+#
+# SPDX-License-Identifier: MIT
+
+# Move the nixos-unstable pin, nix/unstable.json, to the channel's current
+# revision (spec 0423 S7). Only the staged nixpkgs recipes are checked
+# against it (nixpkgs-staging-unstable); the main pin, in default.nix, is
+# not touched.
+#
+# Run from the repository root, with network access, before a release:
+# commit and push the result, and nixpkgs-staging.yml checks the staged
+# recipes against it.
+
+set -euo pipefail
+
+if [ ! -f default.nix ] || [ ! -d nix ]; then
+    echo "update-unstable-pin: run from the repository root" >&2
+    exit 1
+fi
+
+rev=$(git ls-remote https://github.com/NixOS/nixpkgs refs/heads/nixos-unstable | cut -f1)
+if [ -z "$rev" ]; then
+    echo "update-unstable-pin: no nixos-unstable branch found" >&2
+    exit 1
+fi
+url="https://github.com/NixOS/nixpkgs/archive/$rev.tar.gz"
+sha256=$(nix-prefetch-url --unpack "$url" 2>/dev/null)
+date=$(date -u +%Y-%m-%d)
+
+cat > nix/unstable.json <<EOF
+{
+  "comment": "nixos-unstable @ $date, for the staged nixpkgs recipes only (spec 0423 S4); moved by scripts/update-unstable-pin",
+  "rev": "$rev",
+  "sha256": "$sha256"
+}
+EOF
+echo "nix/unstable.json: nixos-unstable at $rev"

@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+#
+# SPDX-License-Identifier: MIT
+
+# Fail if a crate to publish does not exist on crates.io yet (spec 0423 S8).
+# Trusted publishing cannot create a crate: a new one is published once by
+# hand, when the release is approved, like the rest of it. The publish
+# workflow's `crates` job runs this before any upload (S9), so a release
+# with a new crate stops there, never halfway through its crates; run before
+# tagging, it says what that step will involve.
+#
+# Run from the repository root, with network access.
+
+set -euo pipefail
+
+if [ ! -f Cargo.toml ] || [ ! -d scripts ]; then
+    echo "check-new-crates: run from the repository root" >&2
+    exit 1
+fi
+
+source scripts/publishable-crates
+
+missing=()
+for crate in "${crates[@]}"; do
+    status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+        --user-agent "prototools check-new-crates (https://github.com/douzebis/prototools)" \
+        "https://crates.io/api/v1/crates/$crate")
+    case "$status" in
+        200) ;;
+        404) missing+=("$crate") ;;
+        *)
+            echo "check-new-crates: crates.io answered $status for $crate" >&2
+            exit 1
+            ;;
+    esac
+done
+
+if [ ${#missing[@]} -eq 0 ]; then
+    echo "check-new-crates: all ${#crates[@]} crates exist on crates.io"
+    exit 0
+fi
+
+for crate in "${missing[@]}"; do
+    cat >&2 <<EOF
+check-new-crates: $crate is not on crates.io yet, and trusted publishing
+cannot create it. When the release is approved (docs/releasing.md):
+
+  1. Publish it once by hand, from the tag, with a crates.io token scoped
+     to publish-new for $crate:
+       CARGO_REGISTRY_TOKEN=... cargo publish -p $crate --locked
+  2. On https://crates.io/crates/$crate/settings, add a trusted publisher:
+     GitHub, owner douzebis, repository prototools, workflow publish.yaml,
+     environment crates-io.
+  3. Re-run the publish workflow's failed jobs.
+
+EOF
+done
+exit 1

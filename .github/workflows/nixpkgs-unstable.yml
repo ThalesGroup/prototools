@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+#
+# SPDX-License-Identifier: MIT
+
+name: nixpkgs unstable drift
+
+# Spec 0423 S7: every week, the staged nixpkgs recipes against the current
+# nixos-unstable, not the pin. A failure is drift in nixpkgs (a dependency
+# moved), seen the week it happens rather than at a release; the pin, which
+# the push check uses, does not move until it is dealt with. It changes
+# nothing in the repository. GitHub mails a failed scheduled run to whoever
+# last changed the cron line below.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays, 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    name: Staged recipes on today's nixos-unstable
+    if: github.repository == 'douzebis/prototools'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+
+      - name: Enable Magic Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@v13
+        with:
+          use-flakehub: "disabled"
+
+      - name: Build the staged nixpkgs recipes
+        run: >-
+          nix-build -A nixpkgs-staging-unstable
+          --arg unstable 'fetchTarball "https://github.com/NixOS/nixpkgs/archive/nixos-unstable.tar.gz"'
+
+      # Reported, not enforced (spec 0423 S6).
+      - name: Build reproto with nixos-unstable's own prototext
+        continue-on-error: true
+        run: >-
+          nix-build -A nixpkgs-staging-unstable-reproto-alone
+          --arg unstable 'fetchTarball "https://github.com/NixOS/nixpkgs/archive/nixos-unstable.tar.gz"'

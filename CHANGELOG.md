@@ -8,6 +8,13 @@ SPDX-License-Identifier: MIT
 
 ## [Unreleased]
 
+### Fixed
+
+- reproto's completion scripts are printed as they are, whatever Click
+  8.x prints after them; with Click 8.4, a test of 0.3.5 failed on the
+  missing last newline, which made 0.3.5 fail to build in nixpkgs
+  (spec 0423).
+
 ## 0.3.5 — 2026-10-24
 
 ### Added

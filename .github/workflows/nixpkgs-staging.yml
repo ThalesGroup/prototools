@@ -10,6 +10,10 @@ name: nixpkgs staging
 # everyday Nix CI: when the recipes or the dependencies change, at every
 # release tag, and by hand. nixpkgs-staging-check (nixfmt, the version rule)
 # stays in ci.
+#
+# Spec 0423 S7: the same recipes against the nixos-unstable pin
+# (nix/unstable.json), as the nixpkgs PRs build, on Linux x86_64: the
+# pin makes it reproducible, so a failure is the pushed change's.
 
 on:
   push:
@@ -21,6 +25,7 @@ on:
       - "Cargo.lock"
       - "**/Cargo.toml"
       - "**/pyproject.toml"
+      - "nix/unstable.json"
       - ".github/workflows/nixpkgs-staging.yml"
     tags: ["v*"]
   workflow_dispatch:
@@ -51,3 +56,27 @@ jobs:
 
       - name: Build the staged nixpkgs recipes
         run: nix-build -A nixpkgs-staging -A nixpkgs-staging-check
+
+  staging-unstable:
+    name: Staged recipes on the nixos-unstable pin
+    if: github.repository == 'douzebis/prototools'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+
+      - name: Enable Magic Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@v13
+        with:
+          use-flakehub: "disabled"
+
+      - name: Build the staged nixpkgs recipes
+        run: nix-build -A nixpkgs-staging-unstable
+
+      # Reported, not enforced (spec 0423 S6): a failure says that the
+      # release needs prototext's nixpkgs bump under reproto's.
+      - name: Build reproto with the pin's own prototext
+        continue-on-error: true
+        run: nix-build -A nixpkgs-staging-unstable-reproto-alone

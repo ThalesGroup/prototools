@@ -156,7 +156,8 @@ source layout, and pip users still have no script.
 ## Test plan
 
 1. `test_completion_scripts.py`, each case in a fresh process:
-   `bash_source` prints `completions.sh` byte for byte; `zsh_source` and
+   `bash_source` prints `completions.sh`, trailing newlines aside (spec
+   0423 S2); `zsh_source` and
    `fish_source` print reproto's scripts, every placeholder filled;
    `reproto-instantiate-schema`'s are still Click's.
 2. In the same file: after `-I <dir>`, `zsh_complete` and
@@ -174,11 +175,11 @@ source layout, and pip users still have no script.
 
 Implemented 2026-10-24, for v0.3.5.
 
-- **S1–S4a** as specified. Two things the implementation added:
-  `--option=value` in zsh and fish (S3, S4), where Click's scripts
-  lose the option or complete nothing; and Click's echo adds a newline
-  of its own, so the scripts are printed without the file's last one,
-  and `bash_source` is `completions.sh` byte for byte.
+- **S1–S4a** as specified. The implementation added `--option=value`
+  in zsh and fish (S3, S4), where Click's scripts lose the option or
+  complete nothing. It also dropped each script's last newline, to make
+  up for the one Click 8.3 prints after it; Click 8.4 prints none, and
+  spec 0423 S1–S2 removed that, the scripts now being printed as is.
 - **Plan 1, 2:** `test_completion_scripts.py`, 4 tests, pass.
 - **Plan 3,** in zsh 5.9.1, fish 4.7.1 and bash 5.3, typed through tmux:
   the options with their help; `--proto-variant v` lists `variant.yaml`

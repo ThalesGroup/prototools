@@ -42,7 +42,10 @@ def _source(shell: str) -> str:
 
 
 def test_S2_bash_source_is_completions_sh() -> None:
-    assert _source("bash") == (_SCRIPTS / "completions.sh").read_text()
+    # Trailing newlines aside: Click 8.3 prints one after the script, 8.4
+    # none (spec 0423 S2).
+    script = (_SCRIPTS / "completions.sh").read_text()
+    assert _source("bash").rstrip("\n") == script.rstrip("\n")
 
 
 def test_S3_S4_zsh_and_fish_sources_are_reprotos() -> None:
