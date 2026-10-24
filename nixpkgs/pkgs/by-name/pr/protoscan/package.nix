@@ -19,10 +19,10 @@ rustPlatform.buildRustPackage (finalAttrs: {
     owner = "douzebis";
     repo = "prototools";
     tag = "v${finalAttrs.version}";
-    hash = "sha256-kM86xUE4yVaDTROjwwXAWh9J4lPVBTAbUfv1lHy+e+k=";
+    hash = "sha256-sydonITXlBAFLlZS8u/PzKIxJRVGLKJHI/HKzS5ZGz0=";
   };
 
-  cargoHash = "sha256-XVwjHZGEEm5uCuXX9MPGuKmUg2zf5AdubQR0hz5fxwM=";
+  cargoHash = "sha256-QHYJJwyae8n24As49Lrf4+OnxjHRUSLh17Mt5Re/wUA=";
 
   cargoBuildFlags = [
     "-p"
