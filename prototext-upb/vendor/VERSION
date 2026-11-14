@@ -1,5 +1,5 @@
 protobuf v36.2 (upb single-file build), from crates.io google-protobuf 0.36.2-release
-Refresh with scripts/update-upb <google-protobuf version>.
+Refresh with scripts/update-upb <google-protobuf version> <protobuf tag>.
 
 8b25b166318a224eaa6889321f09c4231ab1a5a69c9d907af5123d3ff68e9674  upb/upb.c  <- libupb/upb/upb.c
 e1012509f3c326edd597816e125e18b9d72a638cc8f2c01048af036f7e152b01  upb/upb.h  <- libupb/upb/upb.h
@@ -8,3 +8,5 @@ f564d1f3bb9e1a477a30e683c4d994a113fb6efcd98b51b6ae95cbe9ee4c936b  utf8_range/utf
 af1bc2e251d9146a8dddccc98dfd9a74c52aa0c296dc45167bb59e8959e3552d  utf8_range/utf8_range_sse.inc  <- libupb/third_party/utf8_range/utf8_range_sse.inc
 c0b3252ac67eaf8a36fa2daae286243aba8942b78875286c7bcc3f0421cf0312  utf8_range/utf8_range_neon.inc  <- libupb/third_party/utf8_range/utf8_range_neon.inc
 6e5e117324afd944dcf67f36cf329843bc1a92229a8cd9bb573d7a83130fea7d  LICENSE  <- LICENSE
+c96db5406336ebcc82523c1dfb122721986a1f43c4aaed45a4a4ad6996efacc2  descriptor.proto  <- protobuf v36.2 src/google/protobuf/descriptor.proto
+0b14708e61bc07be90de9aa5b044598dcf2445ef10de53ba918823d1e621e61e  descriptor.pb  <- protoc 36.2 --include_source_info descriptor.proto

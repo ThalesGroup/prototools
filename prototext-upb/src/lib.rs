@@ -21,6 +21,7 @@
 //! number on the pool a read lock.
 
 pub mod descriptor;
+pub mod descriptor_access;
 mod ffi;
 mod message;
 mod set;

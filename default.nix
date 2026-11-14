@@ -617,7 +617,7 @@ let
   #             Use: nix-build -A full-tests
   # ---------------------------------------------------------------------------
   ci = pkgs.linkFarmFromDrvs "ci" [
-    rust.rustFmt rust.rustClippy rust.rustTests
+    rust.rustFmt rust.rustClippy rust.rustTests rust.descriptorAccessCheck
     rust.prototext rust.protolens
     rust.prototextCodec rust.fdpScanLib rust.prototextGraphLib
     rust.protoscan python.reproto
@@ -637,7 +637,7 @@ let
   # ci-no-clippy — same as ci but without rustClippy.
   # Used on platforms where clippy is known to fail (e.g. macos-15-intel).
   ci-no-clippy = pkgs.linkFarmFromDrvs "ci-no-clippy" [
-    rust.rustFmt rust.rustTests
+    rust.rustFmt rust.rustTests rust.descriptorAccessCheck
     rust.prototext rust.protolens
     rust.prototextCodec rust.fdpScanLib rust.prototextGraphLib
     rust.protoscan python.reproto
@@ -821,6 +821,7 @@ in
   rust-fmt             = rust.rustFmt;
   rust-clippy          = rust.rustClippy;
   rust-tests           = rust.rustTests;
+  descriptor-access-check = rust.descriptorAccessCheck;
   prototext-codec      = rust.prototextCodec;
   reproto              = python.reproto;
   wkt-rkyv             = wktRkyv;

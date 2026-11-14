@@ -1,0 +1,33 @@
+// SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+//
+// SPDX-License-Identifier: MIT
+
+// A descriptor.proto of another package and of an older shape: a few
+// fields of four messages, as a variant may have them, for the accessor
+// tests (spec 0424 S6). What it lacks reads as absent. Compiled by:
+//
+//   protoc --descriptor_set_out=variant.pb variant.proto
+
+syntax = "proto2";
+
+package proto2;
+
+message FileDescriptorSet {
+  repeated FileDescriptorProto file = 1;
+}
+
+message FileDescriptorProto {
+  optional string name = 1;
+  optional string package = 2;
+  repeated DescriptorProto message_type = 4;
+}
+
+message DescriptorProto {
+  optional string name = 1;
+  repeated FieldDescriptorProto field = 2;
+}
+
+message FieldDescriptorProto {
+  optional string name = 1;
+  optional int32 number = 3;
+}

@@ -196,6 +196,23 @@ let
     # as it does here.
   });
 
+  # The committed prototext-upb/src/descriptor_access.rs is what
+  # vendor/descriptor.pb generates (spec 0424 S6): a stale file fails ci,
+  # as a stale pyo3 stub fails workspaceBuild. A check of the repository,
+  # not of the software: the test is #[ignore]d, so a downstream
+  # `cargo test` (nixpkgs' check phase, a crates.io user) skips it and
+  # needs no rustfmt. It runs here, with the toolchain's rustfmt, which
+  # lays the generated code out as rustFmt checks it.
+  descriptorAccessCheck = crane.cargoTest (protocArgs // {
+    src                = workspaceSrc;
+    pname              = "prototext-upb-descriptor-access";
+    CARGO_PROFILE      = "quick";
+    cargoArtifacts     = depsCacheTests;
+    cargoExtraArgs     = "-p prototext-upb --test descriptor_access";
+    cargoTestExtraArgs = "-- --ignored";
+    nativeBuildInputs  = protocArgs.nativeBuildInputs ++ [ pkgs.rustfmt ];
+  });
+
   # Common postInstall for both prototext variants.
   prototextPostInstall = whenRunnable ''
     # Install shell completions.
@@ -506,6 +523,7 @@ in {
     rustFmt
     rustClippy
     rustTests
+    descriptorAccessCheck
     workspaceBuild
     prototext
     protoscan

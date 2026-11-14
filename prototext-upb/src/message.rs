@@ -439,6 +439,24 @@ impl<'a> MessageRef<'a> {
         out
     }
 
+    /// The field with this number in the message's type, if that version
+    /// of the type has one.
+    pub fn field_by_number(&self, number: u32) -> Option<Field> {
+        self.def.get_field(number)
+    }
+
+    /// [`get`](Self::get) by field number: `None` when the message's type
+    /// has no such field (spec 0424 S6).
+    pub fn get_by_number(&self, number: u32) -> Option<Value<'a>> {
+        self.field_by_number(number).map(|f| self.get(&f))
+    }
+
+    /// [`has`](Self::has) by field number: false when the message's type
+    /// has no such field.
+    pub fn has_by_number(&self, number: u32) -> bool {
+        self.field_by_number(number).is_some_and(|f| self.has(&f))
+    }
+
     /// The message serialized: its fields in field-number order, then its
     /// extensions, then its unknown fields as they were decoded.
     pub fn encode(&self) -> Result<Vec<u8>, MessageError> {
@@ -699,6 +717,46 @@ impl MessageMut<'_> {
             arena: self.arena,
             _life: PhantomData,
         })
+    }
+
+    /// The field with this number in the message's type, or an error
+    /// naming it when that version of the type has none.
+    fn field_or_err(&self, number: u32) -> Result<Field, MessageError> {
+        self.def
+            .get_field(number)
+            .ok_or_else(|| MessageError(format!("{} has no field {number}", self.def.full_name())))
+    }
+
+    /// [`set`](Self::set) by field number.
+    pub fn set_by_number(&mut self, number: u32, value: Scalar<'_>) -> Result<(), MessageError> {
+        let f = self.field_or_err(number)?;
+        self.set(&f, value)
+    }
+
+    /// [`clear`](Self::clear) by field number; nothing to do when the
+    /// message's type has no such field.
+    pub fn clear_by_number(&mut self, number: u32) {
+        if let Some(f) = self.def.get_field(number) {
+            self.clear(&f);
+        }
+    }
+
+    /// [`message_mut`](Self::message_mut) by field number.
+    pub fn message_mut_by_number(&mut self, number: u32) -> Result<MessageMut<'_>, MessageError> {
+        let f = self.field_or_err(number)?;
+        self.message_mut(&f)
+    }
+
+    /// [`push`](Self::push) by field number.
+    pub fn push_by_number(&mut self, number: u32, value: Scalar<'_>) -> Result<(), MessageError> {
+        let f = self.field_or_err(number)?;
+        self.push(&f, value)
+    }
+
+    /// [`push_message`](Self::push_message) by field number.
+    pub fn push_message_by_number(&mut self, number: u32) -> Result<MessageMut<'_>, MessageError> {
+        let f = self.field_or_err(number)?;
+        self.push_message(&f)
     }
 
     /// Set the entry `key` of a map field whose values are scalars.

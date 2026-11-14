@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# Vendor upb, Google's C protobuf runtime, into prototext-upb/vendor (spec
+# 0415 S1), with the descriptor.proto it was generated from (spec 0424 S6).
+#
+# Usage: scripts/update-upb CRATE_VERSION PROTOBUF_TAG
+#   e.g. scripts/update-upb 0.36.2-release v36.2
+#
+#   CRATE_VERSION  a release of the google-protobuf crate on crates.io,
+#                  whose libupb/ holds upb's single-file build
+#   PROTOBUF_TAG   the protobuf release that build comes from; its
+#                  src/google/protobuf/descriptor.proto is fetched from
+#                  github.com/protocolbuffers/protobuf
+#
+# Environment:
+#   PROTOC  a protoc of that release (default `protoc`), to compile
+#           descriptor.proto into descriptor.pb: an older one may refuse
+#           the newer file. nixos-unstable has it as protobuf_<major>:
+#             nix-build --no-out-link -E '(import <nixpkgs-unstable> {}).protobuf_36'
+#
+# Writes vendor/upb/upb.{c,h}, vendor/utf8_range/*, vendor/LICENSE,
+# vendor/descriptor.proto, vendor/descriptor.pb and vendor/VERSION (the
+# SHA-256 of each and where it came from), then regenerates
+# prototext-upb/src/descriptor_access.rs from descriptor.pb. Run on the
+# version already vendored, it changes nothing: a check of the vendored
+# files.
+set -euo pipefail
+
+crate_version=${1:?usage: scripts/update-upb CRATE_VERSION PROTOBUF_TAG}
+tag=${2:?usage: scripts/update-upb CRATE_VERSION PROTOBUF_TAG}
+protoc=${PROTOC:-protoc}
+repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+vendor=$repo/prototext-upb/vendor
+
+have=$("$protoc" --version | sed -n 's/^libprotoc //p')
+if [[ $have != "${tag#v}" ]]; then
+    echo "update-upb: $protoc is libprotoc $have, not ${tag#v}; set PROTOC" >&2
+    exit 1
+fi
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+
+curl -sfL -A "prototools/update-upb" -o "$work/crate.tar.gz" \
+    "https://static.crates.io/crates/google-protobuf/google-protobuf-$crate_version.crate"
+tar xzf "$work/crate.tar.gz" -C "$work"
+src=$work/google-protobuf-$crate_version
+curl -sfL -A "prototools/update-upb" -o "$work/descriptor.proto" \
+    "https://raw.githubusercontent.com/protocolbuffers/protobuf/$tag/src/google/protobuf/descriptor.proto"
+
+# vendored path <- path in the crate
+files=(
+    "upb/upb.c libupb/upb/upb.c"
+    "upb/upb.h libupb/upb/upb.h"
+    "utf8_range/utf8_range.c libupb/third_party/utf8_range/utf8_range.c"
+    "utf8_range/utf8_range.h libupb/third_party/utf8_range/utf8_range.h"
+    "utf8_range/utf8_range_sse.inc libupb/third_party/utf8_range/utf8_range_sse.inc"
+    "utf8_range/utf8_range_neon.inc libupb/third_party/utf8_range/utf8_range_neon.inc"
+    "LICENSE LICENSE"
+)
+for entry in "${files[@]}"; do
+    read -r to from <<< "$entry"
+    mkdir -p "$(dirname "$vendor/$to")"
+    cp "$src/$from" "$vendor/$to"
+done
+cp "$work/descriptor.proto" "$vendor/descriptor.proto"
+# Under the name it has everywhere, google/protobuf/descriptor.proto, and
+# with its comments (--include_source_info): the generated accessors are
+# documented from them.
+mkdir -p "$work/include/google/protobuf"
+cp "$work/descriptor.proto" "$work/include/google/protobuf/descriptor.proto"
+"$protoc" -I "$work/include" --include_source_info \
+    --descriptor_set_out="$vendor/descriptor.pb" google/protobuf/descriptor.proto
+
+{
+    echo "protobuf $tag (upb single-file build), from crates.io google-protobuf $crate_version"
+    echo "Refresh with scripts/update-upb <google-protobuf version> <protobuf tag>."
+    echo
+    for entry in "${files[@]}"; do
+        read -r to from <<< "$entry"
+        echo "$(cd "$vendor" && sha256sum "$to" | cut -d' ' -f1)  $to  <- $from"
+    done
+    echo "$(cd "$vendor" && sha256sum descriptor.proto | cut -d' ' -f1)  descriptor.proto  <- protobuf $tag src/google/protobuf/descriptor.proto"
+    echo "$(cd "$vendor" && sha256sum descriptor.pb | cut -d' ' -f1)  descriptor.pb  <- protoc ${tag#v} --include_source_info descriptor.proto"
+} > "$vendor/VERSION"
+
+PROTOTEXT_UPB_REGENERATE=1 cargo test --profile quick -p prototext-upb \
+    --test descriptor_access --manifest-path "$repo/Cargo.toml" -q -- --ignored
+
+echo "upb $tag vendored; git diff shows what changed"
