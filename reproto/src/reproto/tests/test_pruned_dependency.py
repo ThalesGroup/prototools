@@ -183,3 +183,60 @@ def test_w1_loading_miss_appears_as_w5(tmp_path: Path) -> None:
     assert "missing file 'prune_base.proto'" not in result.stderr, (
         "W1 must not produce a separate line — it must merge into the W5 counter"
     )
+
+
+# ---------------------------------------------------------------------------
+# TC-R4  Stripping an import keeps the public and weak indices on their files
+# ---------------------------------------------------------------------------
+
+def _write_set(path: Path, *fdps: object) -> Path:
+    from google.protobuf.descriptor_pb2 import FileDescriptorSet
+    fds = FileDescriptorSet()
+    for fdp in fdps:
+        fds.file.add().CopyFrom(fdp)  # type: ignore[arg-type]
+    path.write_bytes(fds.SerializeToString())
+    return path
+
+
+def _file(name: str, message: str, deps: list[str] = []) -> object:
+    from google.protobuf.descriptor_pb2 import FileDescriptorProto
+    fdp = FileDescriptorProto(name=name, package="strip_test", syntax="proto2")
+    fdp.dependency.extend(deps)
+    fdp.message_type.add(name=message)
+    return fdp
+
+
+def test_stripped_import_keeps_public_and_weak_on_their_files(tmp_path: Path) -> None:
+    """An import stripped before the pool shifts the ones after it: the
+    public and weak indices must follow them (spec 0424 S1).
+
+    importer.proto imports missing.proto (never provided), then weak.proto
+    as weak, then public.proto as public. Stripping missing.proto moves
+    weak.proto to index 0 and public.proto to index 1.
+    """
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    importer = _file(
+        "importer.proto", "Importer",
+        ["missing.proto", "weak.proto", "public.proto"],
+    )
+    importer.weak_dependency.append(1)  # type: ignore[attr-defined]
+    importer.public_dependency.append(2)  # type: ignore[attr-defined]
+    pb = _write_set(
+        tmp_path / "set.pb",
+        _file("weak.proto", "Weak"),
+        _file("public.proto", "Public"),
+        importer,
+    )
+    empty_dir = tmp_path / "empty"
+    empty_dir.mkdir()
+
+    result = _run_reproto([pb], out_dir, include_dirs=[empty_dir])
+
+    assert result.returncode == 0, f"reproto crashed:\n{result.stderr}"
+    text = (out_dir / "importer.proto").read_text()
+    imports = [ln.strip() for ln in text.splitlines() if "import" in ln]
+    assert 'import weak "weak.proto";' in imports, text
+    assert 'import public "public.proto";' in imports, text
+    assert '///import "missing.proto";' in imports, text
+    assert not any(ln.startswith('import public "weak') for ln in imports), text

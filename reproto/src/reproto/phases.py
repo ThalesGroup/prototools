@@ -373,40 +373,46 @@ def _dump_resolved_features_yaml(ctx: Context, target_file: str) -> None:
     # file-level resolved and overrides
     file_resolved = _resolve(file_fs)
 
-    def _render_field(field_proto: FieldDescriptorProto, msg_fs: FeatureSet | None) -> dict:
+    # Features flow from the file through every enclosing message, outermost
+    # first, to the element (spec 0424 S1): `outer` is that chain.
+    def _render_field(field_proto: FieldDescriptorProto,
+                      outer: tuple[FeatureSet | None, ...]) -> dict:
         field_fs = field_proto.options.features if field_proto.options.HasField('features') else None
-        resolved = _resolve(file_fs, msg_fs, field_fs)
+        resolved = _resolve(file_fs, *outer, field_fs)
         return {
             "resolved":  _feat_dict(resolved),
             "overrides": _overrides_dict(field_fs),
         }
 
-    def _render_enum(enum_proto: EnumDescriptorProto) -> dict:
+    def _render_enum(enum_proto: EnumDescriptorProto,
+                     outer: tuple[FeatureSet | None, ...] = ()) -> dict:
         enum_fs = enum_proto.options.features if enum_proto.options.HasField('features') else None
-        resolved = _resolve(file_fs, enum_fs)
+        resolved = _resolve(file_fs, *outer, enum_fs)
         return {
             "resolved":  _feat_dict(resolved),
             "overrides": _overrides_dict(enum_fs),
         }
 
-    def _render_message(msg_proto: DescriptorProto) -> dict:
+    def _render_message(msg_proto: DescriptorProto,
+                        outer: tuple[FeatureSet | None, ...] = ()) -> dict:
         msg_fs = msg_proto.options.features if msg_proto.options.HasField('features') else None
-        resolved = _resolve(file_fs, msg_fs)
+        chain = (*outer, msg_fs)
+        resolved = _resolve(file_fs, *chain)
         entry: dict = {
             "resolved":  _feat_dict(resolved),
             "overrides": _overrides_dict(msg_fs),
         }
         if msg_proto.field:
             entry["fields"] = {
-                f.name: _render_field(f, msg_fs) for f in msg_proto.field
+                f.name: _render_field(f, chain) for f in msg_proto.field
             }
         if msg_proto.nested_type:
             entry["messages"] = {
-                m.name: _render_message(m) for m in msg_proto.nested_type
+                m.name: _render_message(m, chain) for m in msg_proto.nested_type
             }
         if msg_proto.enum_type:
             entry["enums"] = {
-                e.name: _render_enum(e) for e in msg_proto.enum_type
+                e.name: _render_enum(e, chain) for e in msg_proto.enum_type
             }
         return entry
 
@@ -670,12 +676,29 @@ def _strip_unresolvable_dependencies(
     if not to_strip:
         return
 
+    # public_dependency and weak_dependency are indices into dependency:
+    # removing an entry renumbers the ones after it (spec 0424 S1).
+    stripped = {i for i, _ in to_strip}
+    new_index: dict[int, int] = {}
+    kept: list[str] = []
+    for i, dep in enumerate(fdp.dependency):
+        if i not in stripped:
+            new_index[i] = len(kept)
+            kept.append(dep)
+    public = [new_index[i] for i in fdp.public_dependency if i in new_index]
+    weak = [new_index[i] for i in fdp.weak_dependency if i in new_index]
+    del fdp.dependency[:]
+    fdp.dependency.extend(kept)
+    del fdp.public_dependency[:]
+    fdp.public_dependency.extend(public)
+    del fdp.weak_dependency[:]
+    fdp.weak_dependency.extend(weak)
+
     for i, dep in reversed(to_strip):
-        if dep in public_indices:
+        if i in public_indices:
             topo_file.stripped_public_dependencies.append(dep)
         else:
             topo_file.stripped_dependencies.append(dep)
-        fdp.dependency.remove(dep)
         if dep in ctx.pruned_file_names:
             if not ctx.quiet:
                 collector.w3(

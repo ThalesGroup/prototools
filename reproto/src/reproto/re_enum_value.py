@@ -15,6 +15,7 @@ from google.protobuf.descriptor_pb2 import (
 from google.protobuf.message import Message
 
 from .context import Context
+from .option_messages import parse_options
 from .fake_types import parse_fqdn
 from .globals import ENUM
 from .text import Block, BlockLine
@@ -74,10 +75,9 @@ class ReEnumValueDescriptorProto:
 
         # Create a dynamic EnumValueOptions instance and parse
         # serialized data
-        evo_msg: Message = EvOClass()
-        evo_msg.ParseFromString(
-            enum_value_desc.GetOptions().SerializeToString()
-        )
+        evo_msg: Message = parse_options(
+            ctx, evo_desc, EvOClass,
+            enum_value_desc.GetOptions().SerializeToString())
 
         out = Block()
         prolog = BlockLine(f'{self.name} = {self.number}', depth)

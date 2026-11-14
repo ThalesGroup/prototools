@@ -11,6 +11,7 @@ from google.protobuf.message import Message
 
 
 from .context import Context
+from .option_messages import option_extensions
 from .field_descriptor import fd_is_repeated
 from .simple_types import ReFieldDescriptor
 from .text import (
@@ -101,7 +102,7 @@ class ReExtensions:
         is_orphan = True
 
         # Sort by extension number for reproductibility
-        for ext_desc in sorted(ctx.pool.FindAllExtensions(options_desc),
+        for ext_desc in sorted(option_extensions(ctx, options_desc),
                                key=lambda d: d.number):
             opt = ReFieldDescriptor(ext_desc)
             val = self.this.Extensions[ext_desc]

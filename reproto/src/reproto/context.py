@@ -249,6 +249,15 @@ class Context(Options):
         # ServiceOptions
         self.svo_desc: Descriptor
         self.svo_cls: type[Message]
+        # ExtensionRangeOptions; None in a variant whose descriptor.proto
+        # predates it (proto2).
+        self.ero_desc: Descriptor | None
+        self.ero_cls: type[Message] | None
+        # The pool the option classes above come from: pool_db with maps as
+        # the repeated messages they are on the wire (option_messages.py).
+        self.options_pool: DescriptorPool
+        # Files loaded into options_pool for their extensions.
+        self.options_pool_files: set[str]
 
     @classmethod
     def from_options(

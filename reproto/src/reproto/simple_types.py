@@ -45,60 +45,55 @@ class ReMessage:
 
     def render(self, depth: int = 0) -> Block:
         assert isinstance(depth, int)
-
-        def escape_bytes(value: bytes) -> str:
-            """Escape bytes for .proto syntax."""
-            return '"' + ''.join(f'\\x{b:02x}' for b in value) + '"'
-        
-        msg = self.msg
         out = Block()
 
         # Use ListFields() to iterate only over fields that are actually set.
         # This is consistent with how options are rendered throughout the codebase.
-        for field, value in msg.ListFields():
-            # Handle repeated fields
+        # A map field arrives as the repeated message it is on the wire, its
+        # entries in order: option values are parsed with classes from
+        # ctx.options_pool, where no message is a map entry (spec 0424 S1).
+        for field, value in self.msg.ListFields():
+            name = _aggregate_field_name(field)
             if fd_is_repeated(field):
                 for item in value:
-                    if field.type == FieldDescriptor.TYPE_MESSAGE:
-                        out.append(BlockLine(f'{field.name}: {{', depth))
-                        out.extend(ReMessage(item).render(depth+1))
-                        out.append(BlockLine('}', depth))
-                    elif field.type == FieldDescriptor.TYPE_ENUM:
-                        enum_name = field.enum_type.values_by_number[item].name
-                        out.append(BlockLine(f'{field.name}: {enum_name}', depth))
-                    elif field.type == FieldDescriptor.TYPE_BYTES:
-                        out.append(BlockLine(f'{field.name}: {escape_bytes(item)}', depth))
-                    else:
-                        out.append(BlockLine(f'{field.name}: {repr(item)}', depth))
-
-            # Singular fields
+                    _render_aggregate_value(out, field, item, name, depth)
             else:
-                if field.type == FieldDescriptor.TYPE_MESSAGE:
-                    out.append(BlockLine(f'{field.name}: {{', depth))
-                    out.extend(ReMessage(value).render(depth+1))
-                    out.append(BlockLine('}', depth))
-                elif field.type == FieldDescriptor.TYPE_ENUM:
-                    enum_name = field.enum_type.values_by_number[value].name
-                    out.append(BlockLine(f'{field.name}: {enum_name}', depth))
-                elif field.type == FieldDescriptor.TYPE_BYTES:
-                    out.append(BlockLine(
-                        f'{field.name}: {escape_bytes(value)}', depth))
-                else:
-                    out.append(BlockLine(f'{field.name}: {repr(value)}', depth))
-
-            # Maps (repeated message entries)
-            if field.message_type and field.message_type.GetOptions().map_entry:
-                for k, v in value.items():
-                    out.append(BlockLine(f'{field.name}: {{', depth))
-                    out.append(BlockLine(f'key: {repr(k)}', depth+1))
-                    if isinstance(v, Message):
-                        out.append(BlockLine('value {', depth+1))
-                        out.extend(ReMessage(v).render(depth+2))
-                        out.append(BlockLine('}', depth+1))
-                    else:
-                        out.append(BlockLine(f'value: {repr(v)}', depth+1))
-                    out.append(BlockLine('}', depth))
+                _render_aggregate_value(out, field, value, name, depth)
         return out
+
+
+def _aggregate_field_name(field: FieldDescriptor) -> str:
+    """A field's name in text format: `[pkg.ext]` for an extension, the
+    type's name for a group, the field's own name otherwise (spec 0424 S1)."""
+    if field.is_extension:
+        return f'[{field.full_name}]'
+    if field.type == FieldDescriptor.TYPE_GROUP:
+        return field.message_type.name
+    return field.name
+
+
+def _render_aggregate_value(
+    out: Block,
+    field: FieldDescriptor,
+    value: object,
+    name: str,
+    depth: int,
+) -> None:
+    """Append one value of `field`, named `name`, to an aggregate."""
+    if field.type in (FieldDescriptor.TYPE_MESSAGE, FieldDescriptor.TYPE_GROUP):
+        assert isinstance(value, Message)
+        out.append(BlockLine(f'{name}: {{', depth))
+        out.extend(ReMessage(value).render(depth + 1))
+        out.append(BlockLine('}', depth))
+    elif field.type == FieldDescriptor.TYPE_ENUM:
+        enum_name = field.enum_type.values_by_number[value].name
+        out.append(BlockLine(f'{name}: {enum_name}', depth))
+    elif field.type == FieldDescriptor.TYPE_BYTES:
+        assert isinstance(value, bytes)
+        escaped = ''.join(f'\\x{b:02x}' for b in value)
+        out.append(BlockLine(f'{name}: "{escaped}"', depth))
+    else:
+        out.append(BlockLine(f'{name}: {repr(value)}', depth))
 
 # === ReservedRange decorator ==================================================
 
@@ -167,11 +162,21 @@ class ReExtensionRange:
                     f'to {extension_range.end - 1}')
 
         # --- ExtensionRange options -------------------------------------------
+        # Parsed with the dynamic class, as every other element's options:
+        # the generated descriptor_pb2 type keeps custom options as unknown
+        # fields, which render as nothing (spec 0424 S1).
         from .base import render_options_from_message as _rom
+        from .option_messages import parse_options
+        opts_msg: Message = self.options
+        opts_desc = self.options.DESCRIPTOR
+        if ctx.ero_desc is not None and ctx.ero_cls is not None:
+            opts_desc = ctx.ero_desc
+            opts_msg = parse_options(
+                ctx, opts_desc, ctx.ero_cls, self.options.SerializeToString())
         texts = _rom(
             ctx=ctx,
-            opts_msg=self.options,
-            options_descriptor=self.options.DESCRIPTOR,
+            opts_msg=opts_msg,
+            options_descriptor=opts_desc,
             composite=True,
             depth=depth + 1,
             exclude={'declaration'},

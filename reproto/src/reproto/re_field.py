@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 from .fake_types import Ref
 from .feature_resolution import ResolvedFeatures, resolve_features
 from .globals import FIELD, type_names
+from .option_messages import parse_options
 from .text import Block, BlockLine
 
 
@@ -37,23 +38,41 @@ def _get_file_and_msg(
     return get_file_node(parent), parent
 
 
+def _message_chain(node: 'ReDescriptorProto | None') -> list[DescriptorProto]:
+    """The messages enclosing a field of `node`, outermost first, `node`'s
+    own last; empty for a top-level extension (node None)."""
+    from .re_descriptor import ReDescriptorProto
+    chain: list[DescriptorProto] = []
+    current: object = node
+    while isinstance(current, ReDescriptorProto):
+        chain.append(current.this)
+        current = current._parent
+    chain.reverse()
+    return chain
+
+
 def _resolve_field_features(
     ctx: Context,
     fdp: FileDescriptorProto,
-    msg_proto: DescriptorProto | None,
+    messages: list[DescriptorProto],
     field_proto: FieldDescriptorProto,
 ) -> ResolvedFeatures | None:
-    """Resolve ResolvedFeatures for a field.  Returns None for proto2/proto3."""
+    """Resolve ResolvedFeatures for a field.  Returns None for proto2/proto3.
+
+    Features flow from the file through every enclosing message, outermost
+    first (`messages`, from `_message_chain`), to the field, as protoc and
+    upb resolve them (spec 0424 S1).
+    """
     # Use the FDP's own edition field to detect editions files — ctx.syntax is
     # set per-file at render time and is not reliable during pool construction.
     if not fdp.HasField('edition'):
         return None
     file_fs = fdp.options.features if fdp.options.HasField('features') else None
-    msg_fs = (msg_proto.options.features
-              if msg_proto is not None and msg_proto.options.HasField('features')
-              else None)
+    msg_fss = [m.options.features if m.options.HasField('features') else None
+               for m in messages]
     field_fs = field_proto.options.features if field_proto.options.HasField('features') else None
-    return resolve_features(ctx.edition_defaults, fdp.edition, file_fs, msg_fs, field_fs)
+    return resolve_features(
+        ctx.edition_defaults, fdp.edition, file_fs, *msg_fss, field_fs)
 
 
 class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
@@ -290,7 +309,7 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
         field_features = _resolve_field_features(
             ctx,
             file_node.this,
-            msg_node.this if msg_node is not None else None,
+            _message_chain(msg_node),
             self.this,
         )
 
@@ -343,8 +362,8 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
             # deps).  The FDP options bytes are the canonical source of truth and
             # always match what GetOptions() would return, so going via the pool
             # is both unnecessary and fragile.
-            fo_msg: Message = ctx.fdo_cls()
-            fo_msg.ParseFromString(self.this.options.SerializeToString())
+            fo_msg: Message = parse_options(
+                ctx, ctx.fdo_desc, ctx.fdo_cls, self.this.options.SerializeToString())
 
 
             # Build options block: default value + json_name + field options

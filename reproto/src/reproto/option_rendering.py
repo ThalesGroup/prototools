@@ -14,6 +14,7 @@ from google.protobuf.internal.extension_dict import _ExtensionDict
 from google.protobuf.message import Message
 
 from .context import Context
+from .option_messages import option_extensions, parse_options
 from .field_descriptor import fd_is_repeated
 from .globals import ENUM, MESSAGE, METHOD, SERVICE
 from .fake_types import parse_fqdn
@@ -140,7 +141,7 @@ def render_options_from_message(
             blocks.append(block)
 
     for ext_desc in sorted(
-        ctx.pool.FindAllExtensions(options_descriptor),
+        option_extensions(ctx, options_descriptor),
         key=lambda d: d.number
     ):
         opt = ReFieldDescriptor(ext_desc)
@@ -243,8 +244,9 @@ def render_options(
             )
             return blocks
 
-        opts_msg = options_class()
-        opts_msg.ParseFromString(desc.GetOptions().SerializeToString())
+        opts_msg = parse_options(
+            ctx, options_descriptor, options_class,
+            desc.GetOptions().SerializeToString())
 
         blocks = render_options_from_message(
             ctx=ctx,

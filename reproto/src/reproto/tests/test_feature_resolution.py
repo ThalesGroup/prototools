@@ -330,3 +330,51 @@ def test_editions_resolution_golden(tmp_path: Path) -> None:
         f"YAML output differs from golden.\n"
         f"--- golden ---\n{golden}\n--- actual ---\n{actual}"
     )
+
+
+def test_nested_message_inherits_the_enclosing_messages_features(tmp_path: Path) -> None:
+    """Features flow file → each enclosing message, outermost first → field
+    or enum (spec 0424 S1), as protoc and upb resolve them: a nested
+    message, its fields and its enums see what the message around them
+    sets. `json_format` is the one core feature a message can set."""
+    proto_path = tmp_path / "nested_features.proto"
+    proto_path.write_text(
+        'edition = "2023";\n'
+        "package nested_features;\n"
+        "message Outer {\n"
+        "  option features.json_format = LEGACY_BEST_EFFORT;\n"
+        "  message Inner {\n"
+        "    int32 x = 1;\n"
+        "    enum E { E_ZERO = 0; }\n"
+        "  }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    pb_path = tmp_path / "nested_features.pb"
+    result = subprocess.run(
+        ["protoc", f"--descriptor_set_out={pb_path}", "--include_imports",
+         f"-I{tmp_path}", str(proto_path)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, f"protoc failed: {result.stderr}"
+
+    src_path = str(Path(__file__).parent.parent.parent)
+    pythonpath_parts = [src_path]
+    if existing := os.environ.get("PYTHONPATH"):
+        pythonpath_parts.append(existing)
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(pythonpath_parts)}
+    env.pop("REPROTO_VARIANT", None)
+    result = subprocess.run(
+        [sys.executable, "-m", "reproto.cli", "--use-variant", "descriptor",
+         f"-I{tmp_path}", "--dump-resolved-features", "nested_features.proto",
+         str(pb_path)],
+        capture_output=True, text=True, env=env,
+    )
+    assert result.returncode == 0, f"reproto failed: {result.stderr}"
+
+    doc = yaml.safe_load(result.stdout)
+    assert isinstance(doc, dict), result.stdout
+    inner = doc["messages"]["Outer"]["messages"]["Inner"]
+    assert inner["resolved"]["json_format"] == "LEGACY_BEST_EFFORT", inner
+    assert inner["fields"]["x"]["resolved"]["json_format"] == "LEGACY_BEST_EFFORT", inner
+    assert inner["enums"]["E"]["resolved"]["json_format"] == "LEGACY_BEST_EFFORT", inner

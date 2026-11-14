@@ -8,6 +8,19 @@ SPDX-License-Identifier: MIT
 
 ## [Unreleased]
 
+### Fixed
+
+- reproto: an import it leaves out, its file missing or pruned, no
+  longer shifts the `public` and `weak` imports after it onto other
+  files; the file's options, which upb then refused, render again
+  (spec 0424 S1).
+- reproto: a custom option whose value is a message prints its map
+  fields, entries in the order they were written, instead of crashing;
+  its extensions as `[pkg.ext]`, and its groups by their type's name
+  with their fields, which protoc could not read back (spec 0424 S1).
+- reproto: custom options on a oneof or an extension range are no longer
+  left out (spec 0424 S1).
+
 ## 0.3.6 — 2026-10-24
 
 ### Fixed

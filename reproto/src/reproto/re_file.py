@@ -30,6 +30,7 @@ from .context import Context, Fqdn, SourceCodeInfoOut
 from .fake_types import Prefix, Ref
 from .globals import FILE
 from .mappings import apply_variant_namespace_to_package, canonize_dependency
+from .option_messages import parse_options
 from .source_info import closing_line, resolve_source_code_info_locations
 from .text import CODE, COMMENT, ORPHAN, Block, BlockLine
 
@@ -139,8 +140,8 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
         try:
             f_desc: FileDescriptor = ctx.pool.FindFileByName(self.name)
 
-            fio_msg: Message = FiOClass()
-            fio_msg.ParseFromString(f_desc.GetOptions().SerializeToString())
+            fio_msg: Message = parse_options(
+                ctx, fio_desc, FiOClass, f_desc.GetOptions().SerializeToString())
 
             # Emit file-level features overrides first (editions only; no-op otherwise).
             from .syntax import render_features_block

@@ -25,7 +25,7 @@ from .context import Context, Fqdn
 from .source_info import SourceCodeInfoMixin, closing_line
 from .fake_types import Ref
 from .globals import MESSAGE
-from .re_field import _resolve_field_features
+from .re_field import _message_chain, _resolve_field_features
 from .text import CODE, ORPHAN, Block, BlockLine
 
 
@@ -341,7 +341,7 @@ class ReDescriptorProto(SourceCodeInfoMixin, NodeBase[DescriptorProto]):
                 if field_proto.type != FieldDescriptorProto.TYPE_MESSAGE:
                     continue
                 field_features = _resolve_field_features(
-                    ctx, _node.this, message, field_proto)
+                    ctx, _node.this, _message_chain(self), field_proto)
                 if (field_features is None
                         or field_features.message_encoding != MESSAGE_ENCODING_DELIMITED):
                     continue
@@ -533,7 +533,7 @@ class ReDescriptorProto(SourceCodeInfoMixin, NodeBase[DescriptorProto]):
                        if f.HasField("oneof_index") and f.oneof_index == idx]
             # For editions: resolve features for the single member (if any).
             member_features = (
-                _resolve_field_features(ctx, fdp.this, self.this,
+                _resolve_field_features(ctx, fdp.this, _message_chain(self),
                                         cast(FieldDescriptorProto, members[0]))
                 if members else None
             )
@@ -599,12 +599,22 @@ class ReDescriptorProto(SourceCodeInfoMixin, NodeBase[DescriptorProto]):
                         field.abandon()
                     block.extend(field)
 
-            # Emit oneof features overrides at the top of the oneof block.
+            # Emit oneof features overrides at the top of the oneof block,
+            # then its other options (spec 0424 S1).
             oneof_feat_block = Block()
             if oneof.HasField('options') and oneof.options.HasField('features'):
                 from .syntax import render_features_block
                 oneof_feat_block = render_features_block(
                     ctx, oneof.options.features, depth + 2, inline=False)
+            if oneof.HasField('options'):
+                from .option_messages import parse_options
+                from .option_rendering import render_options_from_message
+                oneof_opts = parse_options(
+                    ctx, ctx.ooo_desc, ctx.ooo_cls,
+                    oneof.options.SerializeToString())
+                for opt_block in render_options_from_message(
+                        ctx, oneof_opts, ctx.ooo_desc, depth=depth + 2):
+                    oneof_feat_block.extend(opt_block)
             block.insert(0, BlockLine(f'oneof {oneof.name} {{', depth+1,
                          type=ORPHAN if is_orphan else CODE))
             for feat_line in reversed(list(oneof_feat_block)):
