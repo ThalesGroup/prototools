@@ -22,6 +22,7 @@ include = [
     "tests/definitions.rs",
     "tests/message.rs",
     "tests/pool.rs",
+    "tests/threads.rs",
     "tests/fixtures/*",
     "vendor/LICENSE",
     "vendor/VERSION",
@@ -32,6 +33,11 @@ include = [
 
 [lib]
 name = "prototext_upb"
+
+# ThreadSanitizer cannot see libtest's own threads (tests/threads.rs).
+[[test]]
+name    = "threads"
+harness = false
 
 [dependencies]
 workspace-hack = { version = "0.1", path = "../workspace-hack" }

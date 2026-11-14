@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Run prototext-upb's thread tests with upb's C compiled under
+# ThreadSanitizer (spec 0424 S19).
+#
+# As for scripts/upb-asan, stable Rust cannot instrument Rust code, but the
+# C side can be: upb.c is compiled with -fsanitize=thread and the runtime
+# is linked and preloaded. TSan then reports two accesses to the same memory
+# from two threads, at least one a write, with nothing it can see ordering
+# them.
+#
+# Only tests/threads.rs runs, without libtest (harness = false), whose own
+# threads TSan would report for the same reason: a pool built before the
+# threads start, then
+# only read. TSan sees thread creation, so what was written before is
+# ordered; a report means upb writes on a path that should only read. What
+# Rust's own locks order, TSan cannot see (they use futexes, which it does
+# not intercept), so a test that adds files while other threads read, as
+# tests/pool.rs's lookups_and_adds_run_from_several_threads does, would be
+# reported as racing although the lock orders it.
+#
+# Usage: scripts/upb-tsan [extra cargo test args]
+#   PROTOTEXT_UPB_THREADS_SET=<a descriptor set> reads that set instead of
+#   the fixture (googleapis in the spec's test).
+set -euo pipefail
+
+target=${UPB_TSAN_TARGET:-/tmp/upb-tsan-target}
+tsan=$(gcc -print-file-name=libtsan.so)
+
+export CFLAGS="-fsanitize=thread -fno-omit-frame-pointer"
+export RUSTFLAGS="-C link-arg=-fsanitize=thread -C link-arg=-ltsan"
+
+bins=$(cargo test --profile quick -p prototext-upb --target-dir "$target" \
+           --test threads --no-run --message-format=json "$@" 2>/dev/null |
+       python3 -c '
+import json, sys
+for line in sys.stdin:
+    m = json.loads(line)
+    if m.get("reason") == "compiler-artifact" and m.get("executable") \
+            and m["target"].get("test") is not None and m["profile"]["test"]:
+        print(m["executable"])')
+
+[[ -n $bins ]] || { echo "upb-tsan: no test binary built" >&2; exit 1; }
+status=0
+for bin in $bins; do
+    # Count rather than `grep -q`: an early exit would SIGPIPE nm, and
+    # pipefail would read that as "not instrumented".
+    if [[ $(nm "$bin" | grep -c __tsan_read) -eq 0 ]]; then
+        echo "upb-tsan: $bin is not instrumented" >&2
+        exit 1
+    fi
+    TSAN_OPTIONS="halt_on_error=1 exitcode=66" LD_PRELOAD=$tsan "$bin" || status=$?
+done
+exit "$status"

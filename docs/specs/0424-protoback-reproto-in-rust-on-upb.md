@@ -577,3 +577,27 @@ development VM pinned to vCPUs 0–7, on mains power, host idle.
     scheduler puts the process on an E-core or on a P-core's thread
     (vCPUs 8–11), twice as fast for 9 and 11
     (docs/prototext/bench-process.md). Only pinned numbers compare.
+- **Step 2** (2026-11-14), in `prototext-upb`:
+  - S3: `DynamicMessage`, `MessageRef`, `MessageMut`, over 21 upb
+    functions. The options fixture (custom options of every shape, on
+    every kind of definition) decodes and encodes back to protoc's bytes;
+    `set_fields` lists what Python's `ListFields()` lists for each of its
+    options messages: `upb_Message_Next` walks the MiniTable, built in
+    field-number order, then the extensions.
+  - S4: services, methods, extension ranges, `all_extensions` sorted by
+    number, over 23 more. Options through descriptors read as messages,
+    not `upb_XxxDef_Options` (S4's text).
+  - S19: `tests/threads.rs` builds a pool, then reads it from every core
+    at once, each thread decoding its own messages, and all of them one
+    shared message: every thread's result equals the single-threaded
+    one. `scripts/upb-tsan` runs it with upb's C under
+    ThreadSanitizer: no report, on the fixture and on googleapis (12
+    threads, 107 s). What TSan cannot see, being uninstrumented Rust,
+    is ordering made by atomics and futexes, which it reports as races:
+    the checks spawn and join (`pthread_join`, which it sees) rather than
+    use `std::thread::scope`, and the file runs without libtest
+    (`harness = false`), whose own threads it would report. A test that
+    adds files while others read, ordered by the pool's `RwLock`, is
+    outside what TSan can check.
+  - Every test passes, also under AddressSanitizer (`scripts/upb-asan`).
+  - S6's generated accessors: not yet written (next).
