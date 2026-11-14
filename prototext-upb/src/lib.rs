@@ -397,6 +397,19 @@ impl Pool {
         })
     }
 
+    /// A service by fully-qualified name (no leading dot).
+    pub fn get_service_by_name(&self, name: &str) -> Option<Service> {
+        let _state = self.inner.read();
+        // SAFETY: as in `file`.
+        let p = unsafe {
+            ffi::upb_DefPool_FindServiceByNameWithSize(self.raw(), name.as_ptr().cast(), name.len())
+        };
+        NonNull::new(p.cast_mut()).map(|ptr| Service {
+            pool: self.inner.clone(),
+            ptr,
+        })
+    }
+
     /// An extension by fully-qualified name (no leading dot).
     pub fn get_extension_by_name(&self, name: &str) -> Option<Field> {
         let _state = self.inner.read();
@@ -574,10 +587,22 @@ from_handle!(Field, ffi::FieldDef);
 from_handle!(Oneof, ffi::OneofDef);
 from_handle!(Enum, ffi::EnumDef);
 from_handle!(EnumValue, ffi::EnumValueDef);
+handle!(
+    /// A service.
+    Service, ffi::ServiceDef, "Service"
+);
+handle!(
+    /// One method of a service.
+    Method, ffi::MethodDef, "Method"
+);
+from_handle!(Service, ffi::ServiceDef);
+from_handle!(Method, ffi::MethodDef);
 
 // Field numbers in `descriptor.proto` that a declaration path steps through.
 const FILE_MESSAGE_TYPE: i32 = 4;
 const FILE_ENUM_TYPE: i32 = 5;
+const FILE_SERVICE: i32 = 6;
+const SERVICE_METHOD: i32 = 2;
 const MESSAGE_NESTED_TYPE: i32 = 3;
 const MESSAGE_ENUM_TYPE: i32 = 4;
 
@@ -669,6 +694,15 @@ impl File {
             self,
             ffi::upb_FileDef_TopLevelExtensionCount,
             ffi::upb_FileDef_TopLevelExtension
+        )
+    }
+
+    /// Services, in declaration order.
+    pub fn services(&self) -> impl Iterator<Item = Service> + '_ {
+        children!(
+            self,
+            ffi::upb_FileDef_ServiceCount,
+            ffi::upb_FileDef_Service
         )
     }
 }
@@ -801,6 +835,60 @@ impl Message {
         // SAFETY: a valid definition.
         unsafe { ffi::prototext_upb_message_set_wire_format(self.raw()) }
     }
+
+    /// The extension ranges, in declaration order.
+    pub fn extension_ranges(&self) -> Vec<ExtensionRange> {
+        // SAFETY: a valid definition; the index is within its count.
+        let n = unsafe { ffi::upb_MessageDef_ExtensionRangeCount(self.raw()) }.max(0);
+        (0..n)
+            .map(|i| {
+                // SAFETY: as above; a range lives as long as the pool.
+                unsafe {
+                    let r = ffi::upb_MessageDef_ExtensionRange(self.raw(), i);
+                    ExtensionRange {
+                        start: ffi::upb_ExtensionRange_Start(r),
+                        end: ffi::upb_ExtensionRange_End(r),
+                    }
+                }
+            })
+            .collect()
+    }
+
+    /// Every extension of this message among the files loaded so far, by
+    /// field number: what Python's `DescriptorPool.FindAllExtensions`
+    /// returns, sorted as reproto sorts it.
+    pub fn all_extensions(&self) -> Vec<Field> {
+        let _state = self.pool.read();
+        let mut count = 0usize;
+        // SAFETY: a pool lookup, under the read lock. upb allocates the
+        // array, freed below by the same allocator.
+        let exts = unsafe {
+            ffi::upb_DefPool_GetAllExtensions(self.pool.raw.as_ptr(), self.raw(), &mut count)
+        };
+        let mut out: Vec<Field> = if exts.is_null() || count == 0 {
+            Vec::new()
+        } else {
+            // SAFETY: upb wrote `count` definitions.
+            unsafe { std::slice::from_raw_parts(exts, count) }
+                .iter()
+                .filter_map(|&f| self.wrap(f).map(Into::into))
+                .collect()
+        };
+        if !exts.is_null() {
+            // SAFETY: the array upb returned, freed once.
+            unsafe { ffi::prototext_upb_free_extensions(exts) }
+        }
+        out.sort_by_key(Field::number);
+        out
+    }
+}
+
+/// An extension range of a message: field numbers `start` up to, not
+/// including, `end`, as `DescriptorProto.ExtensionRange` has them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExtensionRange {
+    pub start: i32,
+    pub end: i32,
 }
 
 /// A field's type. A group, or an editions field with delimited encoding,
@@ -1120,5 +1208,117 @@ impl EnumValue {
     pub fn number(&self) -> i32 {
         // SAFETY: a valid definition.
         unsafe { ffi::upb_EnumValueDef_Number(self.raw()) }
+    }
+}
+
+impl Service {
+    fn debug_name(&self) -> String {
+        self.full_name().to_string()
+    }
+
+    pub fn full_name(&self) -> &str {
+        // SAFETY: a valid definition.
+        upb_str(self, unsafe { ffi::upb_ServiceDef_FullName(self.raw()) })
+    }
+
+    pub fn name(&self) -> &str {
+        // SAFETY: a valid definition.
+        upb_str(self, unsafe { ffi::upb_ServiceDef_Name(self.raw()) })
+    }
+
+    pub fn parent_file(&self) -> File {
+        // SAFETY: a valid definition; every service has a file.
+        let p = unsafe { ffi::upb_ServiceDef_File(self.raw()) };
+        self.wrap(p).map(Into::into).expect("a service has a file")
+    }
+
+    /// The service's `SourceCodeInfo.Location.path` in its file: `[6, i]`.
+    pub fn declaration_path(&self) -> Vec<i32> {
+        // SAFETY: a valid definition.
+        vec![FILE_SERVICE, unsafe {
+            ffi::upb_ServiceDef_Index(self.raw())
+        }]
+    }
+
+    /// Methods, in declaration order.
+    pub fn methods(&self) -> impl Iterator<Item = Method> + '_ {
+        children!(
+            self,
+            ffi::upb_ServiceDef_MethodCount,
+            ffi::upb_ServiceDef_Method
+        )
+    }
+
+    pub fn get_method_by_name(&self, name: &str) -> Option<Method> {
+        // SAFETY: a valid definition; `name` is valid for its length.
+        self.wrap(unsafe {
+            ffi::upb_ServiceDef_FindMethodByNameWithSize(
+                self.raw(),
+                name.as_ptr().cast(),
+                name.len(),
+            )
+        })
+        .map(Into::into)
+    }
+}
+
+impl Method {
+    fn debug_name(&self) -> String {
+        self.full_name().to_string()
+    }
+
+    pub fn full_name(&self) -> &str {
+        // SAFETY: a valid definition.
+        upb_str(self, unsafe { ffi::upb_MethodDef_FullName(self.raw()) })
+    }
+
+    pub fn name(&self) -> &str {
+        // SAFETY: a valid definition.
+        upb_str(self, unsafe { ffi::upb_MethodDef_Name(self.raw()) })
+    }
+
+    pub fn parent_service(&self) -> Service {
+        // SAFETY: a valid definition; every method has its service.
+        let p = unsafe { ffi::upb_MethodDef_Service(self.raw()) };
+        self.wrap(p)
+            .map(Into::into)
+            .expect("a method has its service")
+    }
+
+    /// The method's `SourceCodeInfo.Location.path` in its file:
+    /// `[6, i, 2, j]`.
+    pub fn declaration_path(&self) -> Vec<i32> {
+        let mut path = self.parent_service().declaration_path();
+        // SAFETY: a valid definition.
+        path.extend([SERVICE_METHOD, unsafe {
+            ffi::upb_MethodDef_Index(self.raw())
+        }]);
+        path
+    }
+
+    pub fn input_type(&self) -> Message {
+        // SAFETY: a valid definition; upb resolves both types at build.
+        let p = unsafe { ffi::upb_MethodDef_InputType(self.raw()) };
+        self.wrap(p)
+            .map(Into::into)
+            .expect("a method has its input type")
+    }
+
+    pub fn output_type(&self) -> Message {
+        // SAFETY: as above.
+        let p = unsafe { ffi::upb_MethodDef_OutputType(self.raw()) };
+        self.wrap(p)
+            .map(Into::into)
+            .expect("a method has its output type")
+    }
+
+    pub fn is_client_streaming(&self) -> bool {
+        // SAFETY: a valid definition.
+        unsafe { ffi::upb_MethodDef_ClientStreaming(self.raw()) }
+    }
+
+    pub fn is_server_streaming(&self) -> bool {
+        // SAFETY: a valid definition.
+        unsafe { ffi::upb_MethodDef_ServerStreaming(self.raw()) }
     }
 }

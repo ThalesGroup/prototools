@@ -35,6 +35,9 @@ opaque!(
     ExtensionRegistry,
     Array,
     Map,
+    ServiceDef,
+    MethodDef,
+    ExtensionRange,
 );
 
 /// C `upb_FieldType`: the values of `FieldDescriptorProto.Type`.
@@ -116,6 +119,16 @@ extern "C" {
         name: *const c_char,
         size: usize,
     ) -> *const FieldDef;
+    pub fn upb_DefPool_FindServiceByNameWithSize(
+        s: *const DefPool,
+        name: *const c_char,
+        size: usize,
+    ) -> *const ServiceDef;
+    pub fn upb_DefPool_GetAllExtensions(
+        s: *const DefPool,
+        m: *const MessageDef,
+        count: *mut usize,
+    ) -> *mut *const FieldDef;
 
     // ── File ──────────────────────────────────────────────────────────────
     pub fn upb_FileDef_Name(f: *const FileDef) -> *const c_char;
@@ -129,6 +142,8 @@ extern "C" {
     pub fn upb_FileDef_TopLevelEnum(f: *const FileDef, i: c_int) -> *const EnumDef;
     pub fn upb_FileDef_TopLevelExtensionCount(f: *const FileDef) -> c_int;
     pub fn upb_FileDef_TopLevelExtension(f: *const FileDef, i: c_int) -> *const FieldDef;
+    pub fn upb_FileDef_ServiceCount(f: *const FileDef) -> c_int;
+    pub fn upb_FileDef_Service(f: *const FileDef, i: c_int) -> *const ServiceDef;
 
     // ── Message ───────────────────────────────────────────────────────────
     pub fn upb_MessageDef_FullName(m: *const MessageDef) -> *const c_char;
@@ -152,6 +167,10 @@ extern "C" {
     pub fn upb_MessageDef_OneofCount(m: *const MessageDef) -> c_int;
     pub fn upb_MessageDef_Oneof(m: *const MessageDef, i: c_int) -> *const OneofDef;
     pub fn upb_MessageDef_IsMapEntry(m: *const MessageDef) -> bool;
+    pub fn upb_MessageDef_ExtensionRangeCount(m: *const MessageDef) -> c_int;
+    pub fn upb_MessageDef_ExtensionRange(m: *const MessageDef, i: c_int) -> *const ExtensionRange;
+    pub fn upb_ExtensionRange_Start(r: *const ExtensionRange) -> i32;
+    pub fn upb_ExtensionRange_End(r: *const ExtensionRange) -> i32;
 
     // ── Field ─────────────────────────────────────────────────────────────
     pub fn upb_FieldDef_Name(f: *const FieldDef) -> *const c_char;
@@ -190,6 +209,27 @@ extern "C" {
     pub fn upb_EnumValueDef_FullName(v: *const EnumValueDef) -> *const c_char;
     pub fn upb_EnumValueDef_Name(v: *const EnumValueDef) -> *const c_char;
     pub fn upb_EnumValueDef_Number(v: *const EnumValueDef) -> i32;
+
+    // ── Service and method ────────────────────────────────────────────────
+    pub fn upb_ServiceDef_FullName(s: *const ServiceDef) -> *const c_char;
+    pub fn upb_ServiceDef_Name(s: *const ServiceDef) -> *const c_char;
+    pub fn upb_ServiceDef_File(s: *const ServiceDef) -> *const FileDef;
+    pub fn upb_ServiceDef_Index(s: *const ServiceDef) -> c_int;
+    pub fn upb_ServiceDef_MethodCount(s: *const ServiceDef) -> c_int;
+    pub fn upb_ServiceDef_Method(s: *const ServiceDef, i: c_int) -> *const MethodDef;
+    pub fn upb_ServiceDef_FindMethodByNameWithSize(
+        s: *const ServiceDef,
+        name: *const c_char,
+        len: usize,
+    ) -> *const MethodDef;
+    pub fn upb_MethodDef_FullName(m: *const MethodDef) -> *const c_char;
+    pub fn upb_MethodDef_Name(m: *const MethodDef) -> *const c_char;
+    pub fn upb_MethodDef_Index(m: *const MethodDef) -> c_int;
+    pub fn upb_MethodDef_Service(m: *const MethodDef) -> *const ServiceDef;
+    pub fn upb_MethodDef_InputType(m: *const MethodDef) -> *const MessageDef;
+    pub fn upb_MethodDef_OutputType(m: *const MethodDef) -> *const MessageDef;
+    pub fn upb_MethodDef_ClientStreaming(m: *const MethodDef) -> bool;
+    pub fn upb_MethodDef_ServerStreaming(m: *const MethodDef) -> bool;
 
     // ── Arena ─────────────────────────────────────────────────────────────
     pub fn upb_Arena_New() -> *mut Arena;
@@ -272,6 +312,7 @@ extern "C" {
         errlen: usize,
     ) -> *const FileDef;
     pub fn prototext_upb_message_set_wire_format(m: *const MessageDef) -> bool;
+    pub fn prototext_upb_free_extensions(exts: *mut *const FieldDef);
 }
 
 #[cfg(test)]
@@ -371,8 +412,32 @@ mod tests {
             super::upb_Map_Size as *const (),
             super::upb_Map_Next as *const (),
             super::upb_Map_Set as *const (),
+            super::upb_DefPool_FindServiceByNameWithSize as *const (),
+            super::upb_DefPool_GetAllExtensions as *const (),
+            super::upb_FileDef_ServiceCount as *const (),
+            super::upb_FileDef_Service as *const (),
+            super::upb_MessageDef_ExtensionRangeCount as *const (),
+            super::upb_MessageDef_ExtensionRange as *const (),
+            super::upb_ExtensionRange_Start as *const (),
+            super::upb_ExtensionRange_End as *const (),
+            super::upb_ServiceDef_FullName as *const (),
+            super::upb_ServiceDef_Name as *const (),
+            super::upb_ServiceDef_File as *const (),
+            super::upb_ServiceDef_Index as *const (),
+            super::upb_ServiceDef_MethodCount as *const (),
+            super::upb_ServiceDef_Method as *const (),
+            super::upb_ServiceDef_FindMethodByNameWithSize as *const (),
+            super::upb_MethodDef_FullName as *const (),
+            super::upb_MethodDef_Name as *const (),
+            super::upb_MethodDef_Index as *const (),
+            super::upb_MethodDef_Service as *const (),
+            super::upb_MethodDef_InputType as *const (),
+            super::upb_MethodDef_OutputType as *const (),
+            super::upb_MethodDef_ClientStreaming as *const (),
+            super::upb_MethodDef_ServerStreaming as *const (),
             super::prototext_upb_add_file as *const (),
             super::prototext_upb_message_set_wire_format as *const (),
+            super::prototext_upb_free_extensions as *const (),
         ];
         assert!(addresses.iter().all(|a| !a.is_null()));
     }

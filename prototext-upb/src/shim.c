@@ -57,6 +57,12 @@ const upb_FileDef* prototext_upb_add_file(upb_DefPool* pool, const char* buf,
   return file;
 }
 
+// upb_DefPool_GetAllExtensions returns an array allocated with upb's global
+// allocator, whose upb_gfree is inline: freed here, by the same allocator.
+void prototext_upb_free_extensions(const upb_FieldDef** exts) {
+  upb_gfree((void*)exts);
+}
+
 // `option message_set_wire_format = true` on a message.
 bool prototext_upb_message_set_wire_format(const upb_MessageDef* m) {
   const google_protobuf_MessageOptions* opts = upb_MessageDef_Options(m);
