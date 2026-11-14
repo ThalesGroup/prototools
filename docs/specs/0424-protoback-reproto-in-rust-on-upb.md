@@ -224,8 +224,15 @@ S5 writes one, to Google's published grammar.
   and maps. Only public symbols, as before; what upb declares
   `static inline` goes through the shim. A message owns its arena on
   the Rust side; the safe API exposes no raw pointer.
-- **S4. Definitions.** Service and method definitions; the options of
-  every definition, as messages; `upb_DefPool_GetAllExtensions`.
+- **S4. Definitions.** Service and method definitions; extension
+  ranges; `upb_DefPool_GetAllExtensions`, every extension of a message.
+  Options are not read through `upb_XxxDef_Options`: those return them in
+  upb's built-in `descriptor.proto` (v36), where custom options are
+  unknown bytes, and whose version is not the input's or the variant's.
+  They come from the descriptors read as messages (S6): decoded with the
+  pool's own types and its extension registry, a `FileDescriptorProto`'s
+  `options` fields carry the custom options as extensions, in the input's
+  version.
 - **S5. Text format.** A parser of the text format, to protobuf.dev's
   Text Format Language Specification, over S3's reflection: any message
   type of a pool. It covers `#` comments, `{}` and `<>`, the optional
@@ -237,9 +244,16 @@ S5 writes one, to Google's published grammar.
   line and column.
 - **S6. Descriptors as messages.** protoback reads and writes
   descriptors as upb messages of `descriptor.proto`'s types, through
-  S3, with thin typed accessors for the fields it uses; not through
-  upb's generated inline accessors (1,312 inline functions, each needing
-  a shim). The plain structs of spec 0415 S5 stay for the code that uses
+  S3, with typed accessors over the reflection; not through upb's
+  generated inline accessors (1,312 inline functions, each needing a
+  shim). The accessors are generated, one per field of every message of
+  the vendored upb's `descriptor.proto`, and committed; a check in `ci`
+  fails when they are out of date, and `scripts/update-upb` regenerates
+  them. Each looks its field up by number in the pool's own
+  `descriptor.proto` and answers "absent" when that version lacks it, so
+  an input built with an older or a variant `descriptor.proto` works; a
+  field none of them knows is kept as unknown bytes and re-encoded as it
+  was. The plain structs of spec 0415 S5 stay for the code that uses
   them.
 
 Every descriptor protoback reads passes spec 0415 S4's gate before upb

@@ -9,6 +9,11 @@
 
 #include "upb.h"
 
+// The Rust side declares upb_MessageValue by hand (src/ffi.rs), without
+// upb's private member: it must keep the C union's size and alignment.
+_Static_assert(sizeof(upb_MessageValue) == 16, "upb_MessageValue changed size");
+_Static_assert(_Alignof(upb_MessageValue) == 8, "upb_MessageValue changed alignment");
+
 // Parse one serialized FileDescriptorProto and add it to `pool`.
 //
 // upb_DefPool_AddFile takes a parsed proto, and parsing needs an arena and

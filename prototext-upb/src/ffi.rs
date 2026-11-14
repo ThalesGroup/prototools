@@ -8,7 +8,7 @@
 //! `every_declaration_links` test takes the address of each one, so an
 //! upgrade that turns one inline fails the build of the test.
 
-use std::ffi::{c_char, c_int};
+use std::ffi::{c_char, c_int, c_void};
 
 macro_rules! opaque {
     ($($name:ident),* $(,)?) => {
@@ -29,12 +29,63 @@ opaque!(
     OneofDef,
     EnumDef,
     EnumValueDef,
+    Arena,
+    RawMessage,
+    MiniTable,
+    ExtensionRegistry,
+    Array,
+    Map,
 );
 
 /// C `upb_FieldType`: the values of `FieldDescriptorProto.Type`.
 pub type FieldType = c_int;
 /// C `google_protobuf_Edition`.
 pub type EditionNumber = c_int;
+
+/// C `upb_StringView`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct StringView {
+    pub data: *const c_char,
+    pub size: usize,
+}
+
+/// C `upb_MessageValue`: one value of any field type. upb's own union also
+/// has a `struct upb_Message` member, private, of the size of a pointer,
+/// which changes neither its size nor its alignment (checked below and in
+/// the shim).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub union MessageValue {
+    pub bool_val: bool,
+    pub float_val: f32,
+    pub double_val: f64,
+    pub int32_val: i32,
+    pub int64_val: i64,
+    pub uint32_val: u32,
+    pub uint64_val: u64,
+    pub array_val: *const Array,
+    pub map_val: *const Map,
+    pub msg_val: *const RawMessage,
+    pub str_val: StringView,
+}
+
+const _: () = assert!(std::mem::size_of::<MessageValue>() == 16);
+const _: () = assert!(std::mem::align_of::<MessageValue>() == 8);
+
+/// C `upb_MutableMessageValue`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub union MutableMessageValue {
+    pub array: *mut Array,
+    pub map: *mut Map,
+    pub msg: *mut RawMessage,
+}
+
+/// `kUpb_Message_Begin` and `kUpb_Map_Begin`: `(size_t)-1`.
+pub const ITER_BEGIN: usize = usize::MAX;
+/// `kUpb_DecodeStatus_Ok`, `kUpb_EncodeStatus_Ok`.
+pub const STATUS_OK: c_int = 0;
 
 extern "C" {
     // ── Pool ──────────────────────────────────────────────────────────────
@@ -140,6 +191,78 @@ extern "C" {
     pub fn upb_EnumValueDef_Name(v: *const EnumValueDef) -> *const c_char;
     pub fn upb_EnumValueDef_Number(v: *const EnumValueDef) -> i32;
 
+    // ── Arena ─────────────────────────────────────────────────────────────
+    pub fn upb_Arena_New() -> *mut Arena;
+    pub fn upb_Arena_Free(a: *mut Arena);
+    pub fn upb_Arena_Malloc(a: *mut Arena, size: usize) -> *mut c_void;
+
+    // ── Messages ──────────────────────────────────────────────────────────
+    pub fn upb_MessageDef_MiniTable(m: *const MessageDef) -> *const MiniTable;
+    pub fn upb_DefPool_ExtensionRegistry(s: *const DefPool) -> *const ExtensionRegistry;
+    pub fn upb_Message_New(m: *const MiniTable, arena: *mut Arena) -> *mut RawMessage;
+    pub fn upb_Decode(
+        buf: *const c_char,
+        size: usize,
+        msg: *mut RawMessage,
+        mt: *const MiniTable,
+        extreg: *const ExtensionRegistry,
+        options: c_int,
+        arena: *mut Arena,
+    ) -> c_int;
+    pub fn upb_Encode(
+        msg: *const RawMessage,
+        l: *const MiniTable,
+        options: c_int,
+        arena: *mut Arena,
+        buf: *mut *mut c_char,
+        size: *mut usize,
+    ) -> c_int;
+    pub fn upb_Message_HasFieldByDef(msg: *const RawMessage, f: *const FieldDef) -> bool;
+    pub fn upb_Message_GetFieldByDef(msg: *const RawMessage, f: *const FieldDef) -> MessageValue;
+    pub fn upb_Message_SetFieldByDef(
+        msg: *mut RawMessage,
+        f: *const FieldDef,
+        val: MessageValue,
+        a: *mut Arena,
+    ) -> bool;
+    pub fn upb_Message_ClearFieldByDef(msg: *mut RawMessage, f: *const FieldDef);
+    pub fn upb_Message_Mutable(
+        msg: *mut RawMessage,
+        f: *const FieldDef,
+        a: *mut Arena,
+    ) -> MutableMessageValue;
+    pub fn upb_Message_Next(
+        msg: *const RawMessage,
+        m: *const MessageDef,
+        ext_pool: *const DefPool,
+        f: *mut *const FieldDef,
+        val: *mut MessageValue,
+        iter: *mut usize,
+    ) -> bool;
+    pub fn upb_Message_DeepClone(
+        msg: *const RawMessage,
+        m: *const MiniTable,
+        arena: *mut Arena,
+    ) -> *mut RawMessage;
+
+    // ── Arrays and maps ───────────────────────────────────────────────────
+    pub fn upb_Array_Size(arr: *const Array) -> usize;
+    pub fn upb_Array_Get(arr: *const Array, i: usize) -> MessageValue;
+    pub fn upb_Array_Append(array: *mut Array, val: MessageValue, arena: *mut Arena) -> bool;
+    pub fn upb_Map_Size(map: *const Map) -> usize;
+    pub fn upb_Map_Next(
+        map: *const Map,
+        key: *mut MessageValue,
+        val: *mut MessageValue,
+        iter: *mut usize,
+    ) -> bool;
+    pub fn upb_Map_Set(
+        map: *mut Map,
+        key: MessageValue,
+        val: MessageValue,
+        arena: *mut Arena,
+    ) -> bool;
+
     // ── Shim (src/shim.c) ─────────────────────────────────────────────────
     pub fn prototext_upb_add_file(
         pool: *mut DefPool,
@@ -227,6 +350,27 @@ mod tests {
             super::upb_EnumValueDef_FullName as *const (),
             super::upb_EnumValueDef_Name as *const (),
             super::upb_EnumValueDef_Number as *const (),
+            super::upb_Arena_New as *const (),
+            super::upb_Arena_Free as *const (),
+            super::upb_Arena_Malloc as *const (),
+            super::upb_MessageDef_MiniTable as *const (),
+            super::upb_DefPool_ExtensionRegistry as *const (),
+            super::upb_Message_New as *const (),
+            super::upb_Decode as *const (),
+            super::upb_Encode as *const (),
+            super::upb_Message_HasFieldByDef as *const (),
+            super::upb_Message_GetFieldByDef as *const (),
+            super::upb_Message_SetFieldByDef as *const (),
+            super::upb_Message_ClearFieldByDef as *const (),
+            super::upb_Message_Mutable as *const (),
+            super::upb_Message_Next as *const (),
+            super::upb_Message_DeepClone as *const (),
+            super::upb_Array_Size as *const (),
+            super::upb_Array_Get as *const (),
+            super::upb_Array_Append as *const (),
+            super::upb_Map_Size as *const (),
+            super::upb_Map_Next as *const (),
+            super::upb_Map_Set as *const (),
             super::prototext_upb_add_file as *const (),
             super::prototext_upb_message_set_wire_format as *const (),
         ];

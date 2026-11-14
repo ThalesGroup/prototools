@@ -22,7 +22,12 @@
 
 pub mod descriptor;
 mod ffi;
+mod message;
 mod set;
+
+pub use message::{
+    DynamicMessage, List, MapRef, MessageError, MessageMut, MessageRef, Scalar, Value,
+};
 
 use std::collections::HashMap;
 use std::ffi::{c_char, CStr};

@@ -83,6 +83,12 @@ thread placement from kernel-declared topology, such as protolens'
 pinned** to the 4–7 cluster, which is exactly one L2: the measurement owns
 that cache outright, and nothing running on 0–3 can evict from it.
 
+**Measure on mains power, with the host idle.** The host is a laptop: on
+battery it lowers its clocks, and its own workloads share the cores the
+VM's vCPUs are pinned to. Neither the pinning nor the lock below can see
+the host, so before a measurement whose numbers matter, the host's owner
+is asked.
+
 `bin/bench` defaults to `taskset -c 4`, one core, which is right for the
 library benches — they are single-threaded, and confining them leaves the rest
 of the cluster's shared L2 alone.  Override for a wallclock measurement of a

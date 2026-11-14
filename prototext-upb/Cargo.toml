@@ -19,6 +19,7 @@ include = [
     "build.rs",
     "src/**/*.rs",
     "src/shim.c",
+    "tests/message.rs",
     "tests/pool.rs",
     "tests/fixtures/*",
     "vendor/LICENSE",

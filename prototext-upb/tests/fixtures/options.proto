@@ -1,0 +1,98 @@
+// SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+//
+// SPDX-License-Identifier: MIT
+
+// Custom options of every shape, on every kind of definition, for the
+// reflection tests (spec 0424 S3). Compiled into options.pb, with
+// descriptor.proto, by:
+//
+//   protoc --include_imports --descriptor_set_out=options.pb options.proto
+
+syntax = "proto2";
+
+package opts;
+
+import "google/protobuf/descriptor.proto";
+
+option (file_tag) = "file";
+option (file_numbers) = 3;
+option (file_numbers) = 1;
+option (file_numbers) = 2;
+
+message Point {
+  optional int32 x = 1;
+  optional int32 y = 2;
+  repeated string labels = 3;
+}
+
+enum Color {
+  option (enum_tag) = "colors";
+
+  RED = 0 [(value_weight) = 1.5];
+  GREEN = 1;
+}
+
+message Target {
+  option (message_point) = { x: 1 y: -2 labels: "b" labels: "a" };
+  option deprecated = true;
+
+  optional string name = 1 [(field_color) = GREEN, deprecated = true];
+  repeated sint64 values = 2 [packed = true];
+  map<string, int32> counts = 3;
+  optional bytes blob = 4 [default = "\001\377"];
+  optional Point at = 5;
+
+  oneof choice {
+    option (oneof_tag) = 7;
+
+    int32 a = 6;
+    string b = 7;
+  }
+
+  extensions 100 to 199;
+}
+
+extend Target {
+  optional int32 extra = 100;
+}
+
+service Svc {
+  option (service_tag) = true;
+
+  rpc Call(Target) returns (Point) {
+    option (method_level) = 2;
+  }
+}
+
+extend google.protobuf.FileOptions {
+  optional string file_tag = 50001;
+  repeated int32 file_numbers = 50002;
+}
+
+extend google.protobuf.MessageOptions {
+  optional Point message_point = 50001;
+}
+
+extend google.protobuf.FieldOptions {
+  optional Color field_color = 50001;
+}
+
+extend google.protobuf.OneofOptions {
+  optional int32 oneof_tag = 50001;
+}
+
+extend google.protobuf.EnumOptions {
+  optional string enum_tag = 50001;
+}
+
+extend google.protobuf.EnumValueOptions {
+  optional double value_weight = 50001;
+}
+
+extend google.protobuf.ServiceOptions {
+  optional bool service_tag = 50001;
+}
+
+extend google.protobuf.MethodOptions {
+  optional uint32 method_level = 50001;
+}
