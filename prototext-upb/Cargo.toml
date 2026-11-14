@@ -24,6 +24,7 @@ include = [
     "tests/descriptor_access.rs",
     "tests/message.rs",
     "tests/pool.rs",
+    "tests/text_format.rs",
     "tests/threads.rs",
     "tests/fixtures/*",
     "vendor/LICENSE",

@@ -1,0 +1,45 @@
+// SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+//
+// SPDX-License-Identifier: MIT
+
+// Custom options protoc prints as `N { … }` without their schema, declared
+// in the file that uses them, for the correction of spec 0426: a value
+// framed as a group, a message, and strings whose bytes happen to read as
+// a message, with a group inside, empty or not.
+// Compiled, and printed, by:
+//
+//   protoc --include_imports --descriptor_set_out=delimited.pb delimited.proto
+//   protoc --decode=google.protobuf.FileDescriptorSet \
+//       google/protobuf/descriptor.proto < delimited.pb > delimited.txtpb
+
+edition = "2023";
+
+package dlm;
+
+import "google/protobuf/descriptor.proto";
+
+message Holder {
+  option (dlm.as_group) = { x: 1 inner { y: 2 } };
+  option (dlm.as_message) = { x: 3 };
+  // `s` … `t`: a group 14 inside, not empty (W2).
+  option (dlm.as_string) = "shoppingProduct";
+  // `st`: an empty group 14 inside, which only a group can be (no W2).
+  option (dlm.as_string_exact) = "UrlList";
+}
+
+message Value {
+  int32 x = 1;
+  // Delimited inside the value too: re-framed where it is nested.
+  Inner inner = 2 [features.message_encoding = DELIMITED];
+
+  message Inner {
+    int32 y = 1;
+  }
+}
+
+extend google.protobuf.MessageOptions {
+  Value as_group = 50001 [features.message_encoding = DELIMITED];
+  Value as_message = 50002;
+  string as_string = 50003;
+  string as_string_exact = 50004;
+}

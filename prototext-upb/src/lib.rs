@@ -20,11 +20,13 @@
 //! [`Pool::add_file`] takes a write lock, and every lookup by name or
 //! number on the pool a read lock.
 
+pub mod delimited;
 pub mod descriptor;
 pub mod descriptor_access;
 mod ffi;
 mod message;
 mod set;
+pub mod text_format;
 
 pub use message::{
     DynamicMessage, List, MapRef, MessageError, MessageMut, MessageRef, Scalar, Value,
@@ -520,6 +522,13 @@ macro_rules! handle {
             /// without cloning the handle.
             pub fn id(&self) -> usize {
                 self.ptr.as_ptr() as usize
+            }
+
+            /// The pool the definition belongs to.
+            pub fn pool(&self) -> Pool {
+                Pool {
+                    inner: self.pool.clone(),
+                }
             }
 
             /// [`Pool::generation`] of the pool the definition belongs to.

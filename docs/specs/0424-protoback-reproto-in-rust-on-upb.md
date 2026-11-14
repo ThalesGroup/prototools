@@ -19,6 +19,8 @@ Refs: docs/specs/0415-prototext-on-upb.md (the upb bundle, its
       the new surface joins);
       docs/specs/0266-a-payload-with-any-flaw-in-it-is-not-a-message.md
       (the probe every descriptor passes);
+      docs/specs/0426-protocs-text-of-unknown-fields-read-back.md (the
+      rules S5 reads protoc's text of unknown fields back by);
       docs/specs/0369-fdp-plugin-applied-at-every-parse.md (the plugin
       contract S9 carries over);
       docs/specs/0063-reproto-instantiate-schema.md (the instance
@@ -239,9 +241,28 @@ S5 writes one, to Google's published grammar.
   `:` before a message, `[a, b]` lists, adjacent string literals, C
   escapes, float forms (`1f`, `inf`, `-nan`), enums by name or number,
   `[pkg.ext]` extensions resolved in the pool, expanded `Any`
-  (`[type.googleapis.com/…]`), and the skipping of unknown fields and
-  extensions that reproto asks of `text_format.Parse`. Errors carry the
-  line and column.
+  (`[type.googleapis.com/…]`). Errors carry the line and column.
+  - **Fields by number are kept.** `protoc --decode` prints a field it
+    does not know, custom options among them, by number. Python's
+    `text_format`, which reproto uses, cannot keep a field it does not
+    know, and drops it: on the options fixture of `prototext-upb`,
+    reproto renders 11 custom options from the binary set and none from
+    its text form. The parser keeps such a field as unknown bytes, as
+    protoc printed it: a decimal number is a varint, `0x` and 8 or 16
+    hex digits a fixed32 or a fixed64, a string length-delimited.
+  - **Corrected once everything is read.** protoc, without the options'
+    schema, prints a string that happens to read as a message as a
+    message, and a group as it prints a length-delimited message, both
+    `N { … }`. Once every file of the input is read, binary and text, a
+    correction re-frames each such value from the table of what the
+    input declares; where the declarations cannot settle it, it takes
+    the likely framing and warns. Spec 0426 has the rules, their
+    rationale and their limits.
+  - **One implementation.** reproto calls the parser and the correction
+    through `prototext_codec_lib`, in place of Python's `text_format`,
+    so both tools read text identically; the variants' import section,
+    which loaded `_pb2` modules so that `text_format` would find their
+    extensions, goes.
 - **S6. Descriptors as messages.** protoback reads and writes
   descriptors as upb messages of `descriptor.proto`'s types, through
   S3, with typed accessors over the reflection; not through upb's
@@ -437,7 +458,7 @@ finds is fixed in the step that introduced it.
 | 0 | The sparse minimization (spec 0425), in `prototext-graph` | Spec 0425's test plan: the same partition and the same `.rkyv` bytes on every fixture and googleapis; `build_graph` timed before and after. |
 | 1 | The reference: S1's fixes, S2's launcher, the harness (S11) with reproto on both sides, `scripts/bench-protoback` with reproto alone | reproto's suite green after each fix; the harness runs reproto against itself on every corpus with no difference; the baseline timings recorded. |
 | 2 | `prototext-upb`: reflection and definitions (S3, S4, S6), threads (S19) | Test plan 2 and 4; the ThreadSanitizer test. |
-| 3 | `prototext-upb`: the text-format parser (S5) | Test plan 3. |
+| 3 | `prototext-upb`: the text-format parser, the declaration table and the group correction (S5); their PyO3 binding; reproto switched to them, the variants' import section removed | Test plan 3; reproto's 11 options from the text form of the options fixture; a group-typed option declared in its own file; a warning for an extension declared nowhere; reproto's suite and the harness. |
 | 4 | protoback: loading, the pool, phases 1–6, the clap skeleton (S7) | A hidden `--dump-graph`, added to both, identical on every corpus: nodes, flags, seeds, summoned files, in order. These phases timed. |
 | 5 | Rendering, in stages: structure; built-in options; custom and message-valued options; editions and `--force-proto2-*`; comments and SourceCodeInfo; `--emit-binary` (S8, S17, S18) | After each stage, the harness's `--proto-out` and `.pb` comparison passes on every corpus, with `--jobs 1` and all cores. Rendering timed. |
 | 6 | Scoring graphs and the schema database (S20), `--emit-scoring-yaml`, the HTML | The schema database byte-identical, WKT's reproducing `prototext/wkt/prebuilt`; googleapis timed against S16. |
@@ -527,7 +548,12 @@ not the exact round trip.
    back to the same bytes.
 3. **S5:** each grammar case, and the googleapis descriptor set in text
    format, parsed by S5, by Python's `text_format` and by
-   `protoc --encode`: the same binary.
+   `protoc --encode`: the same binary where they all know every field.
+   Where only S5 keeps a field (by number), protoc's text of a binary set
+   parsed and corrected gives back that binary set, byte for byte, groups
+   included when their extension is declared in the input; the
+   correction's group rule against upb's resolution of the same
+   declarations.
 4. **S3–S5, fuzzing:** the new entry points in spec 0419's targets,
    under AddressSanitizer.
 5. **S9:** a plugin that changes a descriptor, through the Python

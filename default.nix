@@ -149,6 +149,9 @@ let
         ./prototext-upb/vendor
         ./prototext-upb/src/shim.c
         (fixtureFilter ./prototext-upb/tests/fixtures)
+        # The text forms of two of those sets, as protoc --decode prints
+        # them, which the text-format tests parse (spec 0424 S5).
+        (pkgs.lib.fileset.fileFilter (f: f.hasExt "txtpb") ./prototext-upb/tests/fixtures)
         ./README.md
       ])
       (pkgs.lib.fileset.unions [
