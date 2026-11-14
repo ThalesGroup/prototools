@@ -15,7 +15,6 @@ import importlib
 import importlib.resources
 import os
 import subprocess
-import sys
 from pathlib import Path
 
 import yaml
@@ -30,6 +29,7 @@ from reproto.feature_resolution import (
     build_edition_defaults,
     resolve_features,
 )
+from reproto.tests.conftest import REPROTO_CMD
 
 
 # ---------------------------------------------------------------------------
@@ -311,7 +311,7 @@ def test_editions_resolution_golden(tmp_path: Path) -> None:
         pythonpath_parts.append(existing)
 
     reproto_cmd = [
-        sys.executable, "-m", "reproto.cli",
+        *REPROTO_CMD,
         "--use-variant", "descriptor",
         f"-I{orig_dir}",
         "--dump-resolved-features", "editions_resolution.proto",
@@ -365,7 +365,7 @@ def test_nested_message_inherits_the_enclosing_messages_features(tmp_path: Path)
     env = {**os.environ, "PYTHONPATH": os.pathsep.join(pythonpath_parts)}
     env.pop("REPROTO_VARIANT", None)
     result = subprocess.run(
-        [sys.executable, "-m", "reproto.cli", "--use-variant", "descriptor",
+        [*REPROTO_CMD, "--use-variant", "descriptor",
          f"-I{tmp_path}", "--dump-resolved-features", "nested_features.proto",
          str(pb_path)],
         capture_output=True, text=True, env=env,

@@ -4,14 +4,25 @@
 
 """Pytest configuration for reproto tests."""
 
+import os
+import shlex
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
+
+# The command the CLI tests run (spec 0424 S2): this tree's reproto by
+# default; `REPROTO="protoback"` or any other command line runs the same
+# tests against it.
+REPROTO_CMD: list[str] = (
+    shlex.split(os.environ["REPROTO"]) if os.environ.get("REPROTO")
+    else [sys.executable, "-m", "reproto.cli"]
+)
 
 
 @pytest.fixture(autouse=True)

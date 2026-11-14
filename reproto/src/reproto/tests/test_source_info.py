@@ -12,7 +12,6 @@ synthesis. All gated by --source-info/--no-source-info.
 from __future__ import annotations
 
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -24,13 +23,14 @@ from google.protobuf.descriptor_pb2 import (
 )
 
 from reproto.tests.test_emit_binary import _build_env, _get_fixture_path
+from reproto.tests.conftest import REPROTO_CMD
 
 FIXTURE = "message_comprehensive.proto"
 
 
 def _run_reproto(orig_dir: Path, out_dir: Path, extra_args: list[str]) -> None:
     cmd = [
-        sys.executable, "-m", "reproto.cli",
+        *REPROTO_CMD,
         "--use-variant", "descriptor",
         "--emit-binary",
         f"-I{orig_dir}",

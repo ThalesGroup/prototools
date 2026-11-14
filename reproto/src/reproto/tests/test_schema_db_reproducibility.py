@@ -35,9 +35,9 @@ from __future__ import annotations
 import hashlib
 import os
 import subprocess
-import sys
 import textwrap
 from pathlib import Path
+from reproto.tests.conftest import REPROTO_CMD
 
 _BUILDS = 4
 
@@ -84,7 +84,7 @@ def _build_db(tmp_path: Path, pb_path: Path, tag: str) -> Path:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     result = subprocess.run(
         [
-            sys.executable, "-m", "reproto.cli",
+            *REPROTO_CMD,
             "--use-variant", "descriptor",
             f"--proto-out={tmp_path / tag / 'out'}",
             f"--schema-db-out={db_path}",

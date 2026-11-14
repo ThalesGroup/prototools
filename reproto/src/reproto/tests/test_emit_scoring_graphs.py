@@ -13,14 +13,13 @@ TC-6 (spec 0086) covers canonized output paths when a variant rewrites file name
 from __future__ import annotations
 
 import os
-import sys
 import subprocess
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from reproto.tests.conftest import compile_proto, FIXTURES_DIR
+from reproto.tests.conftest import FIXTURES_DIR, REPROTO_CMD, compile_proto
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -50,7 +49,7 @@ def _run_reproto(
     include_flags = [f"-I{d}" for d in dirs]
 
     cmd = [
-        sys.executable, "-m", "reproto.cli",
+        *REPROTO_CMD,
         "--use-variant", "descriptor",
         *include_flags,
         f"--proto-out={out_dir}",
@@ -534,7 +533,7 @@ def test_TC6_canonized_output_paths(tmp_path: Path) -> None:
 
     result = subprocess.run(
         [
-            sys.executable, "-m", "reproto.cli",
+            *REPROTO_CMD,
             "--proto-variant", str(variant_yaml),
             "--use-variant", "descriptor",
             f"-I{FIXTURES_DIR}",

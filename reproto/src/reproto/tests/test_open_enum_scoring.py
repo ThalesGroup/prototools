@@ -31,9 +31,9 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-import sys
 import textwrap
 from pathlib import Path
+from reproto.tests.conftest import REPROTO_CMD
 
 # Paint{ color: 99 } -- field 1, varint, a number no declared value has.
 _UNKNOWN_VALUE_PAYLOAD = b"\x08\x63"
@@ -71,7 +71,7 @@ def _build_db(tmp_path: Path, name: str, proto: str) -> Path:
     db_path = tmp_path / name / f"{name}.desc"
     result = subprocess.run(
         [
-            sys.executable, "-m", "reproto.cli",
+            *REPROTO_CMD,
             "--use-variant", "descriptor",
             f"--proto-out={tmp_path / name / 'out'}",
             f"--schema-db-out={db_path}",

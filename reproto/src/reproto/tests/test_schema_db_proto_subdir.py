@@ -14,8 +14,8 @@ from __future__ import annotations
 
 import os
 import subprocess
-import sys
 from pathlib import Path
+from reproto.tests.conftest import REPROTO_CMD
 
 _ERROR_MARKER = "only an immediate 'proto' child directory is allowed"
 
@@ -29,7 +29,7 @@ def _run(db_path: Path, proto_out: Path, dummy_pb: Path) -> subprocess.Completed
     env.pop("REPROTO_VARIANT", None)
 
     cmd = [
-        sys.executable, "-m", "reproto.cli",
+        *REPROTO_CMD,
         f"--schema-db-out={db_path}",
         f"-O{proto_out}",
         str(dummy_pb),
@@ -79,7 +79,7 @@ def test_N1_no_schema_db_out_is_unaffected(tmp_path: Path) -> None:
     env.pop("REPROTO_VARIANT", None)
 
     cmd = [
-        sys.executable, "-m", "reproto.cli",
+        *REPROTO_CMD,
         f"-O{tmp_path / 'out'}",
         str(tmp_path / "missing.pb"),
     ]

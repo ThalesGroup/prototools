@@ -592,8 +592,45 @@ print('\n'.join(lines[:$N_EXTRA]))
     touch $out
   '';
 
+  # The differential harness of spec 0424 S11: a reference and a candidate
+  # run the same cases, every output compared byte for byte. Until protoback
+  # exists, reproto runs on both sides, so a difference is nondeterminism in
+  # reproto itself. protobackHarness is part of `ci`; protobackHarnessFull
+  # adds googleapis, three minutes a side, and is part of `full-tests`.
+  protobackHarnessSrc =
+    let fs = pkgs.lib.fileset; in
+    fs.toSource {
+      root = ../.;
+      fileset = fs.difference
+        (fs.unions [
+          ../scripts/protoback-harness
+          ../reproto/src/reproto/tests/fixtures
+          ../prototext/wkt/SOURCES
+          ../tests/fixtures/anomalies.pb
+        ])
+        (fs.fileFilter (f: f.hasExt "pyc") ../reproto/src/reproto/tests/fixtures);
+    };
+
+  mkProtobackHarness = name: prepareFlags: pkgs.runCommand name {
+    strictDeps = true;
+    nativeBuildInputs = [ pkgs.protobuf reproto pythonPkgs.python ];
+  } ''
+    set -euo pipefail
+    harness=${protobackHarnessSrc}/scripts/protoback-harness
+    python3 "$harness" prepare "$TMPDIR/work" --otel ${corpusOtel} ${prepareFlags}
+    python3 "$harness" run "$TMPDIR/work" \
+      --reference reproto --candidate reproto --jobs "$NIX_BUILD_CORES"
+    cp "$TMPDIR/work/report.txt" "$out"
+  '';
+
+  protobackHarness = mkProtobackHarness "protoback-harness" "";
+  protobackHarnessFull = mkProtobackHarness "protoback-harness-full"
+    "--googleapis ${googleapisPbs}/googleapis.pb";
+
 in {
   inherit
+    protobackHarness
+    protobackHarnessFull
     reprotoSrc
     treeSitterTextprotoPkg
     reprotoPropagatedDeps

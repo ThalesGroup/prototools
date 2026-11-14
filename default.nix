@@ -628,6 +628,7 @@ let
     wktDb wktPrebuiltCheck prototextFixturesCheck
     prototoolsClosureCheck
     completionTests
+    python.protobackHarness
     # nixpkgsStaging builds in its own workflow (nixpkgs-staging.yml): two
     # more full Rust builds would weigh on every CI run. The check stays.
     nixpkgsStagingCheck
@@ -807,6 +808,7 @@ let
 
   full-tests = pkgs.linkFarmFromDrvs "full-tests" [
     ci python.googleapisDb python.googleapisTests python.customDb python.customTests
+    python.protobackHarnessFull
   ];
 
 in
@@ -836,6 +838,8 @@ in
   googleapis-tests     = python.googleapisTests;
   custom-db            = python.customDb;
   custom-tests         = python.customTests;
+  protoback-harness    = python.protobackHarness;
+  protoback-harness-full = python.protobackHarnessFull;
   bobapp-desc          = python.bobappDesc;
   bobapp-extra-desc    = python.bobappExtraDesc;
   bobapp               = bobappDemo;

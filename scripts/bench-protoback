@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# Time and measure reproto or protoback on spec 0424 S21's cases.
+#
+# Usage: scripts/bench-protoback CMD OUTDIR
+#
+#   CMD     the command line to measure: `reproto`, `protoback`, ...
+#   OUTDIR  where times.json (hyperfine) and rss.txt (peak resident size
+#           of one run of each case, in KiB) are written
+#
+# Environment:
+#   BENCH_CORPUS  a corpus prepared by `scripts/protoback-harness prepare`;
+#                 the googleapis case runs only if it was prepared with
+#                 --googleapis
+#   BENCH_CPUS    the vCPUs to pin to (default 0-7: both clusters of
+#                 docs/prototext/bench-process.md, whole; protoback is
+#                 multi-threaded)
+#
+# Pinned and exclusive like bin/bench: the machine-wide bench lock, so a
+# build cannot overlap a measurement. Each run starts in an empty directory.
+set -euo pipefail
+
+cmd=$1
+out=$(realpath -m "$2")
+corpus=$(realpath "${BENCH_CORPUS:?set BENCH_CORPUS to a prepared harness corpus}")
+cpus=${BENCH_CPUS:-0-7}
+mkdir -p "$out"
+run=$out/run
+
+unset REPROTO_VARIANT PROTOTEXT_DESCRIPTOR_SET PROTOTEXT_DEFAULT_DESCRIPTOR
+
+# The flags of wktRkyv, customDb and googleapisDb (nix/python.nix,
+# default.nix), as scripts/protoback-harness runs them.
+declare -A cases=(
+    [wkt]="$cmd -I $corpus/wkt --schema-db-out=out/wkt-db.desc --emit-extension-ranges -O out/wkt-db/proto wkt.desc"
+    [custom]="$cmd --use-variant all --force-proto2-for-editions -I $corpus/custom --proto-out=out/custom/proto --emit-scoring-yaml --schema-db-out=out/custom.desc ."
+    [googleapis]="$cmd --use-variant all --force-proto2-for-editions -I $corpus/googleapis --proto-out=out/googleapis/proto --emit-scoring-yaml --emit-binary --schema-db-out=out/googleapis.desc googleapis.pb"
+)
+names=(wkt)
+[[ -d $corpus/custom ]] && names+=(custom)
+[[ -d $corpus/googleapis ]] && names+=(googleapis)
+
+exec 8>/tmp/prototools-bench.lock
+flock -n 8 || { echo "bench-protoback: a build or bench holds the lock" >&2; exit 1; }
+
+# googleapis takes minutes a run: three runs, no warmup.
+for n in "${names[@]}"; do
+    if [[ $n == googleapis ]]; then runs=(--runs 3); else runs=(--warmup 1 --min-runs 5); fi
+    taskset -c "$cpus" hyperfine "${runs[@]}" \
+        --prepare "rm -rf $run && mkdir -p $run" \
+        --export-json "$out/$n.json" -n "$n" \
+        "cd $run && ${cases[$n]} > /dev/null 2>&1"
+done
+
+: > "$out/rss.txt"
+for n in "${names[@]}"; do
+    rm -rf "$run" && mkdir -p "$run"
+    kib=$(cd "$run" && taskset -c "$cpus" python3 -c '
+import resource, subprocess, sys
+subprocess.run(sys.argv[1], shell=True, stdout=subprocess.DEVNULL,
+               stderr=subprocess.DEVNULL, check=True)
+print(resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)' "${cases[$n]}")
+    printf '%-12s %s\n' "$n" "$kib" >> "$out/rss.txt"
+done
+rm -rf "$run"
+cat "$out/rss.txt"

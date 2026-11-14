@@ -19,10 +19,9 @@ from __future__ import annotations
 
 import os
 import subprocess
-import sys
 from pathlib import Path
 
-from reproto.tests.conftest import compile_proto, FIXTURES_DIR
+from reproto.tests.conftest import FIXTURES_DIR, REPROTO_CMD, compile_proto
 
 # A plugin that adds an import of plugin_target.proto to plugin_subject.
 ADD_IMPORT = """
@@ -74,7 +73,7 @@ def _run_reproto(
 
     dirs = include_dirs if include_dirs is not None else [FIXTURES_DIR]
     cmd = [
-        sys.executable, "-m", "reproto.cli",
+        *REPROTO_CMD,
         "--use-variant", "descriptor",
         *[f"-I{d}" for d in dirs],
         f"--proto-out={out_dir}",

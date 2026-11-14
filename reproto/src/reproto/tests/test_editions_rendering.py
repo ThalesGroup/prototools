@@ -16,7 +16,6 @@ import importlib
 import importlib.resources
 import os
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -43,6 +42,7 @@ from reproto.syntax import (
     packed_option,
     should_render_default,
 )
+from reproto.tests.conftest import REPROTO_CMD
 
 
 # ---------------------------------------------------------------------------
@@ -323,7 +323,7 @@ def test_T13_editions_rendering_golden(tmp_path: Path) -> None:
         pythonpath_parts.append(existing)
 
     reproto_cmd = [
-        sys.executable, "-m", "reproto.cli",
+        *REPROTO_CMD,
         "--use-variant", "descriptor",
         f"-I{orig_dir}",
         f"--proto-out={out_dir}",
@@ -395,7 +395,7 @@ def test_T14_force_proto2_output_golden(tmp_path: Path) -> None:
         pythonpath_parts.append(existing)
 
     reproto_cmd = [
-        sys.executable, "-m", "reproto.cli",
+        *REPROTO_CMD,
         "--use-variant", "descriptor",
         "--force-proto2-output",
         f"-I{orig_dir}",

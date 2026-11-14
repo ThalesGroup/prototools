@@ -16,11 +16,11 @@ from __future__ import annotations
 
 import os
 import subprocess
-import sys
 import textwrap
 from pathlib import Path
 
 from google.protobuf.descriptor_pb2 import FileDescriptorSet
+from reproto.tests.conftest import REPROTO_CMD
 
 
 def _write_proto(path: Path, package: str, message: str) -> None:
@@ -82,7 +82,7 @@ def _run(variant: Path, db_path: Path, out_dir: Path, *pb_paths: Path) -> subpro
     env.pop("REPROTO_VARIANT", None)
 
     cmd = [
-        sys.executable, "-m", "reproto.cli",
+        *REPROTO_CMD,
         f"--proto-variant={variant}",
         f"--proto-out={out_dir}",
         f"--schema-db-out={db_path}",

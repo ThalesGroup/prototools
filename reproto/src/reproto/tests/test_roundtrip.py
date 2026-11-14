@@ -16,12 +16,12 @@ import importlib
 import importlib.resources
 import os
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
 from reproto.tests.proto_normalize import normalize_proto_batch, pb_diff, pb_diff_fields
+from reproto.tests.conftest import REPROTO_CMD
 
 
 
@@ -196,7 +196,7 @@ def _run_roundtrip(
         pythonpath_parts.append(existing_pythonpath)
 
     reproto_cmd = [
-        sys.executable, "-m", "reproto.cli",
+        *REPROTO_CMD,
         "--use-variant", "descriptor",
         f"-I{orig_dir}",
         f"--proto-out={new_dir}",
@@ -366,7 +366,7 @@ def test_roundtrip_use_variant_all_wkt(tmp_path: Path) -> None:
 
     reproto_result = subprocess.run(
         [
-            sys.executable, "-m", "reproto.cli",
+            *REPROTO_CMD,
             "--use-variant", "descriptor",
             "--use-variant", "all",
             f"-I{orig_dir}",
@@ -427,7 +427,7 @@ def test_roundtrip_use_variant_all_api(tmp_path: Path) -> None:
 
     reproto_result = subprocess.run(
         [
-            sys.executable, "-m", "reproto.cli",
+            *REPROTO_CMD,
             "--use-variant", "descriptor",
             "--use-variant", "all",
             "--emit-scoring-yaml",
@@ -491,7 +491,7 @@ def test_scoring_graph_pruned_dependency(tmp_path: Path) -> None:
 
     reproto_result = subprocess.run(
         [
-            sys.executable, "-m", "reproto.cli",
+            *REPROTO_CMD,
             "--use-variant", "descriptor",
             "--emit-scoring-yaml",
             f"-I{orig_dir}",

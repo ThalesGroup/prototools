@@ -17,12 +17,12 @@ from __future__ import annotations
 
 import os
 import subprocess
-import sys
 import textwrap
 from pathlib import Path
 
 from google.protobuf.descriptor_pb2 import FileDescriptorSet
 from google.protobuf.descriptor_pool import DescriptorPool
+from reproto.tests.conftest import REPROTO_CMD
 
 
 # create_option_message_classes() (option_messages.py) hardcodes the
@@ -82,7 +82,7 @@ def _run(
     env.pop("REPROTO_VARIANT", None)
 
     cmd = [
-        sys.executable, "-m", "reproto.cli",
+        *REPROTO_CMD,
         f"--proto-variant={variant}",
         f"--proto-out={out_dir}",
         f"--schema-db-out={db_path}",

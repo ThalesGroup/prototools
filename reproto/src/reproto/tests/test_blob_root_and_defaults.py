@@ -16,10 +16,10 @@ from __future__ import annotations
 
 import os
 import subprocess
-import sys
 from pathlib import Path
 
 from google.protobuf import descriptor_pb2
+from reproto.tests.conftest import REPROTO_CMD
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -36,7 +36,7 @@ def _run(*args: str) -> subprocess.CompletedProcess[str]:
     # and supplying it as a third blob member would put a 6 KB descriptor
     # in the middle of tests that are about paths and defaults.
     return subprocess.run(
-        [sys.executable, "-m", "reproto.cli", "--use-variant=descriptor", *args],
+        [*REPROTO_CMD, "--use-variant=descriptor", *args],
         capture_output=True, text=True, env=env,
     )
 

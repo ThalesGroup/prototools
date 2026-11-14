@@ -12,12 +12,12 @@ space of its own, so a decompiled comment reads as the original did.
 from __future__ import annotations
 
 import subprocess
-import sys
 from pathlib import Path
 
 from google.protobuf.descriptor_pb2 import FileDescriptorProto, FileDescriptorSet
 
 from reproto.tests.test_emit_binary import _build_env, _get_fixture_path
+from reproto.tests.conftest import REPROTO_CMD
 
 FIXTURE = "comments.proto"
 
@@ -54,7 +54,7 @@ def _decompile(tmp_path: Path) -> tuple[FileDescriptorProto, str]:
     fdp = _compile(orig_dir, FIXTURE, pb)
     r = subprocess.run(
         [
-            sys.executable, "-m", "reproto.cli",
+            *REPROTO_CMD,
             "--use-variant", "descriptor",
             f"-I{orig_dir}",
             f"--proto-out={out_dir}",

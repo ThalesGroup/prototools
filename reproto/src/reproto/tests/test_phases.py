@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import os
 import subprocess
-import sys
 from pathlib import Path
 
 from google.protobuf.descriptor_pb2 import (
@@ -22,7 +21,7 @@ from google.protobuf.descriptor_pb2 import (
 
 from google.protobuf import text_format
 
-from reproto.tests.conftest import FIXTURES_DIR, compile_proto, compile_proto_multi
+from reproto.tests.conftest import FIXTURES_DIR, REPROTO_CMD, compile_proto, compile_proto_multi
 
 
 # ---------------------------------------------------------------------------
@@ -46,7 +45,7 @@ def _run_reproto(
     include_flags = [f"-I{d}" for d in dirs]
 
     cmd = [
-        sys.executable, "-m", "reproto.cli",
+        *REPROTO_CMD,
         "--use-variant", "descriptor",
         *include_flags,
         f"--proto-out={out_dir}",

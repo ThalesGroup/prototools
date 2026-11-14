@@ -14,11 +14,10 @@ TC-5 reuses the bridge_lex_*.proto fixtures.
 from __future__ import annotations
 
 import os
-import sys
 import subprocess
 from pathlib import Path
 
-from reproto.tests.conftest import compile_proto, FIXTURES_DIR
+from reproto.tests.conftest import FIXTURES_DIR, REPROTO_CMD, compile_proto
 
 
 # ---------------------------------------------------------------------------
@@ -43,7 +42,7 @@ def _run_reproto(
     include_flags = [f"-I{d}" for d in dirs]
 
     cmd = [
-        sys.executable, "-m", "reproto.cli",
+        *REPROTO_CMD,
         "--use-variant", "descriptor",
         *include_flags,
         f"--proto-out={out_dir}",

@@ -49,24 +49,27 @@ HTML reports from Criterion runs are written to `target/criterion/`.
 
 ## Machine configuration
 
-The development VM is given the host's **eight E-cores, mapped one-to-one**
-onto guest vCPUs 0–7.  The host is an Intel Core Ultra 7 165U, whose full
-topology is asymmetric, but the slice handed to the VM deliberately is not:
+The host is an Intel Core Ultra 7 165U, whose topology is asymmetric. The
+development VM has 12 vCPUs, each pinned to one host CPU (`virsh vcpupin`,
+`lscpu -e` on the host, 2026-11-14):
 
-| vCPU | kind | clock | L2 |
-| --- | --- | --- | --- |
-| 0–3 | E-core cluster | uniform | shared by the four |
-| 4–7 | E-core cluster | uniform | shared by the four |
+| vCPU | host CPU | kind | clock | L2 |
+| --- | --- | --- | --- | --- |
+| 0–3 | 4–7 | E-core cluster | 3.8 GHz | shared by the four |
+| 4–7 | 8–11 | E-core cluster | 3.8 GHz | shared by the four |
+| 8–11 | 0–3 | the two P-cores, two threads each (8–9, 10–11) | 4.9 GHz | per core |
 
-The host's P-cores and its two LP E-cores are **excluded from the VM
-entirely**.  A guest scheduler cannot see capacity asymmetry — ITMT/EAS
-capacity is not exposed to a VM — so given a mixed set it would happily place
-a single-threaded link step on the slowest core and make build times
-unpredictable for no gain.  Handing the guest one uniform class removes the
-placement lottery at its source rather than compensating for it downstream.
+The two LP E-cores (host CPUs 12–13, 2.1 GHz) are not given to the VM.
 
-What is left is a single asymmetry, and it is a *cache* one: the two clusters
-each have their own L2.
+**Measurements use vCPUs 0–7 only**, the eight E-cores: one uniform class,
+in two clusters, each with its own L2. vCPUs 8–11 are a different class, and
+not even a uniform one: each pair shares a physical core (SMT), and the spin
+probe below finds 8 and 10, the first thread of each P-core, as slow as an
+E-core, and 9 and 11 twice as fast, presumably because the host runs on the
+first threads itself. A guest scheduler cannot see any of this — ITMT/EAS
+capacity is not exposed to a VM — so builds that spread over all 12 vCPUs
+land on cores of unpredictable speed; that costs build-time predictability,
+not correctness.
 
 **This structure is invisible from inside the VM.**  Guest sysfs reports every
 vCPU with a private 2 MB L2 (`cache/index2/shared_cpu_list` naming only
@@ -74,9 +77,9 @@ itself) and empty `thread_siblings_list`/`core_siblings_list`; no `cpufreq` is
 exposed at all.  The table above is therefore knowledge about the host, not
 something a probe or a program can recover — which also means code that plans
 thread placement from kernel-declared topology, such as protolens'
-`affinity::plan`, treats all eight vCPUs as unrelated peers here.
+`affinity::plan`, treats all twelve vCPUs as unrelated peers here.
 
-**Compilation is unrestricted** across all 8 vCPUs.  **Measurements are
+**Compilation is unrestricted** across all 12 vCPUs.  **Measurements are
 pinned** to the 4–7 cluster, which is exactly one L2: the measurement owns
 that cache outright, and nothing running on 0–3 can evict from it.
 
@@ -129,11 +132,13 @@ TIMEFORMAT='%3R'
 for c in $(seq 0 13); do printf "vcpu %2d: " "$c"; { time taskset -c $c ./spin; } 2>&1; done
 ```
 
-Measured 2026-08-14: vCPUs 0–7 at 0.264–0.272 s — a 1.03× spread, i.e. one
-uniform class, as intended — and vCPUs 8–13 rejected with `failed to set
-affinity: Invalid argument`.  A grouping in this output means the VM has been
-given a mixed set and needs reconfiguring, not that the benchmark should route
-around it.
+Measured 2026-08-14, when the VM had vCPUs 0–7 only: 0.264–0.272 s, a 1.03×
+spread, one uniform class, and vCPUs 8–13 rejected with `failed to set
+affinity: Invalid argument`.  Measured 2026-11-14, with another spin loop,
+after the P-cores' threads were added as vCPUs 8–11: vCPUs 0–7 at 0.56–0.62 s,
+one class still; 8 and 10 at 0.56 s; 9 and 11 at 0.26–0.28 s; 8 and 9 run
+together, 0.47 s, against 0.28 s for 9 alone.  A measurement stays inside one
+group of this output: here, vCPUs 0–7.
 
 The probe says nothing about the L2 clusters: two cores sharing an L2 run a
 register-bound loop at identical speed, and, as noted above, the guest cannot

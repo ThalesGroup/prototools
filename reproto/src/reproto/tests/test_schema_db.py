@@ -16,12 +16,11 @@ from __future__ import annotations
 
 import os
 import subprocess
-import sys
 from pathlib import Path
 
 from google.protobuf.descriptor_pb2 import FileDescriptorSet
 
-from reproto.tests.conftest import FIXTURES_DIR
+from reproto.tests.conftest import FIXTURES_DIR, REPROTO_CMD
 
 
 def _compile(orig_dir: Path, proto_name: str) -> Path:
@@ -57,7 +56,7 @@ def test_G1_schema_db_includes_suppressed_descriptor_proto(tmp_path: Path) -> No
     env.pop("REPROTO_VARIANT", None)
 
     cmd = [
-        sys.executable, "-m", "reproto.cli",
+        *REPROTO_CMD,
         "--use-variant", "descriptor",
         "--no-emit-descriptor",
         f"-I{FIXTURES_DIR}",

@@ -23,14 +23,13 @@ from __future__ import annotations
 
 import os
 import subprocess
-import sys
 from pathlib import Path
 from typing import Any
 
 import yaml
 
 from reproto.phases import _canonical_extension_ranges
-from reproto.tests.conftest import compile_proto, FIXTURES_DIR
+from reproto.tests.conftest import FIXTURES_DIR, REPROTO_CMD, compile_proto
 
 # 2**29 - 1, the largest legal protobuf field number, which is what protoc
 # has already materialized `max` into by the time reproto sees a descriptor.
@@ -54,7 +53,7 @@ def _run_reproto(pb: Path, out_dir: Path, extra_args: list[str]) -> None:
 
     result = subprocess.run(
         [
-            sys.executable, "-m", "reproto.cli",
+            *REPROTO_CMD,
             "--use-variant", "descriptor",
             f"-I{FIXTURES_DIR}",
             f"--proto-out={out_dir}",

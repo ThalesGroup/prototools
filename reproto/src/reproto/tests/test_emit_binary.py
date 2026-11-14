@@ -25,7 +25,6 @@ import importlib
 import importlib.resources
 import os
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -38,6 +37,7 @@ from reproto.tests.test_roundtrip import (
     POLYGLOT_FIXTURES_STRICT,
     get_fixture_content,
 )
+from reproto.tests.conftest import REPROTO_CMD
 
 # All case-1 fixtures: same coverage as the existing roundtrip suite.
 EMIT_BINARY_FIXTURES = (
@@ -66,7 +66,7 @@ def _build_env() -> dict:
 
 def _reproto_cmd(orig_dir: Path, out_dir: Path, extra_args: list[str]) -> list[str]:
     return [
-        sys.executable, "-m", "reproto.cli",
+        *REPROTO_CMD,
         "--use-variant", "descriptor",
         "--emit-binary",
         f"-I{orig_dir}",

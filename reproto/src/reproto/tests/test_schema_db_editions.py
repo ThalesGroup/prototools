@@ -19,11 +19,11 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-import sys
 import textwrap
 from pathlib import Path
 
 from google.protobuf.descriptor_pb2 import Edition, FileDescriptorSet
+from reproto.tests.conftest import REPROTO_CMD
 
 _ED2023_PROTO = """\
     edition = "2023";
@@ -87,7 +87,7 @@ def _build_db(tmp_path: Path, name: str, *flags: str) -> Path:
     out = tmp_path / name
     result = subprocess.run(
         [
-            sys.executable, "-m", "reproto.cli",
+            *REPROTO_CMD,
             "--use-variant", "descriptor",
             *flags,
             f"--proto-out={out / 'proto'}",

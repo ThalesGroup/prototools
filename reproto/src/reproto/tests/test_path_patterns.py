@@ -16,13 +16,12 @@ from __future__ import annotations
 
 import os
 import subprocess
-import sys
 from pathlib import Path
 
 from reproto import Fqdn
 from reproto.load import PathPatterns
 from reproto.phases import fqdn_match
-from reproto.tests.conftest import FIXTURES_DIR, compile_proto, compile_proto_multi
+from reproto.tests.conftest import FIXTURES_DIR, REPROTO_CMD, compile_proto, compile_proto_multi
 
 
 # ---------------------------------------------------------------------------
@@ -85,7 +84,7 @@ def _run_reproto(
     env.pop("REPROTO_VARIANT", None)
 
     cmd = [
-        sys.executable, "-m", "reproto.cli",
+        *REPROTO_CMD,
         "--use-variant", "descriptor",
         f"-I{FIXTURES_DIR}",
         f"--proto-out={out_dir}",

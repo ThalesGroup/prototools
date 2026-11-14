@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Pinned, mutually-exclusive `cargo bench` runner.
 #
-# This VM maps guest vCPU N to host CPU N one-to-one, and is given only the
-# host's eight E-cores: vCPUs 0-7, one uniform clock, in two four-core clusters
-# that each share an L2 (0-3 and 4-7). Benchmarks are pinned to 4-7 — one whole
-# cluster, owning its L2, so nothing on 0-3 can evict from it — while
-# compilation stays free to use all 8 vCPUs. Take both clusters whole (`0-7`)
-# if a measurement needs more than four cores; never straddle them.
+# This VM's vCPUs 0-7 are the host's eight E-cores, one uniform clock, in two
+# four-core clusters that each share an L2 (0-3 and 4-7); vCPUs 8-11 are the
+# P-cores' threads, a faster and uneven class (docs/prototext/bench-process.md).
+# Benchmarks are pinned to 4-7 — one whole cluster, owning its L2, so nothing
+# on 0-3 can evict from it — while compilation stays free to use all 12
+# vCPUs. Take both clusters whole (`0-7`) if a measurement needs more than four
+# cores; never straddle them, and never measure on 8-11.
 #
 # Keeping those two apart is the lock's job, not the operator's: this takes it
 # exclusively, `bin/build` takes it shared. So builds may overlap each other

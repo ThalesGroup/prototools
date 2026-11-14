@@ -1,0 +1,349 @@
+#!/usr/bin/env python3
+"""Differential harness for the Rust port of reproto (spec 0424 S11, S12).
+
+Runs a reference and a candidate command on the same cases, each in an
+empty directory, and compares what they produce, byte for byte: every
+file they write, stdout, stderr and the exit status.
+
+Usage:
+  scripts/protoback-harness prepare WORK [--googleapis PB] [--otel DIR]
+  scripts/protoback-harness run WORK --reference CMD --candidate CMD
+                                [--jobs N] [--only REGEX] [--rename OLD=NEW]
+
+`prepare` builds the corpora under WORK/corpus with protoc; `run` runs
+every case on them and writes WORK/report.txt. CMD is a command line,
+split as a shell would (`reproto`, `python -m reproto.cli`, `protoback`).
+`run` exits 1 if any case differs.
+
+Normalized before comparison, the only differences allowed (S12):
+  - the run directory's own path, in stdout and stderr;
+  - with --rename OLD=NEW, the reference's program name OLD, read as NEW.
+"""
+
+from __future__ import annotations
+
+import argparse
+import concurrent.futures
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import time
+from dataclasses import dataclass
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+FIXTURES = REPO / "reproto/src/reproto/tests/fixtures"
+WKT_SOURCES = REPO / "prototext/wkt/SOURCES"
+ANOMALIES = REPO / "tests/fixtures/anomalies.pb"
+
+# The flag sets every fixture runs with: the options that change the
+# output (S11). A case without a --use-variant of its own gets the
+# embedded descriptor.proto, as the test suite does: without it, reproto
+# stops on any input that does not include descriptor.proto.
+FLAG_SETS: dict[str, list[str]] = {
+    "default": [],
+    "all-variants": ["--use-variant", "all"],
+    "force-proto2-output": ["--force-proto2-output"],
+    "force-proto2-for-editions": ["--force-proto2-for-editions"],
+    "schema-db": ["--emit-binary", "--emit-scoring-yaml",
+                  "--emit-extension-ranges", "--schema-db-out=out/db.desc"],
+}
+DEFAULT_VARIANT = ["--use-variant", "descriptor"]
+
+# googleapisDb's flags (nix/python.nix), and customDb's.
+GOOGLEAPIS_FLAGS = ["--use-variant", "all", "--force-proto2-for-editions",
+                    "--emit-scoring-yaml", "--emit-binary",
+                    "--schema-db-out=out/googleapis.desc"]
+CUSTOM_FLAGS = ["--use-variant", "all", "--force-proto2-for-editions",
+                "--emit-scoring-yaml", "--schema-db-out=out/custom.desc"]
+
+
+# ── prepare ──────────────────────────────────────────────────────────────────
+
+def protoc(*args: str | Path, stdin: bytes | None = None) -> bytes | None:
+    """Run protoc; its stdout, or None if it fails."""
+    r = subprocess.run(["protoc", *map(str, args)], input=stdin,
+                       capture_output=True)
+    return r.stdout if r.returncode == 0 else None
+
+
+def to_text(pb: Path, out: Path) -> None:
+    """A descriptor set in text format, as protoc --decode prints it."""
+    text = protoc("--decode=google.protobuf.FileDescriptorSet",
+                  "google/protobuf/descriptor.proto", stdin=pb.read_bytes())
+    if text is not None:
+        out.write_bytes(text)
+
+
+def prepare(work: Path, googleapis: Path | None, otel: Path | None) -> None:
+    if otel is not None and not (otel / "opentelemetry").is_dir():
+        sys.exit(f"protoback-harness: --otel {otel} is not opentelemetry-proto")
+    if googleapis is not None and not googleapis.is_file():
+        sys.exit(f"protoback-harness: --googleapis {googleapis} is not a file")
+    corpus = work / "corpus"
+    if corpus.exists():
+        shutil.rmtree(corpus)
+    fixtures = sorted(FIXTURES.glob("*.proto"))
+
+    # Each fixture alone (its imports missing) and with its imports, in a
+    # directory of its own: -I gives reproto that directory and no more.
+    for p in fixtures:
+        for kind, extra in (("alone", []), ("imports", ["--include_imports"])):
+            d = corpus / kind / p.stem
+            d.mkdir(parents=True)
+            if protoc(f"-I{FIXTURES}", *extra,
+                      f"--descriptor_set_out={d / (p.stem + '.pb')}", p) is None:
+                shutil.rmtree(d)
+
+    # The well-known types, as wktRkyv compiles them.
+    wkt = corpus / "wkt"
+    wkt.mkdir()
+    sources = [s for s in WKT_SOURCES.read_text().split("\n") if s]
+    assert protoc("--include_imports",
+                  f"--descriptor_set_out={wkt / 'wkt.desc'}", *sources) is not None
+
+    # Text format: the fixtures with their imports, and the WKT (S11 6).
+    text = corpus / "text"
+    for d in sorted((corpus / "imports").iterdir()):
+        (text / d.name).mkdir(parents=True)
+        to_text(d / f"{d.name}.pb", text / d.name / f"{d.name}.textpb")
+    (text / "wkt").mkdir()
+    to_text(wkt / "wkt.desc", text / "wkt" / "wkt.textpb")
+
+    # A blob: descriptors embedded among other bytes, as in a binary.
+    blob = corpus / "blob"
+    blob.mkdir()
+    parts = [bytes(range(256)) * 4]
+    for name in ("address_book", "enum", "service"):
+        parts += [(corpus / "imports" / name / f"{name}.pb").read_bytes(),
+                  b"\x00\xff" * 512]
+    (blob / "blob.bin").write_bytes(b"".join(parts))
+
+    # The demos' anomalies set.
+    demo = corpus / "demo"
+    demo.mkdir()
+    shutil.copy(ANOMALIES, demo / "anomalies.pb")
+
+    # customDb's inputs: some fixtures and opentelemetry-proto, one file each.
+    if otel is not None:
+        custom = corpus / "custom"
+        custom.mkdir()
+        for name in ("field_comprehensive", "default_values_proto2",
+                     "group_proto2", "extensions_proto2", "message_comprehensive",
+                     "packed_proto3", "phone_number", "address_book",
+                     "editions_rendering"):
+            shutil.copy(corpus / "alone" / name / f"{name}.pb", custom)
+        for p in sorted(otel.rglob("*.proto")):
+            rel = p.relative_to(otel)
+            flat = str(rel.with_suffix("")).replace("/", "_")
+            protoc(f"--proto_path={otel}",
+                   f"--descriptor_set_out={custom / (flat + '.pb')}", rel)
+
+    if googleapis is not None:
+        (corpus / "googleapis").mkdir()
+        shutil.copy(googleapis, corpus / "googleapis" / "googleapis.pb")
+
+    print(f"corpus prepared in {corpus}")
+
+
+# ── cases ────────────────────────────────────────────────────────────────────
+
+@dataclass
+class Case:
+    name: str
+    args: list[str]
+
+
+def cases(corpus: Path) -> list[Case]:
+    out: list[Case] = []
+    proto_out = ["--proto-out=out/proto"]
+
+    for d in sorted((corpus / "imports").iterdir()):
+        for flag_name, flags in FLAG_SETS.items():
+            out.append(Case(f"imports/{d.name}/{flag_name}",
+                            ["-I", str(d), *proto_out, *flags, f"{d.name}.pb"]))
+    for d in sorted((corpus / "alone").iterdir()):
+        out.append(Case(f"alone/{d.name}/default",
+                        ["-I", str(d), *proto_out, f"{d.name}.pb"]))
+    for d in sorted((corpus / "text").iterdir()):
+        out.append(Case(f"text/{d.name}/default",
+                        ["-I", str(d), *proto_out, f"{d.name}.textpb"]))
+
+    wkt = corpus / "wkt"
+    out.append(Case("wkt/default", ["-I", str(wkt), *proto_out, "wkt.desc"]))
+    # wktRkyv's flags: what prototext/wkt/prebuilt is built with.
+    out.append(Case("wkt/wkt-rkyv", ["-I", str(wkt), "--schema-db-out=out/wkt-db.desc",
+                                     "--emit-extension-ranges",
+                                     "-O", "out/wkt-db/proto", "wkt.desc"]))
+
+    # Seeds and prunes on one set with imports.
+    ab = corpus / "imports" / "address_book"
+    for name, flags in (
+        ("seed-desc", ["--seed", "desc:tutorial.Person"]),
+        ("prune-file", ["--prune", "file:google/protobuf/timestamp.proto"]),
+        ("prune-glob", ["--prune", "desc:tutorial.*"]),
+    ):
+        out.append(Case(f"patterns/address_book/{name}",
+                        ["-I", str(ab), *proto_out, *flags, "address_book.pb"]))
+
+    blob = corpus / "blob" / "blob.bin"
+    out.append(Case("blob/default", ["-I", str(blob), *proto_out]))
+
+    demo = corpus / "demo"
+    for flag_name in ("default", "schema-db"):
+        out.append(Case(f"demo/anomalies/{flag_name}",
+                        ["-I", str(demo), *proto_out, *FLAG_SETS[flag_name],
+                         "anomalies.pb"]))
+
+    if (corpus / "custom").is_dir():
+        out.append(Case("custom/custom-db", ["-I", str(corpus / "custom"),
+                                             "--proto-out=out/custom/proto",
+                                             *CUSTOM_FLAGS, "."]))
+    if (corpus / "googleapis").is_dir():
+        out.append(Case("googleapis/googleapis-db",
+                        ["-I", str(corpus / "googleapis"),
+                         "--proto-out=out/googleapis/proto", *GOOGLEAPIS_FLAGS,
+                         "googleapis.pb"]))
+    for case in out:
+        if "--use-variant" not in case.args:
+            case.args[:0] = DEFAULT_VARIANT
+    return out
+
+
+# ── run ──────────────────────────────────────────────────────────────────────
+
+ENV_DROP = ("REPROTO_VARIANT", "PROTOTEXT_DESCRIPTOR_SET",
+            "PROTOTEXT_DEFAULT_DESCRIPTOR")
+
+
+@dataclass
+class Run:
+    stdout: bytes
+    stderr: bytes
+    exit: int
+    seconds: float
+
+
+def run_side(cmd: list[str], case: Case, rundir: Path) -> Run:
+    if rundir.exists():
+        shutil.rmtree(rundir)
+    rundir.mkdir(parents=True)
+    env = {k: v for k, v in os.environ.items() if k not in ENV_DROP}
+    start = time.monotonic()
+    r = subprocess.run([*cmd, *case.args], cwd=rundir, env=env,
+                       capture_output=True)
+    seconds = time.monotonic() - start
+    placeholder = b"<RUN>"
+    return Run(r.stdout.replace(bytes(rundir), placeholder),
+               r.stderr.replace(bytes(rundir), placeholder),
+               r.returncode, seconds)
+
+
+def tree(root: Path) -> dict[str, Path]:
+    return {str(p.relative_to(root)): p for p in sorted(root.rglob("*"))
+            if p.is_file()}
+
+
+def compare(ref_dir: Path, cand_dir: Path, ref: Run, cand: Run,
+            rename: tuple[bytes, bytes] | None) -> list[str]:
+    """The differences between two runs, empty if none."""
+    diffs: list[str] = []
+    ref_out, ref_err = ref.stdout, ref.stderr
+    if rename is not None:
+        ref_out = ref_out.replace(*rename)
+        ref_err = ref_err.replace(*rename)
+    if ref.exit != cand.exit:
+        diffs.append(f"exit status {ref.exit} != {cand.exit}")
+    if ref_out != cand.stdout:
+        diffs.append("stdout")
+    if ref_err != cand.stderr:
+        diffs.append("stderr")
+    a, b = tree(ref_dir), tree(cand_dir)
+    for rel in sorted(a.keys() - b.keys()):
+        diffs.append(f"only in reference: {rel}")
+    for rel in sorted(b.keys() - a.keys()):
+        diffs.append(f"only in candidate: {rel}")
+    for rel in sorted(a.keys() & b.keys()):
+        if a[rel].read_bytes() != b[rel].read_bytes():
+            diffs.append(f"differs: {rel}")
+    return diffs
+
+
+def run(work: Path, reference: list[str], candidate: list[str], jobs: int,
+        only: str | None, rename: tuple[bytes, bytes] | None) -> int:
+    all_cases = cases(work / "corpus")
+    if only:
+        all_cases = [c for c in all_cases if re.search(only, c.name)]
+    runs = work / "runs"
+
+    def one(case: Case) -> tuple[Case, list[str], Run, Run]:
+        base = runs / case.name
+        ref = run_side(reference, case, base / "reference")
+        cand = run_side(candidate, case, base / "candidate")
+        diffs = compare(base / "reference", base / "candidate", ref, cand, rename)
+        if not diffs:
+            shutil.rmtree(base)
+        return case, diffs, ref, cand
+
+    results = []
+    with concurrent.futures.ThreadPoolExecutor(jobs) as pool:
+        for case, diffs, ref, cand in pool.map(one, all_cases):
+            results.append((case, diffs, ref, cand))
+            mark = "ok  " if not diffs else "DIFF"
+            print(f"{mark} {case.name}", flush=True)
+
+    failed = [(c, d) for c, d, _, _ in results if d]
+    ref_time = sum(r.seconds for _, _, r, _ in results)
+    cand_time = sum(c.seconds for _, _, _, c in results)
+    # A case where both sides fail alike compares equal: list them, so that
+    # a corpus that only exercises an error path does not pass unnoticed.
+    errors = [(c, r.exit) for c, _, r, _ in results if r.exit != 0]
+    lines = [f"{len(results)} cases, {len(failed)} differ, "
+             f"{len(errors)} where the reference exits with an error",
+             f"reference: {shlex.join(reference)}, {ref_time:.1f} s in all",
+             f"candidate: {shlex.join(candidate)}, {cand_time:.1f} s in all", ""]
+    lines += [f"reference exit {code}: {c.name}" for c, code in errors]
+    if errors:
+        lines.append("")
+    for case, diffs in failed:
+        lines.append(f"{case.name}: {shlex.join(case.args)}")
+        lines += [f"  {d}" for d in diffs[:20]]
+        lines.append(f"  (runs kept in {runs / case.name})")
+    report = "\n".join(lines) + "\n"
+    (work / "report.txt").write_text(report)
+    print("\n" + report, end="")
+    return 1 if failed else 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
+    sub = parser.add_subparsers(dest="command", required=True)
+    p = sub.add_parser("prepare")
+    p.add_argument("work", type=Path)
+    p.add_argument("--googleapis", type=Path)
+    p.add_argument("--otel", type=Path)
+    r = sub.add_parser("run")
+    r.add_argument("work", type=Path)
+    r.add_argument("--reference", required=True)
+    r.add_argument("--candidate", required=True)
+    r.add_argument("--jobs", type=int, default=os.cpu_count() or 1)
+    r.add_argument("--only")
+    r.add_argument("--rename", help="OLD=NEW: the reference's program name, "
+                   "read as the candidate's")
+    args = parser.parse_args()
+    if args.command == "prepare":
+        prepare(args.work.resolve(), args.googleapis, args.otel)
+        return 0
+    rename = None
+    if args.rename:
+        old, _, new = args.rename.partition("=")
+        rename = (old.encode(), new.encode())
+    return run(args.work.resolve(), shlex.split(args.reference),
+               shlex.split(args.candidate), args.jobs, args.only, rename)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
