@@ -18,7 +18,7 @@ use crate::serialize::common::{
 };
 
 use super::helpers::{wfl_prefix_n, AnnWriter};
-use super::sink::TextSink;
+use super::sink::{FieldRef, TagFacts, TextSink};
 use super::{ANNOTATIONS, CBL_START, HIDE_UNKNOWN};
 
 /// Classify a varint value against the schema's expected type.
@@ -111,19 +111,25 @@ pub(super) fn fmt_varint(kind: VarintKind, raw: u64) -> String {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn render_varint_field(
-    field_number: u64,
-    field_schema: Option<&FieldOrExt>,
-    tag_ohb: Option<u64>,
-    tag_oor: bool,
-    repeated_singular: bool,
+    field: FieldRef<'_>,
+    tag: TagFacts,
     val_ohb: Option<u64>,
     kind: VarintKind,
     raw_val: u64,
     schema_present: bool,
     sink: &mut TextSink,
 ) {
+    let FieldRef {
+        number: field_number,
+        schema: field_schema,
+    } = field;
+    let TagFacts {
+        tag_ohb,
+        tag_oor,
+        repeated_singular,
+        ..
+    } = tag;
     let annotations = ANNOTATIONS.with(|c| c.get());
     let is_mismatch = kind == VarintKind::Mismatch;
     let is_wire = kind == VarintKind::Wire;

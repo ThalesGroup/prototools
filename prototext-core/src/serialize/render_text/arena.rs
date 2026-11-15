@@ -20,11 +20,11 @@
 use std::ops::Range;
 
 use super::sink::{
-    narrow, GroupCloseFacts, MalformedKind, NestedKind, ScalarValue, Sink, TagFacts,
+    narrow, FieldRef, GroupCloseFacts, MalformedKind, NestedKind, ScalarValue, Sink, TagFacts,
 };
 use super::{
-    render_message, FieldOrExt, DEPTH, EXPAND_ANY, EXPAND_MESSAGE_SET, HIDE_UNKNOWN,
-    MAX_INDEXED_BUFFER, MAX_WIRE_DEPTH,
+    render_message, DEPTH, EXPAND_ANY, EXPAND_MESSAGE_SET, HIDE_UNKNOWN, MAX_INDEXED_BUFFER,
+    MAX_WIRE_DEPTH,
 };
 use crate::CodecError;
 
@@ -148,8 +148,7 @@ impl Sink for ArenaSink {
 
     fn scalar_field(
         &mut self,
-        _field_number: u64,
-        _field_schema: Option<&FieldOrExt>,
+        _field: FieldRef<'_>,
         _tag: TagFacts,
         _value: ScalarValue<'_>,
         raw_range: Range<usize>,
@@ -165,8 +164,7 @@ impl Sink for ArenaSink {
 
     fn begin_nested(
         &mut self,
-        _field_number: u64,
-        _field_schema: Option<&FieldOrExt>,
+        _field: FieldRef<'_>,
         _tag: TagFacts,
         kind: NestedKind,
         raw_start: usize,

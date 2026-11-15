@@ -1269,17 +1269,16 @@ fn release(me: Option<&crate::sweep::Member<'_>>) {
 /// Nothing here owns a query, which is the point. A screenful is ~40
 /// queries of wildly unequal size, and one worker per query leaves the
 /// pool idle behind whichever query is the document root's.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn heat_worker_loop(
-    me: usize,
-    queue: Arc<HeatRequestQueue>,
-    caches: Arc<Mutex<HeatCaches>>,
-    graph: Arc<LoadedGraph>,
-    blob: Arc<Blob>,
-    progress: mpsc::Sender<AppEvent>,
-    partition: Arc<crate::sweep::Partition>,
-    crew: Arc<crate::sweep::Crew>,
-) {
+pub(super) fn heat_worker_loop(me: usize, shared: WorkerShared) {
+    let WorkerShared {
+        queue,
+        caches,
+        graph,
+        blob,
+        progress,
+        partition,
+        crew,
+    } = shared;
     // Spec 0180 S2: the worker owns a handle to the mapping rather than a
     // `&'static` copied out of one, so the borrow below cannot outlive it.
     let graph = graph.graph();
@@ -1424,6 +1423,18 @@ pub(super) struct HeatWorkerHandle {
     joins: Vec<JoinHandle<()>>,
 }
 
+/// What every worker of a pool shares: one clone each, handles only.
+#[derive(Clone)]
+pub(super) struct WorkerShared {
+    queue: Arc<HeatRequestQueue>,
+    caches: Arc<Mutex<HeatCaches>>,
+    graph: Arc<LoadedGraph>,
+    blob: Arc<Blob>,
+    progress: mpsc::Sender<AppEvent>,
+    partition: Arc<crate::sweep::Partition>,
+    crew: Arc<crate::sweep::Crew>,
+}
+
 impl HeatWorkerHandle {
     /// Spawns `jobs` workers behind one queue and one partition.
     ///
@@ -1449,19 +1460,17 @@ impl HeatWorkerHandle {
         // walks a `User` part; between queries every one of them is
         // vacant and the crew is inert.
         let crew = Arc::new(crate::sweep::Crew::new(jobs.max(1)));
+        let shared = WorkerShared {
+            queue: Arc::clone(&queue),
+            caches,
+            graph,
+            blob,
+            progress,
+            partition,
+            crew,
+        };
         let joins = (0..jobs.max(1))
-            .map(|n| {
-                spawn_worker(
-                    n,
-                    Arc::clone(&queue),
-                    Arc::clone(&caches),
-                    Arc::clone(&graph),
-                    Arc::clone(&blob),
-                    progress.clone(),
-                    Arc::clone(&partition),
-                    Arc::clone(&crew),
-                )
-            })
+            .map(|n| spawn_worker(n, shared.clone()))
             .collect();
         HeatWorkerHandle { queue, joins }
     }
@@ -1594,19 +1603,17 @@ impl HeatWorkerHandle {
     ) -> Self {
         let partition = Arc::new(crate::sweep::Partition::new(graph.graph(), jobs));
         let crew = Arc::new(crate::sweep::Crew::new(jobs.max(1)));
+        let shared = WorkerShared {
+            queue: Arc::clone(&self.queue),
+            caches,
+            graph,
+            blob,
+            progress,
+            partition,
+            crew,
+        };
         self.joins = (0..jobs.max(1))
-            .map(|n| {
-                spawn_worker(
-                    n,
-                    Arc::clone(&self.queue),
-                    Arc::clone(&caches),
-                    Arc::clone(&graph),
-                    Arc::clone(&blob),
-                    progress.clone(),
-                    Arc::clone(&partition),
-                    Arc::clone(&crew),
-                )
-            })
+            .map(|n| spawn_worker(n, shared.clone()))
             .collect();
         self
     }
@@ -1614,17 +1621,7 @@ impl HeatWorkerHandle {
 
 /// One worker thread. Numbered in its name so that a stack trace or a
 /// `top -H` says which of them is walking.
-#[allow(clippy::too_many_arguments)]
-fn spawn_worker(
-    n: usize,
-    queue: Arc<HeatRequestQueue>,
-    caches: Arc<Mutex<HeatCaches>>,
-    graph: Arc<LoadedGraph>,
-    blob: Arc<Blob>,
-    progress: mpsc::Sender<AppEvent>,
-    partition: Arc<crate::sweep::Partition>,
-    crew: Arc<crate::sweep::Crew>,
-) -> JoinHandle<()> {
+fn spawn_worker(n: usize, shared: WorkerShared) -> JoinHandle<()> {
     thread::Builder::new()
         .name(format!("heat-worker-{n}"))
         .stack_size(crate::sweep::SCORING_THREAD_STACK_SIZE)
@@ -1633,7 +1630,7 @@ fn spawn_worker(
             // across `clone(2)`. A heat worker is throughput work and
             // wants every CPU the process was given.
             crate::affinity::widen();
-            heat_worker_loop(n, queue, caches, graph, blob, progress, partition, crew)
+            heat_worker_loop(n, shared)
         })
         .expect("spawn heat worker thread")
 }

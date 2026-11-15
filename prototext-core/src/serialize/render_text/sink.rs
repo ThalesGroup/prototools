@@ -19,6 +19,14 @@ use super::FieldOrExt;
 /// `tag_ohb`/`tag_oor`/`len_ohb` triple already threaded through nearly every
 /// `render_*` function today. `len_ohb` is only ever populated for LEN-wire
 /// fields (`None` for VARINT/FIXED32/FIXED64).
+/// The field a record is for: its number, and its declaration when the
+/// schema has one.
+#[derive(Clone, Copy)]
+pub(super) struct FieldRef<'a> {
+    pub(super) number: u64,
+    pub(super) schema: Option<&'a FieldOrExt>,
+}
+
 #[derive(Clone, Copy, Default)]
 pub(super) struct TagFacts {
     pub(super) tag_ohb: Option<u64>,
@@ -126,11 +134,9 @@ pub(super) trait Sink {
 
     /// A scalar (non-recursive), schema-backed field has been fully parsed
     /// off the wire.
-    #[allow(clippy::too_many_arguments)]
     fn scalar_field(
         &mut self,
-        field_number: u64,
-        field_schema: Option<&FieldOrExt>,
+        field: FieldRef<'_>,
         tag: TagFacts,
         value: ScalarValue<'_>,
         raw_range: Range<usize>,
@@ -152,8 +158,7 @@ pub(super) trait Sink {
     /// into one absolute coordinate space (spec 0110 §3).
     fn begin_nested(
         &mut self,
-        field_number: u64,
-        field_schema: Option<&FieldOrExt>,
+        field: FieldRef<'_>,
         tag: TagFacts,
         kind: NestedKind,
         raw_start: usize,
@@ -422,13 +427,16 @@ impl Sink for TextSink {
 
     fn scalar_field(
         &mut self,
-        field_number: u64,
-        field_schema: Option<&FieldOrExt>,
+        field: FieldRef<'_>,
         tag: TagFacts,
         value: ScalarValue<'_>,
         _raw_range: Range<usize>,
         schema_present: bool,
     ) {
+        let FieldRef {
+            number: field_number,
+            schema: field_schema,
+        } = field;
         match value {
             ScalarValue::Varint { raw_val, val_ohb } => {
                 let (content_kind, typed_val) = if let Some(fs) = field_schema {
@@ -437,11 +445,8 @@ impl Sink for TextSink {
                     (VarintKind::Wire, raw_val)
                 };
                 render_varint_field(
-                    field_number,
-                    field_schema,
-                    tag.tag_ohb,
-                    tag.tag_oor,
-                    tag.repeated_singular,
+                    field,
+                    tag,
                     val_ohb,
                     content_kind,
                     typed_val,
@@ -697,13 +702,16 @@ impl Sink for TextSink {
 
     fn begin_nested(
         &mut self,
-        field_number: u64,
-        field_schema: Option<&FieldOrExt>,
+        field: FieldRef<'_>,
         tag: TagFacts,
         kind: NestedKind,
         _raw_start: usize,
         _payload_start: usize,
     ) -> TextMark {
+        let FieldRef {
+            number: field_number,
+            schema: field_schema,
+        } = field;
         // Spec 0303 S1/S2: consume the missing-bytes count exactly once — on
         // the outermost `begin_nested` call — so it never leaks onto inner
         // nodes.  The value is set by `decode_and_render_indexed` when the
@@ -1102,8 +1110,7 @@ impl Sink for ProbeSink {
 
     fn scalar_field(
         &mut self,
-        _field_number: u64,
-        _field_schema: Option<&FieldOrExt>,
+        _field: FieldRef<'_>,
         tag: TagFacts,
         value: ScalarValue<'_>,
         _raw_range: Range<usize>,
@@ -1129,8 +1136,7 @@ impl Sink for ProbeSink {
 
     fn begin_nested(
         &mut self,
-        _field_number: u64,
-        _field_schema: Option<&FieldOrExt>,
+        _field: FieldRef<'_>,
         tag: TagFacts,
         _kind: NestedKind,
         _raw_start: usize,
@@ -1666,13 +1672,16 @@ impl Sink for IndexingTextSink<'_> {
 
     fn scalar_field(
         &mut self,
-        field_number: u64,
-        field_schema: Option<&FieldOrExt>,
+        field: FieldRef<'_>,
         mut tag: TagFacts,
         value: ScalarValue<'_>,
         raw_range: Range<usize>,
         schema_present: bool,
     ) {
+        let FieldRef {
+            number: field_number,
+            schema: field_schema,
+        } = field;
         self.take_pending(&mut tag);
         let text_start = self.inner.line_count();
         let level = LEVEL.with(|c| c.get());
@@ -1717,8 +1726,10 @@ impl Sink for IndexingTextSink<'_> {
             },
         };
         self.inner.scalar_field(
-            field_number,
-            field_schema,
+            FieldRef {
+                number: field_number,
+                schema: field_schema,
+            },
             tag,
             value,
             raw_range.clone(),
@@ -1789,13 +1800,16 @@ impl Sink for IndexingTextSink<'_> {
 
     fn begin_nested(
         &mut self,
-        field_number: u64,
-        field_schema: Option<&FieldOrExt>,
+        field: FieldRef<'_>,
         mut tag: TagFacts,
         kind: NestedKind,
         raw_start: usize,
         payload_start: usize,
     ) -> IndexMark {
+        let FieldRef {
+            number: field_number,
+            schema: field_schema,
+        } = field;
         self.take_pending(&mut tag);
         let text_start = self.inner.line_count();
         let level = LEVEL.with(|c| c.get());
@@ -1806,8 +1820,10 @@ impl Sink for IndexingTextSink<'_> {
         };
         let raw_base = self.raw_base;
         let inner = self.inner.begin_nested(
-            field_number,
-            field_schema,
+            FieldRef {
+                number: field_number,
+                schema: field_schema,
+            },
             tag,
             kind,
             raw_start,

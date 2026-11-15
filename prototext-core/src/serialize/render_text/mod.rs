@@ -27,7 +27,9 @@ use crate::helpers::{
 use crate::CodecError;
 
 use helpers::{render_group_field, render_len_field, scan_group_extent, FieldCtx};
-use sink::{IndexingTextSink, MalformedKind, ProbeSink, ScalarValue, Sink, TagFacts, TextSink};
+use sink::{
+    FieldRef, IndexingTextSink, MalformedKind, ProbeSink, ScalarValue, Sink, TagFacts, TextSink,
+};
 
 pub use arena::{build_arena, Arena};
 pub use fqdn::{FqdnId, FqdnTable, NO_FQDN, UNINTERNED};
@@ -959,8 +961,10 @@ fn render_message<'a, S: Sink>(
                 let val = vr.varint.unwrap();
 
                 sink.scalar_field(
-                    field_number,
-                    field_schema.as_deref(),
+                    FieldRef {
+                        number: field_number,
+                        schema: field_schema.as_deref(),
+                    },
                     TagFacts {
                         tag_ohb,
                         tag_oor,
@@ -999,8 +1003,10 @@ fn render_message<'a, S: Sink>(
                 pos = end;
 
                 sink.scalar_field(
-                    field_number,
-                    field_schema.as_deref(),
+                    FieldRef {
+                        number: field_number,
+                        schema: field_schema.as_deref(),
+                    },
                     TagFacts {
                         tag_ohb,
                         tag_oor,
@@ -1206,8 +1212,10 @@ fn render_message<'a, S: Sink>(
                 pos = end;
 
                 sink.scalar_field(
-                    field_number,
-                    field_schema.as_deref(),
+                    FieldRef {
+                        number: field_number,
+                        schema: field_schema.as_deref(),
+                    },
                     TagFacts {
                         tag_ohb,
                         tag_oor,
@@ -1276,8 +1284,7 @@ mod tests {
 
         fn scalar_field(
             &mut self,
-            _field_number: u64,
-            _field_schema: Option<&FieldOrExt>,
+            _field: FieldRef<'_>,
             _tag: TagFacts,
             _value: sink::ScalarValue<'_>,
             _raw_range: Range<usize>,
@@ -1287,8 +1294,7 @@ mod tests {
 
         fn begin_nested(
             &mut self,
-            _field_number: u64,
-            _field_schema: Option<&FieldOrExt>,
+            _field: FieldRef<'_>,
             _tag: TagFacts,
             _kind: sink::NestedKind,
             _raw_start: usize,

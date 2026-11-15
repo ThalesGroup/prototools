@@ -8,7 +8,7 @@ use std::ops::Range;
 use crate::schema::{Cardinality, Kind, Message};
 
 use super::super::sink::{
-    GroupCloseFacts, MalformedKind, NestedKind, ProbeSink, ScalarValue, Sink, TagFacts,
+    FieldRef, GroupCloseFacts, MalformedKind, NestedKind, ProbeSink, ScalarValue, Sink, TagFacts,
 };
 use super::super::{
     at_depth_cap, descend, enter_level, render_message, FieldOrExt, EXPAND_ANY, EXPAND_MESSAGE_SET,
@@ -67,8 +67,10 @@ pub(in super::super) fn render_len_field<S: Sink>(
     );
     if sink.treat_len_as_opaque() {
         sink.scalar_field(
-            field_number,
-            field_schema,
+            FieldRef {
+                number: field_number,
+                schema: field_schema,
+            },
             tag,
             ScalarValue::Bytes(data),
             raw_range,
@@ -90,8 +92,10 @@ pub(in super::super) fn render_len_field<S: Sink>(
     // which is always emitted and always re-encodes to tag + length + payload.
     if at_depth_cap() {
         sink.scalar_field(
-            field_number,
-            None,
+            FieldRef {
+                number: field_number,
+                schema: None,
+            },
             tag,
             ScalarValue::Bytes(data),
             raw_range,
@@ -142,8 +146,10 @@ pub(in super::super) fn render_len_field<S: Sink>(
         };
         if probed_as_message || sink.unknown_len_is_message() {
             let mark = sink.begin_nested(
-                field_number,
-                None,
+                FieldRef {
+                    number: field_number,
+                    schema: None,
+                },
                 tag,
                 NestedKind::Message {
                     probed_as_message: Some(probed_as_message),
@@ -187,8 +193,10 @@ pub(in super::super) fn render_len_field<S: Sink>(
     // `is_packed()` here would turn a legal record into a TYPE_MISMATCH.
     if is_repeated && is_packable_kind {
         sink.scalar_field(
-            field_number,
-            Some(fs),
+            FieldRef {
+                number: field_number,
+                schema: Some(fs),
+            },
             tag,
             ScalarValue::Packed(data),
             raw_range,
@@ -257,8 +265,10 @@ pub(in super::super) fn render_len_field<S: Sink>(
             let nested_schema: Option<&Message> = Some(nested_msg_desc);
 
             let mark = sink.begin_nested(
-                field_number,
-                Some(fs),
+                FieldRef {
+                    number: field_number,
+                    schema: Some(fs),
+                },
                 tag,
                 NestedKind::Message {
                     // A declared message field: the schema decided, no probe ran.
@@ -291,8 +301,10 @@ pub(in super::super) fn render_len_field<S: Sink>(
     // `TextSink::scalar_field`'s `Bytes` arm already dispatches on
     // `field_schema.kind()` for String, Bytes, and (catch-all) mismatch.
     sink.scalar_field(
-        field_number,
-        Some(fs),
+        FieldRef {
+            number: field_number,
+            schema: Some(fs),
+        },
         tag,
         ScalarValue::Bytes(data),
         raw_range,
@@ -330,8 +342,10 @@ fn decline_unknown_len<S: Sink>(
             raw_range,
         ),
         None => sink.scalar_field(
-            field_number,
-            None,
+            FieldRef {
+                number: field_number,
+                schema: None,
+            },
             tag,
             ScalarValue::Bytes(data),
             raw_range,
@@ -373,8 +387,10 @@ pub(in super::super) fn render_group_field<S: Sink>(
     let nested_schema_opt: Option<&Message> = nested_msg_desc;
 
     let mark = sink.begin_nested(
-        field_number,
-        field_schema,
+        FieldRef {
+            number: field_number,
+            schema: field_schema,
+        },
         tag,
         NestedKind::Group,
         raw_start,

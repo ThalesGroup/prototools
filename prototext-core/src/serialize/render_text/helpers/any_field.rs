@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use crate::schema::Message;
 
-use super::super::sink::{NestedKind, Sink};
+use super::super::sink::{FieldRef, NestedKind, Sink};
 use super::super::{descend, enter_level, render_message, ANY_LOADER, EXPAND_ANY};
 use super::len_field::FieldCtx;
 
@@ -164,8 +164,10 @@ pub(in super::super) fn render_any_expansion<S: Sink>(
 
     // ── Outer Any field opener ────────────────────────────────────────────────
     let outer_mark = sink.begin_nested(
-        field_number,
-        field_schema,
+        FieldRef {
+            number: field_number,
+            schema: field_schema,
+        },
         tag,
         NestedKind::Message {
             // An `Any` expansion: the schema decided, no probe ran.

@@ -8,7 +8,7 @@ use std::ops::Range;
 
 use crate::schema::{Kind, Message};
 
-use super::super::sink::{NestedKind, Sink, TagFacts};
+use super::super::sink::{FieldRef, NestedKind, Sink, TagFacts};
 use super::super::{descend, enter_level, render_message, ANY_LOADER};
 use super::len_field::FieldCtx;
 
@@ -179,8 +179,10 @@ pub(in super::super) fn render_message_set_expansion<S: Sink>(
     } = ctx;
     // ── Outer block opener ────────────────────────────────────────────────────
     let outer_mark = sink.begin_nested(
-        field_number,
-        field_schema,
+        FieldRef {
+            number: field_number,
+            schema: field_schema,
+        },
         tag,
         NestedKind::Message {
             // A `MessageSet` item: the schema decided, no probe ran.
