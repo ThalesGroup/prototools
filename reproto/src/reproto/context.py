@@ -132,6 +132,9 @@ class Options:
     # Hidden diagnostic flag (spec 0025): when set to a proto file name, skip
     # rendering and dump resolved FeatureSet YAML for that file to stdout.
     dump_resolved_features: str = ""
+    # Hidden diagnostic flag (spec 0428): when set to a path, write there
+    # what phases 1 to 6 leave, and stop.
+    dump_graph: str = ""
     # Duplicate-symbol pruning (spec 0041): when False (default), files that
     # introduce symbols already registered in the pool are pruned and a warning
     # is emitted.  Set to True to revert to legacy behaviour.
@@ -158,6 +161,8 @@ class Context(Options):
         # (spec 0149 G4); consumed by reproto() after phase 1 to extend the
         # FQDN seed list passed to _phase5_reachability.
         self.path_seed_fqdns: set[Fqdn] = set()
+        # The nodes phase 5 started from, for the graph dump (spec 0428 S6).
+        self.seed_nodes: set[NodeBase[Any]] = set()
 
         # Per-file syntax state (updated by re_file.py at the start of each render)
         self.syntax: str = "proto2"         # input file syntax

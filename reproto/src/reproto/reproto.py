@@ -231,6 +231,9 @@ def reproto(
         module=r'google\.protobuf\.descriptor_database',
     )
 
+    from . import dump_graph
+    recorder = dump_graph.Recorder() if ctx.dump_graph else None
+
     try:
         seed_files = _phase1_load_files(ctx, in_repo, seed_paths, topo)
         if not topo.files:
@@ -249,6 +252,10 @@ def reproto(
         # physical candidate matching a path seed pattern.
         _phase5_reachability(ctx, seeds + list(ctx.path_seed_fqdns), topo)
         _phase6_summoning(ctx)
+
+        if recorder is not None:
+            dump_graph.write(ctx, topo, recorder, Path(ctx.dump_graph))
+            return ctx
 
         # Phase 7 runs whenever there is file output OR when --build-schema-db
         # is active (even without -O, it needs the fully-initialised render

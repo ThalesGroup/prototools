@@ -115,6 +115,8 @@ class QualFile:
         # A file given as text keeps it until the input is read, in import
         # order (spec 0427 S3); until then its imports come from a scan.
         self.text: str | None = None
+        # Given as text: for the graph dump (spec 0428 S2).
+        self.from_text = False
         self._imports: list[str] | None = None
         self._name: str
         self._desc: FileDescriptorProto | None = None
@@ -366,6 +368,7 @@ def parse_qfile(
             fdp.ParseFromString(fragment)
         qf = QualFile(file.root, file.rel_path, fragment)
         qf.text = text
+        qf.from_text = text is not None
         qf.name = name
         if fdp is None:
             assert imports is not None

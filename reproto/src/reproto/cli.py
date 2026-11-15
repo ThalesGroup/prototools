@@ -692,6 +692,13 @@ class _SectionedCommand(click.Command):
 )
 
 @click.option(
+    '--dump-graph',
+    default='',
+    hidden=True,
+    help='(diagnostic) Write what phases 1 to 6 decided to the given file, and stop',
+)
+
+@click.option(
     '--debug-fqdn',
     is_flag=True,
     help='Print detailed information about FQDNs (development only)',
@@ -736,6 +743,7 @@ def main(
         fdp_plugin: Path | None,
         phase2_plugin_deprecated: Path | None,
         dump_resolved_features: str,
+        dump_graph: str,
         debug: bool,
         debug_fqdn: bool,
 ):
@@ -824,9 +832,10 @@ def main(
     #   --dry-run             → writes nothing at all
     #   --scoring-html-out    → writes HTML visualisations
     #   --dump-resolved-features → returns early before phase 7
+    #   --dump-graph             → returns early before phase 7
     output_only_mode = bool(
         no_proto_out or dry_run or emit_scoring_html is not None
-        or dump_resolved_features
+        or dump_resolved_features or dump_graph
     )
     if proto_out is None and not output_only_mode:
         raise click.UsageError(
@@ -920,6 +929,7 @@ def main(
         debug_fqdn=debug_fqdn,
         descriptor_proto=variant['variant_descriptor_proto'],
         dump_resolved_features=dump_resolved_features,
+        dump_graph=dump_graph,
         fallback_protos=fallback_protos,
         keep_variant_descriptor=keep_descriptor_path,
         variant_descriptor_proto=variant['variant_descriptor_proto'],

@@ -1185,6 +1185,7 @@ def _phase5_reachability(
                     current_reachables.add(node)
 
     initial_nodes = current_reachables  # for --debug
+    ctx.seed_nodes = set(initial_nodes)  # for --dump-graph (spec 0428 S6)
 
     # --- Propagates forwards (targeted nodes) --------------------------------
 
