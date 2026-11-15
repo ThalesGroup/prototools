@@ -12,15 +12,12 @@
 //   Tag!(field: 44, ohb: 2)      — like Python's Tag('uint64Rp', ohb=2)
 //   Integer!(value: 42, ohb: 4)  — like Python's Integer(42, ohb=4)
 //   RawData!(b"\x80")            — like Python's RawData(b'\x80')
-//   Message!(desc: d)            — like Python's Message(schema=d)
-//   Message!()                   — like Python's Message()
 //
 // All fields not mentioned take their value from the DEFAULT const.
 
 #[cfg(test)]
 macro_rules! Tag {
     ($($key:ident : $val:expr),* $(,)?) => {
-        #[allow(clippy::needless_update)]
         { $crate::protocraft::Tag { $($key: $val,)* ..$crate::protocraft::Tag::DEFAULT } }
     };
 }
@@ -28,7 +25,6 @@ macro_rules! Tag {
 #[cfg(test)]
 macro_rules! Integer {
     ($($field:ident : $val:expr),* $(,)?) => {
-        #[allow(clippy::needless_update)]
         { $crate::protocraft::Integer { $($field: $val,)* ..$crate::protocraft::Integer::DEFAULT } }
     }
 }
@@ -37,17 +33,6 @@ macro_rules! Integer {
 macro_rules! RawData {
     ($val:expr) => {
         $crate::protocraft::RawData($val)
-    };
-}
-
-#[cfg(test)]
-#[allow(unused_macros)]
-macro_rules! Message {
-    (desc: $desc:expr) => {
-        $crate::protocraft::Message::with_schema($desc)
-    };
-    () => {
-        $crate::protocraft::Message::new()
     };
 }
 
@@ -265,7 +250,6 @@ macro_rules! msg_fields {
 #[cfg(test)]
 macro_rules! fixture {
     ($name:ident, $schema:expr; $($fields:tt)*) => {
-        #[allow(non_snake_case)]
         pub fn $name() -> Vec<u8> {
             let mut _m = $crate::protocraft::Message::with_schema($schema);
             msg_fields!(_m, $($fields)*);
@@ -832,7 +816,6 @@ impl Message {
 
     /// Non-test stub: always returns None.
     #[cfg(not(test))]
-    #[allow(dead_code)]
     fn desc_ref(&self) -> Option<&()> {
         None
     }

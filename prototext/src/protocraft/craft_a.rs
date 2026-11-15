@@ -12,7 +12,7 @@ fixture!(test_empty, super::knife_descriptor();
 
 // ── test_FIELD_INVALID ────────────────────────────────────────────────────────
 
-fixture!(test_FIELD_INVALID, super::knife_descriptor();
+fixture!(test_field_invalid, super::knife_descriptor();
     message!("messageRp";
         raw!(b"\x07"),
     ),
@@ -114,7 +114,7 @@ fixture!(test_proto2_level, super::knife_descriptor();
 
 // ── test_VARINT_INVALID ───────────────────────────────────────────────────────
 
-fixture!(test_VARINT_INVALID, super::knife_descriptor();
+fixture!(test_varint_invalid, super::knife_descriptor();
     message!("messageRp";
         uint64!("uint64Rp", RawData!(b"\x80")),
     ),
@@ -160,7 +160,7 @@ fixture!(test_fixed64_tag, super::knife_descriptor();
 
 // ── test_FIELD_INVALID_LENGTH ─────────────────────────────────────────────────
 
-fixture!(test_FIELD_INVALID_LENGTH, super::knife_descriptor();
+fixture!(test_field_invalid_length, super::knife_descriptor();
     message!("messageRp";
         string!("stringRp", "hello1"),
         string!(Tag!(field: "stringRp", length_ohb: 3), "hello2"),
@@ -183,7 +183,7 @@ fixture!(test_FIELD_INVALID_LENGTH, super::knife_descriptor();
 
 // ── test_INVALID_PACKED_RECORDS ───────────────────────────────────────────────
 
-fixture!(test_INVALID_PACKED_RECORDS, super::knife_descriptor();
+fixture!(test_invalid_packed_records, super::knife_descriptor();
     packed_varints!("int32Pk", [
         Integer!(unsigned: 23),
         Integer!(unsigned: 24),
@@ -219,7 +219,7 @@ fixture!(test_records_overhung_count, super::knife_descriptor();
 
 // ── test_INVALID_STRING ───────────────────────────────────────────────────────
 
-fixture!(test_INVALID_STRING, super::knife_descriptor();
+fixture!(test_invalid_string, super::knife_descriptor();
     message!("messageRp";
         string!("stringRp", "Hello, world!"),
     ),
@@ -269,7 +269,7 @@ fixture!(test_group_no_schema, super::knife_descriptor();
 
 // ── test_INVALID_GROUP_END ────────────────────────────────────────────────────
 
-fixture!(test_INVALID_GROUP_END, super::knife_descriptor();
+fixture!(test_invalid_group_end, super::knife_descriptor();
     uint64!("uint64Op", 1),
     uint64!("uint64Op", 2),
     uint64!("uint64Op", 3),
@@ -280,7 +280,7 @@ fixture!(test_INVALID_GROUP_END, super::knife_descriptor();
 
 // ── test_INVALID_FIXED64 ──────────────────────────────────────────────────────
 
-fixture!(test_INVALID_FIXED64, super::knife_descriptor();
+fixture!(test_invalid_fixed64, super::knife_descriptor();
     double_!("doublePk", std::f64::consts::PI),
     // Tag('doublePk', length=7): wire type 1, only 7 of 8 payload bytes
     double_!(Tag!(field: "doublePk", length: 7), std::f64::consts::PI),
@@ -288,7 +288,7 @@ fixture!(test_INVALID_FIXED64, super::knife_descriptor();
 
 // ── test_INVALID_FIXED32 ──────────────────────────────────────────────────────
 
-fixture!(test_INVALID_FIXED32, super::knife_descriptor();
+fixture!(test_invalid_fixed32, super::knife_descriptor();
     float_!("floatRp", std::f32::consts::PI),
     // Tag('floatRp', length=2): wire type 5, only 2 of 4 payload bytes
     float_!(Tag!(field: "floatRp", length: 2), std::f32::consts::PI),
@@ -1120,17 +1120,24 @@ fixture!(test_packed_sfixed64, super::knife_descriptor();
 );
 
 // ── ALL_FIXTURES registry ─────────────────────────────────────────────────────
+//
+// A fixture is known by its name, the string: what fixtures/index.toml
+// matches and the tests print. Those named after an anomaly keep its
+// spelling, as prototext's `#@` annotations write it (test_FIELD_INVALID);
+// their functions are snake case, as Rust names are (test_field_invalid).
 
-#[allow(clippy::type_complexity)]
-pub static ALL_FIXTURES: &[(&str, fn() -> Vec<u8>)] = &[
+/// A fixture: its name, and the function building its wire bytes.
+pub type Fixture = (&'static str, fn() -> Vec<u8>);
+
+pub static ALL_FIXTURES: &[Fixture] = &[
     ("test_empty", test_empty),
-    ("test_FIELD_INVALID", test_FIELD_INVALID),
+    ("test_FIELD_INVALID", test_field_invalid),
     ("test_garbage", test_garbage),
     ("test_n_overhanging_bytes", test_n_overhanging_bytes),
     ("test_n_out_of_range", test_n_out_of_range),
     ("test_wire_level", test_wire_level),
     ("test_proto2_level", test_proto2_level),
-    ("test_VARINT_INVALID", test_VARINT_INVALID),
+    ("test_VARINT_INVALID", test_varint_invalid),
     (
         "test_varint_overhanging_bytes",
         test_varint_overhanging_bytes,
@@ -1138,15 +1145,15 @@ pub static ALL_FIXTURES: &[(&str, fn() -> Vec<u8>)] = &[
     ("test_bool_out_of_range", test_bool_out_of_range),
     ("test_fixed64", test_fixed64),
     ("test_fixed64_tag", test_fixed64_tag),
-    ("test_FIELD_INVALID_LENGTH", test_FIELD_INVALID_LENGTH),
-    ("test_INVALID_PACKED_RECORDS", test_INVALID_PACKED_RECORDS),
+    ("test_FIELD_INVALID_LENGTH", test_field_invalid_length),
+    ("test_INVALID_PACKED_RECORDS", test_invalid_packed_records),
     ("test_records_overhung_count", test_records_overhung_count),
-    ("test_INVALID_STRING", test_INVALID_STRING),
+    ("test_INVALID_STRING", test_invalid_string),
     ("test_message_no_schema", test_message_no_schema),
     ("test_group_no_schema", test_group_no_schema),
-    ("test_INVALID_GROUP_END", test_INVALID_GROUP_END),
-    ("test_INVALID_FIXED64", test_INVALID_FIXED64),
-    ("test_INVALID_FIXED32", test_INVALID_FIXED32),
+    ("test_INVALID_GROUP_END", test_invalid_group_end),
+    ("test_INVALID_FIXED64", test_invalid_fixed64),
+    ("test_INVALID_FIXED32", test_invalid_fixed32),
     ("test_open_ended_group", test_open_ended_group),
     ("test_group_with_overhang", test_group_with_overhang),
     ("test_proto2_primitive_types", test_proto2_primitive_types),
