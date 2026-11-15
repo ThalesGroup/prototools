@@ -51,7 +51,7 @@ stages, each with its own gate.
 ### The gates
 
 - **S1. Stages.** Rendering is ported in six stages, in this order, each
-  merged only when its gate (S2) passes:
+  merged only when its gate (S3) passes:
   1. structure: files, messages, fields, enums, services, methods,
      declaration order, layout, imports, package;
   2. built-in options;
@@ -62,29 +62,48 @@ stages, each with its own gate.
   6. `--emit-binary`, `--no-emit-descriptor`, `--no-source-info`.
 
   Until a stage lands, protoback refuses the options it brings (spec
-  0428 S9), and the harness skips the cases that need them.
+  0428 S9).
 - **S2. The harness, output trees.** `scripts/protoback-harness run
   --compare PATH…` compares, besides the exit status, only the files
   written under the given paths of the run directory (`out/proto`,
   then `out/proto` and the `.pb` files); stdout and stderr are not
   compared until step 9 (N1), as under `--dump-graph` (spec 0428 S10).
-  Each stage's gate: the harness, so restricted, clean on every corpus,
-  run once with `--jobs 1` passed to protoback and once without.
+  Run once with `--jobs 1` passed to protoback and once without.
+- **S3. The gates.** Almost every file has options, so before stage 3
+  almost every file differs from reproto's. The early stages live with
+  that: their diffs are read, on a sample of cases, and every hunk must
+  be one a later stage brings (an option, a comment, a feature), none in
+  what the stage ported. From stage 3, the harness restricted as S2
+  says must be clean on every case outside what stages 4 to 6 bring;
+  after stage 6, on every case.
 
 ### Threads
 
-- **S3. A render context per file** (spec 0424 S17) from the first
+- **S4. A render context per file** (spec 0424 S17) from the first
   stage: phases 1 to 6's state is read-only during rendering, and
   everything reproto keeps on its `Context` for the file being rendered
   lives in a context of its own, one per file. Files render on a rayon
   pool; their outputs are written, and their warnings recorded, in
   reproto's file order (spec 0424 S18).
+  - **What a file sees of the pool.** reproto's `ctx.pool` builds a file
+    when first asked for it (`DescriptorPool(pool_db)`), and rendering
+    asks for each file in turn with its imports (`re_file.py:141`);
+    `option_extensions` (`option_messages.py:80`) lists the extensions
+    `ctx.pool` holds so far. A file's custom option declared in a file
+    it does not import, directly or not, so renders as the extension
+    if an earlier file's render loaded that file, and is dropped as an
+    unknown field otherwise: the output depends on the render order.
+    protoback reproduces it without shared state: before rendering,
+    the files loaded before the k-th file renders are computed (the
+    import closures of files 1 to k), and the k-th file's render reads
+    that set. To confirm first, by a fixture that reaches the case, and
+    by a check that no other lookup during rendering loads files.
 
 ### Stages
 
 Paths are reproto's (`reproto/src/reproto/`); sizes, the Python ported.
 
-- **S4. Structure** (about 1,300 lines). `_phase7_output`
+- **S5. Structure** (about 1,300 lines). `_phase7_output`
   (`phases.py`): the summoned present files, in node order; the output
   path (`canonize_dependency`, `--keep-descriptor-path`), `--dry-run`,
   `--debug`'s `Writing:` lines, `buf.yaml`; a file whose render raises a
@@ -101,7 +120,7 @@ Paths are reproto's (`reproto/src/reproto/`); sizes, the Python ported.
   `service`, `name_resolution`, `group_proto2`, `extensions_proto2`,
   `extension_ranges`, `synthetic_oneof`, `weak_import_proto2`, the
   `bridge_*` and `tc*` sets, `address_book`.
-- **S5. Built-in options** (about 650). `ReOptions`, the built-in loop of
+- **S6. Built-in options** (about 650). `ReOptions`, the built-in loop of
   `render_options_from_message` (`option_rendering.py`),
   `format_composite_options`, `Scalar`, `canonize_opt_name`; a field's
   `default`, `json_name`, `packed`. Options come in field number order
@@ -111,7 +130,7 @@ Paths are reproto's (`reproto/src/reproto/`); sizes, the Python ported.
   default's bytes through `unicode-escape` then latin-1. Fixtures:
   `default_values_proto2`, `packed_proto2`, `packed_proto3`,
   `json_name`, `message_set_proto2`, `file_comprehensive`.
-- **S6. Custom and message-valued options** (about 350). The pool's
+- **S7. Custom and message-valued options** (about 350). The pool's
   extensions by number, `(.full.name)`, orphaned unless their extension
   field is summoned; aggregates (`ReMessage`, `simple_types.py`), whose
   scalars are Python's `repr` (single quotes, `True`), maps as repeated
@@ -120,20 +139,20 @@ Paths are reproto's (`reproto/src/reproto/`); sizes, the Python ported.
   `ext_no_options_*`, `editions_custom_option_dep`; tests
   `test_aggregate_options`, `test_extension_field_options`,
   `test_oneof_and_range_options`.
-- **S7. Editions and `--force-proto2-*`** (about 800). `syntax.py`,
+- **S8. Editions and `--force-proto2-*`** (about 800). `syntax.py`,
   `feature_resolution.py`, the target syntax per file, the A1 and A2
   header comments, features blocks, synthetic groups for DELIMITED
   fields under `--force-proto2-output` (spec 0428 builds their nodes),
   the proto3 to proto2 anomalies. Fixtures: `editions_rendering` and its
   two `.golden.proto`, `editions_roundtrip`, `editions_resolution`; the
   proto3 fixtures under `--force-proto2-output`.
-- **S8. Comments and SourceCodeInfo** (about 300). `source_info.py`: the
+- **S9. Comments and SourceCodeInfo** (about 300). `source_info.py`: the
   file's and messages' comments only (fields', enums' and services' are
   not rendered); the output SourceCodeInfo, spans counted in code
   points, in lines that survive redaction; `--redact-comments`,
   `--redact-orphans`, applied in `flush`. Fixtures: `comments`,
   `address_book`; tests `test_comments`, `test_source_info`.
-- **S9. `--emit-binary`** (about 350). Each node's output descriptor,
+- **S10. `--emit-binary`** (about 350). Each node's output descriptor,
   built beside its text: names canonized, package rewritten, syntax and
   edition and features per the target, the children filtered as the
   text is at file level and not within a message. Serialized as upb
@@ -143,31 +162,44 @@ Paths are reproto's (`reproto/src/reproto/`); sizes, the Python ported.
 
 ### reproto's defects found on the way
 
-Each is reproduced by a failing test and fixed in reproto before the
-stage that ports it, as in steps 1 and 4; until then the port copies
-reproto's behavior.
+reproto stays the reference until protoback is complete: these are not
+fixed in step 5. protoback reproduces each, and each is recorded here,
+with its evidence, to be fixed in both tools once the port is done.
+(S16's fixed messages are the exception, decided apart: they change
+reproto first.)
 
-- **S10. Renders repeated** (before S9). Under `--emit-binary` and
+- **S11. Renders repeated.** Under `--emit-binary` and
   `--schema-db-out`, a node's descriptor side-channel renders each
   child again, text included, after the text pass rendered it
   (`re_descriptor.py`, `re_file.py`): a node at depth d renders about
-  2^(d+1) times, and the W4 to W6 counts and immediate warnings of a
-  render multiply with it.
-- **S11. `..` in a type name** (before S9). Under
-  `--force-proto2-output`, a DELIMITED field's synthetic group gets
-  `type_name = f'.{prefix}'.rstrip('.')` (`re_field.py:518`), and the
-  prefix already starts with a dot:
-  `..reproto.test.rendering.AllFeatures.DelimitedField`, in the golden
-  `editions_rendering.emit_binary.force_proto2_output.golden.pb`.
-- **S12. To confirm, each by a test first:** `proto3_optional` kept in a
-  descriptor down-converted to proto2; `ctx.syntax` and `ctx.out_sci`
-  carried from one file into the next when a render fails; a file's,
-  message's, service's or method's options dropped without a warning
-  when the pool does not know the element.
+  2^(d+1) times. Only the time and the W4 to W6 counts and immediate
+  warnings change with it: the re-renders pass no SourceCodeInfo path,
+  so they record no span, and the file's spans are resolved before
+  they run. protoback renders each node once, and counts warnings as
+  reproto does (step 9).
+- **S12. `..` in a type name.** Under `--force-proto2-output`, a
+  DELIMITED field's synthetic group gets `type_name =
+  f'.{prefix}'.rstrip('.')` (`re_field.py:518`), and the prefix already
+  starts with a dot: `..reproto.test.rendering.AllFeatures.DelimitedField`,
+  in the golden `editions_rendering.emit_binary.force_proto2_output.golden.pb`.
+- **S13. `proto3_optional` under `--force-proto2-output`**, confirmed
+  2026-11-15: from `syntax = "proto3"; message M { optional int32 x = 1;
+  int32 y = 2; }`, `--emit-binary` writes a proto2 descriptor whose `x`
+  keeps `proto3_optional`, which protoc refuses (`The
+  [proto3_optional=true] option may only be set on proto3fields`); the
+  `.proto` renders `x` in an explicit `oneof _x { int32 x = 1; }`, a
+  real oneof once compiled, not the optional field it was.
+- **S14. The render order** (S4): a custom option whose extension the
+  file does not import renders or not depending on the files rendered
+  before it.
+- **S15. To confirm, each by a test first:** `ctx.syntax` and
+  `ctx.out_sci` carried from one file into the next when a render fails;
+  a file's, message's, service's or method's options dropped without a
+  warning when the pool does not know the element.
 
 ### Text that is Python's
 
-- **S13. Fixed messages for render failures, in both tools.** Today a
+- **S16. Fixed messages for render failures, in both tools.** Today a
   failed render writes a caught exception's text: in the `.proto`
   comment of A3 (file options) and C5 (field options), and in the W4 to
   W6 warning of a file skipped (`_phase7_output`) or an option dropped.
@@ -187,7 +219,7 @@ reproto's behavior.
     message naming the element (file, and field or option), the same in
     both tools, so that the harness compares it; the exception is shown
     in full under `--debug` only.
-  - Before S4: the causes listed, each reached by a fixture (the
+  - Before S5: the causes listed, each reached by a fixture (the
     harness's and the test suite's), by an inventory of what
     `render()`'s `except` clauses catch in practice.
 
@@ -201,13 +233,13 @@ that made it.
 
 ### Single-threaded first, threads later
 
-S18's check would then come after all six stages, and a context shared
+Spec 0424 S18's check would then come after all six stages, and a context shared
 by mistake would show only then, across every stage's code. With a
 context per file from the start, each gate checks it.
 
 ## Test plan
 
-1. Each stage: S2's gate, `--jobs 1` and all cores.
+1. Each stage: S3's gate, `--jobs 1` and all cores.
 2. reproto's CLI tests that check rendered output, run against
    protoback through `REPROTO_CMD` (spec 0424 S2), each from the stage
    it needs: `test_roundtrip`, `test_aggregate_options`,
