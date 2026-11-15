@@ -5,6 +5,11 @@
 
 //! Protocraft: a test-only library for constructing protobuf wire bytes
 //! programmatically, including non-canonical and malformed encodings.
+//!
+//! Compiled only by prototext's test targets, `tests/e2e.rs` and
+//! `tests/protocraft.rs`, each through `#[path]`, both with `cfg(test)`
+//! (the second, `harness = false`, by cargo's `--cfg test`): it has no
+//! non-test build to provide for.
 
 // ── Constructor macros ─────────────────────────────────────────────────────────
 //
@@ -15,21 +20,18 @@
 //
 // All fields not mentioned take their value from the DEFAULT const.
 
-#[cfg(test)]
 macro_rules! Tag {
     ($($key:ident : $val:expr),* $(,)?) => {
         { $crate::protocraft::Tag { $($key: $val,)* ..$crate::protocraft::Tag::DEFAULT } }
     };
 }
 
-#[cfg(test)]
 macro_rules! Integer {
     ($($field:ident : $val:expr),* $(,)?) => {
         { $crate::protocraft::Integer { $($field: $val,)* ..$crate::protocraft::Integer::DEFAULT } }
     }
 }
 
-#[cfg(test)]
 macro_rules! RawData {
     ($val:expr) => {
         $crate::protocraft::RawData($val)
@@ -75,7 +77,6 @@ macro_rules! RawData {
 //   packed_sfixed64!(field, [...]) — packed i64
 //   raw!(bytes)                    — verbatim bytes
 
-#[cfg(test)]
 macro_rules! msg_fields {
     ($m:ident,) => {};
 
@@ -247,7 +248,6 @@ macro_rules! msg_fields {
     };
 }
 
-#[cfg(test)]
 macro_rules! fixture {
     ($name:ident, $schema:expr; $($fields:tt)*) => {
         pub fn $name() -> Vec<u8> {
@@ -260,7 +260,6 @@ macro_rules! fixture {
 
 pub mod craft_a;
 
-#[cfg(test)]
 use prototext_core::schema::{Kind, Message as MessageDescriptor};
 
 // ── Core types ────────────────────────────────────────────────────────────────
@@ -336,12 +335,7 @@ pub struct RawData<'a>(pub &'a [u8]);
 
 /// Resolves a field specifier to a `Tag`, using the message descriptor if needed.
 pub trait IntoFieldTag {
-    fn into_field_tag(
-        self,
-        default_wire_type: u8,
-        #[cfg(test)] desc: Option<&MessageDescriptor>,
-        #[cfg(not(test))] _desc: Option<&()>,
-    ) -> Tag;
+    fn into_field_tag(self, default_wire_type: u8, desc: Option<&MessageDescriptor>) -> Tag;
 }
 
 macro_rules! impl_into_field_tag_int {
@@ -351,8 +345,7 @@ macro_rules! impl_into_field_tag_int {
                 fn into_field_tag(
                     self,
                     default_wire_type: u8,
-                    #[cfg(test)] _desc: Option<&MessageDescriptor>,
-                    #[cfg(not(test))] _desc: Option<&()>,
+                    _desc: Option<&MessageDescriptor>,
                 ) -> Tag {
                     Tag {
                         field: "",
@@ -371,7 +364,6 @@ impl_into_field_tag_int!(u64, u32, u16, u8, i64, i32, i16, usize);
 /// Resolve a field name or numeric string to a field number.
 /// - all-digit string → parse as u64
 /// - otherwise → look up by name in `desc`
-#[cfg(test)]
 fn resolve_field_name(name: &str, desc: Option<&MessageDescriptor>) -> u64 {
     if let Ok(n) = name.parse::<u64>() {
         return n;
@@ -390,7 +382,6 @@ fn resolve_field_name(name: &str, desc: Option<&MessageDescriptor>) -> u64 {
 /// Resolve a `Tag`'s field specifier to a concrete field number.
 /// - `field != ""`: resolve via `resolve_field_name`
 /// - `field == ""`: use `field_num` directly.
-#[cfg(test)]
 fn resolve_tag_field(tag: &Tag, default_wire_type: u8, desc: Option<&MessageDescriptor>) -> Tag {
     let field_num = if tag.field.is_empty() {
         tag.field_num
@@ -410,20 +401,11 @@ fn resolve_tag_field(tag: &Tag, default_wire_type: u8, desc: Option<&MessageDesc
 }
 
 impl IntoFieldTag for Tag {
-    fn into_field_tag(
-        self,
-        default_wire_type: u8,
-        #[cfg(test)] desc: Option<&MessageDescriptor>,
-        #[cfg(not(test))] _desc: Option<&()>,
-    ) -> Tag {
-        #[cfg(test)]
-        return resolve_tag_field(&self, default_wire_type, desc);
-        #[cfg(not(test))]
-        return self;
+    fn into_field_tag(self, default_wire_type: u8, desc: Option<&MessageDescriptor>) -> Tag {
+        resolve_tag_field(&self, default_wire_type, desc)
     }
 }
 
-#[cfg(test)]
 impl IntoFieldTag for &str {
     fn into_field_tag(self, default_wire_type: u8, desc: Option<&MessageDescriptor>) -> Tag {
         Tag {
@@ -439,12 +421,10 @@ impl IntoFieldTag for &str {
 
 /// Resolves a field specifier to `(field_number, nested_descriptor)`.
 /// Used by schema-aware message/group builder arms.
-#[cfg(test)]
 pub trait FieldSpec {
     fn resolve(self, desc: Option<&MessageDescriptor>) -> (u64, Option<MessageDescriptor>);
 }
 
-#[cfg(test)]
 impl FieldSpec for &str {
     fn resolve(self, desc: Option<&MessageDescriptor>) -> (u64, Option<MessageDescriptor>) {
         let d = desc.unwrap_or_else(|| panic!("no descriptor bound, cannot resolve '{}'", self));
@@ -462,7 +442,6 @@ impl FieldSpec for &str {
 macro_rules! impl_field_spec_int {
     ($($t:ty),*) => {
         $(
-            #[cfg(test)]
             impl FieldSpec for $t {
                 fn resolve(self, _desc: Option<&MessageDescriptor>) -> (u64, Option<MessageDescriptor>) {
                     (self as u64, None)
@@ -474,7 +453,6 @@ macro_rules! impl_field_spec_int {
 
 impl_field_spec_int!(u64, u32, u16, u8, i64, i32, i16, usize);
 
-#[cfg(test)]
 impl FieldSpec for Tag {
     fn resolve(self, desc: Option<&MessageDescriptor>) -> (u64, Option<MessageDescriptor>) {
         if !self.field.is_empty() {
@@ -678,7 +656,6 @@ fn encode_sint64(v: i64) -> u64 {
 // ── Descriptor helper functions ───────────────────────────────────────────────
 
 /// Load a `MessageDescriptor` for `SwissArmyKnife` from the compiled schema.
-#[cfg(test)]
 pub fn knife_descriptor() -> MessageDescriptor {
     let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/knife.pb"));
     let pool = prototext_core::decode_pool(bytes.as_ref())
@@ -689,7 +666,6 @@ pub fn knife_descriptor() -> MessageDescriptor {
 }
 
 /// Load a `MessageDescriptor` for `SwissArmyKnifeRq` from the compiled schema.
-#[cfg(test)]
 pub fn knife_rq_descriptor() -> MessageDescriptor {
     let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/knife.pb"));
     let pool = prototext_core::decode_pool(bytes.as_ref())
@@ -700,7 +676,6 @@ pub fn knife_rq_descriptor() -> MessageDescriptor {
 }
 
 /// Load a `MessageDescriptor` for `EnumCollision` from the compiled schema.
-#[cfg(test)]
 pub fn enum_collision_descriptor() -> MessageDescriptor {
     let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/enum_collision.pb"));
     let pool = prototext_core::decode_pool(bytes.as_ref())
@@ -711,7 +686,6 @@ pub fn enum_collision_descriptor() -> MessageDescriptor {
 }
 
 /// Load a `MessageDescriptor` for `SchemaSimple` from the compiled schema.
-#[cfg(test)]
 pub fn schema_simple_descriptor() -> MessageDescriptor {
     let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/knife.pb"));
     let pool = prototext_core::decode_pool(bytes.as_ref())
@@ -722,7 +696,6 @@ pub fn schema_simple_descriptor() -> MessageDescriptor {
 }
 
 /// Load a `MessageDescriptor` for `SchemaOverhang` from the compiled schema.
-#[cfg(test)]
 pub fn schema_overhang_descriptor() -> MessageDescriptor {
     let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/knife.pb"));
     let pool = prototext_core::decode_pool(bytes.as_ref())
@@ -733,7 +706,6 @@ pub fn schema_overhang_descriptor() -> MessageDescriptor {
 }
 
 /// Load a `MessageDescriptor` for `SchemaInterleaved` from the compiled schema.
-#[cfg(test)]
 pub fn schema_interleaved_descriptor() -> MessageDescriptor {
     let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/knife.pb"));
     let pool = prototext_core::decode_pool(bytes.as_ref())
@@ -744,7 +716,6 @@ pub fn schema_interleaved_descriptor() -> MessageDescriptor {
 }
 
 /// Load a `MessageDescriptor` for `SchemaHidden` from the compiled schema.
-#[cfg(test)]
 pub fn schema_hidden_descriptor() -> MessageDescriptor {
     let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/knife.pb"));
     let pool = prototext_core::decode_pool(bytes.as_ref())
@@ -755,7 +726,6 @@ pub fn schema_hidden_descriptor() -> MessageDescriptor {
 }
 
 /// Load a `MessageDescriptor` for `google.protobuf.FileDescriptorProto`.
-#[cfg(test)]
 pub fn fdp_descriptor() -> MessageDescriptor {
     let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/descriptor.pb"));
     let pool = prototext_core::decode_pool(bytes.as_ref())
@@ -770,7 +740,6 @@ pub fn fdp_descriptor() -> MessageDescriptor {
 /// A message builder accumulating wire bytes.
 pub struct Message {
     buf: Vec<u8>,
-    #[cfg(test)]
     pub desc: Option<MessageDescriptor>,
 }
 
@@ -784,13 +753,11 @@ impl Message {
     pub fn new() -> Self {
         Message {
             buf: Vec::new(),
-            #[cfg(test)]
             desc: None,
         }
     }
 
     /// Construct a schema-bound message; field names are resolved against `desc`.
-    #[cfg(test)]
     pub fn with_schema(desc: MessageDescriptor) -> Self {
         Message {
             buf: Vec::new(),
@@ -809,15 +776,8 @@ impl Message {
     }
 
     /// Return a reference to the bound descriptor (test-only helper).
-    #[cfg(test)]
     fn desc_ref(&self) -> Option<&MessageDescriptor> {
         self.desc.as_ref()
-    }
-
-    /// Non-test stub: always returns None.
-    #[cfg(not(test))]
-    fn desc_ref(&self) -> Option<&()> {
-        None
     }
 
     // ── Varint fields (wire type 0) ──────────────────────────────────────────
