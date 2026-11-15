@@ -5,21 +5,23 @@
 // descriptor_text.rs — descriptors in the text format, read back
 // (spec 0424 S5, spec 0426), for reproto.
 //
-// Two passes (spec 0427): `parse_descriptor_text` parses the text of a
-// `FileDescriptorProto` or a `FileDescriptorSet` with `descriptor.proto`
-// alone, which gives each file's imports and declarations;
-// `DescriptorPool`, built from every file of the input, parses each text
-// file again, its options resolved by the input's declarations.
+// Descriptors in the text format (spec 0427): `read_descriptors` reads
+// an input's files in import order, each text parsed with the files read
+// before it; `scan_descriptor_text` and `split_descriptor_set` give a
+// file's imports and a set's files without parsing;
+// `parse_descriptor_text` parses with `descriptor.proto` alone, for what
+// must see a file before the input is complete (an FDP plugin).
 
 use std::sync::OnceLock;
 
+use prototext_upb::input::{read_input, Input, Read};
 use prototext_upb::text_format::{self, Options};
-use prototext_upb::{Message, Pool};
+use prototext_upb::Pool;
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
-use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
+use pyo3_stub_gen::derive::gen_stub_pyfunction;
 
 /// The vendored `descriptor.proto`, alone: the types of a descriptor, and
 /// none of the extensions an input declares.
@@ -50,11 +52,11 @@ const LENIENT: Options = Options {
 /// -------
 /// bytes
 ///     The serialized message, read with the vendored ``descriptor.proto``
-///     alone: the first pass of spec 0427, which gives a file's imports
-///     and declarations.  A field printed by number is kept, ``N { … }``
+///     alone, for what must see a file before the input is complete (an
+///     FDP plugin).  A field printed by number is kept, ``N { … }``
 ///     length-delimited; a field or an extension by a name
-///     ``descriptor.proto`` does not declare is skipped.  Parse the file
-///     again with a `DescriptorPool` of the input for its options.
+///     ``descriptor.proto`` does not declare is skipped.  Read the input
+///     with `read_descriptors` for its options.
 ///
 /// Raises
 /// ------
@@ -81,85 +83,85 @@ pub fn parse_descriptor_text<'py>(
     Ok(PyBytes::new(py, &bytes))
 }
 
-/// The pool of an input's files, to parse its text files with in a
-/// second pass (spec 0427).
+/// The name and imports of a ``FileDescriptorProto`` in the text format,
+/// from its top-level ``name`` and ``dependency`` fields, without parsing
+/// the rest (spec 0427 S1).
 ///
-/// Built from every file of the input, binary as it is, text as
-/// `parse_descriptor_text` gave it; `parse_file_text` then parses a text
-/// file again, its options by name resolved and by number framed from the
-/// input's declarations.
-#[gen_stub_pyclass]
-#[pyclass]
-pub struct DescriptorPool {
-    file_type: Message,
-    skipped: Vec<(String, String)>,
+/// Raises ``ValueError`` (``"LINE:COLUMN: message"``) when a string does
+/// not end or the brackets do not match.
+#[gen_stub_pyfunction]
+#[pyfunction]
+pub fn scan_descriptor_text(text: &str) -> PyResult<(String, Vec<String>)> {
+    text_format::scan_imports(text).map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
-#[gen_stub_pymethods]
-#[pymethods]
-impl DescriptorPool {
-    /// Parameters
-    /// ----------
-    /// files : list[bytes]
-    ///     Every file of the input, serialized ``FileDescriptorProto``\ s,
-    ///     in any order: they are loaded imports first.
-    /// descriptor_file : str
-    ///     The input's ``descriptor.proto`` (the variant's, e.g.
-    ///     ``net/proto2/proto/descriptor.proto``): its ``FileDescriptorProto``
-    ///     is the type text files are parsed as.  The vendored one is
-    ///     added when no file of ``files`` has that name.
-    #[new]
-    fn new(files: Vec<Bound<'_, PyBytes>>, descriptor_file: &str) -> PyResult<Self> {
-        let mut set = Vec::new();
-        for f in &files {
-            put_len(&mut set, 1, f.as_bytes());
-        }
-        let (pool, report) = text_format::load_input(&set, descriptor_file);
-        // The vendored descriptor.proto declares it: never an error, but
-        // an extension module must not panic.
-        let file_type = text_format::descriptor_type(&pool, descriptor_file, "FileDescriptorProto")
-            .ok_or_else(|| PyValueError::new_err("no FileDescriptorProto to parse with"))?;
-        Ok(DescriptorPool {
-            file_type,
-            skipped: report.skipped,
+/// Each ``file { … }`` of a ``FileDescriptorSet`` in the text format, as
+/// the text inside its brackets: one ``FileDescriptorProto`` each.
+///
+/// Raises ``ValueError`` (``"LINE:COLUMN: message"``) when a string does
+/// not end or the brackets do not match.
+#[gen_stub_pyfunction]
+#[pyfunction]
+pub fn split_descriptor_set(text: &str) -> PyResult<Vec<String>> {
+    text_format::split_set(text)
+        .map(|files| files.into_iter().map(str::to_owned).collect())
+        .map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
+/// What became of one text: its bytes, its warnings, and why it does not
+/// parse.
+type TextRead<'py> = (Option<Bound<'py, PyBytes>>, Vec<String>, Option<String>);
+
+/// Read an input's descriptors in import order (spec 0427).
+///
+/// Every file goes into one pool, imports first; each text file is
+/// parsed when its turn comes, its options by name resolved and by number
+/// framed from the files read before it, and parsed once more at the end
+/// where that left a value declared nowhere.
+///
+/// Parameters
+/// ----------
+/// binary : list[bytes]
+///     The input's serialized ``FileDescriptorProto``\ s.
+/// text : list[str]
+///     The input's ``FileDescriptorProto``\ s in the text format.
+/// descriptor_file : str
+///     The input's ``descriptor.proto`` (the variant's, e.g.
+///     ``net/proto2/proto/descriptor.proto``), whose
+///     ``FileDescriptorProto`` the texts are parsed as; the vendored one
+///     when no input has that name.
+///
+/// Returns
+/// -------
+/// tuple[list[tuple[bytes | None, list[str], str | None]], list[tuple[str, str]]]
+///     For each text, in order: its bytes, its warnings (spec 0426 S4,
+///     spec 0427 S6), and ``None``; or ``None``, ``[]`` and why it does not
+///     parse (``"LINE:COLUMN: message"``). Then ``(file, reason)`` for each
+///     file the pool could not hold, even mended.
+#[gen_stub_pyfunction]
+#[pyfunction]
+pub fn read_descriptors<'py>(
+    py: Python<'py>,
+    binary: Vec<Bound<'py, PyBytes>>,
+    text: Vec<String>,
+    descriptor_file: &str,
+) -> (Vec<TextRead<'py>>, Vec<(String, String)>) {
+    let mut inputs: Vec<Input> = binary.iter().map(|b| Input::Binary(b.as_bytes())).collect();
+    inputs.extend(text.iter().map(|t| Input::Text(t)));
+    let (_, reads, report) = read_input(&inputs, descriptor_file);
+    let texts = reads[binary.len()..]
+        .iter()
+        .map(|r| match r {
+            Read::Parsed {
+                bytes, warnings, ..
+            } => (
+                Some(PyBytes::new(py, bytes)),
+                warnings.iter().map(|w| w.to_string()).collect(),
+                None,
+            ),
+            Read::Error(e) => (None, Vec::new(), Some(e.to_string())),
+            Read::Binary => unreachable!("a text input"),
         })
-    }
-
-    /// ``(file, reason)`` for each file that did not load: its
-    /// declarations are not in the pool.
-    #[getter]
-    fn skipped(&self) -> Vec<(String, String)> {
-        self.skipped.clone()
-    }
-
-    /// Parse ``text``, one ``FileDescriptorProto`` in the text format, with
-    /// the pool.
-    ///
-    /// Returns the serialized file, and one warning per value the pool
-    /// could not settle (spec 0426 S4, spec 0427 S4).  Raises
-    /// ``ValueError`` (``"LINE:COLUMN: message"``) when ``text`` does not
-    /// parse.
-    fn parse_file_text<'py>(
-        &self,
-        py: Python<'py>,
-        text: &str,
-    ) -> PyResult<(Bound<'py, PyBytes>, Vec<String>)> {
-        let parsed = text_format::parse_reporting(&self.file_type, text, LENIENT)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        let warnings = parsed.warnings.iter().map(|w| w.to_string()).collect();
-        Ok((PyBytes::new(py, &parsed.bytes), warnings))
-    }
-}
-
-fn put_len(out: &mut Vec<u8>, number: u32, payload: &[u8]) {
-    let mut put_varint = |mut v: u64| {
-        while v >= 0x80 {
-            out.push((v as u8) | 0x80);
-            v >>= 7;
-        }
-        out.push(v as u8);
-    };
-    put_varint((u64::from(number) << 3) | 2);
-    put_varint(payload.len() as u64);
-    out.extend_from_slice(payload);
+        .collect();
+    (texts, report.skipped)
 }

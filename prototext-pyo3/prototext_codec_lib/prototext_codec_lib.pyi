@@ -4,54 +4,15 @@
 import builtins
 import typing
 __all__ = [
-    "DescriptorPool",
     "SchemaHandle",
     "format_as_bytes",
     "format_as_text",
     "parse_descriptor_text",
+    "read_descriptors",
     "register_schema",
+    "scan_descriptor_text",
+    "split_descriptor_set",
 ]
-
-@typing.final
-class DescriptorPool:
-    r"""
-    The pool of an input's files, to parse its text files with in a
-    second pass (spec 0427).
-    
-    Built from every file of the input, binary as it is, text as
-    `parse_descriptor_text` gave it; `parse_file_text` then parses a text
-    file again, its options by name resolved and by number framed from the
-    input's declarations.
-    """
-    @property
-    def skipped(self) -> builtins.list[tuple[builtins.str, builtins.str]]:
-        r"""
-        ``(file, reason)`` for each file that did not load: its
-        declarations are not in the pool.
-        """
-    def __new__(cls, files: typing.Sequence[bytes], descriptor_file: builtins.str) -> DescriptorPool:
-        r"""
-        Parameters
-        ----------
-        files : list[bytes]
-            Every file of the input, serialized ``FileDescriptorProto``\ s,
-            in any order: they are loaded imports first.
-        descriptor_file : str
-            The input's ``descriptor.proto`` (the variant's, e.g.
-            ``net/proto2/proto/descriptor.proto``): its ``FileDescriptorProto``
-            is the type text files are parsed as.  The vendored one is
-            added when no file of ``files`` has that name.
-        """
-    def parse_file_text(self, text: builtins.str) -> tuple[bytes, builtins.list[builtins.str]]:
-        r"""
-        Parse ``text``, one ``FileDescriptorProto`` in the text format, with
-        the pool.
-        
-        Returns the serialized file, and one warning per value the pool
-        could not settle (spec 0426 S4, spec 0427 S4).  Raises
-        ``ValueError`` (``"LINE:COLUMN: message"``) when ``text`` does not
-        parse.
-        """
 
 @typing.final
 class SchemaHandle:
@@ -139,16 +100,46 @@ def parse_descriptor_text(text: builtins.str, is_set: builtins.bool = False) -> 
     -------
     bytes
         The serialized message, read with the vendored ``descriptor.proto``
-        alone: the first pass of spec 0427, which gives a file's imports
-        and declarations.  A field printed by number is kept, ``N { … }``
+        alone, for what must see a file before the input is complete (an
+        FDP plugin).  A field printed by number is kept, ``N { … }``
         length-delimited; a field or an extension by a name
-        ``descriptor.proto`` does not declare is skipped.  Parse the file
-        again with a `DescriptorPool` of the input for its options.
+        ``descriptor.proto`` does not declare is skipped.  Read the input
+        with `read_descriptors` for its options.
     
     Raises
     ------
     ValueError
         ``"LINE:COLUMN: message"`` when ``text`` does not parse.
+    """
+
+def read_descriptors(binary: typing.Sequence[bytes], text: typing.Sequence[builtins.str], descriptor_file: builtins.str) -> tuple[builtins.list[tuple[typing.Optional[bytes], builtins.list[builtins.str], typing.Optional[builtins.str]]], builtins.list[tuple[builtins.str, builtins.str]]]:
+    r"""
+    Read an input's descriptors in import order (spec 0427).
+    
+    Every file goes into one pool, imports first; each text file is
+    parsed when its turn comes, its options by name resolved and by number
+    framed from the files read before it, and parsed once more at the end
+    where that left a value declared nowhere.
+    
+    Parameters
+    ----------
+    binary : list[bytes]
+        The input's serialized ``FileDescriptorProto``\ s.
+    text : list[str]
+        The input's ``FileDescriptorProto``\ s in the text format.
+    descriptor_file : str
+        The input's ``descriptor.proto`` (the variant's, e.g.
+        ``net/proto2/proto/descriptor.proto``), whose
+        ``FileDescriptorProto`` the texts are parsed as; the vendored one
+        when no input has that name.
+    
+    Returns
+    -------
+    tuple[list[tuple[bytes | None, list[str], str | None]], list[tuple[str, str]]]
+        For each text, in order: its bytes, its warnings (spec 0426 S4,
+        spec 0427 S6), and ``None``; or ``None``, ``[]`` and why it does not
+        parse (``"LINE:COLUMN: message"``). Then ``(file, reason)`` for each
+        file the pool could not hold, even mended.
     """
 
 def register_schema(schema_data: bytes, root_message: builtins.str) -> SchemaHandle:
@@ -173,5 +164,24 @@ def register_schema(schema_data: bytes, root_message: builtins.str) -> SchemaHan
     -------
     SchemaHandle
         Opaque handle; pass to `format_as_text()`.
+    """
+
+def scan_descriptor_text(text: builtins.str) -> tuple[builtins.str, builtins.list[builtins.str]]:
+    r"""
+    The name and imports of a ``FileDescriptorProto`` in the text format,
+    from its top-level ``name`` and ``dependency`` fields, without parsing
+    the rest (spec 0427 S1).
+    
+    Raises ``ValueError`` (``"LINE:COLUMN: message"``) when a string does
+    not end or the brackets do not match.
+    """
+
+def split_descriptor_set(text: builtins.str) -> builtins.list[builtins.str]:
+    r"""
+    Each ``file { … }`` of a ``FileDescriptorSet`` in the text format, as
+    the text inside its brackets: one ``FileDescriptorProto`` each.
+    
+    Raises ``ValueError`` (``"LINE:COLUMN: message"``) when a string does
+    not end or the brackets do not match.
     """
 

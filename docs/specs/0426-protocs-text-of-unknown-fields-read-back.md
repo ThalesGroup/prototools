@@ -12,7 +12,7 @@ App: prototext-upb, reproto, protoback
 Refs: docs/specs/0424-protoback-reproto-in-rust-on-upb.md (S5: the
       text-format parser this specifies the rules of);
       docs/specs/0427-text-input-parsed-with-the-inputs-schema.md (the
-      two passes that apply them, the second with the input's pool)
+      reading, in import order, that applies them with the input's pool)
 
 ## Background
 
@@ -136,7 +136,7 @@ choose between them by.
 ## Test plan
 
 1. googleapis printed by `protoc --decode` with `descriptor.proto` only,
-   read back in two passes (spec 0427): every file byte for byte, and one W2 per
+   read back in import order (spec 0427): every file byte for byte, and one W2 per
    string protoc printed as a message with a non-empty group inside.
 2. The fixtures of `prototext-upb`: a message-valued option, an option
    declared delimited in its own file with a delimited field nested in

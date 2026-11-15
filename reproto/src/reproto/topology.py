@@ -6,7 +6,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from google.protobuf.descriptor_pb2 import FileDescriptorProto, FileDescriptorSet
 
 from .load import QualFile
 
@@ -65,6 +64,11 @@ class File:
     def qfile(self, v: QualFile) -> None:
         self._qfile = v
 
+    def forget(self) -> None:
+        """Back to a reference: the file turned out unreadable, and is
+        missing from the input from then on (spec 0427 S3)."""
+        self._qfile = None
+
 
 class ReFile(File):
     def __new__(
@@ -109,15 +113,9 @@ class ReFile(File):
         self.qfile = qfile_or_name
         self.is_seed = False
 
-        match qfile_or_name.desc:
-            case FileDescriptorSet():
-                fdp = qfile_or_name.desc.file[0]
-            case FileDescriptorProto():
-                fdp = qfile_or_name.desc
-            case _:
-                raise AssertionError(f"Unexpected desc type: {type(qfile_or_name.desc)}")
-
-        for index, dep in enumerate(fdp.dependency):
+        # Its imports only: a text file is not parsed before the input is
+        # read (spec 0427 S1).
+        for dep in qfile_or_name.imports:
             assert isinstance(dep, str)
             file = ReFile(topo, dep)
             self.targets.add(file)

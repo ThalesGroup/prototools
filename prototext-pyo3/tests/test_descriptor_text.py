@@ -20,7 +20,12 @@ from google.protobuf.descriptor_pb2 import (
 )
 
 import prototext_codec_lib
-from prototext_codec_lib import DescriptorPool, parse_descriptor_text
+from prototext_codec_lib import (
+    parse_descriptor_text,
+    read_descriptors,
+    scan_descriptor_text,
+    split_descriptor_set,
+)
 
 # A message's options: field 7 of a DescriptorProto.
 _TEXT = """\
@@ -88,34 +93,34 @@ def _declaring_file(label_type: FieldDescriptorProto.Type.ValueType) -> bytes:
 _DESCRIPTOR = "google/protobuf/descriptor.proto"
 
 
-def _second_pass(*files: bytes) -> tuple[bytes, list[str]]:
-    """``_TEXT`` parsed again with the pool of ``files`` and its own first
-    pass."""
-    pool = DescriptorPool([*files, parse_descriptor_text(_TEXT)], _DESCRIPTOR)
-    assert pool.skipped == []
-    return pool.parse_file_text(_TEXT)
+def _read(*binary: bytes, text: str = _TEXT) -> tuple[bytes, list[str]]:
+    """``text`` read in import order with ``binary``."""
+    texts, skipped = read_descriptors(list(binary), [text], _DESCRIPTOR)
+    assert skipped == []
+    [(parsed, warnings, error)] = texts
+    assert error is None and parsed is not None
+    return parsed, warnings
 
 
 def test_exported() -> None:
-    assert "parse_descriptor_text" in prototext_codec_lib.__all__
-    assert "DescriptorPool" in prototext_codec_lib.__all__
+    for name in ("parse_descriptor_text", "read_descriptors",
+                 "scan_descriptor_text", "split_descriptor_set"):
+        assert name in prototext_codec_lib.__all__
 
 
-def test_the_first_pass_takes_an_option_by_number_as_length_delimited() -> None:
+def test_alone_an_option_by_number_is_length_delimited() -> None:
     assert parse_descriptor_text(_TEXT) == _use_proto(
         _len(50001, _tag(1, 0) + b"\x03"))
 
 
 def test_a_declared_message_is_length_delimited() -> None:
-    parsed, warnings = _second_pass(
-        _declaring_file(FieldDescriptorProto.TYPE_MESSAGE))
+    parsed, warnings = _read(_declaring_file(FieldDescriptorProto.TYPE_MESSAGE))
     assert parsed == _use_proto(_len(50001, _tag(1, 0) + b"\x03"))
     assert warnings == []
 
 
 def test_a_declared_group_is_a_group() -> None:
-    parsed, warnings = _second_pass(
-        _declaring_file(FieldDescriptorProto.TYPE_GROUP))
+    parsed, warnings = _read(_declaring_file(FieldDescriptorProto.TYPE_GROUP))
     group = _tag(50001, 3) + _tag(1, 0) + b"\x03" + _tag(50001, 4)
     assert parsed == _use_proto(group)
     assert warnings == []
@@ -124,24 +129,21 @@ def test_a_declared_group_is_a_group() -> None:
 def test_a_declared_string_keeps_its_bytes() -> None:
     """``1: 3`` inside is exact, so the string is ``\\x08\\x03``: no group,
     hence no warning."""
-    parsed, warnings = _second_pass(
-        _declaring_file(FieldDescriptorProto.TYPE_STRING))
+    parsed, warnings = _read(_declaring_file(FieldDescriptorProto.TYPE_STRING))
     assert parsed == _use_proto(_len(50001, b"\x08\x03"))
     assert warnings == []
 
 
+_NAMED = _TEXT.replace("50001 {\n      1: 3", "[decl.opt] {\n      x: 3")
+
+
 def test_an_option_by_name() -> None:
-    pool = DescriptorPool(
-        [_declaring_file(FieldDescriptorProto.TYPE_MESSAGE),
-         parse_descriptor_text(_TEXT)],
-        _DESCRIPTOR,
-    )
-    named = _TEXT.replace("50001 {\n      1: 3", "[decl.opt] {\n      x: 3")
-    assert pool.parse_file_text(named) == pool.parse_file_text(_TEXT)
+    declaring = _declaring_file(FieldDescriptorProto.TYPE_MESSAGE)
+    assert _read(declaring, text=_NAMED) == _read(declaring)
 
 
 def test_an_option_declared_nowhere_is_reported() -> None:
-    parsed, warnings = _second_pass()
+    parsed, warnings = _read()
     assert parsed == _use_proto(_len(50001, _tag(1, 0) + b"\x03"))
     assert len(warnings) == 1
     assert warnings[0].startswith(
@@ -150,14 +152,24 @@ def test_an_option_declared_nowhere_is_reported() -> None:
 
 
 def test_an_extension_by_name_declared_nowhere_is_reported() -> None:
-    pool = DescriptorPool([parse_descriptor_text(_TEXT)], _DESCRIPTOR)
-    named = _TEXT.replace("50001 {\n      1: 3", "[decl.opt] {\n      x: 3")
-    parsed, warnings = pool.parse_file_text(named)
+    parsed, warnings = _read(text=_NAMED)
     assert parsed == _use_proto(b"")
     assert warnings == [
         "extension [decl.opt] of google.protobuf.MessageOptions is declared"
         " nowhere in the input: skipped"
     ]
+
+
+def test_text_that_does_not_parse() -> None:
+    texts, _ = read_descriptors([], ['name: "a.proto"\n}'], _DESCRIPTOR)
+    assert texts == [(None, [], "2:1: unbalanced brackets")]
+
+
+def test_the_scan_and_the_split() -> None:
+    assert scan_descriptor_text(_TEXT) == ("use.proto", [])
+    assert split_descriptor_set("file {\n" + _TEXT + "}\n") == ["\n" + _TEXT]
+    with pytest.raises(ValueError, match=r"^1:\d+: "):
+        scan_descriptor_text('name: "a')
 
 
 def test_a_set() -> None:
@@ -174,8 +186,8 @@ def test_an_error_has_its_line_and_column() -> None:
 
 def test_a_missing_import_is_mended() -> None:
     lonely = FileDescriptorProto(name="lonely.proto", dependency=["gone.proto"])
-    pool = DescriptorPool([lonely.SerializeToString()], _DESCRIPTOR)
-    assert pool.skipped == []
+    _, skipped = read_descriptors([lonely.SerializeToString()], [], _DESCRIPTOR)
+    assert skipped == []
 
 
 def test_a_file_that_does_not_load_even_mended_is_reported() -> None:
@@ -185,5 +197,5 @@ def test_a_file_that_does_not_load_even_mended_is_reported() -> None:
     bad = FileDescriptorProto(name="bad.proto", message_type=[DescriptorProto(
         name="M", field=[FieldDescriptorProto(name="a", **field),
                          FieldDescriptorProto(name="b", **field)])])
-    pool = DescriptorPool([bad.SerializeToString()], _DESCRIPTOR)
-    assert [name for name, _ in pool.skipped] == ["bad.proto"]
+    _, skipped = read_descriptors([bad.SerializeToString()], [], _DESCRIPTOR)
+    assert [name for name, _ in skipped] == ["bad.proto"]

@@ -112,11 +112,12 @@ class QualFile:
         self.root = root
         self.rel_path = rel_path
         self.contents = contents
-        # A file read from the text format keeps its text until it is
-        # parsed again with the input's pool (spec 0427 S3).
+        # A file given as text keeps it until the input is read, in import
+        # order (spec 0427 S3); until then its imports come from a scan.
         self.text: str | None = None
+        self._imports: list[str] | None = None
         self._name: str
-        self._desc: FileDescriptorProto
+        self._desc: FileDescriptorProto | None = None
 
     @property
     def name(self) -> str:
@@ -128,11 +129,32 @@ class QualFile:
 
     @property
     def desc(self) -> FileDescriptorProto:
+        """The file's descriptor. A text file not read yet is parsed here,
+        with descriptor.proto alone, if anything asks before the input is
+        read: in a run, nothing does (the topology reads `imports`)."""
+        if self._desc is None:
+            assert self.text is not None, "a QualFile without a desc"
+            fdp = FileDescriptorProto()
+            fdp.ParseFromString(_pt_codec.parse_descriptor_text(self.text))
+            self._desc = fdp
         return self._desc
+
+    @property
+    def imports(self) -> list[str]:
+        """The files it imports: from the scan of a text not read yet, else
+        from its descriptor."""
+        if self._imports is not None:
+            return self._imports
+        return list(self.desc.dependency)
+
+    @imports.setter
+    def imports(self, v: list[str]) -> None:
+        self._imports = v
 
     @desc.setter
     def desc(self, v: FileDescriptorProto) -> None:
         self._desc = v
+        self._imports = None
 
 
 def _blob_files(
@@ -316,30 +338,44 @@ def parse_qfile(
     result: list[QualFile] = []
     for name, fragment in fragments:
         text: str | None = None
+        imports: list[str] | None = None
+        fdp: FileDescriptorProto | None = FileDescriptorProto()
         if isinstance(fragment, str):
-            # The first pass (spec 0427 S1): bytes enough for the file's
-            # imports and declarations, everything past this point reads
-            # bytes; the options come with the second pass, once every
-            # file is loaded (phases._reparse_text_files).
+            # Read once every file is loaded, in import order, with the
+            # files it imports (spec 0427; phases._read_text_files). Until
+            # then, its name and imports are all the topology needs: a
+            # scan, not a parse. A plugin, which sees each file as it is
+            # loaded (spec 0369), sees it parsed with descriptor.proto
+            # alone, as before.
             text = fragment
             try:
-                fragment = _pt_codec.parse_descriptor_text(fragment)
+                if ctx.fdp_plugin_fn is None:
+                    _, imports = _pt_codec.scan_descriptor_text(fragment)
+                    fdp = None
+                    fragment = b""
+                else:
+                    fragment = _pt_codec.parse_descriptor_text(fragment)
+                    fdp.ParseFromString(fragment)
             except ValueError as e:
                 logger.warning(
                     "Cannot parse '%s' (file '%s'): %s", file.rel_path, name, e,
                     extra={"cli_warn": True},
                 )
                 continue
+        else:
+            fdp.ParseFromString(fragment)
         qf = QualFile(file.root, file.rel_path, fragment)
         qf.text = text
         qf.name = name
-        fdp = FileDescriptorProto()
-        fdp.ParseFromString(fragment)
-        # Before the QualFile reaches ReFile, hence before targets is
-        # built from fdp.dependency — this is the application that lets
-        # a plugin-added import be discovered at all (spec 0369 S2).
-        apply_fdp_plugin(ctx, fdp)
-        qf.desc = fdp
+        if fdp is None:
+            assert imports is not None
+            qf.imports = imports
+        else:
+            # Before the QualFile reaches ReFile, hence before targets is
+            # built from its imports — this is the application that lets
+            # a plugin-added import be discovered at all (spec 0369 S2).
+            apply_fdp_plugin(ctx, fdp)
+            qf.desc = fdp
         if ctx.debug:
             logger.warning(
                 "Parsing file '%s'", file.rel_path,

@@ -325,7 +325,9 @@ fn prototext_codec_lib(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(format_as_bytes, m)?)?;
     m.add_class::<SchemaHandle>()?;
     m.add_function(wrap_pyfunction!(descriptor_text::parse_descriptor_text, m)?)?;
-    m.add_class::<descriptor_text::DescriptorPool>()?;
+    m.add_function(wrap_pyfunction!(descriptor_text::scan_descriptor_text, m)?)?;
+    m.add_function(wrap_pyfunction!(descriptor_text::split_descriptor_set, m)?)?;
+    m.add_function(wrap_pyfunction!(descriptor_text::read_descriptors, m)?)?;
     Ok(())
 }
 

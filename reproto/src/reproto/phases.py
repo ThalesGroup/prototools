@@ -595,51 +595,53 @@ def _phase1_load_files(
         # Those imports must appear earlier in ctx.fallback_protos so the
         # topo-sort sees them in the right order — enforced by cli.py ordering.
 
-    _reparse_text_files(ctx, topo)
+    _read_text_files(ctx, topo)
     return seed_files
 
 
-def _reparse_text_files(ctx: Context, topo: Topology) -> None:
-    """Parse the files read from text again, with the input's pool (spec
-    0427 S3).
+def _read_text_files(ctx: Context, topo: Topology) -> None:
+    """Read the files given as text, in import order (spec 0427).
 
-    The first pass, as each file was loaded, knew descriptor.proto alone:
-    enough for imports and declarations, not for custom options. Now that
-    every file of the input is loaded, binary and text, a pool of all of
-    them declares the options: by name, they resolve; by number, each is
-    framed as declared, and where nothing is declared the likely framing is
-    taken, with a warning (spec 0426). Each file's desc is rebuilt from its
-    new contents (spec 0369 S1).
+    Until now a text file was only scanned for its name and imports. Now
+    that every file of the input is loaded, binary and text, they all go
+    into one pool, imports first, and each text is parsed when its turn
+    comes, with the files it imports: options by name resolve, options by
+    number are framed as declared, and where nothing is declared the
+    likely framing is taken, with a warning (spec 0426). A text that does
+    not parse is reported, and is missing from the input from then on.
+    Each file's desc is rebuilt from its contents (spec 0369 S1).
     """
-    qfiles = [f.qfile for f in topo.files.values() if not f.is_ref()]
-    from_text = [qf for qf in qfiles if qf.text is not None]
-    if not from_text:
+    files = [f for f in topo.files.values() if not f.is_ref()]
+    text_files = [f for f in files if f.qfile.text is not None]
+    if not text_files:
         return
-    contents: list[bytes] = []
-    for qf in qfiles:
-        assert isinstance(qf.contents, bytes)
-        contents.append(qf.contents)
-    pool = _pt_codec.DescriptorPool(contents, ctx.variant_descriptor_proto)
+    binary: list[bytes] = []
+    for f in files:
+        if f.qfile.text is None:
+            assert isinstance(f.qfile.contents, bytes)
+            binary.append(f.qfile.contents)
+    texts = [f.qfile.text for f in text_files]
+    assert all(t is not None for t in texts)
+    results, skipped = _pt_codec.read_descriptors(
+        binary, [t for t in texts if t is not None], ctx.variant_descriptor_proto,
+    )
     if ctx.debug:
-        for name, reason in pool.skipped:
+        for name, reason in skipped:
             cli_info(f"  Not in the text files' pool: {name}: {reason}")
-    for qf in from_text:
-        assert qf.text is not None
-        try:
-            parsed, warnings = pool.parse_file_text(qf.text)
-        except ValueError as e:
-            cli_warning("%s: cannot parse it with the input's pool: %s", qf.name, e)
+    for f, (parsed, warnings, error) in zip(text_files, results):
+        qf = f.qfile
+        qf.text = None
+        if parsed is None:
+            cli_warning("Cannot parse '%s': %s", qf.name, error)
+            f.forget()
             continue
-        finally:
-            qf.text = None
         for warning in warnings:
             cli_warning("%s: %s", qf.name, warning)
-        if parsed != qf.contents:
-            qf.contents = parsed
-            fdp = FileDescriptorProto()
-            fdp.ParseFromString(parsed)
-            apply_fdp_plugin(ctx, fdp)
-            qf.desc = fdp
+        qf.contents = parsed
+        fdp = FileDescriptorProto()
+        fdp.ParseFromString(parsed)
+        apply_fdp_plugin(ctx, fdp)
+        qf.desc = fdp
 
 def _strip_self_dependency(fdp: FileDescriptorProto) -> None:
     """Remove any self-referential entries from fdp.dependency in-place.

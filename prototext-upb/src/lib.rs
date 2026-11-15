@@ -23,6 +23,7 @@
 pub mod descriptor;
 pub mod descriptor_access;
 mod ffi;
+pub mod input;
 mod mend;
 mod message;
 mod set;

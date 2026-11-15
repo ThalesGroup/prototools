@@ -6,8 +6,9 @@
 //! read in two passes, protoc's text of unknown fields framed by the
 //! input's declarations (spec 0424 S5, spec 0426, spec 0427).
 
+use prototext_upb::input::{read_input, Input, Read};
 use prototext_upb::text_format::{
-    descriptor_type, load_input, parse, parse_reporting, Options, Warning,
+    descriptor_type, parse, parse_reporting, scan_imports, split_set, Options, Warning,
 };
 use prototext_upb::{DynamicMessage, Message, Pool, Value};
 
@@ -85,24 +86,42 @@ fn set_of(files: &[Vec<u8>]) -> Vec<u8> {
     out
 }
 
-/// A set's text read as a loader does (spec 0427): with descriptor.proto
-/// alone, then again with the pool of the files the first pass gave. The
-/// set, and the warnings of the second pass.
-fn two_passes(text: &str) -> (Vec<u8>, Vec<Warning>) {
-    let alone = descriptor_pool();
-    let first = parse(&set_type(&alone), text, LENIENT).unwrap();
-    let (pool, report) = load_input(&first, DESCRIPTOR_FILE);
+/// Each file's bytes, warnings and second parse, from `read_input`.
+fn parsed(reads: Vec<Read>) -> Vec<(Vec<u8>, Vec<Warning>, bool)> {
+    reads
+        .into_iter()
+        .map(|r| match r {
+            Read::Parsed {
+                bytes,
+                warnings,
+                parsed_again,
+            } => (bytes, warnings, parsed_again),
+            r => panic!("{r:?}"),
+        })
+        .collect()
+}
+
+/// A set's text read as a loader does (spec 0427): split into its files,
+/// read in import order. The set, and the warnings.
+fn read_set_text(text: &str) -> (Vec<u8>, Vec<Warning>) {
+    let inputs: Vec<Input> = split_set(text)
+        .unwrap()
+        .into_iter()
+        .map(Input::Text)
+        .collect();
+    let (_, reads, report) = read_input(&inputs, DESCRIPTOR_FILE);
     assert!(report.skipped.is_empty(), "{:?}", report.skipped);
-    let def = descriptor_type(&pool, DESCRIPTOR_FILE, "FileDescriptorSet").unwrap();
-    let parsed = parse_reporting(&def, text, LENIENT).unwrap();
-    (parsed.bytes, parsed.warnings)
+    let files = parsed(reads);
+    let warnings = files.iter().flat_map(|f| f.1.clone()).collect();
+    let bytes: Vec<Vec<u8>> = files.into_iter().map(|f| f.0).collect();
+    (set_of(&bytes), warnings)
 }
 
 // ── Back to the binary set ──────────────────────────────────────────────────
 
 #[test]
 fn protocs_text_of_a_set_parses_back_to_the_set_custom_options_included() {
-    let (bytes, warnings) = two_passes(OPTIONS_TEXT);
+    let (bytes, warnings) = read_set_text(OPTIONS_TEXT);
     assert_eq!(bytes, OPTIONS);
     assert!(warnings.is_empty(), "{warnings:?}");
 }
@@ -119,8 +138,8 @@ fn options_by_name_resolve_in_the_inputs_own_pool() {
         .iter()
         .all(|w| matches!(w, Warning::UnknownExtension { .. })));
     assert!(!first.warnings.is_empty());
-    // The second pass: every name declared in the input.
-    let (bytes, warnings) = two_passes(OPTIONS_NAMED_TEXT);
+    // In import order: every name declared by the files read before.
+    let (bytes, warnings) = read_set_text(OPTIONS_NAMED_TEXT);
     assert_eq!(bytes, OPTIONS);
     assert!(warnings.is_empty(), "{warnings:?}");
 }
@@ -129,7 +148,7 @@ fn options_by_name_resolve_in_the_inputs_own_pool() {
 fn values_protoc_printed_alike_come_back_as_declared() {
     // The delimited value a group, its nested delimited field too, the
     // message value length-delimited, both strings exact.
-    let (bytes, warnings) = two_passes(DELIMITED_TEXT);
+    let (bytes, warnings) = read_set_text(DELIMITED_TEXT);
     assert_eq!(bytes, DELIMITED);
     // A guess for "shoppingProduct" (a group inside, not empty), none for
     // "UrlList" (only an empty one, which only a group can be).
@@ -203,18 +222,29 @@ fn options_extend_the_inputs_own_descriptor_proto() {
         LENIENT,
     )
     .unwrap();
-    let set = set_of(&[renamed, declaring]);
-    let (pool, report) = load_input(&set, PROTO2);
+    let message = r#"name: "m.proto" dependency: "use.proto"
+                     message_type { name: "M" options { OPTION } }"#;
+    let by_name = message.replace("OPTION", r#"[u.tag]: "t""#);
+    // The user of the option first: read after what it imports anyway.
+    let inputs = [
+        Input::Text(&by_name),
+        Input::Binary(&renamed),
+        Input::Binary(&declaring),
+    ];
+    let (pool, reads, report) = read_input(&inputs, PROTO2);
     assert!(report.skipped.is_empty(), "{:?}", report.skipped);
     assert!(pool.file(DESCRIPTOR_FILE).is_none());
     let def = descriptor_type(&pool, PROTO2, "FileDescriptorProto").unwrap();
     assert_eq!(def.full_name(), "proto2.FileDescriptorProto");
-    let message = r#"name: "m.proto" message_type { name: "M" options { OPTION } }"#;
-    let by_name =
-        parse_reporting(&def, &message.replace("OPTION", r#"[u.tag]: "t""#), LENIENT).unwrap();
-    assert!(by_name.warnings.is_empty(), "{:?}", by_name.warnings);
+    let Read::Parsed {
+        bytes, warnings, ..
+    } = &reads[0]
+    else {
+        panic!("{:?}", reads[0])
+    };
+    assert!(warnings.is_empty(), "{warnings:?}");
     let by_number = parse(&def, &message.replace("OPTION", r#"50001: "t""#), LENIENT).unwrap();
-    assert_eq!(by_name.bytes, by_number);
+    assert_eq!(*bytes, by_number);
 }
 
 // ── The grammar ─────────────────────────────────────────────────────────────
@@ -494,24 +524,20 @@ fn a_large_sets_text_parses_back_to_the_set() {
     };
     let set = std::fs::read(set).unwrap();
     let text = std::fs::read_to_string(text).unwrap();
-    // Each stage timed, for the spec's measured outcome (0427).
+    // Timed, for the spec's measured outcome (0427).
     let t = std::time::Instant::now();
-    let alone = descriptor_pool();
-    let first = parse(&set_type(&alone), &text, LENIENT).unwrap();
+    let files = split_set(&text).unwrap();
     let t1 = t.elapsed();
-    let (pool, report) = load_input(&first, DESCRIPTOR_FILE);
-    assert!(report.skipped.is_empty(), "{:?}", report.skipped);
+    let inputs: Vec<Input> = files.into_iter().map(Input::Text).collect();
+    let (_, reads, report) = read_input(&inputs, DESCRIPTOR_FILE);
     let t2 = t.elapsed();
-    let def = descriptor_type(&pool, DESCRIPTOR_FILE, "FileDescriptorSet").unwrap();
-    let parsed = parse_reporting(&def, &text, LENIENT).unwrap();
-    let t3 = t.elapsed();
-    eprintln!(
-        "first pass {:?}, pool {:?}, second pass {:?}",
-        t1,
-        t2 - t1,
-        t3 - t2
-    );
-    let (bytes, warnings) = (parsed.bytes, parsed.warnings);
+    assert!(report.skipped.is_empty(), "{:?}", report.skipped);
+    eprintln!("split {:?}, read {:?}", t1, t2 - t1);
+    let files = parsed(reads);
+    let again = files.iter().filter(|f| f.2).count();
+    eprintln!("{again} files parsed again");
+    let warnings: Vec<Warning> = files.iter().flat_map(|f| f.1.clone()).collect();
+    let bytes = set_of(&files.into_iter().map(|f| f.0).collect::<Vec<_>>());
     // Every option is declared in the set: the only guesses are strings
     // protoc printed as messages (spec 0426 S3).
     assert!(warnings
@@ -539,19 +565,19 @@ fn a_descriptor_proto_without_the_descriptor_types_falls_back_to_the_vendored_on
         LENIENT,
     )
     .unwrap();
-    let (pool, report) = load_input(&set_of(&[minimal]), DESCRIPTOR_FILE);
+    let inputs = [Input::Binary(&minimal), Input::Text(r#"name: "a.proto""#)];
+    let (pool, reads, report) = read_input(&inputs, DESCRIPTOR_FILE);
     assert!(report.skipped.is_empty(), "{:?}", report.skipped);
     let def = descriptor_type(&pool, DESCRIPTOR_FILE, "FileDescriptorProto").unwrap();
     assert_eq!(def.full_name(), "google.protobuf.FileDescriptorProto");
-    let parsed = parse(&def, r#"name: "a.proto""#, LENIENT).unwrap();
-    assert_eq!(parsed, b"\x0a\x07a.proto");
+    assert_eq!(parsed(reads[1..].to_vec())[0].0, b"\x0a\x07a.proto");
 }
 
 #[test]
 fn a_file_whose_import_is_missing_still_declares_its_options() {
     // delimited.proto, importing a file the input does not have and using
     // a type of it: upb refuses it as it is. Mended, without the import
-    // and the field, it declares its options to the second pass.
+    // and the field, it declares its options to the files read after.
     let alone = descriptor_pool();
     let mut files = files(&alone, DELIMITED);
     let descriptor_type_ = alone
@@ -573,7 +599,8 @@ fn a_file_whose_import_is_missing_still_declares_its_options() {
     files[1].extend(dependency);
     let set = set_of(&files);
     assert!(!Pool::new().load_set(&set).skipped.is_empty());
-    let (pool, report) = load_input(&set, DESCRIPTOR_FILE);
+    let inputs: Vec<Input> = files.iter().map(|f| Input::Binary(f)).collect();
+    let (pool, _, report) = read_input(&inputs, DESCRIPTOR_FILE);
     assert!(report.skipped.is_empty(), "{:?}", report.skipped);
     let mended = pool.get_message_by_name("dlm.UsesGone").unwrap();
     assert!(mended.get_field(1).is_none() && mended.get_field(2).is_some());
@@ -585,4 +612,80 @@ fn a_file_whose_import_is_missing_still_declares_its_options() {
     let parsed = parse_reporting(&def, DELIMITED_TEXT, LENIENT).unwrap();
     assert_eq!(parsed.bytes, DELIMITED);
     assert_eq!(parsed.warnings.len(), 1, "{:?}", parsed.warnings);
+}
+
+#[test]
+fn the_files_of_a_set_are_read_in_import_order_whatever_their_order() {
+    let mut files = split_set(OPTIONS_TEXT).unwrap();
+    files.reverse();
+    let inputs: Vec<Input> = files.iter().map(|f| Input::Text(f)).collect();
+    let (_, reads, report) = read_input(&inputs, DESCRIPTOR_FILE);
+    assert!(report.skipped.is_empty(), "{:?}", report.skipped);
+    let mut read = parsed(reads);
+    // No guess left; descriptor.proto, read first though given last,
+    // parsed once (options.proto uses options it declares: twice).
+    assert!(read.iter().all(|f| f.1.is_empty()));
+    read.reverse();
+    assert!(!read[0].2 && read[1].2);
+    assert_eq!(
+        set_of(&read.into_iter().map(|f| f.0).collect::<Vec<_>>()),
+        OPTIONS
+    );
+}
+
+#[test]
+fn a_file_using_options_it_declares_is_parsed_again() {
+    let files = split_set(DELIMITED_TEXT).unwrap();
+    let inputs: Vec<Input> = files.iter().map(|f| Input::Text(f)).collect();
+    let (_, reads, _) = read_input(&inputs, DESCRIPTOR_FILE);
+    let read = parsed(reads);
+    // descriptor.proto once; delimited.proto twice, its own declarations
+    // in the pool only once it is read.
+    assert!(!read[0].2 && read[1].2);
+}
+
+#[test]
+fn a_cycle_is_read_and_its_options_settled_by_a_second_parse() {
+    // a.proto uses an option b.proto declares; each imports the other.
+    let a = r#"name: "a.proto" dependency: "b.proto"
+               dependency: "google/protobuf/descriptor.proto"
+               message_type { name: "A" options { [b.tag]: "t" } }"#;
+    let b = r#"name: "b.proto" package: "b" dependency: "a.proto"
+               dependency: "google/protobuf/descriptor.proto"
+               extension { name: "tag" number: 50001 label: LABEL_OPTIONAL
+                           type: TYPE_STRING extendee: ".google.protobuf.MessageOptions" }"#;
+    let (_, reads, report) = read_input(&[Input::Text(a), Input::Text(b)], DESCRIPTOR_FILE);
+    // a.proto first (the cycle broken at its first file), b.proto's
+    // import of it then resolves; a.proto parsed again with b.proto.
+    assert!(report.skipped.is_empty(), "{:?}", report.skipped);
+    let read = parsed(reads);
+    assert!(read[0].2 && read[0].1.is_empty(), "{:?}", read[0].1);
+    let by_number = a.replace("[b.tag]", "50001");
+    let alone = descriptor_pool();
+    let fdp_type = alone
+        .get_message_by_name("google.protobuf.FileDescriptorProto")
+        .unwrap();
+    assert_eq!(read[0].0, parse(&fdp_type, &by_number, LENIENT).unwrap());
+}
+
+#[test]
+fn the_scan_finds_a_files_name_and_imports_only() {
+    let text = r#"
+        # dependency: "commented.proto"
+        name: "a.proto" dependency: "b" ".proto"
+        message_type { name: "inner" field { name: "dependency" } }
+        dependency: 'c.proto'
+        options { [x.y] { dependency: "nested.proto" } }
+    "#;
+    let (name, imports) = scan_imports(text).unwrap();
+    assert_eq!(name, "a.proto");
+    assert_eq!(imports, ["b.proto", "c.proto"]);
+    assert!(scan_imports("name: \"a\" message_type {").is_err());
+}
+
+#[test]
+fn a_sets_text_splits_into_its_files() {
+    let files = split_set(OPTIONS_TEXT).unwrap();
+    let names: Vec<String> = files.iter().map(|f| scan_imports(f).unwrap().0).collect();
+    assert_eq!(names, ["google/protobuf/descriptor.proto", "options.proto"]);
 }

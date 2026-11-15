@@ -362,21 +362,18 @@ def split_fdps(contents: str | bytes, ext: str) -> FdpFragments:
 
     # str input that produced no results
     if isinstance(contents, str):
-        # try as text FDS/FDP, parsed whole, as a last resort. A set's
-        # files come back as bytes, from the first pass alone (spec 0427
-        # S1): without their own text, they are not parsed again.
-        for is_set, proto in ((True, FileDescriptorSet()),
-                              (False, FileDescriptorProto())):
-            try:
-                data = _pt_codec.parse_descriptor_text(contents, is_set=is_set)
-                proto.ParseFromString(data)
-            except (ValueError, DecodeError):
-                continue
-            if isinstance(proto, FileDescriptorSet) and proto.file:
-                return [(fdp.name, fdp.SerializeToString())
-                        for fdp in proto.file if fdp.name]
-            if isinstance(proto, FileDescriptorProto) and proto.name:
-                return [(proto.name, contents)]
+        # try as text FDS/FDP, split by prototext's own skimmer, as a last
+        # resort: each file kept as text, read with the input (spec 0427).
+        try:
+            files = _pt_codec.split_descriptor_set(contents)
+            named = [(_pt_codec.scan_descriptor_text(f)[0], f) for f in files]
+            if any(name for name, _ in named):
+                return [(name, f) for name, f in named if name]
+            name, _ = _pt_codec.scan_descriptor_text(contents)
+            if name:
+                return [(name, contents)]
+        except ValueError:
+            pass
 
     raise ValueError(
         f"input with extension {ext!r} is not a recognised FDS or FDP"

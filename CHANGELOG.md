@@ -11,7 +11,7 @@ SPDX-License-Identifier: MIT
 ### Changed
 
 - reproto reads descriptors in the text format with prototext's own
-  parser, in two passes, the second with the input's own declarations
+  parser, each file once, in import order, with the files it imports
   (specs 0426, 0427), instead of Python's `text_format`. Custom options
   printed by number, which `text_format` dropped, are kept; options
   printed by name resolve from the input; where the text leaves a value's

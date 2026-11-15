@@ -250,17 +250,18 @@ S5 writes one, to Google's published grammar.
     its text form. The parser keeps such a field as unknown bytes, as
     protoc printed it: a decimal number is a varint, `0x` and 8 or 16
     hex digits a fixed32 or a fixed64, a string length-delimited.
-  - **Two passes, the second with the input's schema.** protoc, without
-    the options' schema, prints a string that happens to read as a
-    message as a message, and a group as it prints a length-delimited
-    message, both `N { … }`; with it, it prints an option by name,
-    `[pkg.ext]`, which only the declaration can parse. A text file is
-    parsed first with `descriptor.proto` alone, for its imports and
-    declarations; once every file of the input is read, binary and text,
-    it is parsed again with a pool of all of them, which resolves names
-    and frames each value by number as declared, and warns where nothing
-    is. Spec 0427 has the passes, spec 0426 the framing rules, their
-    rationale and their limits.
+  - **In import order, with the input's schema.** protoc, without the
+    options' schema, prints a string that happens to read as a message
+    as a message, and a group as it prints a length-delimited message,
+    both `N { … }`; with it, it prints an option by name, `[pkg.ext]`,
+    which only the declaration can parse. Once every file of the input
+    is loaded, binary and text (a text file only scanned for its
+    imports), all go into one pool, imports first, and each text file is
+    parsed when its turn comes, with the files it imports: names
+    resolve, values by number are framed as declared, and where nothing
+    is, the likely framing is taken, with a warning. Spec 0427 has the
+    reading, spec 0426 the framing rules, their rationale and their
+    limits.
   - **One implementation.** reproto calls the parser and the input's
     pool through `prototext_codec_lib`, in place of Python's
     `text_format`, so both tools read text identically; the variants'
@@ -462,7 +463,7 @@ finds is fixed in the step that introduced it.
 | 0 | The sparse minimization (spec 0425), in `prototext-graph` | Spec 0425's test plan: the same partition and the same `.rkyv` bytes on every fixture and googleapis; `build_graph` timed before and after. |
 | 1 | The reference: S1's fixes, S2's launcher, the harness (S11) with reproto on both sides, `scripts/bench-protoback` with reproto alone | reproto's suite green after each fix; the harness runs reproto against itself on every corpus with no difference; the baseline timings recorded. |
 | 2 | `prototext-upb`: reflection and definitions (S3, S4, S6), threads (S19) | Test plan 2 and 4; the ThreadSanitizer test. |
-| 3 | `prototext-upb`: the text-format parser and the two passes (S5, spec 0427); their PyO3 binding; reproto switched to them, the variants' import section removed | Test plan 3; reproto's 11 options from the text form of the options fixture, by number and by name; a group-typed option declared in its own file; warnings for options declared nowhere, by number and by name; reproto's suite and the harness. |
+| 3 | `prototext-upb`: the text-format parser and the reading in import order (S5, spec 0427); their PyO3 binding; reproto switched to them, the variants' import section removed | Test plan 3; reproto's 11 options from the text form of the options fixture, by number and by name; a group-typed option declared in its own file; warnings for options declared nowhere, by number and by name; reproto's suite and the harness. |
 | 4 | protoback: loading, the pool, phases 1–6, the clap skeleton (S7) | A hidden `--dump-graph`, added to both, identical on every corpus: nodes, flags, seeds, summoned files, in order. These phases timed. |
 | 5 | Rendering, in stages: structure; built-in options; custom and message-valued options; editions and `--force-proto2-*`; comments and SourceCodeInfo; `--emit-binary` (S8, S17, S18) | After each stage, the harness's `--proto-out` and `.pb` comparison passes on every corpus, with `--jobs 1` and all cores. Rendering timed. |
 | 6 | Scoring graphs and the schema database (S20), `--emit-scoring-yaml`, the HTML | The schema database byte-identical, WKT's reproducing `prototext/wkt/prebuilt`; googleapis timed against S16. |
@@ -554,7 +555,7 @@ not the exact round trip.
    format, parsed by S5, by Python's `text_format` and by
    `protoc --encode`: the same binary where they all know every field.
    Where only S5 keeps a field (by number or by name), protoc's text of
-   a binary set read in two passes (spec 0427) gives back that binary
+   a binary set read in import order (spec 0427) gives back that binary
    set, byte for byte, groups included when their extension is declared
    in the input.
 4. **S3–S5, fuzzing:** the new entry points in spec 0419's targets,

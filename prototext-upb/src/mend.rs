@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+//
+// SPDX-License-Identifier: MIT
+
 //! A file the pool refuses, reduced to what still resolves (spec 0427 S2).
 //!
 //! An input's file may import a file the input lacks, or use a type

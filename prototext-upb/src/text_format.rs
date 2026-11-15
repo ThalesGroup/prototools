@@ -17,9 +17,9 @@
 //! a string whose bytes happen to read as a message. The parser frames
 //! each one by the declaration of its number in the pool it parses with,
 //! and takes the likely framing, with a [`Warning`], where there is none
-//! (spec 0426). A descriptor set is read in two passes (spec 0427): with
-//! `descriptor.proto` alone, to learn its files, then with the pool
-//! [`load_input`] builds from them, which declares their options.
+//! (spec 0426). An input's descriptors are read in import order, with a
+//! pool of the files read before, which declares their options
+//! ([`crate::input`], spec 0427).
 //!
 //! **Unknown names** (a field name, or an `[extension]`, the type does not
 //! have) are skipped, value and all, when [`Options`] allows it, and are
@@ -28,7 +28,7 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use crate::{Cardinality, Field, Kind, LoadReport, Message, Pool, DESCRIPTOR_SET};
+use crate::{Cardinality, Field, Kind, Message, Pool};
 
 /// What to do with names the type does not know.
 #[derive(Debug, Clone, Copy, Default)]
@@ -131,67 +131,197 @@ pub fn parse_reporting(def: &Message, text: &str, options: Options) -> Result<Pa
     })
 }
 
-/// The pool of an input's files (spec 0427 S2): `set`, a serialized
-/// `FileDescriptorSet`, loaded imports first, after the vendored
-/// `descriptor.proto` when `set` has no file named `descriptor_file`.
-pub fn load_input(set: &[u8], descriptor_file: &str) -> (Pool, LoadReport) {
-    let pool = Pool::new();
-    let has_descriptor = crate::set::split_set(set).is_ok_and(|files| {
-        files
-            .iter()
-            .any(|f| crate::set::name_and_imports(f).is_ok_and(|(name, _)| name == descriptor_file))
-    });
-    if !has_descriptor {
-        pool.load_set(DESCRIPTOR_SET);
-    }
-    let mut report = pool.load_set(set);
-    if !report.skipped.is_empty() {
-        retry_mended(&pool, set, &mut report);
-    }
-    (pool, report)
+// ── Skimming ────────────────────────────────────────────────────────────────
+//
+// What a set's split and a file's imports need, its top level, without
+// tokens: brackets, comments and strings skipped at the byte level, three
+// times faster than lexing (spec 0427 S1).
+
+/// The 1-based line and column of byte `at` of `text`.
+fn position(text: &str, at: usize) -> (usize, usize) {
+    let before = &text[..at.min(text.len())];
+    let line = before.matches('\n').count() + 1;
+    let line_start = before.rfind('\n').map_or(0, |n| n + 1);
+    (line, before[line_start..].chars().count() + 1)
 }
 
-/// Retry each file `pool` refused, mended ([`crate::mend`]), imports
-/// first: a file is retried once none of its imports is still waiting,
-/// or, in a cycle, when nothing else is. What still fails stays in
-/// `report.skipped`, with the reason it first failed.
-fn retry_mended(pool: &Pool, set: &[u8], report: &mut LoadReport) {
-    let Ok(files) = crate::set::split_set(set) else {
-        return;
-    };
-    let mut by_name: HashMap<String, (&[u8], Vec<String>)> = HashMap::new();
-    for f in files {
-        if let Ok((name, imports)) = crate::set::name_and_imports(f) {
-            by_name.entry(name).or_insert((f, imports));
+fn skim_error(text: &str, at: usize, message: &str) -> TextError {
+    let (line, column) = position(text, at);
+    TextError {
+        line,
+        column,
+        message: message.into(),
+    }
+}
+
+/// The end of the string starting at `i`, past its closing quote.
+fn skip_string(b: &[u8], i: usize) -> Option<usize> {
+    let quote = b[i];
+    let mut j = i + 1;
+    while j < b.len() {
+        match b[j] {
+            b'\\' => j += 2,
+            b'\n' => return None,
+            c if c == quote => return Some(j + 1),
+            _ => j += 1,
         }
     }
-    let mut pending: Vec<String> = report
-        .skipped
-        .iter()
-        .map(|(name, _)| name.clone())
-        .filter(|name| by_name.contains_key(name))
-        .collect();
-    while !pending.is_empty() {
-        let waiting = |name: &String| {
-            by_name[name]
-                .1
-                .iter()
-                .any(|i| i != name && pending.contains(i))
-        };
-        let mut ready: Vec<String> = pending.iter().filter(|n| !waiting(n)).cloned().collect();
-        if ready.is_empty() {
-            ready = pending.clone();
-        }
-        for name in &ready {
-            let loaded = crate::mend::mend(pool, by_name[name].0)
-                .is_some_and(|mended| pool.add_file(&mended).is_ok());
-            if loaded {
-                report.skipped.retain(|(n, _)| n != name);
-                report.loaded.push(name.clone());
+    None
+}
+
+/// Whitespace and comments from `i` on skipped.
+fn skip_blank(b: &[u8], mut i: usize) -> usize {
+    while i < b.len() {
+        match b[i] {
+            b' ' | b'\t' | b'\r' | b'\n' | 0x0b | 0x0c => i += 1,
+            b'#' => {
+                while i < b.len() && b[i] != b'\n' {
+                    i += 1;
+                }
             }
+            _ => break,
         }
-        pending.retain(|n| !ready.contains(n));
     }
+    i
+}
+
+/// Walk `text`'s top level: `visit(name, i, depth)` for each identifier,
+/// `i` just past it, and `bracket(open, i, depth)` for each bracket, the
+/// depth before it. Strings and comments are skipped.
+fn skim(
+    text: &str,
+    mut visit: impl FnMut(&str, usize, usize) -> Result<Option<usize>, TextError>,
+    mut bracket: impl FnMut(bool, usize, usize),
+) -> Result<(), TextError> {
+    let b = text.as_bytes();
+    let mut depth = 0usize;
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'#' => {
+                while i < b.len() && b[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'"' | b'\'' => {
+                i = skip_string(b, i).ok_or_else(|| skim_error(text, i, "unterminated string"))?
+            }
+            b'{' | b'<' => {
+                bracket(true, i, depth);
+                depth += 1;
+                i += 1;
+            }
+            b'}' | b'>' => {
+                depth = depth
+                    .checked_sub(1)
+                    .ok_or_else(|| skim_error(text, i, "unbalanced brackets"))?;
+                bracket(false, i, depth);
+                i += 1;
+            }
+            c if c.is_ascii_alphabetic() || c == b'_' => {
+                let start = i;
+                while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
+                    i += 1;
+                }
+                if let Some(next) = visit(&text[start..i], i, depth)? {
+                    i = next;
+                }
+            }
+            c if c.is_ascii_digit() => {
+                // A number, `1e5` and `0x1f` included: not an identifier.
+                while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'.') {
+                    i += 1;
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    if depth != 0 {
+        return Err(skim_error(text, b.len(), "unbalanced brackets"));
+    }
+    Ok(())
+}
+
+/// Each `file { … }` of `text`, a `FileDescriptorSet` in the text
+/// format, as the slice of `text` inside its brackets, in order: one
+/// `FileDescriptorProto` each, to read on its own (spec 0424 S7).
+pub fn split_set(text: &str) -> Result<Vec<&str>, TextError> {
+    let b = text.as_bytes();
+    let mut files = Vec::new();
+    let mut open: Option<usize> = None;
+    let after_file: std::cell::Cell<Option<usize>> = std::cell::Cell::new(None);
+    skim(
+        text,
+        |name, i, depth| {
+            if depth == 0 && name == "file" {
+                after_file.set(Some(i));
+            }
+            Ok(None)
+        },
+        |opening, i, depth| {
+            if depth == 0 {
+                if opening {
+                    // `file`, an optional `:`, then the bracket.
+                    let follows = after_file.take().is_some_and(|f| {
+                        let j = skip_blank(b, f);
+                        let j = if b.get(j) == Some(&b':') {
+                            skip_blank(b, j + 1)
+                        } else {
+                            j
+                        };
+                        j == i
+                    });
+                    open = follows.then_some(i + 1);
+                } else if let Some(start) = open.take() {
+                    files.push(&text[start..i]);
+                }
+            }
+        },
+    )?;
+    Ok(files)
+}
+
+/// The name and imports of `text`, a `FileDescriptorProto` in the text
+/// format, from its top-level `name` and `dependency` fields, without
+/// parsing the rest (spec 0427 S1). An error where a string does not end,
+/// or the brackets do not match.
+pub fn scan_imports(text: &str) -> Result<(String, Vec<String>), TextError> {
+    let b = text.as_bytes();
+    let mut name = None;
+    let mut imports = Vec::new();
+    skim(
+        text,
+        |field, i, depth| {
+            if depth != 0 || (field != "name" && field != "dependency") {
+                return Ok(None);
+            }
+            // `field: "…" "…"`, adjacent strings joined.
+            let mut j = skip_blank(b, i);
+            if b.get(j) == Some(&b':') {
+                j = skip_blank(b, j + 1);
+            }
+            let mut value = Vec::new();
+            let mut any = false;
+            while matches!(b.get(j), Some(b'"' | b'\'')) {
+                let (s, next) = lex_string(b, j).map_err(|m| skim_error(text, j, &m))?;
+                value.extend(s);
+                any = true;
+                j = skip_blank(b, next);
+            }
+            if !any {
+                return Ok(None);
+            }
+            let value = String::from_utf8_lossy(&value).into_owned();
+            if field == "name" {
+                name = Some(value);
+            } else {
+                imports.push(value);
+            }
+            Ok(Some(j))
+        },
+        |_, _, _| {},
+    )?;
+    Ok((name.unwrap_or_default(), imports))
 }
 
 /// Message `name` (`FileDescriptorProto`, `FileDescriptorSet`) of the
@@ -213,7 +343,7 @@ pub fn descriptor_type(pool: &Pool, descriptor_file: &str, name: &str) -> Option
 }
 
 /// The vendored `descriptor.proto`, alone.
-fn vendored() -> &'static Pool {
+pub(crate) fn vendored() -> &'static Pool {
     static POOL: std::sync::OnceLock<Pool> = std::sync::OnceLock::new();
     POOL.get_or_init(Pool::with_descriptor_proto)
 }
@@ -256,7 +386,8 @@ fn lex(text: &str) -> Result<Vec<Token>, TextError> {
     };
     while i < b.len() {
         let c = b[i];
-        let column = text[line_start..i].chars().count() + 1;
+        let start = i;
+        let column = || text[line_start..start].chars().count() + 1;
         match c {
             b'\n' => {
                 i += 1;
@@ -275,36 +406,39 @@ fn lex(text: &str) -> Result<Vec<Token>, TextError> {
                 out.push(Token {
                     tok: Tok::Sym(c as char),
                     line,
-                    column,
+                    column: column(),
                 });
                 i += 1;
             }
             b'"' | b'\'' => {
-                let (bytes, next) = lex_string(b, i).map_err(|m| err(line, column, &m))?;
+                let (bytes, next) = lex_string(b, i).map_err(|m| err(line, column(), &m))?;
                 out.push(Token {
                     tok: Tok::Str(bytes),
                     line,
-                    column,
+                    column: column(),
                 });
                 i = next;
             }
             c if c.is_ascii_digit() || c == b'.' => {
-                let (tok, next) = lex_number(b, i).map_err(|m| err(line, column, &m))?;
-                out.push(Token { tok, line, column });
+                let (tok, next) = lex_number(b, i).map_err(|m| err(line, column(), &m))?;
+                out.push(Token {
+                    tok,
+                    line,
+                    column: column(),
+                });
                 i = next;
             }
             c if c.is_ascii_alphabetic() || c == b'_' => {
-                let start = i;
                 while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
                     i += 1;
                 }
                 out.push(Token {
                     tok: Tok::Ident(text[start..i].to_string()),
                     line,
-                    column,
+                    column: column(),
                 });
             }
-            _ => return Err(err(line, column, "unexpected character")),
+            _ => return Err(err(line, column(), "unexpected character")),
         }
     }
     Ok(out)
