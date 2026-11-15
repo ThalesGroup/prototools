@@ -246,23 +246,30 @@ fn skim(
 /// format, as the slice of `text` inside its brackets, in order: one
 /// `FileDescriptorProto` each, to read on its own (spec 0424 S7).
 pub fn split_set(text: &str) -> Result<Vec<&str>, TextError> {
+    field_bodies(text, "file")
+}
+
+/// The body of each top-level `field { … }` (or `field: < … >`) of `text`,
+/// in order: the slice of `text` inside its brackets. A `field` with a
+/// scalar value is not among them.
+pub fn field_bodies<'t>(text: &'t str, field: &str) -> Result<Vec<&'t str>, TextError> {
     let b = text.as_bytes();
-    let mut files = Vec::new();
+    let mut bodies = Vec::new();
     let mut open: Option<usize> = None;
-    let after_file: std::cell::Cell<Option<usize>> = std::cell::Cell::new(None);
+    let after_field: std::cell::Cell<Option<usize>> = std::cell::Cell::new(None);
     skim(
         text,
         |name, i, depth| {
-            if depth == 0 && name == "file" {
-                after_file.set(Some(i));
+            if depth == 0 && name == field {
+                after_field.set(Some(i));
             }
             Ok(None)
         },
         |opening, i, depth| {
             if depth == 0 {
                 if opening {
-                    // `file`, an optional `:`, then the bracket.
-                    let follows = after_file.take().is_some_and(|f| {
+                    // The field, an optional `:`, then the bracket.
+                    let follows = after_field.take().is_some_and(|f| {
                         let j = skip_blank(b, f);
                         let j = if b.get(j) == Some(&b':') {
                             skip_blank(b, j + 1)
@@ -273,12 +280,12 @@ pub fn split_set(text: &str) -> Result<Vec<&str>, TextError> {
                     });
                     open = follows.then_some(i + 1);
                 } else if let Some(start) = open.take() {
-                    files.push(&text[start..i]);
+                    bodies.push(&text[start..i]);
                 }
             }
         },
     )?;
-    Ok(files)
+    Ok(bodies)
 }
 
 /// The name and imports of `text`, a `FileDescriptorProto` in the text

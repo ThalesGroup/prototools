@@ -1757,6 +1757,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "protoback"
+version = "0.3.6"
+dependencies = [
+ "clap",
+ "fdp-scan",
+ "prototext-core",
+ "prototext-upb",
+ "regex",
+ "serde",
+ "serde_yaml",
+ "sha2",
+ "workspace-hack",
+]
+
+[[package]]
 name = "protoscan"
 version = "0.3.6"
 dependencies = [

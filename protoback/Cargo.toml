@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+#
+# SPDX-License-Identifier: MIT
+
+[package]
+name        = "protoback"
+version.workspace    = true
+edition     = "2021"
+description = "Give back the .proto sources a protobuf descriptor set was compiled from"
+license     = "MIT"
+repository.workspace = true
+# Not published yet: reproto and protoback run side by side (spec 0424 S15).
+publish     = false
+
+[[bin]]
+name = "protoback"
+path = "src/main.rs"
+
+[dependencies]
+prototext-upb  = { workspace = true }
+prototext-core = { workspace = true }
+fdp-scan       = { workspace = true }
+clap           = { version = "4.5", features = ["derive", "env"] }
+serde          = { version = "1", features = ["derive"] }
+serde_yaml     = "0.9"
+sha2           = "0.10"
+regex          = "1"
+workspace-hack = { version = "0.1", path = "../workspace-hack" }

@@ -19,6 +19,8 @@ are passed as they are.
 
 from __future__ import annotations
 
+import hashlib
+import os
 import shutil
 import subprocess
 import sys
@@ -32,11 +34,18 @@ class _Converter:
     def __init__(self, tmp: Path) -> None:
         self.tmp = tmp
         self.mirrors: list[Path] = []
-        self.count = 0
+        self.made: list[Path] = []
 
-    def _fresh(self, prefix: str) -> Path:
-        self.count += 1
-        return self.tmp / f"{prefix}{self.count}"
+    def _fresh(self, prefix: str, source: Path) -> Path:
+        """A directory for `source`'s text form, named after `source` and
+        the process that runs this one: two runs of one test, on the same
+        inputs, see the same paths, which the graph dump writes (spec 0428
+        S2); tests running at once, in other processes, do not share it."""
+        key = f"{os.getppid()}:{source.resolve()}"
+        d = self.tmp / f"{prefix}-{hashlib.sha256(key.encode()).hexdigest()[:16]}"
+        shutil.rmtree(d, ignore_errors=True)
+        self.made.append(d)
+        return d
 
     @staticmethod
     def to_text(src: Path, dst: Path) -> bool:
@@ -53,13 +62,13 @@ class _Converter:
         return True
 
     def file(self, path: Path) -> str:
-        d = self._fresh("f")
+        d = self._fresh("f", path)
         d.mkdir()
         dst = d / (path.stem + ".textpb")
         return str(dst) if self.to_text(path, dst) else str(path)
 
     def directory(self, path: Path) -> str:
-        root = self._fresh("d")
+        root = self._fresh("d", path)
         root.mkdir()
         for f in path.rglob("*"):
             if f.is_dir():
@@ -79,7 +88,9 @@ class _Converter:
     def filter_config(self, path: Path) -> str:
         if not path.is_file():
             return str(path)
-        copy = self._fresh("filter").with_suffix(".yaml")
+        d = self._fresh("filter", path)
+        d.mkdir()
+        copy = d / path.name
         copy.write_text(path.read_text().replace(".pb", ".textpb"))
         return str(copy)
 
@@ -112,12 +123,15 @@ def _arguments(argv: list[str], c: _Converter) -> list[str]:
 
 
 def main() -> int:
-    tmp = Path(tempfile.mkdtemp(prefix="via-text-"))
+    tmp = Path(tempfile.gettempdir()) / "via-text"
+    tmp.mkdir(exist_ok=True)
+    converter = _Converter(tmp)
     try:
-        args = _arguments(sys.argv[1:], _Converter(tmp))
+        args = _arguments(sys.argv[1:], converter)
         return subprocess.run([sys.executable, "-m", "reproto.cli", *args]).returncode
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        for d in converter.made:
+            shutil.rmtree(d, ignore_errors=True)
 
 
 if __name__ == "__main__":

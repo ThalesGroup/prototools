@@ -114,6 +114,11 @@ let
         # What drops the stub generator's ruff header before that
         # comparison (spec 0409 S2).
         ./scripts/strip-stub-header
+        # reproto's built-in variant, which protoback embeds so that both
+        # tools load the same fallbacks (spec 0428 S7).
+        ./reproto/src/reproto/variants/google-protobuf.yaml
+        (pkgs.lib.fileset.fileFilter (f: f.hasExt "pb")
+          ./reproto/src/reproto/variants/google-protobuf)
         (fixtureFilter ./prototext/fixtures)
         (fixtureFilter ./reproto/src/reproto/tests/fixtures)
         (fixtureFilter ./prototext-graph/tests/fixtures)

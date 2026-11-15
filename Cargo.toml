@@ -31,6 +31,7 @@ members = [
     "prototools-complete",
     "fdp-scan",
     "protoscan",
+    "protoback",
     "workspace-hack",
 ]
 

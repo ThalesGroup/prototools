@@ -11,6 +11,7 @@ instrument comparing protoback with reproto.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -180,11 +181,15 @@ def test_a_directory_is_read_in_sorted_order(tmp_path: Path) -> None:
         capture_output=True, text=True, env=env,
     )
     assert result.returncode == 0, result.stderr
-    files = dump.read_text(encoding="utf-8").split("[pool]", 1)[0]
-    paths = [line.split(" | ")[2].removeprefix(f"{root}/")
-             for line in files.splitlines() if " | file | " in line
+    text = dump.read_text(encoding="utf-8")
+    files = text.split("[pool]", 1)[0]
+    # Relative to their root, without their extension: the same whether
+    # the inputs are binary, or text (reproto.tests.via_text).
+    paths = [Path(line.split(" | ")[2]) for line in files.splitlines()
+             if " | file | " in line
              and not line.split(" | ")[2].startswith("internal/")]
-    assert paths == ["alpha.pb", "b_second.pb", "beta.pb", "sub/kappa.pb",
-                     "sub/mu.pb", "zeta.pb"]
-    assert (f"w7 | omega.proto | {root}/y_first.pb | {root}/b_second.pb"
-            in dump.read_text())
+    common = Path(os.path.commonpath(paths))
+    rel = [p.relative_to(common).with_suffix("").as_posix() for p in paths]
+    assert rel == ["alpha", "b_second", "beta", "sub/kappa", "sub/mu", "zeta"]
+    assert re.search(r"^w7 \| omega\.proto \| \S+/y_first\.\w+ \| \S+/b_second\.\w+$",
+                     text, re.M)
