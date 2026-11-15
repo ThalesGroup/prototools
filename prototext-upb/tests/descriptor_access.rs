@@ -473,6 +473,18 @@ fn writer_code(out: &mut String, f: &Field) {
             )
             .unwrap();
             writeln!(out, "    }}").unwrap();
+            writeln!(out).unwrap();
+            writeln!(
+                out,
+                "    pub fn {bare}_mut(&mut self, index: usize) -> Result<{sub}Mut<'_>, MessageError> {{"
+            )
+            .unwrap();
+            writeln!(
+                out,
+                "        self.0.list_message_mut_by_number({n}, index).map({sub}Mut)"
+            )
+            .unwrap();
+            writeln!(out, "    }}").unwrap();
         }
         (_, Some(s), _) => {
             let (verb, call) = if repeated {
@@ -495,6 +507,16 @@ fn writer_code(out: &mut String, f: &Field) {
             writeln!(out, "    }}").unwrap();
         }
         (_, None, _) => unreachable!(),
+    }
+    if repeated {
+        writeln!(out).unwrap();
+        writeln!(
+            out,
+            "    pub fn remove_{bare}(&mut self, index: usize) -> Result<(), MessageError> {{"
+        )
+        .unwrap();
+        writeln!(out, "        self.0.remove_by_number({n}, index)").unwrap();
+        writeln!(out, "    }}").unwrap();
     }
     writeln!(out).unwrap();
     writeln!(out, "    pub fn clear_{bare}(&mut self) {{").unwrap();

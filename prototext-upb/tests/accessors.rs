@@ -92,6 +92,36 @@ fn a_descriptor_set_writes_through_its_accessors() {
 }
 
 #[test]
+fn list_elements_change_in_place_and_go() {
+    let pool = Pool::new();
+    pool.load_set(OPTIONS);
+    let mut set = decode(&pool, "google.protobuf.FileDescriptorSet", OPTIONS);
+    let before = FileDescriptorSet::new(set.as_ref()).unwrap();
+    let file = &before.file()[1];
+    let imports = file.dependency().len();
+    let first = &file.message_type()[0];
+    let (message, fields) = (first.name().to_vec(), first.field().len());
+    let second_field = first.field()[1].name().to_vec();
+    {
+        let mut w = FileDescriptorSetMut(set.as_mut());
+        let mut file = w.file_mut(1).unwrap();
+        file.remove_dependency(0).unwrap();
+        // The first field of the first message goes; the second comes up.
+        file.message_type_mut(0).unwrap().remove_field(0).unwrap();
+        assert!(file.remove_dependency(99).is_err());
+    }
+    let bytes = set.encode().unwrap();
+    let again = decode(&pool, "google.protobuf.FileDescriptorSet", &bytes);
+    let again = FileDescriptorSet::new(again.as_ref()).unwrap();
+    let file = &again.file()[1];
+    assert_eq!(file.dependency().len(), imports - 1);
+    let first = &file.message_type()[0];
+    assert_eq!(first.name(), &message[..]);
+    assert_eq!(first.field().len(), fields - 1);
+    assert_eq!(first.field()[0].name(), &second_field[..]);
+}
+
+#[test]
 fn another_package_and_an_older_shape_read_and_keep_the_rest() {
     let pool = Pool::new();
     pool.load_set(VARIANT);

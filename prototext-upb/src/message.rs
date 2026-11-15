@@ -793,6 +793,22 @@ impl MessageMut<'_> {
         self.push(&f, value)
     }
 
+    /// [`remove`](Self::remove) by field number.
+    pub fn remove_by_number(&mut self, number: u32, index: usize) -> Result<(), MessageError> {
+        let f = self.field_or_err(number)?;
+        self.remove(&f, index)
+    }
+
+    /// [`list_message_mut`](Self::list_message_mut) by field number.
+    pub fn list_message_mut_by_number(
+        &mut self,
+        number: u32,
+        index: usize,
+    ) -> Result<MessageMut<'_>, MessageError> {
+        let f = self.field_or_err(number)?;
+        self.list_message_mut(&f, index)
+    }
+
     /// [`push_message`](Self::push_message) by field number.
     pub fn push_message_by_number(&mut self, number: u32) -> Result<MessageMut<'_>, MessageError> {
         let f = self.field_or_err(number)?;

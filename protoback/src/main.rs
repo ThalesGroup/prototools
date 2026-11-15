@@ -6,11 +6,13 @@
 //! loading, the pool, phases 1 to 6, and the graph dump.
 
 mod cli;
+mod db;
 mod dump;
 mod events;
 mod load;
 mod pathmatch;
 mod phase1;
+mod phase2;
 mod run;
 mod topology;
 mod variant;
@@ -198,19 +200,33 @@ fn main() -> ExitCode {
     let mut run = Run {
         roots,
         pb_files,
+        prunings: prune_fqdns.clone(),
         pruned_fqdns: prune_fqdns.into_iter().collect(),
+        pruned_file_names: BTreeSet::new(),
         pruned_paths: PathPatterns::new(&prune_paths),
         path_seeds: PathPatterns::new(&seed_paths),
         path_seed_fqdns: BTreeSet::new(),
         fallback_protos: fallback,
         variant,
+        keep_duplicates: cli.keep_duplicates,
+        go_root: cli.go_root.clone(),
         quiet: cli.quiet,
         debug: cli.debug,
+        debug_fqdn: cli.debug_fqdn,
         events: Events::default(),
         blobs,
+        db: db::Database::default(),
+        edition_defaults: Default::default(),
     };
     let mut topo = topology::Topology::default();
     phase1::run(&mut run, &mut topo);
+    if let Err(fatal) = phase2::run(&mut run, &mut topo) {
+        if let Some(detail) = fatal.detail() {
+            eprintln!("{detail}");
+        }
+        eprintln!("Error: {}", fatal.message());
+        return ExitCode::from(1);
+    }
 
     if let Err(e) = std::fs::write(&dump_path, dump::write(&run, &topo)) {
         eprintln!("Error: {}: {e}", dump_path.display());

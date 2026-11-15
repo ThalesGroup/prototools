@@ -139,6 +139,16 @@ impl FileDescriptorSetMut<'_> {
         self.0.push_message_by_number(1).map(FileDescriptorProtoMut)
     }
 
+    pub fn file_mut(&mut self, index: usize) -> Result<FileDescriptorProtoMut<'_>, MessageError> {
+        self.0
+            .list_message_mut_by_number(1, index)
+            .map(FileDescriptorProtoMut)
+    }
+
+    pub fn remove_file(&mut self, index: usize) -> Result<(), MessageError> {
+        self.0.remove_by_number(1, index)
+    }
+
     pub fn clear_file(&mut self) {
         self.0.clear_by_number(1)
     }
@@ -316,12 +326,20 @@ impl FileDescriptorProtoMut<'_> {
         self.0.push_by_number(3, Scalar::Bytes(value))
     }
 
+    pub fn remove_dependency(&mut self, index: usize) -> Result<(), MessageError> {
+        self.0.remove_by_number(3, index)
+    }
+
     pub fn clear_dependency(&mut self) {
         self.0.clear_by_number(3)
     }
 
     pub fn push_public_dependency(&mut self, value: i32) -> Result<(), MessageError> {
         self.0.push_by_number(10, Scalar::I32(value))
+    }
+
+    pub fn remove_public_dependency(&mut self, index: usize) -> Result<(), MessageError> {
+        self.0.remove_by_number(10, index)
     }
 
     pub fn clear_public_dependency(&mut self) {
@@ -332,12 +350,20 @@ impl FileDescriptorProtoMut<'_> {
         self.0.push_by_number(11, Scalar::I32(value))
     }
 
+    pub fn remove_weak_dependency(&mut self, index: usize) -> Result<(), MessageError> {
+        self.0.remove_by_number(11, index)
+    }
+
     pub fn clear_weak_dependency(&mut self) {
         self.0.clear_by_number(11)
     }
 
     pub fn push_option_dependency(&mut self, value: &[u8]) -> Result<(), MessageError> {
         self.0.push_by_number(15, Scalar::Bytes(value))
+    }
+
+    pub fn remove_option_dependency(&mut self, index: usize) -> Result<(), MessageError> {
+        self.0.remove_by_number(15, index)
     }
 
     pub fn clear_option_dependency(&mut self) {
@@ -348,12 +374,38 @@ impl FileDescriptorProtoMut<'_> {
         self.0.push_message_by_number(4).map(DescriptorProtoMut)
     }
 
+    pub fn message_type_mut(
+        &mut self,
+        index: usize,
+    ) -> Result<DescriptorProtoMut<'_>, MessageError> {
+        self.0
+            .list_message_mut_by_number(4, index)
+            .map(DescriptorProtoMut)
+    }
+
+    pub fn remove_message_type(&mut self, index: usize) -> Result<(), MessageError> {
+        self.0.remove_by_number(4, index)
+    }
+
     pub fn clear_message_type(&mut self) {
         self.0.clear_by_number(4)
     }
 
     pub fn push_enum_type(&mut self) -> Result<EnumDescriptorProtoMut<'_>, MessageError> {
         self.0.push_message_by_number(5).map(EnumDescriptorProtoMut)
+    }
+
+    pub fn enum_type_mut(
+        &mut self,
+        index: usize,
+    ) -> Result<EnumDescriptorProtoMut<'_>, MessageError> {
+        self.0
+            .list_message_mut_by_number(5, index)
+            .map(EnumDescriptorProtoMut)
+    }
+
+    pub fn remove_enum_type(&mut self, index: usize) -> Result<(), MessageError> {
+        self.0.remove_by_number(5, index)
     }
 
     pub fn clear_enum_type(&mut self) {
@@ -366,6 +418,19 @@ impl FileDescriptorProtoMut<'_> {
             .map(ServiceDescriptorProtoMut)
     }
 
+    pub fn service_mut(
+        &mut self,
+        index: usize,
+    ) -> Result<ServiceDescriptorProtoMut<'_>, MessageError> {
+        self.0
+            .list_message_mut_by_number(6, index)
+            .map(ServiceDescriptorProtoMut)
+    }
+
+    pub fn remove_service(&mut self, index: usize) -> Result<(), MessageError> {
+        self.0.remove_by_number(6, index)
+    }
+
     pub fn clear_service(&mut self) {
         self.0.clear_by_number(6)
     }
@@ -374,6 +439,19 @@ impl FileDescriptorProtoMut<'_> {
         self.0
             .push_message_by_number(7)
             .map(FieldDescriptorProtoMut)
+    }
+
+    pub fn extension_mut(
+        &mut self,
+        index: usize,
+    ) -> Result<FieldDescriptorProtoMut<'_>, MessageError> {
+        self.0
+            .list_message_mut_by_number(7, index)
+            .map(FieldDescriptorProtoMut)
+    }
+
+    pub fn remove_extension(&mut self, index: usize) -> Result<(), MessageError> {
+        self.0.remove_by_number(7, index)
     }
 
     pub fn clear_extension(&mut self) {
@@ -533,6 +611,16 @@ impl DescriptorProtoMut<'_> {
             .map(FieldDescriptorProtoMut)
     }
 
+    pub fn field_mut(&mut self, index: usize) -> Result<FieldDescriptorProtoMut<'_>, MessageError> {
+        self.0
+            .list_message_mut_by_number(2, index)
+            .map(FieldDescriptorProtoMut)
+    }
+
+    pub fn remove_field(&mut self, index: usize) -> Result<(), MessageError> {
+        self.0.remove_by_number(2, index)
+    }
+
     pub fn clear_field(&mut self) {
         self.0.clear_by_number(2)
     }
@@ -543,6 +631,19 @@ impl DescriptorProtoMut<'_> {
             .map(FieldDescriptorProtoMut)
     }
 
+    pub fn extension_mut(
+        &mut self,
+        index: usize,
+    ) -> Result<FieldDescriptorProtoMut<'_>, MessageError> {
+        self.0
+            .list_message_mut_by_number(6, index)
+            .map(FieldDescriptorProtoMut)
+    }
+
+    pub fn remove_extension(&mut self, index: usize) -> Result<(), MessageError> {
+        self.0.remove_by_number(6, index)
+    }
+
     pub fn clear_extension(&mut self) {
         self.0.clear_by_number(6)
     }
@@ -551,12 +652,38 @@ impl DescriptorProtoMut<'_> {
         self.0.push_message_by_number(3).map(DescriptorProtoMut)
     }
 
+    pub fn nested_type_mut(
+        &mut self,
+        index: usize,
+    ) -> Result<DescriptorProtoMut<'_>, MessageError> {
+        self.0
+            .list_message_mut_by_number(3, index)
+            .map(DescriptorProtoMut)
+    }
+
+    pub fn remove_nested_type(&mut self, index: usize) -> Result<(), MessageError> {
+        self.0.remove_by_number(3, index)
+    }
+
     pub fn clear_nested_type(&mut self) {
         self.0.clear_by_number(3)
     }
 
     pub fn push_enum_type(&mut self) -> Result<EnumDescriptorProtoMut<'_>, MessageError> {
         self.0.push_message_by_number(4).map(EnumDescriptorProtoMut)
+    }
+
+    pub fn enum_type_mut(
+        &mut self,
+        index: usize,
+    ) -> Result<EnumDescriptorProtoMut<'_>, MessageError> {
+        self.0
+            .list_message_mut_by_number(4, index)
+            .map(EnumDescriptorProtoMut)
+    }
+
+    pub fn remove_enum_type(&mut self, index: usize) -> Result<(), MessageError> {
+        self.0.remove_by_number(4, index)
     }
 
     pub fn clear_enum_type(&mut self) {
@@ -571,6 +698,19 @@ impl DescriptorProtoMut<'_> {
             .map(DescriptorProtoExtensionRangeMut)
     }
 
+    pub fn extension_range_mut(
+        &mut self,
+        index: usize,
+    ) -> Result<DescriptorProtoExtensionRangeMut<'_>, MessageError> {
+        self.0
+            .list_message_mut_by_number(5, index)
+            .map(DescriptorProtoExtensionRangeMut)
+    }
+
+    pub fn remove_extension_range(&mut self, index: usize) -> Result<(), MessageError> {
+        self.0.remove_by_number(5, index)
+    }
+
     pub fn clear_extension_range(&mut self) {
         self.0.clear_by_number(5)
     }
@@ -579,6 +719,19 @@ impl DescriptorProtoMut<'_> {
         self.0
             .push_message_by_number(8)
             .map(OneofDescriptorProtoMut)
+    }
+
+    pub fn oneof_decl_mut(
+        &mut self,
+        index: usize,
+    ) -> Result<OneofDescriptorProtoMut<'_>, MessageError> {
+        self.0
+            .list_message_mut_by_number(8, index)
+            .map(OneofDescriptorProtoMut)
+    }
+
+    pub fn remove_oneof_decl(&mut self, index: usize) -> Result<(), MessageError> {
+        self.0.remove_by_number(8, index)
     }
 
     pub fn clear_oneof_decl(&mut self) {
@@ -601,12 +754,29 @@ impl DescriptorProtoMut<'_> {
             .map(DescriptorProtoReservedRangeMut)
     }
 
+    pub fn reserved_range_mut(
+        &mut self,
+        index: usize,
+    ) -> Result<DescriptorProtoReservedRangeMut<'_>, MessageError> {
+        self.0
+            .list_message_mut_by_number(9, index)
+            .map(DescriptorProtoReservedRangeMut)
+    }
+
+    pub fn remove_reserved_range(&mut self, index: usize) -> Result<(), MessageError> {
+        self.0.remove_by_number(9, index)
+    }
+
     pub fn clear_reserved_range(&mut self) {
         self.0.clear_by_number(9)
     }
 
     pub fn push_reserved_name(&mut self, value: &[u8]) -> Result<(), MessageError> {
         self.0.push_by_number(10, Scalar::Bytes(value))
+    }
+
+    pub fn remove_reserved_name(&mut self, index: usize) -> Result<(), MessageError> {
+        self.0.remove_by_number(10, index)
     }
 
     pub fn clear_reserved_name(&mut self) {
@@ -822,6 +992,19 @@ impl ExtensionRangeOptionsMut<'_> {
             .map(UninterpretedOptionMut)
     }
 
+    pub fn uninterpreted_option_mut(
+        &mut self,
+        index: usize,
+    ) -> Result<UninterpretedOptionMut<'_>, MessageError> {
+        self.0
+            .list_message_mut_by_number(999, index)
+            .map(UninterpretedOptionMut)
+    }
+
+    pub fn remove_uninterpreted_option(&mut self, index: usize) -> Result<(), MessageError> {
+        self.0.remove_by_number(999, index)
+    }
+
     pub fn clear_uninterpreted_option(&mut self) {
         self.0.clear_by_number(999)
     }
@@ -832,6 +1015,19 @@ impl ExtensionRangeOptionsMut<'_> {
         self.0
             .push_message_by_number(2)
             .map(ExtensionRangeOptionsDeclarationMut)
+    }
+
+    pub fn declaration_mut(
+        &mut self,
+        index: usize,
+    ) -> Result<ExtensionRangeOptionsDeclarationMut<'_>, MessageError> {
+        self.0
+            .list_message_mut_by_number(2, index)
+            .map(ExtensionRangeOptionsDeclarationMut)
+    }
+
+    pub fn remove_declaration(&mut self, index: usize) -> Result<(), MessageError> {
+        self.0.remove_by_number(2, index)
     }
 
     pub fn clear_declaration(&mut self) {
@@ -1374,6 +1570,19 @@ impl EnumDescriptorProtoMut<'_> {
             .map(EnumValueDescriptorProtoMut)
     }
 
+    pub fn value_mut(
+        &mut self,
+        index: usize,
+    ) -> Result<EnumValueDescriptorProtoMut<'_>, MessageError> {
+        self.0
+            .list_message_mut_by_number(2, index)
+            .map(EnumValueDescriptorProtoMut)
+    }
+
+    pub fn remove_value(&mut self, index: usize) -> Result<(), MessageError> {
+        self.0.remove_by_number(2, index)
+    }
+
     pub fn clear_value(&mut self) {
         self.0.clear_by_number(2)
     }
@@ -1394,12 +1603,29 @@ impl EnumDescriptorProtoMut<'_> {
             .map(EnumDescriptorProtoEnumReservedRangeMut)
     }
 
+    pub fn reserved_range_mut(
+        &mut self,
+        index: usize,
+    ) -> Result<EnumDescriptorProtoEnumReservedRangeMut<'_>, MessageError> {
+        self.0
+            .list_message_mut_by_number(4, index)
+            .map(EnumDescriptorProtoEnumReservedRangeMut)
+    }
+
+    pub fn remove_reserved_range(&mut self, index: usize) -> Result<(), MessageError> {
+        self.0.remove_by_number(4, index)
+    }
+
     pub fn clear_reserved_range(&mut self) {
         self.0.clear_by_number(4)
     }
 
     pub fn push_reserved_name(&mut self, value: &[u8]) -> Result<(), MessageError> {
         self.0.push_by_number(5, Scalar::Bytes(value))
+    }
+
+    pub fn remove_reserved_name(&mut self, index: usize) -> Result<(), MessageError> {
+        self.0.remove_by_number(5, index)
     }
 
     pub fn clear_reserved_name(&mut self) {
@@ -1603,6 +1829,19 @@ impl ServiceDescriptorProtoMut<'_> {
         self.0
             .push_message_by_number(2)
             .map(MethodDescriptorProtoMut)
+    }
+
+    pub fn method_mut(
+        &mut self,
+        index: usize,
+    ) -> Result<MethodDescriptorProtoMut<'_>, MessageError> {
+        self.0
+            .list_message_mut_by_number(2, index)
+            .map(MethodDescriptorProtoMut)
+    }
+
+    pub fn remove_method(&mut self, index: usize) -> Result<(), MessageError> {
+        self.0.remove_by_number(2, index)
     }
 
     pub fn clear_method(&mut self) {
@@ -2208,6 +2447,19 @@ impl FileOptionsMut<'_> {
             .map(UninterpretedOptionMut)
     }
 
+    pub fn uninterpreted_option_mut(
+        &mut self,
+        index: usize,
+    ) -> Result<UninterpretedOptionMut<'_>, MessageError> {
+        self.0
+            .list_message_mut_by_number(999, index)
+            .map(UninterpretedOptionMut)
+    }
+
+    pub fn remove_uninterpreted_option(&mut self, index: usize) -> Result<(), MessageError> {
+        self.0.remove_by_number(999, index)
+    }
+
     pub fn clear_uninterpreted_option(&mut self) {
         self.0.clear_by_number(999)
     }
@@ -2419,6 +2671,19 @@ impl MessageOptionsMut<'_> {
         self.0
             .push_message_by_number(999)
             .map(UninterpretedOptionMut)
+    }
+
+    pub fn uninterpreted_option_mut(
+        &mut self,
+        index: usize,
+    ) -> Result<UninterpretedOptionMut<'_>, MessageError> {
+        self.0
+            .list_message_mut_by_number(999, index)
+            .map(UninterpretedOptionMut)
+    }
+
+    pub fn remove_uninterpreted_option(&mut self, index: usize) -> Result<(), MessageError> {
+        self.0.remove_by_number(999, index)
     }
 
     pub fn clear_uninterpreted_option(&mut self) {
@@ -2710,6 +2975,10 @@ impl FieldOptionsMut<'_> {
         self.0.push_by_number(19, Scalar::Enum(value))
     }
 
+    pub fn remove_targets(&mut self, index: usize) -> Result<(), MessageError> {
+        self.0.remove_by_number(19, index)
+    }
+
     pub fn clear_targets(&mut self) {
         self.0.clear_by_number(19)
     }
@@ -2720,6 +2989,19 @@ impl FieldOptionsMut<'_> {
         self.0
             .push_message_by_number(20)
             .map(FieldOptionsEditionDefaultMut)
+    }
+
+    pub fn edition_defaults_mut(
+        &mut self,
+        index: usize,
+    ) -> Result<FieldOptionsEditionDefaultMut<'_>, MessageError> {
+        self.0
+            .list_message_mut_by_number(20, index)
+            .map(FieldOptionsEditionDefaultMut)
+    }
+
+    pub fn remove_edition_defaults(&mut self, index: usize) -> Result<(), MessageError> {
+        self.0.remove_by_number(20, index)
     }
 
     pub fn clear_edition_defaults(&mut self) {
@@ -2752,6 +3034,19 @@ impl FieldOptionsMut<'_> {
         self.0
             .push_message_by_number(999)
             .map(UninterpretedOptionMut)
+    }
+
+    pub fn uninterpreted_option_mut(
+        &mut self,
+        index: usize,
+    ) -> Result<UninterpretedOptionMut<'_>, MessageError> {
+        self.0
+            .list_message_mut_by_number(999, index)
+            .map(UninterpretedOptionMut)
+    }
+
+    pub fn remove_uninterpreted_option(&mut self, index: usize) -> Result<(), MessageError> {
+        self.0.remove_by_number(999, index)
     }
 
     pub fn clear_uninterpreted_option(&mut self) {
@@ -2995,6 +3290,19 @@ impl OneofOptionsMut<'_> {
             .map(UninterpretedOptionMut)
     }
 
+    pub fn uninterpreted_option_mut(
+        &mut self,
+        index: usize,
+    ) -> Result<UninterpretedOptionMut<'_>, MessageError> {
+        self.0
+            .list_message_mut_by_number(999, index)
+            .map(UninterpretedOptionMut)
+    }
+
+    pub fn remove_uninterpreted_option(&mut self, index: usize) -> Result<(), MessageError> {
+        self.0.remove_by_number(999, index)
+    }
+
     pub fn clear_uninterpreted_option(&mut self) {
         self.0.clear_by_number(999)
     }
@@ -3128,6 +3436,19 @@ impl EnumOptionsMut<'_> {
             .map(UninterpretedOptionMut)
     }
 
+    pub fn uninterpreted_option_mut(
+        &mut self,
+        index: usize,
+    ) -> Result<UninterpretedOptionMut<'_>, MessageError> {
+        self.0
+            .list_message_mut_by_number(999, index)
+            .map(UninterpretedOptionMut)
+    }
+
+    pub fn remove_uninterpreted_option(&mut self, index: usize) -> Result<(), MessageError> {
+        self.0.remove_by_number(999, index)
+    }
+
     pub fn clear_uninterpreted_option(&mut self) {
         self.0.clear_by_number(999)
     }
@@ -3258,6 +3579,19 @@ impl EnumValueOptionsMut<'_> {
             .map(UninterpretedOptionMut)
     }
 
+    pub fn uninterpreted_option_mut(
+        &mut self,
+        index: usize,
+    ) -> Result<UninterpretedOptionMut<'_>, MessageError> {
+        self.0
+            .list_message_mut_by_number(999, index)
+            .map(UninterpretedOptionMut)
+    }
+
+    pub fn remove_uninterpreted_option(&mut self, index: usize) -> Result<(), MessageError> {
+        self.0.remove_by_number(999, index)
+    }
+
     pub fn clear_uninterpreted_option(&mut self) {
         self.0.clear_by_number(999)
     }
@@ -3342,6 +3676,19 @@ impl ServiceOptionsMut<'_> {
         self.0
             .push_message_by_number(999)
             .map(UninterpretedOptionMut)
+    }
+
+    pub fn uninterpreted_option_mut(
+        &mut self,
+        index: usize,
+    ) -> Result<UninterpretedOptionMut<'_>, MessageError> {
+        self.0
+            .list_message_mut_by_number(999, index)
+            .map(UninterpretedOptionMut)
+    }
+
+    pub fn remove_uninterpreted_option(&mut self, index: usize) -> Result<(), MessageError> {
+        self.0.remove_by_number(999, index)
     }
 
     pub fn clear_uninterpreted_option(&mut self) {
@@ -3446,6 +3793,19 @@ impl MethodOptionsMut<'_> {
             .map(UninterpretedOptionMut)
     }
 
+    pub fn uninterpreted_option_mut(
+        &mut self,
+        index: usize,
+    ) -> Result<UninterpretedOptionMut<'_>, MessageError> {
+        self.0
+            .list_message_mut_by_number(999, index)
+            .map(UninterpretedOptionMut)
+    }
+
+    pub fn remove_uninterpreted_option(&mut self, index: usize) -> Result<(), MessageError> {
+        self.0.remove_by_number(999, index)
+    }
+
     pub fn clear_uninterpreted_option(&mut self) {
         self.0.clear_by_number(999)
     }
@@ -3541,6 +3901,19 @@ impl UninterpretedOptionMut<'_> {
         self.0
             .push_message_by_number(2)
             .map(UninterpretedOptionNamePartMut)
+    }
+
+    pub fn name_mut(
+        &mut self,
+        index: usize,
+    ) -> Result<UninterpretedOptionNamePartMut<'_>, MessageError> {
+        self.0
+            .list_message_mut_by_number(2, index)
+            .map(UninterpretedOptionNamePartMut)
+    }
+
+    pub fn remove_name(&mut self, index: usize) -> Result<(), MessageError> {
+        self.0.remove_by_number(2, index)
     }
 
     pub fn clear_name(&mut self) {
@@ -3931,6 +4304,19 @@ impl FeatureSetDefaultsMut<'_> {
             .map(FeatureSetDefaultsFeatureSetEditionDefaultMut)
     }
 
+    pub fn defaults_mut(
+        &mut self,
+        index: usize,
+    ) -> Result<FeatureSetDefaultsFeatureSetEditionDefaultMut<'_>, MessageError> {
+        self.0
+            .list_message_mut_by_number(1, index)
+            .map(FeatureSetDefaultsFeatureSetEditionDefaultMut)
+    }
+
+    pub fn remove_defaults(&mut self, index: usize) -> Result<(), MessageError> {
+        self.0.remove_by_number(1, index)
+    }
+
     pub fn clear_defaults(&mut self) {
         self.0.clear_by_number(1)
     }
@@ -4113,6 +4499,19 @@ impl SourceCodeInfoMut<'_> {
             .map(SourceCodeInfoLocationMut)
     }
 
+    pub fn location_mut(
+        &mut self,
+        index: usize,
+    ) -> Result<SourceCodeInfoLocationMut<'_>, MessageError> {
+        self.0
+            .list_message_mut_by_number(1, index)
+            .map(SourceCodeInfoLocationMut)
+    }
+
+    pub fn remove_location(&mut self, index: usize) -> Result<(), MessageError> {
+        self.0.remove_by_number(1, index)
+    }
+
     pub fn clear_location(&mut self) {
         self.0.clear_by_number(1)
     }
@@ -4267,12 +4666,20 @@ impl SourceCodeInfoLocationMut<'_> {
         self.0.push_by_number(1, Scalar::I32(value))
     }
 
+    pub fn remove_path(&mut self, index: usize) -> Result<(), MessageError> {
+        self.0.remove_by_number(1, index)
+    }
+
     pub fn clear_path(&mut self) {
         self.0.clear_by_number(1)
     }
 
     pub fn push_span(&mut self, value: i32) -> Result<(), MessageError> {
         self.0.push_by_number(2, Scalar::I32(value))
+    }
+
+    pub fn remove_span(&mut self, index: usize) -> Result<(), MessageError> {
+        self.0.remove_by_number(2, index)
     }
 
     pub fn clear_span(&mut self) {
@@ -4297,6 +4704,10 @@ impl SourceCodeInfoLocationMut<'_> {
 
     pub fn push_leading_detached_comments(&mut self, value: &[u8]) -> Result<(), MessageError> {
         self.0.push_by_number(6, Scalar::Bytes(value))
+    }
+
+    pub fn remove_leading_detached_comments(&mut self, index: usize) -> Result<(), MessageError> {
+        self.0.remove_by_number(6, index)
     }
 
     pub fn clear_leading_detached_comments(&mut self) {
@@ -4343,6 +4754,19 @@ impl GeneratedCodeInfoMut<'_> {
         self.0
             .push_message_by_number(1)
             .map(GeneratedCodeInfoAnnotationMut)
+    }
+
+    pub fn annotation_mut(
+        &mut self,
+        index: usize,
+    ) -> Result<GeneratedCodeInfoAnnotationMut<'_>, MessageError> {
+        self.0
+            .list_message_mut_by_number(1, index)
+            .map(GeneratedCodeInfoAnnotationMut)
+    }
+
+    pub fn remove_annotation(&mut self, index: usize) -> Result<(), MessageError> {
+        self.0.remove_by_number(1, index)
     }
 
     pub fn clear_annotation(&mut self) {
@@ -4423,6 +4847,10 @@ impl GeneratedCodeInfoAnnotationMut<'_> {
 
     pub fn push_path(&mut self, value: i32) -> Result<(), MessageError> {
         self.0.push_by_number(1, Scalar::I32(value))
+    }
+
+    pub fn remove_path(&mut self, index: usize) -> Result<(), MessageError> {
+        self.0.remove_by_number(1, index)
     }
 
     pub fn clear_path(&mut self) {
