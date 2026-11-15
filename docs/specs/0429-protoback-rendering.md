@@ -254,11 +254,14 @@ reproto first.)
     skips is W6 `internal error`. `render_options`' failed lookups are
     unchanged: they go to a logger nothing shows, not even `--debug`,
     and reach no output.
-  - **Open: C5's cause seen in the wild.** Spec 0041's corpus (not in
-    the repository) met `Couldn't find Extension N` rendering a
-    `message_set_extension` field's options; neither the harness, the
-    tests, nor a MessageSet fixture made for it reaches it. It is
-    written `internal error` until a reproducer names its cause.
+  - **C5's cause seen in the wild, not met since.** Spec 0041's corpus
+    (not in the repository) met `Couldn't find Extension N` rendering a
+    `message_set_extension` field's options, with an older reproto.
+    Neither the harness, the tests, nor a MessageSet fixture made for it
+    reaches it, and a large proprietary corpus, processed as its own
+    build processes it (its variant, load-time plugin and prunes),
+    renders with no render failure at all (2026-11-15). It is written
+    `internal error` until a reproducer names its cause.
 
 ## Alternatives considered
 
