@@ -24,7 +24,7 @@ python3Packages.buildPythonApplication (finalAttrs: {
     owner = "douzebis";
     repo = "prototools";
     tag = "v${finalAttrs.version}";
-    hash = "sha256-sydonITXlBAFLlZS8u/PzKIxJRVGLKJHI/HKzS5ZGz0=";
+    hash = "sha256-PTOmgGRMhMrss2HBwgLp7ub7uNVncNVkT63W+7wqk3U=";
   };
 
   sourceRoot = "${finalAttrs.src.name}/reproto";
@@ -89,7 +89,7 @@ python3Packages.buildPythonApplication (finalAttrs: {
     # from here.
     cargoDeps = rustPlatform.fetchCargoVendor {
       inherit (finalAttrs) pname version src;
-      hash = "sha256-QHYJJwyae8n24As49Lrf4+OnxjHRUSLh17Mt5Re/wUA=";
+      hash = "sha256-aHobnBJJWsMem2oehd8pNwlrXHdjnY/it20mGK9+N2s=";
     };
     # Only v-prefixed release tags
     updateScript = nix-update-script {
