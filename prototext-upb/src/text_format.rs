@@ -335,8 +335,8 @@ pub fn scan_imports(text: &str) -> Result<(String, Vec<String>), TextError> {
 }
 
 /// Message `name` (`FileDescriptorProto`, `FileDescriptorSet`) of the
-/// package of `pool`'s `descriptor_file` (spec 0427 S3): `proto2.…` for
-/// `net/proto2/proto/descriptor.proto`, `google.protobuf.…` when the pool
+/// package of `pool`'s `descriptor_file` (spec 0427 S3): `proto2.…` for a
+/// `descriptor.proto` under `package proto2`, `google.protobuf.…` when the pool
 /// has no such file. When the pool does not declare it (a variant's
 /// `descriptor.proto` may declare the options messages alone), the
 /// vendored `descriptor.proto`'s: its text then parses, its options

@@ -37,18 +37,18 @@ raw `Any` body, so its own field 1 is matched against the `type_url` LEN
 tag/bytes instead of against the real first field of the wrapped message.
 
 This was discovered while investigating a real-world false-positive
-`[veto] boundary_proxy.Exemplar — wire-type mismatch on field 1 (wire_type=2)`.
-The `Exemplar.header` field is a `google.protobuf.Any` that resolves to
-`RPC_Request`, whose real field 1 is `optional int32 type = 1` (VARINT). The
+`[veto] proxy.Sample — wire-type mismatch on field 1 (wire_type=2)`.
+The `Sample.header` field is a `google.protobuf.Any` that resolves to
+`Request`, whose real field 1 is `optional int32 type = 1` (VARINT). The
 misread `type_url` tag (field 1, wire type `LEN`) collides with the expected
 VARINT wire type, producing an unconditional `Verdict::Mismatch` — the
 observed veto.
 
 Root-cause was confirmed by hand-constructing minimal wire payloads locally
 (against `/tmp/pdb.desc` / `/tmp/protodb`) and bisecting: a bare `Any` wrapping
-a completely empty `RPC_Request` still vetoes, proving the bug is purely
-positional/mechanical and unrelated to `RPC_Request`'s or
-`proto2.bridge.MessageSet`'s content (the originally-reported MessageSet issue
+a completely empty `Request` still vetoes, proving the bug is purely
+positional/mechanical and unrelated to `Request`'s or
+`bridge.MessageSet`'s content (the originally-reported MessageSet issue
 is a separate, unrelated bug — deferred to a future spec).
 
 The bug has two manifestations, both confirmed:
@@ -85,7 +85,7 @@ gone undetected since spec 0089 was implemented (2026-05-29).
 
 ## Non-goals
 
-- The `proto2.bridge.MessageSet` / `request_extensions` scoring issue from
+- The `bridge.MessageSet` / `request_extensions` scoring issue from
   the original bug report — unrelated, deferred to a separate future spec.
 - The `value`-before-`type_url` wire-ordering fallback (`scan_any_fields`
   returning `None`, raw LEN rendering) — already correct, untouched by this
@@ -207,11 +207,11 @@ A second `Merged` builder, parallel to `make_merged()`, with:
   `child: Some("google.protobuf.Any".to_string())`, `label: Optional`.
 - `TargetVarint` (root): one field, `number: 1`, `kind: ScoringKind::Uint32`,
   `child: None`, `label: Optional`. (Real field 1 is VARINT — reproduces the
-  hard-veto manifestation, matching `RPC_Request.type`.)
+  hard-veto manifestation, matching `Request.type`.)
 - `TargetString` (root): one field, `number: 1`, `kind: ScoringKind::LenString`,
   `child: None`, `label: Optional`. (Real field 1 is LEN — reproduces the
-  silent-corruption manifestation, matching `RPC_Request` → ... →
-  `boundary_proxy.RpcInfoRequest`'s `string value = 1` shape.)
+  silent-corruption manifestation, matching `Request` → ... →
+  `proxy.InfoRequest`'s `string value = 1` shape.)
 
 `roots: vec!["Wrapper".into(), "TargetVarint".into(), "TargetString".into()]`.
 
@@ -278,7 +278,7 @@ Each test follows the existing pattern: `build_graph()`-equivalent using
 
 ## Gaps and follow-up work
 
-- The original `proto2.bridge.MessageSet` / `request_extensions` scoring
+- The original `bridge.MessageSet` / `request_extensions` scoring
   issue remains open — tracked separately, not addressed by this spec.
 - Spec 0089's `TC-S3`..`TC-S6` (unresolved type_url, non-root wrapped type,
   etc.) remain unimplemented; out of scope here since they don't cover this

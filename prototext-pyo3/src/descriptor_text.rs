@@ -118,7 +118,7 @@ type TextRead<'py> = (Option<Bound<'py, PyBytes>>, Vec<String>, Option<String>);
 ///     The input's ``FileDescriptorProto``\ s in the text format.
 /// descriptor_file : str
 ///     The input's ``descriptor.proto`` (the variant's, e.g.
-///     ``net/proto2/proto/descriptor.proto``), whose
+///     ``proto2/descriptor.proto``), whose
 ///     ``FileDescriptorProto`` the texts are parsed as; the vendored one
 ///     when no input has that name.
 ///

@@ -36,7 +36,7 @@ for `--use-variant any`).  A variant that does **not** include `any.proto` as
 a WKT cannot produce `Any` fields — so the expansion feature is safe to assume
 the type is always available in the schema pool.
 
-For Google-internal variants (Google3 sources), the WKT identity problem is
+For variants with their own descriptor path, the WKT identity problem is
 already handled (spec 0051): the pool always contains exactly one copy of
 `google.protobuf.Any` regardless of which proto path the variant uses.
 

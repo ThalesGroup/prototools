@@ -19,11 +19,11 @@ App: tree-sitter-textproto, protolens
 
 ## Background
 
-Interactive testing against a real document (`RPC_Request`'s
+Interactive testing against a real document (`Request`'s
 `request_extensions` MessageSet field, nested inside an auto-expanded
 `Any`, spec 0120) surfaced a syntax-highlighting bug: two rendered
 sibling lines — `payload_display_when_private: true #@ bool = 26` and
-`package_name: "boundary_proxy" #@ string = 31` — lost all field-name/
+`package_name: "proxy" #@ string = 31` — lost all field-name/
 value coloring, while their trailing `#@` comments (lexed as `extras`,
 independent of parser state) stayed correctly colored.
 
@@ -33,7 +33,7 @@ needs the real auto-expansion cascade): `colorize()`
 (`protolens/src/colorize.rs`) runs once per node, at the moment
 `splice_override` (`protolens/src/tui.rs`) splices that node's
 freshly-rendered text into the document. When an `Any`'s `value` field
-auto-expands to `RPC_Request` (spec 0120), `RPC_Request`'s own
+auto-expands to `Request` (spec 0120), `Request`'s own
 `request_extensions` MessageSet field is, at that exact instant, still
 raw/unpromoted — rendered as a bare decimal field name (`1 { ... }`).
 `tree-sitter-textproto`'s grammar has no `field_name` alternative for a
@@ -120,7 +120,7 @@ for some other, real-world input.
   per this repo's convention for third-party-sourced files, even when
   locally modified).
 - G6: the original reported symptom (`payload_display_when_private`/
-  `package_name` losing coloring after `RPC_Request` auto-expands
+  `package_name` losing coloring after `Request` auto-expands
   inside an `Any`) is confirmed fixed against the real repro document.
 
 ## Non-goals
@@ -200,7 +200,7 @@ already present via its `src = ./reproto/tree-sitter-textproto`.
    keeps its own coloring rather than falling into a corrupted `ERROR`
    region.
 5. Rebuild protolens; re-run the original repro (`--descriptor-set
-   /tmp/pdb.desc /tmp/anu`, navigating to the `RPC_Request`-typed `Any`
+   /tmp/pdb.desc /tmp/anu`, navigating to the `Request`-typed `Any`
    under the `request_extensions` MessageSet) and confirm
    `payload_display_when_private`/`package_name` render with correct
    coloring (G6).

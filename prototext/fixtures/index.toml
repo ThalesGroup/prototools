@@ -225,12 +225,12 @@ schema  = "fixtures/schemas/descriptor.pb"
 message = "google.protobuf.FileDescriptorProto"
 
 [[fixture]]
-name    = "mpm_complex_message"
+name    = "knife_complex_message"
 schema  = "fixtures/schemas/knife.pb"
 message = "SwissArmyKnife"
 
 [[fixture]]
-name    = "mpm_edge_cases"
+name    = "knife_edge_cases"
 schema  = "fixtures/schemas/knife.pb"
 message = "SwissArmyKnife"
 

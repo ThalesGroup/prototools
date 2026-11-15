@@ -15,7 +15,7 @@ SPDX-License-Identifier: MIT
 
 `--seed` and `--prune` accept FQDNs of the form `file:foo.proto` or
 `desc:my.pkg.MyMsg`.  The matching in phase 4 (pruning) and phase 5 (seeds)
-already uses `fnmatch` — so glob patterns like `file:borg/common/mpm_*.proto`
+already uses `fnmatch` — so glob patterns like `file:vendor/common/util_*.proto`
 silently work at node-selection time.  However:
 
 1. This is undocumented and untested.
@@ -138,13 +138,13 @@ individually loaded); `desc:` and other patterns will simply never match a
 ```
 -s, --seed TEXT   FQDN or glob pattern to treat as an output root.
                   Plain FQDN: desc:my.pkg.MyMsg or file:foo.proto.
-                  Glob: file:borg/common/*.proto (one level),
-                  file:borg/** (recursive), desc:my.pkg.* (one level).
+                  Glob: file:vendor/common/*.proto (one level),
+                  file:vendor/** (recursive), desc:my.pkg.* (one level).
 
 -p, --prune TEXT  FQDN or glob pattern to exclude from output.
                   Plain FQDN: desc:my.pkg.MyMsg or file:foo.proto.
-                  Glob: file:borg/common/*.proto (one level),
-                  file:borg/** (recursive), desc:my.pkg.* (one level).
+                  Glob: file:vendor/common/*.proto (one level),
+                  file:vendor/** (recursive), desc:my.pkg.* (one level).
 ```
 
 All patterns must start with a valid prefix (`file:`, `desc:`, `enum:`,

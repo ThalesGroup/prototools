@@ -160,7 +160,7 @@ game.
   That requires arbitrary binary padding after the record. It cannot
   happen inside a `FileDescriptorSet`, where the next byte is the record
   header `0x0A` and S12 rule 2 fires cleanly, nor in the
-  Google-internal MPM package layout. It is a stripped-executable
+  package layouts it reads. It is a stripped-executable
   concern, and protoscan does not face it first.
 
   The mechanism, recorded so it is not re-derived when that day comes:

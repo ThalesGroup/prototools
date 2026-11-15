@@ -50,8 +50,8 @@ TypeError: Couldn't build proto file into descriptor pool: couldn't resolve name
 ```
 
 The canonical, and most severe, instance of this is a variant's own
-`descriptor_proto:` file (e.g. a Google-internal-style corpus using
-`net/proto2/proto/descriptor.proto`, package `proto2`, with a
+`descriptor_proto:` file (e.g. a corpus using
+`proto2/descriptor.proto`, package `proto2`, with a
 `namespace_rewrites` rule `.proto2. → .google.protobuf.`): *every* field
 in that file is a same-file, same-package self-reference (`DescriptorProto`
 referencing `FieldDescriptorProto`, `FileDescriptorProto` referencing

@@ -40,7 +40,7 @@ The previous workaround (commits `260f81d` and `4c9f111`) forced
 - It only covers `descriptor.proto`; other WKTs that happen not to be summoned
   remain absent.
 - It forces the variant descriptor path (e.g.
-  `net/proto2/proto/descriptor.proto`) to be preserved verbatim, which may be
+  `proto2/descriptor.proto`) to be preserved verbatim, which may be
   the right behaviour for the DB but is reached via a side effect rather than
   an explicit mechanism.
 

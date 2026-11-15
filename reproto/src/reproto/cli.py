@@ -463,7 +463,7 @@ class _SectionedCommand(click.Command):
         '(the FDP named foo.proto). Path (bare, or path: prefix): '
         'foo.pb (every FDP in that physical file), matched against '
         'the -I-relative path. Glob (either form): one *.proto '
-        '(one level), borg/** (recursive).'
+        '(one level), vendor/** (recursive).'
     ),
 )
 
@@ -478,7 +478,7 @@ class _SectionedCommand(click.Command):
         '(the FDP named foo.proto). Path (bare, or path: prefix): '
         'foo.pb (that physical file, never loaded), matched against '
         'the -I-relative path. Glob (either form): one *.proto '
-        '(one level), borg/** (recursive).'
+        '(one level), vendor/** (recursive).'
     ),
 )
 

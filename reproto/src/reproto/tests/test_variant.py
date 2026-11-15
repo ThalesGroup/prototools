@@ -105,17 +105,17 @@ def test_reproto_variant_env_var(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     yaml_file = tmp_path / 'env.yaml'
     yaml_file.write_text(textwrap.dedent("""\
         name: env-test
-        descriptor_proto: net/proto2/proto/descriptor.proto
+        descriptor_proto: proto2/descriptor.proto
     """))
     monkeypatch.setenv('REPROTO_VARIANT', str(yaml_file))
     result = V.load()
-    assert result['variant_descriptor_proto'] == 'net/proto2/proto/descriptor.proto'
+    assert result['variant_descriptor_proto'] == 'proto2/descriptor.proto'
 
 
 def test_explicit_path_overrides_env_var(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Explicit path argument overrides REPROTO_VARIANT env var."""
     env_file = tmp_path / 'env.yaml'
-    env_file.write_text('name: env\ndescriptor_proto: net/proto2/proto/descriptor.proto\n')
+    env_file.write_text('name: env\ndescriptor_proto: proto2/descriptor.proto\n')
     explicit_file = tmp_path / 'explicit.yaml'
     explicit_file.write_text('name: explicit\ndescriptor_proto: custom/descriptor.proto\n')
     monkeypatch.setenv('REPROTO_VARIANT', str(env_file))
@@ -165,7 +165,7 @@ def test_import_rules_parsed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
     yaml_file.write_text(textwrap.dedent("""\
         name: test
         import_rewrites:
-          - match: proto2/bridge/
+          - match: vendor/bridge/
             action: keep
           - match: proto2/
             action: rewrite
@@ -175,5 +175,5 @@ def test_import_rules_parsed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
     result = V.load(str(yaml_file))
     rules = result['variant_import_rules']
     assert len(rules) == 2
-    assert rules[0] == {'match': 'proto2/bridge/', 'action': 'keep'}
+    assert rules[0] == {'match': 'vendor/bridge/', 'action': 'keep'}
     assert rules[1] == {'match': 'proto2/', 'action': 'rewrite', 'to': 'google/protobuf/'}

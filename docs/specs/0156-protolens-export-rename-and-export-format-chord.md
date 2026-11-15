@@ -218,7 +218,7 @@ bare-`x`-then-edit-the-flag-by-hand flow.
   come from the already-loaded `--descriptor-set`. Locate it as
   follows: walk `ctx.pool().files()` for a file whose `name()` ends in
   `descriptor.proto` (matches `google/protobuf/descriptor.proto`,
-  `net/proto2/proto/descriptor.proto`, or any other path ending that
+  `proto2/descriptor.proto`, or any other path ending that
   way — deliberately not keyed to any one package/variant, since
   reproto's own variant/canonization mechanism, spec 0086/0150, decides
   what ends up in a given schema-db, and protolens never special-cases
@@ -903,7 +903,7 @@ today.)
   - a pool containing a file named `google/protobuf/descriptor.proto`
     with both `FileDescriptorSet`/`FileDescriptorProto` messages →
     resolves.
-  - the same, but the file named `net/proto2/proto/descriptor.proto`
+  - the same, but the file named `proto2/descriptor.proto`
     and packaged `proto2` (uncanonized) → still resolves (name-suffix +
     simple-name match, package-agnostic — G7).
   - a pool with no `...descriptor.proto`-suffixed file → `None`.

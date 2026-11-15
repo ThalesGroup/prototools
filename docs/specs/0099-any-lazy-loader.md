@@ -30,8 +30,8 @@ transitively reachable from the root message type, it is absent from the pool
 and the map — so expansion silently falls back to raw two-field rendering.
 
 In practice, `Any.value` routinely wraps types that are entirely unrelated to
-the root message (e.g. `boundary_proxy.Exemplar` contains `Any` fields whose
-`type_url` references `RPC_Request` and `boundary_proxy.RpcInfoRequest`).
+the root message (e.g. `proxy.Sample` contains `Any` fields whose
+`type_url` references `Request` and `proxy.InfoRequest`).
 These types live in the same descriptor set but are not loaded because the root
 type does not depend on them.
 
@@ -166,8 +166,8 @@ The `--raw` path and `encode` path are unchanged (no schema context).
 
 ## Testing
 
-- TC-1: Decode a binary whose root type is `boundary_proxy.Exemplar` with a
-  lazy pool containing `RPC_Request` and `boundary_proxy.RpcInfoRequest`.
+- TC-1: Decode a binary whose root type is `proxy.Sample` with a
+  lazy pool containing `Request` and `proxy.InfoRequest`.
   Assert that `Any` fields expand to named message blocks rather than raw bytes.
 - TC-2: Same binary, eager pool.  Assert same expansion (types present).
 - TC-3: Same binary, eager pool with only the root type's transitive deps.

@@ -18,7 +18,7 @@ reproto processes descriptor sets whose file names and package namespaces
 may differ from the canonical proto paths.  For example, the `proto2`
 variant rewrites:
 
-- `net/proto2/proto/descriptor.proto` → `google/protobuf/descriptor.proto`
+- `proto2/descriptor.proto` → `google/protobuf/descriptor.proto`
   (via `variant_import_rules` / `canonize_dependency`)
 - `.proto2.DescriptorProto` → `.google.protobuf.DescriptorProto`
   (via `variant_ns_rules` / `apply_variant_namespace`)
@@ -42,7 +42,7 @@ fdp_out.CopyFrom(self.this)   # copies original name, dependency[], type names
 After this copy, no variant rewrites are applied.  The resulting `fdp_out`
 carries:
 
-- `fdp_out.name` — original file name (e.g. `net/proto2/proto/descriptor.proto`)
+- `fdp_out.name` — original file name (e.g. `proto2/descriptor.proto`)
 - `fdp_out.dependency[i]` — original import paths
 - `fdp_out.message_type[*].field[*].type_name` — original type references
   (e.g. `.proto2.DescriptorProto`)
@@ -212,16 +212,16 @@ Both functions handle:
 
 ## Example
 
-With the `proto2` variant and `net/proto2/proto/descriptor.proto`:
+With the `proto2` variant and `proto2/descriptor.proto`:
 
 | Output | Before §86.3/§86.4 | After §86.3/§86.4 |
 |---|---|---|
 | `.proto` output path | `out/google/protobuf/descriptor.proto` (fixed by §86.1) | (unchanged) |
-| `fdp_out.name` | `net/proto2/proto/descriptor.proto` | `google/protobuf/descriptor.proto` |
-| `fdp_out.dependency[i]` | `net/proto2/proto/descriptor.proto` | `google/protobuf/descriptor.proto` |
+| `fdp_out.name` | `proto2/descriptor.proto` | `google/protobuf/descriptor.proto` |
+| `fdp_out.dependency[i]` | `proto2/descriptor.proto` | `google/protobuf/descriptor.proto` |
 | `field_out.type_name` | `.proto2.DescriptorProto` | `.google.protobuf.DescriptorProto` |
 | `.proto` text import | `google/protobuf/descriptor.proto` (already correct) | (unchanged) |
-| Pool lookup key | `net/proto2/proto/descriptor.proto` (unchanged) | (unchanged) |
+| Pool lookup key | `proto2/descriptor.proto` (unchanged) | (unchanged) |
 
 After §86.3/§86.4, the binary FDP is consistent with the `.proto` text.
 

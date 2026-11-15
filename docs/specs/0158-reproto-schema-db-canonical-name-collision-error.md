@@ -24,24 +24,24 @@ named 'google/protobuf/descriptor.proto' has already been added
 ```
 
 Root cause, confirmed with a real corpus
-(`internal/fixtures/bp-protodb` in the sibling `prototools` repo, a
-466-file Google-internal-style proto tree containing both
-`net/proto2/proto/descriptor.proto`, imported by 22 other files, and a
+(a private 466-file proto tree, in the sibling `prototools` repo,
+containing both a variant's `descriptor.proto` under another package,
+imported by 22 other files, and a
 standalone `google/protobuf/descriptor.proto`, imported by nothing
 else):
 
 - The active `$REPROTO_VARIANT` (`proto2.yaml`) defines an
-  `import_rewrites` rule `net/proto2/proto/` → `google/protobuf/`,
+  `import_rewrites` rule `proto2/` → `google/protobuf/`,
   applied by `canonize_dependency()` (`mappings.py`) at *render* time
   (`re_file.py`, `ReFileDescriptorProto.render()`,
   `fdp_out.name = canonize_dependency(ctx, fdp_out.name)`).
-- Both `net/proto2/proto/descriptor.proto` and the standalone
+- Both `proto2/descriptor.proto` and the standalone
   `google/protobuf/descriptor.proto` are independently `is_summoned`
   (spec 0148's load-time dedup does not merge them — they have
   distinct declared `.name`s at load time, so it correctly treats
   them as two different files). Both are rendered by
   `_phase7_output`'s `summoned` loop.
-- After rendering, `net/proto2/proto/descriptor.proto`'s
+- After rendering, `proto2/descriptor.proto`'s
   `fdp_out.name` is rewritten to `google/protobuf/descriptor.proto`
   by `canonize_dependency` — now colliding, byte-for-byte differently,
   with the standalone file's own (already-canonical)
@@ -171,8 +171,8 @@ the existing I/O-error handling a few lines above).
 - New test: same setup but with *identical* content on both sides —
   assert the run succeeds and the resulting `.desc` contains exactly
   one entry under the canonical name (G2).
-- Regression: rebuild `internal/fixtures/bp-protodb` (sibling
-  `prototools` repo, `net/proto2/proto/proto2.yaml` variant) without
+- Regression: rebuild that private tree (sibling `prototools` repo,
+  with its variant) without
   `-p`/`--prune` — assert the new collision error now fires (this was
   the reported bug) instead of silently producing an invalid `.desc`.
 - Regression: existing `--schema-db-out` tests with no colliding names

@@ -208,7 +208,7 @@ mod tests {
     #[test]
     fn locate_file_descriptor_set_type_resolves_an_uncanonized_variant() {
         let pool = pool_from(vec![FileDescriptorProto {
-            name: Some("net/proto2/proto/descriptor.proto".to_string()),
+            name: Some("proto2/descriptor.proto".to_string()),
             package: Some("proto2".to_string()),
             message_type: vec![message("FileDescriptorSet"), message("FileDescriptorProto")],
             syntax: Some("proto2".to_string()),

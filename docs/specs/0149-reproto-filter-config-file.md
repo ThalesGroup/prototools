@@ -20,7 +20,7 @@ the pre-existing bare-value heuristic so that any unprefixed `-s`/`-p`/
 `-C` value was assumed to mean `file:<value>`.
 
 That simplification turned out to be wrong. Running `reproto -I
-../google3 . --dry-run` surfaced the real issue: `file:some/path` is
+CORPUS . --dry-run` on a large corpus surfaced the real issue: `file:some/path` is
 used throughout reproto to name two genuinely different things that
 usually — but not always — coincide:
 
@@ -30,11 +30,11 @@ usually — but not always — coincide:
    inside the reconstructed FQDN graph, established once a file is
    parsed, independent of which physical artifact produced it.
 
-Blaze (google3's build system) routinely produces more than one
+A build system can produce more than one
 physical `.pb` artifact declaring the same `FileDescriptorProto.name`
 (e.g. two independent targets both emit a descriptor for
-`google/protobuf/struct.proto`); when both land in the merged genfiles
-tree, Blaze disambiguates the colliding filenames with a `~2`, `~3`, ...
+`google/protobuf/struct.proto`); when both land in the merged output
+tree, the build disambiguates the colliding filenames with a `~2`, `~3`, ...
 suffix (`struct.pb` / `struct~2.pb`). `reproto`'s loader (spec 0148 G2)
 already handles this at the FQDN-identity level — it silently keeps
 whichever candidate it encounters first (by `-I` root order, then
@@ -179,7 +179,7 @@ spec reworks `-s`/`-p`/`-C` accordingly, superseding Round 1's G6/G7.
   top-level-key validation, union-merge with CLI flags — is unchanged
   (see G1); this spec only changes how individual `seed:`/`prune:`/
   `-s`/`-p` *entries* are classified.
-- N6: No automatic/heuristic resolution of the google3-style
+- N6: No automatic/heuristic resolution of the
   shadow-duplicate case. The user must explicitly write a `prune:` (or
   `-p`) path pattern naming the unwanted physical duplicate; no
   "pick the better candidate" logic is added (this is the earlier,
@@ -413,11 +413,11 @@ Consequently a single `**/*~2.pb` matches **both** a top-level
 A bare `*~2.pb` (no `**`), by contrast, matches only a top-level
 `foo~2.pb`, since a single `*` never crosses `/`.
 
-### Worked example: pruning all Blaze shadow-duplicates in one pattern
+### Worked example: pruning all shadow-duplicates in one pattern
 
 ```yaml
 prune:
-  - "**/*~2.pb"   # drop every Blaze `~2`-uniquified duplicate, any depth
+  - "**/*~2.pb"   # drop every `~2`-uniquified duplicate, any depth
   - "**/*~3.pb"
 ```
 
@@ -450,7 +450,7 @@ place of the blanket one for that pair.
   `test_T2_star_does_not_cross_slash` for the path case): `**/*~2.pb`
   matches both a top-level `foo~2.pb` and a nested `bar/foo~2.pb`;
   a bare `*~2.pb` matches only the top-level one, never the nested one.
-- Prune-by-path (G3): fixture recreating the google3 `~2` scenario —
+- Prune-by-path (G3): fixture recreating the `~2` scenario —
   two physically distinct files under two different `-I` roots that
   parse to the same `FileDescriptorProto.name`. `-p` (or filter-config
   `prune:`) naming one path exactly → the other survives

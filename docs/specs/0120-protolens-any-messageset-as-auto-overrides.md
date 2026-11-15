@@ -18,7 +18,7 @@ App: protolens
 
 ## Background
 
-Interactive testing against a real `boundary_proxy.Exemplar` document (with
+Interactive testing against a real `proxy.Sample` document (with
 nested `Any`-typed fields) surfaced three linked bugs:
 
 1. Down-arrow navigation jumps backwards through Any-expanded content, with

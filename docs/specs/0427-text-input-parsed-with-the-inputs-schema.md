@@ -90,7 +90,7 @@ and the options that import declared with it.
   input has none, or when the input's declares no `FileDescriptorProto`).
   The options' types are then those its extensions extend:
   `proto2.MessageOptions` in a variant built on
-  `net/proto2/proto/descriptor.proto`. The bytes go to the pool, and are
+  `proto2/descriptor.proto`. The bytes go to the pool, and are
   the file's contents from then on.
 - **S4. Mending.** A file upb refuses (an import the input lacks, a type
   nobody declares) is added mended: the records that do not resolve

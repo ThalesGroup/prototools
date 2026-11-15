@@ -42,8 +42,8 @@ to the pre-spec-0089 treatment of `google.protobuf.Any`.
 Unlike `Any`, a `MessageSet` type does not have a fixed well-known FQDN: its
 fully-qualified name depends on the descriptor set being used.  A descriptor
 set may contain multiple types that look structurally like a `MessageSet`
-(e.g. `boundary_proxy.MessageSet` and `proto2.bridge.MessageSet` in
-`bp-protodb`).
+(e.g. `proxy.MessageSet` and `bridge.MessageSet` in one private
+corpus).
 
 The renderer applies a **structural heuristic at render time** to the
 `MessageDescriptor` of each message field it encounters to detect
@@ -119,7 +119,7 @@ optional bool message_set_wire_format = 1 [default = false];
 This is an authoritative, unambiguous binary flag on the message descriptor.
 No name-based heuristic is needed or appropriate: multiple MessageSet-typed
 messages with different names can coexist in a single `FileDescriptorSet`
-(e.g. `TransportMessageSet`, `LoggingMessageSet`, `boundary_proxy.MessageSet`)
+(e.g. `AlphaMessageSet`, `BetaMessageSet`, `proxy.MessageSet`)
 and each must be handled independently.
 
 During rendering, whenever a `Kind::Message` field is encountered with a
@@ -140,8 +140,8 @@ If both conditions hold, attempt `MessageSet` expansion (§2).  Otherwise render
 normally.
 
 Multiple types satisfying these conditions may exist in the same descriptor set
-(e.g. both `boundary_proxy.MessageSet` and `proto2.bridge.MessageSet` in
-`bp-protodb`).  Each is expanded independently; there is no ambiguity because
+(e.g. both `proxy.MessageSet` and `bridge.MessageSet` in one private
+corpus).  Each is expanded independently; there is no ambiguity because
 each field already carries its own `MessageDescriptor` at render time.
 
 ### §2 — Expansion rendering (`prototext-core`)
@@ -173,7 +173,7 @@ type 4, field number 1).  For each group:
 1. Extract field 2 (`type_id`, varint) and field 3 (`message`, length-delimited
    bytes).
 2. JIT-load the extension FDP via `ANY_LOADER` using the sentinel key
-   `"<extendee_fqdn>/<type_id>"` (e.g. `"proto2.bridge.MessageSet/208477678"`).
+   `"<extendee_fqdn>/<type_id>"` (e.g. `"bridge.MessageSet/208477678"`).
    The loader in `run.rs` detects this pattern and calls
    `lazy.get_extension(extendee_fqdn, type_id)` (§5).  Then call
    `nested_msg_desc.get_extension(type_id as u32)` — the prost-reflect
@@ -204,7 +204,7 @@ Full verbatim rendered output when both extensions resolve (annotations on,
 indent 1):
 
 ```
-request_extensions {  #@ proto2.bridge.MessageSet = 23
+request_extensions {  #@ bridge.MessageSet = 23
  Item {  #@ group; Item = 1
   type_id: 208477678  #@ int32 = 2
   message {  #@ MyExtensionType = 3
@@ -442,7 +442,7 @@ expanded independently.
 - TC-3: Unknown `type_id` (not in `ext_to_file`, not in pool) → group
   rendered via schemaless cascade (message / string / bytes); no data lost;
   no error.
-- TC-4: Descriptor set with two `MessageSet`-shaped types (e.g. `bp-protodb`)
+- TC-4: Descriptor set with two `MessageSet`-shaped types (as a private corpus has)
   → both expanded independently; no ambiguity.
 - TC-5: No `MessageSet` in descriptor → no expansion; raw rendering.
 - TC-6: Round-trip: `decode -a` → `encode` → bytes match original.
@@ -479,8 +479,8 @@ expanded independently.
   archived-tuple lookup issues and allows direct `ArchivedHashMap::get(&str)`.
 - **VERSION bump 3→4**: the rkyv zero-copy layout changes with the new
   `ext_to_file` field; old archives are incompatible and are rejected on open.
-- The `bp-protodb` fixture contains two types satisfying the MessageSet check:
-  `boundary_proxy.MessageSet` (stubby.proto) and `proto2.bridge.MessageSet`
-  (net/proto2/bridge/proto/message_set.proto).  At render time each field
+- A private corpus contains two types satisfying the MessageSet check:
+  `proxy.MessageSet` (`proxy.proto`) and `bridge.MessageSet`
+  (`bridge/message_set.proto`).  At render time each field
   already carries its own `MessageDescriptor`, so both are handled
   independently without any disambiguation step.

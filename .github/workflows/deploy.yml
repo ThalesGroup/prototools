@@ -85,7 +85,7 @@ jobs:
           #   - Nix build internals (0038)
           #   - internal bug-fix specs with no standalone user value
           #     (0051, 0053, 0060, 0062)
-          #   - bp-protodb companion (0043-hopcroft-db-bp-protodb)
+          #   - 0043's private companion, untracked (0043 matches it)
           #
           EXCLUDE_SPECS="0006 0009 0014 0015 0017 0024 0031 0032 0033 \
                          0035 0036 0037 0038 0040 0042 0043 0044 0047 0050 \
@@ -99,11 +99,6 @@ jobs:
             for ex in $EXCLUDE_SPECS; do
               [ "$num" = "$ex" ] && skip=1 && break
             done
-            # Also skip the bp-protodb companion (no number prefix match needed,
-            # catch by filename).
-            case "$(basename "$f")" in
-              0043-hopcroft-db-bp-protodb.md) skip=1 ;;
-            esac
             [ "$skip" = "1" ] && continue
             name=$(basename "$f" .md)
             inject "$f" "website/content/specs/${name}.md"

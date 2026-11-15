@@ -676,17 +676,17 @@ fixture!(fdp_service, super::fdp_descriptor();
     ),
 );
 
-// ── mpm_complex_message ───────────────────────────────────────────────────────
+// ── knife_complex_message ─────────────────────────────────────────────────────
 
-fixture!(mpm_complex_message, super::knife_descriptor();
+fixture!(knife_complex_message, super::knife_descriptor();
     uint64!("uint64Rp", 12345),
-    string!("stringRp", "Complex MPM test message"),
+    string!("stringRp", "Complex test message"),
     float_!("floatRp", std::f32::consts::PI),
     bool_!("boolRp", true),
-    bytes_!("bytesRp", b"Binary data for MPM testing"),
+    bytes_!("bytesRp", b"Binary data for testing"),
     message!("messageRp";
         uint32!("uint32Rp", 42),
-        string!("stringRp", "Nested message in MPM"),
+        string!("stringRp", "Nested message"),
         group!(10;
             uint64!(1, 999),
             string!(2, "Group inside nested message"),
@@ -694,9 +694,9 @@ fixture!(mpm_complex_message, super::knife_descriptor();
     ),
 );
 
-// ── mpm_edge_cases ────────────────────────────────────────────────────────────
+// ── knife_edge_cases ──────────────────────────────────────────────────────────
 
-fixture!(mpm_edge_cases, super::knife_descriptor();
+fixture!(knife_edge_cases, super::knife_descriptor();
     uint64!(1, 0),
     uint64!(2, (1u64 << 63) - 1),
     fixed64!(3, 0x123456789ABCDEF0),
@@ -1177,8 +1177,8 @@ pub static ALL_FIXTURES: &[Fixture] = &[
     ("fdp_complex", fdp_complex),
     ("fdp_enum_nested", fdp_enum_nested),
     ("fdp_service", fdp_service),
-    ("mpm_complex_message", mpm_complex_message),
-    ("mpm_edge_cases", mpm_edge_cases),
+    ("knife_complex_message", knife_complex_message),
+    ("knife_edge_cases", knife_edge_cases),
     ("canonical_scalars", canonical_scalars),
     ("canonical_strings", canonical_strings),
     ("canonical_repeated", canonical_repeated),

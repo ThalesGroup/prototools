@@ -410,7 +410,7 @@ mod tests {
         // absorbed the next couple of syntactically-valid sibling fields
         // into the same `ERROR` node, losing their captures entirely. This
         // is the exact regression reported against a real document (an
-        // `Any`-typed field's `RPC_Request` payload, whose own
+        // `Any`-typed field's `Request` payload, whose own
         // `request_extensions` MessageSet field was still unpromoted at
         // colorize-time).
         let text = "outer {\n  1 { a: 1 }\n  flag: true\n  name: \"x\"\n}\n";

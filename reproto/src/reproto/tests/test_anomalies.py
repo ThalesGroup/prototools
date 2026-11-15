@@ -262,11 +262,11 @@ def test_A5_proto2_options_extendee_not_omitted(tmp_path: Path) -> None:
     """Extending .proto2.MethodOptions in a proto3 file must NOT trigger A5.
 
     Regression test for the bug introduced in 94e9a10 (spec 0024): when reproto
-    is run without a namespace-rewriting variant (e.g. --force-proto2-for-editions on
-    bp-protodb without --use-variant), extendees compiled against the
-    Google-internal net/proto2/proto/descriptor.proto use the .proto2.* package
-    instead of .google.protobuf.*.  allow_extend_block() must recognise these
-    as valid custom-option targets in proto3.
+    is run without a namespace-rewriting variant (e.g. --force-proto2-for-editions
+    without --use-variant), extendees compiled against a descriptor.proto
+    under package proto2 use the .proto2.* package instead of
+    .google.protobuf.*.  allow_extend_block() must recognise these as valid
+    custom-option targets in proto3.
     """
     pb_dir = tmp_path / "pb"
     pb_dir.mkdir()
@@ -274,7 +274,7 @@ def test_A5_proto2_options_extendee_not_omitted(tmp_path: Path) -> None:
     out_dir.mkdir()
 
     # Simulate a proto3 file that extends .proto2.MethodOptions (as produced
-    # when compiling against net/proto2/proto/descriptor.proto without a
+    # when compiling against a descriptor.proto under package proto2 without a
     # namespace-rewriting variant).
     main = _minimal_proto3("a5_regression.proto")
     ext_field = main.extension.add()

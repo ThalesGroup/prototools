@@ -14,7 +14,7 @@ SPDX-License-Identifier: MIT
 
 ## Background
 
-When running reproto against a large corpus (e.g. a google3 checkout with
+When running reproto against a large corpus (with
 `--use-variant all`), thousands of warnings are emitted to stderr.  A sample
 run produced 10,309 lines for a corpus where only 24 distinct source files
 were missing from the `-I` path.  The explosion comes from per-field
@@ -175,8 +175,8 @@ re-parse with the pool is also skipped, preventing `ctx.pool` corruption.
 The warning groups conflicts by the file they originate from:
 
 ```
-Warning: file:src/proto/grpc/channelz/channelz.proto pruned —
-    duplicate symbols with file:third_party/grpc_proto/grpc/channelz/v1/channelz.proto
+Warning: file:app/proto/status.proto pruned —
+    duplicate symbols with file:vendor/status/v1/status.proto
     (42 symbols)
 ```
 
@@ -193,16 +193,16 @@ are loaded first as leaf files, so they always win over any user file
 redefining them — correctly.
 
 In the sample run: 42 `RuntimeWarning` lines for a single file pair
-(`channelz`), totalling 47 lines across 4 conflicting files.
+(`status`), totalling 47 lines across 4 conflicting files.
 
 ```
-RuntimeWarning: Conflict register for file "src/proto/grpc/channelz/channelz.proto":
-    grpc.channelz.v1.Channel is already defined in
-    "third_party/grpc_proto/grpc/channelz/v1/channelz.proto"
+RuntimeWarning: Conflict register for file "app/proto/status.proto":
+    status.v1.Channel is already defined in
+    "vendor/status/v1/status.proto"
 ...  (one line per conflicting symbol)
-'src/proto/grpc/channelz/channelz.proto': failed to render file options:
+'app/proto/status.proto': failed to render file options:
     TypeError: Couldn't build proto file into descriptor pool:
-    duplicate symbol 'grpc.channelz.v1.Channel'
+    duplicate symbol 'status.v1.Channel'
 ```
 
 The `RuntimeWarning` lines come from the protobuf library; they can be
@@ -223,7 +223,7 @@ three levels, from two separate call sites:
   exception propagates past the anomaly handler
 
 85 distinct unresolvable type names in the sample run.  The top offender
-(`.net_model_unm.proto.DrainType`) fired **2,147 times**, all traceable to
+(`.model.proto.DrainType`) fired **2,147 times**, all traceable to
 a single missing dependency.  Total: ~9,800 lines.
 
 The `TypeError: Couldn't build proto file into descriptor pool:` prefix is a
@@ -232,7 +232,7 @@ messages do not identify which `.proto` file the field belongs to.
 
 Note on FQDN format: in reproto's internal FQDN scheme, type descriptors are
 written as `desc:.some.package.TypeName` (prefix `desc:`).  The unresolvable
-name appearing in W4 messages (e.g. `.net_model_unm.proto.DrainType`) is the
+name appearing in W4 messages (e.g. `.model.proto.DrainType`) is the
 raw protobuf type reference, not a reproto FQDN — it has no `desc:` prefix.
 The squashed warning format should present it as-is, since that is what the
 user would search for.
@@ -245,7 +245,7 @@ underlying error names the missing file rather than a missing symbol:
 ```
 field 'name': failed to render options: TypeError: Couldn't build proto file
     into descriptor pool: Depends on file
-    'third_party/protoc_gen_validate/validate/validate.proto',
+    'vendor/validate/validate.proto',
     but it has not been loaded
 ```
 
@@ -255,7 +255,7 @@ lines.
 W4 and W5 originate at the same code locations but carry different actionable
 information:
 
-- W4 names a **type reference** (e.g. `.net_model_unm.proto.DrainType`) —
+- W4 names a **type reference** (e.g. `.model.proto.DrainType`) —
   useful for grepping the codebase to find where the type is defined.
 - W5 names a **file path** (e.g. `third_party/.../validate.proto`) — directly
   tells the user what to add to `-I`.
@@ -309,8 +309,8 @@ Reproto's own `"Could not add descriptor from '...' to pool: ..."` line is
 replaced with a single line per conflicting file pair:
 
 ```
-Warning: file:src/proto/grpc/channelz/channelz.proto conflicts with
-    file:third_party/grpc_proto/grpc/channelz/v1/channelz.proto (file skipped)
+Warning: file:app/proto/status.proto conflicts with
+    file:vendor/status/v1/status.proto (file skipped)
 ```
 
 **W4/W5:** Strip the `TypeError: Couldn't build proto file into descriptor
@@ -320,10 +320,10 @@ W4 and W5 keep distinct formats to preserve their different actionable content:
 ```
 # W4 — before
 field 'device_name': failed to render options: TypeError: Couldn't build proto
-    file into descriptor pool: couldn't resolve name '.net_model_unm.proto.DrainType'
+    file into descriptor pool: couldn't resolve name '.model.proto.DrainType'
 
 # W4 — after
-Warning: 'net/model/foo.proto' field 'device_name': unresolvable type '.net_model_unm.proto.DrainType'
+Warning: 'model/foo.proto' field 'device_name': unresolvable type '.model.proto.DrainType'
 
 # W5 — before
 field 'name': failed to render options: TypeError: Couldn't build proto file
@@ -331,8 +331,8 @@ field 'name': failed to render options: TypeError: Couldn't build proto file
     but it has not been loaded
 
 # W5 — after
-Warning: 'net/model/foo.proto' field 'name': missing file dependency
-    'third_party/protoc_gen_validate/validate/validate.proto'
+Warning: 'model/foo.proto' field 'name': missing file dependency
+    'vendor/validate/validate.proto'
 ```
 
 ### 2. Default mode (squashed)
@@ -367,19 +367,19 @@ that the flush block is visually distinct from immediate emissions:
 
 **W5 squashed:**
 ```
-Warning: missing dependency file:third_party/protoc_gen_validate/validate/validate.proto (341 occurrences)
+Warning: missing dependency file:vendor/validate/validate.proto (341 occurrences)
 Warning: missing dependency file:third_party/envoy/.../base.proto (164 occurrences)
 ```
 
 **W4 squashed:**
 ```
-Warning: unresolvable type .net_model_unm.proto.DrainType (2147 occurrences)
-Warning: unresolvable type .net_model_unm.proto.Size (613 occurrences)
+Warning: unresolvable type .model.proto.DrainType (2147 occurrences)
+Warning: unresolvable type .model.proto.Size (613 occurrences)
 ```
 
 **W6 squashed:**
 ```
-Warning: 'security/loas/.../thinmint_cert_extensions.proto' field 'message_set_extension': "Couldn't find Extension 43796541" (1 occurrence)
+Warning: 'certs/cert_extensions.proto' field 'message_set_extension': "Couldn't find Extension 1000001" (1 occurrence)
 ```
 
 After the squashed block, if any warnings had more than one occurrence, append:
@@ -414,8 +414,8 @@ rendering), in both squashed and detailed modes — there is no per-field
 explosion, so buffering adds no value:
 
 ```
-Warning: file:src/proto/grpc/channelz/channelz.proto pruned —
-    duplicate symbols with file:third_party/grpc_proto/grpc/channelz/v1/channelz.proto
+Warning: file:app/proto/status.proto pruned —
+    duplicate symbols with file:vendor/status/v1/status.proto
     (42 symbols)
 ```
 
@@ -464,8 +464,8 @@ and are printed raw to stderr as they occur.  In the sample run this
 produces ~60 unsorted lines interleaved mid-phase-7, e.g.:
 
 ```
-'security/loas/l2/internal/certs/thinmint_cert_extensions.proto' field 'message_set_extension': failed to render options: "Couldn't find Extension 43796541"
-'security/loas/l2/internal/certs/thinmint_cert_extensions.proto' field 'message_set_extension': failed to render options: "Couldn't find Extension 43673850"
+'certs/cert_extensions.proto' field 'message_set_extension': failed to render options: "Couldn't find Extension 1000001"
+'certs/cert_extensions.proto' field 'message_set_extension': failed to render options: "Couldn't find Extension 1000002"
 ...  (12 more lines for the same file)
 ```
 
@@ -479,7 +479,7 @@ per distinct `(file, error)` pair with an occurrence count.  In
 Squashed format:
 
 ```
-Warning: 'security/loas/l2/internal/certs/thinmint_cert_extensions.proto' field 'message_set_extension': Couldn't find Extension 43796541
+Warning: 'certs/cert_extensions.proto' field 'message_set_extension': Couldn't find Extension 1000001
 ```
 
 Since each `(file, field, extension-id)` combination is already unique, the
@@ -488,7 +488,7 @@ but not printed when it equals 1 (matching W1/W4/W5 behavior).
 
 #### 6.2 W5 warnings for importers of pruned files
 
-In the sample run, `file:privacy/rollouts/proto/request_context_enforceable_mode_config.proto`
+In the sample run, `file:rollout/mode_config.proto`
 generates **850 W5 occurrences** solely because it was pruned by
 duplicate-symbol detection.  Its importers render it as an orphan import
 and each one fires W5 when the file is not found in `pool_db`.
@@ -509,7 +509,7 @@ warning is never generated, not merely hidden in the summary.
 The line:
 
 ```
-  Skipping net/proto2/proto/descriptor.proto (use --emit-descriptor to include)
+  Skipping proto2/descriptor.proto (use --emit-descriptor to include)
 ```
 
 is indented with two leading spaces, making it look visually subordinate

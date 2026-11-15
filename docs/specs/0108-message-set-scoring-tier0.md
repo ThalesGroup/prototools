@@ -35,7 +35,7 @@ Spec 0100 already implements `MessageSet` expansion at **render time**
 (`prototext decode`), using a structural check
 (`message_set_wire_format == true && fields().count() == 0`) rather than any
 hardcoded FQDN — real-world descriptor sets use custom names
-(`proto2.bridge.MessageSet`, `boundary_proxy.MessageSet`), never the literal
+(`bridge.MessageSet`, `proxy.MessageSet`), never the literal
 name `google.protobuf.MessageSet`. Spec 0100 explicitly listed
 "Scoring-walk expansion of MessageSet" as a non-goal, deferred to future
 work.

@@ -134,7 +134,7 @@ def test_single_file_seed_arg_stops_at_first_root_no_warning(tmp_path: Path) -> 
 
 # ---------------------------------------------------------------------------
 # G3 — prune-by-path disambiguates a same-name collision across roots
-# (spec 0149; the google3 "~2"-duplicate scenario, with two physically
+# (spec 0149; the "~2"-duplicate scenario, with two physically
 # distinct paths that happen to parse to the same FileDescriptorProto.name)
 # ---------------------------------------------------------------------------
 

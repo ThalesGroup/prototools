@@ -122,7 +122,7 @@ The only reliable way to detect an explicit annotation is via `source_code_info`
 when `json_name` is explicitly set, a location entry with a path ending in `10`
 (the field number of `json_name` in `FieldDescriptorProto`) is present.
 However, `source_code_info` is optional and absent from most `.pb` files in
-practice — confirmed: none of the bp-protodb and google3 fixture files include
+practice — confirmed: none of the large corpora's fixture files include
 it.
 
 **Consequence for reproto:** comparison against the auto-derived value is the

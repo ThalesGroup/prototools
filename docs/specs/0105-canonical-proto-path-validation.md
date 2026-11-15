@@ -35,7 +35,7 @@ of the next FDP).
 Arbitrary non-protobuf binary content can coincidentally decode as valid
 wire-format bytes whose "name" field happens to end in `.proto`, despite
 being garbage.  A real-world example, found via `protoscan` on a customer
-MPM file, is a `name` field whose bytes decoded to:
+package file, is a `name` field whose bytes decoded to:
 
 ```
 /p>

@@ -22,12 +22,12 @@ const OPTIONS_NAMED_TEXT: &str = include_str!("fixtures/options_named.txtpb");
 const DELIMITED: &[u8] = include_bytes!("fixtures/delimited.pb");
 const DELIMITED_TEXT: &str = include_str!("fixtures/delimited.txtpb");
 /// The vendored `descriptor.proto` under `package proto2`, as
-/// `net/proto2/proto/descriptor.proto`, by protoc 36.2 (its release):
+/// `proto2/descriptor.proto`, by protoc 36.2 (its release):
 ///
 ///   sed 's/^package google\.protobuf;/package proto2;/' \
-///       vendor/descriptor.proto > $T/net/proto2/proto/descriptor.proto
+///       vendor/descriptor.proto > $T/proto2/descriptor.proto
 ///   protoc -I$T --descriptor_set_out=proto2_descriptor.pb \
-///       $T/net/proto2/proto/descriptor.proto
+///       $T/proto2/descriptor.proto
 const PROTO2_DESCRIPTOR: &[u8] = include_bytes!("fixtures/proto2_descriptor.pb");
 
 const LENIENT: Options = Options {
@@ -198,8 +198,8 @@ fn a_field_declared_nowhere_is_length_delimited_and_reported() {
 #[test]
 fn options_extend_the_inputs_own_descriptor_proto() {
     // descriptor.proto under another name and package, as a variant built
-    // on net/proto2/proto/descriptor.proto has it.
-    const PROTO2: &str = "net/proto2/proto/descriptor.proto";
+    // on proto2/descriptor.proto has it.
+    const PROTO2: &str = "proto2/descriptor.proto";
     let alone = descriptor_pool();
     let fdp_type = alone
         .get_message_by_name("google.protobuf.FileDescriptorProto")

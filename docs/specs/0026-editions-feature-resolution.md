@@ -62,7 +62,7 @@ repeated entries on each field of the `FeatureSet` message.
 Each `edition_defaults` entry is a `(edition: Edition, value: string)` pair
 where `value` is the name of the enum value (e.g. `"EXPLICIT"`, `"PACKED"`).
 
-Example (from `net/proto2/proto/descriptor.proto`):
+Example (from `proto2/descriptor.proto`):
 
 ```
 message FeatureSet {
