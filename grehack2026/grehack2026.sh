@@ -1,18 +1,17 @@
 # Remove the artifacts of a previous run (skip this step to keep them):
 [ -e capture/tap.pid ] && life-tap --out capture --stop; rm -rf capture life.desc life eve/server.log eve/server.yaml
 
-clear && header "Why prototools"
+clear && header "What this talk is about"
 # \
 #                                                                              \
 #                                                                              \
-# At S3NS we run a Trusted Partner Cloud: we audit Google's software           \
-# updates before they reach production.                                        \
+# This talk is about protobuf, Google's binary encoding for structured         \
+# data, and about prototools: four open-source tools (MIT) to take it          \
+# apart.                                                                       \
 #                                                                              \
-# Inside them, protobuf is everywhere — and it is opaque: the bytes alone      \
-# don't say what they mean.                                                    \
-#                                                                              \
-# So we built prototools, to dissect protobufs even when nobody hands us       \
-# the schema.                                                                  \
+# Why we care: at S3NS we operate a dedicated, SecNumCloud-qualified           \
+# Google Cloud region. We audit every software update Google sends us          \
+# before it reaches production — and protobuf is everywhere inside them.       \
 #                                                                              \
 # First, what a protobuf does — and doesn't — tell you.                        \
 #                                                                              \
@@ -21,8 +20,7 @@ clear && header "Why prototools"
 clear && header "Protobuf in a nutshell"
 # \
 #                                                                              \
-# • Compact binary encoding of structured data — Google's lingua franca:       \
-#   RPCs (gRPC), configs, logs, archives.                                      \
+# • Google's lingua franca: RPCs (gRPC), configs, logs, archives.              \
 #                                                                              \
 # • Not self-describing: the bytes carry field numbers and wire types,         \
 #   nothing more. No names, no types — a length-delimited field may be a       \
@@ -31,11 +29,13 @@ clear && header "Protobuf in a nutshell"
 # • Decoding needs the schema: a descriptor set (compiled .proto files)        \
 #   plus the root message type. Neither travels with the data.                 \
 #                                                                              \
-# • Generated code usually embeds its descriptors, for reflection — but        \
-#   lite builds strip them. Nothing guarantees they are there.                 \
+# • Generated code often embeds its descriptors: gRPC server reflection        \
+#   serves them to any client that asks what the server offers. Lite           \
+#   builds strip them.                                                         \
 #                                                                              \
-# • Decoders are lenient: many encodings decode to the same value, and         \
-#   unknown fields pass through silently.                                      \
+# • Non-canonical encodings (fields out of order, duplicated, over-long        \
+#   varints) are silently accepted by standard decoders: room to hide          \
+#   data.                                                                      \
 #                                                                              \
 # To read a protobuf you didn't write: recover its schema, and watch what      \
 # the decoder lets through. Here is prototools doing both, in a toy            \
@@ -43,22 +43,21 @@ clear && header "Protobuf in a nutshell"
 #                                                                              \
 
 
-clear && header "0. The cast" && picture images/characters.jpeg 22
+clear && header "0. The demo: the cast" && picture images/characters.jpeg 22
 # \
 #                                                                              \
-# Bob 🙂 — the player. Thinks he's just playing.                               \
+# Bob 🙂 — plays the Game of Life with software from Eve. Just a game.         \
 #                                                                              \
-# Eve 👩 — the server admin. Keep an eye on her.                               \
+# Eve 👩 — provides the game, and runs its server. Keep an eye on her.         \
 #                                                                              \
-# Alice 🕵️ — Bob's friend, savvy with cyber security.                          \
+# Alice 🕵️ — Bob's friend, a security pro.                                     \
 #                                                                              \
 
 clear && picture images/playing.jpeg 22
 # \
 #                                                                              \
-# Bob plays the Game of Life with software Eve provides: his client asks       \
-# her server for each next generation over gRPC — one pair of protobuf         \
-# messages per step.                                                           \
+# Bob's client asks Eve's server for each next generation over gRPC —          \
+# one pair of protobuf messages per step.                                      \
 #                                                                              \
 #    ┌──────────────┐        StepRequest         ┌──────────────┐              \
 #    │     Bob      │ ─────────────────────────▶ │     Eve      │              \
@@ -108,7 +107,7 @@ clear && picture images/tapping.jpeg 22
 # One capture per message; each saved in capture/.                             \
 
 
-life-tap -q --detach --out capture
+life-tap --detach --out capture
 
 # Look at the first captured request as raw bytes:
 hexdump -v -C capture/000001-request.pb | view
