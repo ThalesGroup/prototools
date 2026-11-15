@@ -12,6 +12,8 @@
 #[cfg(test)]
 include!(concat!(env!("OUT_DIR"), "/libpython.rs"));
 
+mod descriptor_text;
+
 use prototext_core::schema::SchemaError;
 use prototext_core::{schema, serialize};
 
@@ -322,6 +324,8 @@ fn prototext_codec_lib(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(format_as_text, m)?)?;
     m.add_function(wrap_pyfunction!(format_as_bytes, m)?)?;
     m.add_class::<SchemaHandle>()?;
+    m.add_function(wrap_pyfunction!(descriptor_text::parse_descriptor_text, m)?)?;
+    m.add_class::<descriptor_text::DescriptorPool>()?;
     Ok(())
 }
 

@@ -24,5 +24,3 @@ orphans:
   MessageOptions:         [features, feature_support, map_entry]
   MethodOptions:          [features, feature_support]
   ServiceOptions:         [features, feature_support]
-
-annotation_modules: []

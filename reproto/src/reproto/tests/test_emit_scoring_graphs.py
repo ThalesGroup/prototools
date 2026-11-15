@@ -505,7 +505,6 @@ def test_TC6_canonized_output_paths(tmp_path: Path) -> None:
         "    action: rewrite\n"
         "    to: .canonical.tutorial.\n"
         "orphans: {}\n"
-        "annotation_modules: []\n"
     )
 
     # The custom variant has no embedded .pb files, so --use-variant descriptor

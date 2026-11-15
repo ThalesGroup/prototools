@@ -10,8 +10,9 @@ Status: implemented
 Implemented in: 2026-11-14
 App: prototext-upb, reproto, protoback
 Refs: docs/specs/0424-protoback-reproto-in-rust-on-upb.md (S5: the
-      text-format parser and the group correction this specifies the
-      rules of)
+      text-format parser this specifies the rules of);
+      docs/specs/0427-text-input-parsed-with-the-inputs-schema.md (the
+      two passes that apply them, the second with the input's pool)
 
 ## Background
 
@@ -65,21 +66,20 @@ length-delimited) and a length byte, `\r`: the string came back as
 
 ## Specification
 
-- **S1. The parser frames every `N { … }` by number as a group,** and
-  `N: "…"` as length-delimited. What a field by number holds otherwise
-  (a varint, a fixed32 or fixed64 in hex) protoc prints without loss.
-- **S2. The correction**, once every file of the input is read, walks
-  each file read from text, with the type of each value in hand, from the
-  declarations of the input and of the pool. A group by number is:
+- **S1. A scalar by number keeps the wire type protoc printed:** a
+  decimal number a varint, `0x` and 8 or 16 hex digits a fixed32 or a
+  fixed64, `N: "…"` length-delimited. protoc prints these without loss.
+- **S2. `N { … }` by number is framed as the field or extension of that
+  number is declared** in the pool the text is parsed with, the input's
+  own once every file of it is read (spec 0427 S3):
 
-  | declared as | becomes |
+  | declared as | framed |
   |---|---|
-  | a message, length-delimited | length-delimited, its content corrected as that message |
-  | a message, delimited (a proto2 group, or editions' `message_encoding = DELIMITED`) | kept, its content corrected as that message |
+  | a message, length-delimited | length-delimited, its content parsed as that message |
+  | a message, delimited (a proto2 group, or editions' `message_encoding = DELIMITED`) | a group, its content parsed as that message |
   | a string or bytes | length-delimited, its content kept as it is, groups included (S3) |
   | nowhere | length-delimited, its content treated alike, recursively; warning W1 |
 
-  Everything else is copied byte for byte.
 - **S3. Inside a string or bytes value protoc printed as a message**, a
   group by number is kept a group. When it is empty, `N { }`, that is
   exact: protoc prints an empty length-delimited field as `N: ""`. When
@@ -136,7 +136,7 @@ choose between them by.
 ## Test plan
 
 1. googleapis printed by `protoc --decode` with `descriptor.proto` only,
-   read back and corrected: every file byte for byte, and one W2 per
+   read back in two passes (spec 0427): every file byte for byte, and one W2 per
    string protoc printed as a message with a non-empty group inside.
 2. The fixtures of `prototext-upb`: a message-valued option, an option
    declared delimited in its own file with a delimited field nested in
@@ -145,11 +145,13 @@ choose between them by.
 
 ## Measured outcome
 
-2026-11-14, `prototext-upb` (`text_format`, `delimited`).
+2026-11-14, `prototext-upb` (`text_format`). First implemented as a
+correction of the parsed bytes, after the fact; since spec 0427, the
+same rules applied while parsing, in its second pass.
 
 - googleapis printed by `protoc --decode` (protoc 34.1, `descriptor.proto`
-  only), 56 MB of text, read back and corrected: all 7,771 files byte for
-  byte, with 19 W2 and no W1. The first version, every `N { … }`
+  only), 56 MB of text, read back: all 7,771 files byte for byte, with 19
+  W2 and no W1, both ways. The first version, every `N { … }`
   length-delimited, corrupted 18 strings.
 - On the same text, the parser and Python's `text_format` give the same
   bytes for every field Python knows; Python drops the fields by number.

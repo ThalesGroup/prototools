@@ -181,14 +181,12 @@ from .phases import (
     _phase7_output,
     _phase_build_schema_db,
     _phase_emit_scoring_graphs,
-    import_annotations,
 )
 from .topology import Topology
 
 __all__ = [
     "reproto",
     "matches_any_pattern",
-    "import_annotations",
     "DescriptorProtoMissingError",
     "DescriptorProtoUnresolvedError",
     "DescriptorProtoHasTargetsError",

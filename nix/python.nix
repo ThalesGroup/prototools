@@ -202,6 +202,27 @@ let
     touch $out
   '';
 
+  # The same suite, every binary input given as protoc's text form
+  # (spec 0427): the text path must agree with the binary one.
+  reprotoTestsViaText = let
+    # Named, not looked up on PATH: another package's bare python may
+    # come first there.
+    testPython = pythonPkgs.python.withPackages (_: reprotoTestDeps);
+  in pkgs.runCommand "reproto-tests-via-text" {
+    strictDeps = true;
+    nativeBuildInputs = [
+      pkgs.protobuf
+      pkgs.buf
+      prototext
+      testPython
+    ];
+  } ''
+    export PYTHONPATH="${reprotoSrc}/src"
+    export REPROTO="${testPython}/bin/python3 -m reproto.tests.via_text"
+    pytest -p no:cacheprovider ${reprotoSrc}/src/reproto/tests/ -x
+    touch $out
+  '';
+
   # Tests for fdp_scan_lib — run against the installed extension (no PYTHONPATH
   # override needed; the installed package is already on the Python path via
   # withPackages).
@@ -638,6 +659,7 @@ in {
     reprotoTestDeps
     reproto
     reprotoTests
+    reprotoTestsViaText
     fdpScanTests
     prototextCodecTests
     pythonLint

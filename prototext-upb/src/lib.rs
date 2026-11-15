@@ -20,10 +20,10 @@
 //! [`Pool::add_file`] takes a write lock, and every lookup by name or
 //! number on the pool a read lock.
 
-pub mod delimited;
 pub mod descriptor;
 pub mod descriptor_access;
 mod ffi;
+mod mend;
 mod message;
 mod set;
 pub mod text_format;
@@ -118,6 +118,10 @@ impl PoolInner {
     }
 }
 
+/// The vendored `descriptor.proto` (`vendor/VERSION`), as a serialized
+/// `FileDescriptorSet` of that one file.
+pub const DESCRIPTOR_SET: &[u8] = include_bytes!("../vendor/descriptor.pb");
+
 /// A descriptor pool: the definitions of the files added to it.
 #[derive(Clone)]
 pub struct Pool {
@@ -182,6 +186,16 @@ impl Pool {
                 generation: AtomicU64::new(0),
             }),
         }
+    }
+
+    /// A pool with the vendored `descriptor.proto` ([`DESCRIPTOR_SET`])
+    /// alone: what reads a descriptor set, binary or text, knowing none of
+    /// the extensions it declares.
+    pub fn with_descriptor_proto() -> Pool {
+        let pool = Pool::new();
+        let report = pool.load_set(DESCRIPTOR_SET);
+        debug_assert!(report.skipped.is_empty() && report.set_error.is_none());
+        pool
     }
 
     fn raw(&self) -> *mut ffi::DefPool {

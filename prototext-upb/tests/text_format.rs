@@ -2,20 +2,32 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! The text format, parsed into the binary format, and protoc's text of
-//! unknown fields re-framed (spec 0424 S5, spec 0426).
+//! The text format, parsed into the binary format, and descriptor sets
+//! read in two passes, protoc's text of unknown fields framed by the
+//! input's declarations (spec 0424 S5, spec 0426, spec 0427).
 
-use prototext_upb::delimited::{correct, Declarations, Declared, Warning};
-use prototext_upb::text_format::{parse, Options};
+use prototext_upb::text_format::{
+    descriptor_type, load_input, parse, parse_reporting, Options, Warning,
+};
 use prototext_upb::{DynamicMessage, Message, Pool, Value};
 
 /// `tests/fixtures/options.proto` and `descriptor.proto`, and their text
 /// form as `protoc --decode` prints it: the custom options by number.
 const OPTIONS: &[u8] = include_bytes!("fixtures/options.pb");
 const OPTIONS_TEXT: &str = include_str!("fixtures/options.txtpb");
+/// The same set printed with `options.proto`: the custom options by name.
+const OPTIONS_NAMED_TEXT: &str = include_str!("fixtures/options_named.txtpb");
 /// Custom options protoc prints as `N { … }`, declared in their own file.
 const DELIMITED: &[u8] = include_bytes!("fixtures/delimited.pb");
 const DELIMITED_TEXT: &str = include_str!("fixtures/delimited.txtpb");
+/// The vendored `descriptor.proto` under `package proto2`, as
+/// `net/proto2/proto/descriptor.proto`, by protoc 36.2 (its release):
+///
+///   sed 's/^package google\.protobuf;/package proto2;/' \
+///       vendor/descriptor.proto > $T/net/proto2/proto/descriptor.proto
+///   protoc -I$T --descriptor_set_out=proto2_descriptor.pb \
+///       $T/net/proto2/proto/descriptor.proto
+const PROTO2_DESCRIPTOR: &[u8] = include_bytes!("fixtures/proto2_descriptor.pb");
 
 const LENIENT: Options = Options {
     allow_unknown_field: true,
@@ -26,6 +38,7 @@ const LENIENT: Options = Options {
 const DESCRIPTOR: &[u8] = include_bytes!("../vendor/descriptor.pb");
 
 const MESSAGE_OPTIONS: &str = "google.protobuf.MessageOptions";
+const DESCRIPTOR_FILE: &str = "google/protobuf/descriptor.proto";
 
 /// A pool with only `descriptor.proto`: what reads a descriptor set, and
 /// knows none of the extensions the sets parsed declare.
@@ -72,46 +85,51 @@ fn set_of(files: &[Vec<u8>]) -> Vec<u8> {
     out
 }
 
-/// Parse a set's text, then correct each file with what all of them
-/// declare, as a loader does: the set, and the warnings.
-fn parse_and_correct(pool: &Pool, text: &str) -> (Vec<u8>, Vec<Warning>) {
-    let parsed = parse(&set_type(pool), text, LENIENT).unwrap();
-    let files = files(pool, &parsed);
-    let mut decls = Declarations::new();
-    for f in &files {
-        decls.add_file(pool, f).unwrap();
-    }
-    let mut warnings = Vec::new();
-    let corrected: Vec<Vec<u8>> = files
-        .iter()
-        .map(|f| {
-            let c = correct(pool, f, &decls);
-            warnings.extend(c.warnings);
-            c.bytes
-        })
-        .collect();
-    (set_of(&corrected), warnings)
+/// A set's text read as a loader does (spec 0427): with descriptor.proto
+/// alone, then again with the pool of the files the first pass gave. The
+/// set, and the warnings of the second pass.
+fn two_passes(text: &str) -> (Vec<u8>, Vec<Warning>) {
+    let alone = descriptor_pool();
+    let first = parse(&set_type(&alone), text, LENIENT).unwrap();
+    let (pool, report) = load_input(&first, DESCRIPTOR_FILE);
+    assert!(report.skipped.is_empty(), "{:?}", report.skipped);
+    let def = descriptor_type(&pool, DESCRIPTOR_FILE, "FileDescriptorSet").unwrap();
+    let parsed = parse_reporting(&def, text, LENIENT).unwrap();
+    (parsed.bytes, parsed.warnings)
 }
 
 // ── Back to the binary set ──────────────────────────────────────────────────
 
 #[test]
 fn protocs_text_of_a_set_parses_back_to_the_set_custom_options_included() {
-    let pool = descriptor_pool();
-    let (bytes, warnings) = parse_and_correct(&pool, OPTIONS_TEXT);
+    let (bytes, warnings) = two_passes(OPTIONS_TEXT);
+    assert_eq!(bytes, OPTIONS);
+    assert!(warnings.is_empty(), "{warnings:?}");
+}
+
+#[test]
+fn options_by_name_resolve_in_the_inputs_own_pool() {
+    // descriptor.proto alone knows none of the names: each one skipped,
+    // and said so.
+    let alone = descriptor_pool();
+    let first = parse_reporting(&set_type(&alone), OPTIONS_NAMED_TEXT, LENIENT).unwrap();
+    assert_ne!(first.bytes, OPTIONS);
+    assert!(first
+        .warnings
+        .iter()
+        .all(|w| matches!(w, Warning::UnknownExtension { .. })));
+    assert!(!first.warnings.is_empty());
+    // The second pass: every name declared in the input.
+    let (bytes, warnings) = two_passes(OPTIONS_NAMED_TEXT);
     assert_eq!(bytes, OPTIONS);
     assert!(warnings.is_empty(), "{warnings:?}");
 }
 
 #[test]
 fn values_protoc_printed_alike_come_back_as_declared() {
-    let pool = descriptor_pool();
-    // Parsed alone, every `N { … }` is a group: not the set.
-    let parsed = parse(&set_type(&pool), DELIMITED_TEXT, LENIENT).unwrap();
-    assert_ne!(parsed, DELIMITED);
-    // Corrected: the delimited value kept a group, its nested delimited
-    // field too, the message value length-delimited, both strings exact.
-    let (bytes, warnings) = parse_and_correct(&pool, DELIMITED_TEXT);
+    // The delimited value a group, its nested delimited field too, the
+    // message value length-delimited, both strings exact.
+    let (bytes, warnings) = two_passes(DELIMITED_TEXT);
     assert_eq!(bytes, DELIMITED);
     // A guess for "shoppingProduct" (a group inside, not empty), none for
     // "UrlList" (only an empty one, which only a group can be).
@@ -125,48 +143,11 @@ fn values_protoc_printed_alike_come_back_as_declared() {
 }
 
 #[test]
-fn the_group_rule_agrees_with_upb() {
-    // upb's resolution of the same declarations: the value of as_group is
-    // framed as a group, of as_message length-delimited.
-    let pool = Pool::new();
-    assert!(pool.load_set(DELIMITED).skipped.is_empty());
-    let group = pool.get_extension_by_name("dlm.as_group").unwrap();
-    let message = pool.get_extension_by_name("dlm.as_message").unwrap();
-    let inner = pool
-        .get_message_by_name("dlm.Value")
-        .unwrap()
-        .get_field(2)
-        .unwrap();
-    assert!(group.is_group() && !message.is_group() && inner.is_group());
-    // And the table, read from the files alone, says the same.
-    let mut decls = Declarations::new();
-    let alone = descriptor_pool();
-    for f in files(&pool, DELIMITED) {
-        decls.add_file(&alone, &f).unwrap();
-    }
-    let delimited = |t: &str, n| match decls.field(&alone, t, n) {
-        Some(Declared::Message { delimited, .. }) => delimited,
-        d => panic!("{d:?}"),
-    };
-    assert!(delimited(MESSAGE_OPTIONS, 50001));
-    assert!(!delimited(MESSAGE_OPTIONS, 50002));
-    assert!(delimited("dlm.Value", 2));
-    assert_eq!(
-        decls.field(&alone, MESSAGE_OPTIONS, 50003),
-        Some(Declared::Bytes)
-    );
-}
-
-#[test]
 fn a_field_declared_nowhere_is_length_delimited_and_reported() {
-    let pool = descriptor_pool();
-    let parsed = parse(&set_type(&pool), DELIMITED_TEXT, LENIENT).unwrap();
-    // The declarations of descriptor.proto only: not delimited.proto's.
-    let files = files(&pool, &parsed);
-    let mut decls = Declarations::new();
-    decls.add_file(&pool, &files[0]).unwrap();
-    let corrected = correct(&pool, &files[1], &decls);
-    let numbers: Vec<u32> = corrected
+    // descriptor.proto alone: delimited.proto's declarations unknown.
+    let alone = descriptor_pool();
+    let parsed = parse_reporting(&set_type(&alone), DELIMITED_TEXT, LENIENT).unwrap();
+    let numbers: Vec<u32> = parsed
         .warnings
         .iter()
         .map(|w| match w {
@@ -188,7 +169,7 @@ fn a_field_declared_nowhere_is_length_delimited_and_reported() {
     let fdp = full
         .get_message_by_name("google.protobuf.FileDescriptorProto")
         .unwrap();
-    let file = DynamicMessage::decode(&fdp, &corrected.bytes).unwrap();
+    let file = DynamicMessage::decode(&fdp, &files(&alone, &parsed.bytes)[1]).unwrap();
     let holder = prototext_upb::descriptor_access::FileDescriptorProto(file.as_ref())
         .message_type()
         .into_iter()
@@ -203,18 +184,37 @@ fn a_field_declared_nowhere_is_length_delimited_and_reported() {
 }
 
 #[test]
-fn a_file_needing_no_correction_is_copied_byte_for_byte() {
-    let pool = descriptor_pool();
-    let mut decls = Declarations::new();
-    let files = files(&pool, OPTIONS);
-    for f in &files {
-        decls.add_file(&pool, f).unwrap();
-    }
-    for f in &files {
-        let c = correct(&pool, f, &decls);
-        assert_eq!(&c.bytes, f);
-        assert!(c.warnings.is_empty());
-    }
+fn options_extend_the_inputs_own_descriptor_proto() {
+    // descriptor.proto under another name and package, as a variant built
+    // on net/proto2/proto/descriptor.proto has it.
+    const PROTO2: &str = "net/proto2/proto/descriptor.proto";
+    let alone = descriptor_pool();
+    let fdp_type = alone
+        .get_message_by_name("google.protobuf.FileDescriptorProto")
+        .unwrap();
+    let renamed = files(&alone, PROTO2_DESCRIPTOR).remove(0);
+    let declaring = parse(
+        &fdp_type,
+        &format!(
+            r#"name: "use.proto" package: "u" dependency: "{PROTO2}"
+               extension {{ name: "tag" number: 50001 label: LABEL_OPTIONAL
+                            type: TYPE_STRING extendee: ".proto2.MessageOptions" }}"#
+        ),
+        LENIENT,
+    )
+    .unwrap();
+    let set = set_of(&[renamed, declaring]);
+    let (pool, report) = load_input(&set, PROTO2);
+    assert!(report.skipped.is_empty(), "{:?}", report.skipped);
+    assert!(pool.file(DESCRIPTOR_FILE).is_none());
+    let def = descriptor_type(&pool, PROTO2, "FileDescriptorProto").unwrap();
+    assert_eq!(def.full_name(), "proto2.FileDescriptorProto");
+    let message = r#"name: "m.proto" message_type { name: "M" options { OPTION } }"#;
+    let by_name =
+        parse_reporting(&def, &message.replace("OPTION", r#"[u.tag]: "t""#), LENIENT).unwrap();
+    assert!(by_name.warnings.is_empty(), "{:?}", by_name.warnings);
+    let by_number = parse(&def, &message.replace("OPTION", r#"50001: "t""#), LENIENT).unwrap();
+    assert_eq!(by_name.bytes, by_number);
 }
 
 // ── The grammar ─────────────────────────────────────────────────────────────
@@ -457,7 +457,7 @@ fn fields_by_number_keep_their_wire_types() {
             0x55, 1, 0, 0, 0, // 10: fixed32
             0x59, 2, 0, 0, 0, 0, 0, 0, 0, // 11: fixed64
             0x62, 1, b'b', // 12: length-delimited
-            0x6b, 0x08, 0x01, 0x6c, // 13: a group, until the correction
+            0x6a, 2, 0x08, 0x01, // 13: declared nowhere, length-delimited
         ]
     );
     // A known field given by number is read by its type.
@@ -494,8 +494,24 @@ fn a_large_sets_text_parses_back_to_the_set() {
     };
     let set = std::fs::read(set).unwrap();
     let text = std::fs::read_to_string(text).unwrap();
-    let pool = descriptor_pool();
-    let (bytes, warnings) = parse_and_correct(&pool, &text);
+    // Each stage timed, for the spec's measured outcome (0427).
+    let t = std::time::Instant::now();
+    let alone = descriptor_pool();
+    let first = parse(&set_type(&alone), &text, LENIENT).unwrap();
+    let t1 = t.elapsed();
+    let (pool, report) = load_input(&first, DESCRIPTOR_FILE);
+    assert!(report.skipped.is_empty(), "{:?}", report.skipped);
+    let t2 = t.elapsed();
+    let def = descriptor_type(&pool, DESCRIPTOR_FILE, "FileDescriptorSet").unwrap();
+    let parsed = parse_reporting(&def, &text, LENIENT).unwrap();
+    let t3 = t.elapsed();
+    eprintln!(
+        "first pass {:?}, pool {:?}, second pass {:?}",
+        t1,
+        t2 - t1,
+        t3 - t2
+    );
+    let (bytes, warnings) = (parsed.bytes, parsed.warnings);
     // Every option is declared in the set: the only guesses are strings
     // protoc printed as messages (spec 0426 S3).
     assert!(warnings
@@ -506,4 +522,67 @@ fn a_large_sets_text_parses_back_to_the_set() {
         std::fs::write(out, &bytes).unwrap();
     }
     assert!(bytes == set, "the text does not parse back to the set");
+}
+
+#[test]
+fn a_descriptor_proto_without_the_descriptor_types_falls_back_to_the_vendored_one() {
+    // A variant's descriptor.proto may declare the options messages alone
+    // (reproto's spec 0159 tests): no FileDescriptorProto to parse with.
+    let alone = descriptor_pool();
+    let fdp_type = alone
+        .get_message_by_name("google.protobuf.FileDescriptorProto")
+        .unwrap();
+    let minimal = parse(
+        &fdp_type,
+        r#"name: "google/protobuf/descriptor.proto" package: "google.protobuf"
+           message_type { name: "MessageOptions" }"#,
+        LENIENT,
+    )
+    .unwrap();
+    let (pool, report) = load_input(&set_of(&[minimal]), DESCRIPTOR_FILE);
+    assert!(report.skipped.is_empty(), "{:?}", report.skipped);
+    let def = descriptor_type(&pool, DESCRIPTOR_FILE, "FileDescriptorProto").unwrap();
+    assert_eq!(def.full_name(), "google.protobuf.FileDescriptorProto");
+    let parsed = parse(&def, r#"name: "a.proto""#, LENIENT).unwrap();
+    assert_eq!(parsed, b"\x0a\x07a.proto");
+}
+
+#[test]
+fn a_file_whose_import_is_missing_still_declares_its_options() {
+    // delimited.proto, importing a file the input does not have and using
+    // a type of it: upb refuses it as it is. Mended, without the import
+    // and the field, it declares its options to the second pass.
+    let alone = descriptor_pool();
+    let mut files = files(&alone, DELIMITED);
+    let descriptor_type_ = alone
+        .get_message_by_name("google.protobuf.DescriptorProto")
+        .unwrap();
+    let uses_gone = parse(
+        &descriptor_type_,
+        r#"name: "UsesGone"
+           field { name: "g" number: 1 label: LABEL_OPTIONAL
+                   type: TYPE_MESSAGE type_name: ".gone.G" }
+           field { name: "kept" number: 2 label: LABEL_OPTIONAL type: TYPE_INT32 }"#,
+        LENIENT,
+    )
+    .unwrap();
+    let mut dependency = b"\x1a\x0agone.proto".to_vec();
+    dependency.push(0x22);
+    dependency.push(uses_gone.len() as u8);
+    dependency.extend(&uses_gone);
+    files[1].extend(dependency);
+    let set = set_of(&files);
+    assert!(!Pool::new().load_set(&set).skipped.is_empty());
+    let (pool, report) = load_input(&set, DESCRIPTOR_FILE);
+    assert!(report.skipped.is_empty(), "{:?}", report.skipped);
+    let mended = pool.get_message_by_name("dlm.UsesGone").unwrap();
+    assert!(mended.get_field(1).is_none() && mended.get_field(2).is_some());
+    assert!(pool
+        .get_extension_by_name("dlm.as_group")
+        .unwrap()
+        .is_group());
+    let def = descriptor_type(&pool, DESCRIPTOR_FILE, "FileDescriptorSet").unwrap();
+    let parsed = parse_reporting(&def, DELIMITED_TEXT, LENIENT).unwrap();
+    assert_eq!(parsed.bytes, DELIMITED);
+    assert_eq!(parsed.warnings.len(), 1, "{:?}", parsed.warnings);
 }

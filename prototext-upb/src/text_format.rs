@@ -14,9 +14,12 @@
 //! number is a varint, `0x` with 8 or 16 hex digits a fixed32 or a fixed64,
 //! a string a length-delimited field, `N { … }` a group of the same kind of
 //! fields. protoc prints that way a group, a length-delimited message, and
-//! a string whose bytes happen to read as a message: once the input's
-//! declarations are known, [`delimited::correct`](crate::delimited::correct)
-//! re-frames each one (spec 0426).
+//! a string whose bytes happen to read as a message. The parser frames
+//! each one by the declaration of its number in the pool it parses with,
+//! and takes the likely framing, with a [`Warning`], where there is none
+//! (spec 0426). A descriptor set is read in two passes (spec 0427): with
+//! `descriptor.proto` alone, to learn its files, then with the pool
+//! [`load_input`] builds from them, which declares their options.
 //!
 //! **Unknown names** (a field name, or an `[extension]`, the type does not
 //! have) are skipped, value and all, when [`Options`] allows it, and are
@@ -25,7 +28,7 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use crate::{Cardinality, Field, Kind, Message};
+use crate::{Cardinality, Field, Kind, LoadReport, Message, Pool, DESCRIPTOR_SET};
 
 /// What to do with names the type does not know.
 #[derive(Debug, Clone, Copy, Default)]
@@ -52,21 +55,167 @@ impl fmt::Display for TextError {
 
 impl std::error::Error for TextError {}
 
+/// What the pool could not settle (spec 0426 S4, spec 0427 S4), in a
+/// message of type `message_type`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Warning {
+    /// W1: `N { … }` by number, declared nowhere; read as
+    /// length-delimited.
+    Undeclared { message_type: String, number: u32 },
+    /// W2: a string or bytes protoc printed as a message; rebuilt taking
+    /// its sub-fields for groups.
+    StringAsMessage { message_type: String, number: u32 },
+    /// W3: an `[extension]` declared nowhere; skipped.
+    UnknownExtension { message_type: String, name: String },
+}
+
+impl fmt::Display for Warning {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Warning::Undeclared {
+                message_type,
+                number,
+            } => write!(
+                f,
+                "field {number} of {message_type} is declared nowhere in the input: \
+                 read as length-delimited"
+            ),
+            Warning::StringAsMessage {
+                message_type,
+                number,
+            } => write!(
+                f,
+                "field {number} of {message_type} is a string protoc printed as a \
+                 message: rebuilt taking its sub-fields for groups (decode the text \
+                 with the files that declare the options to avoid it)"
+            ),
+            Warning::UnknownExtension { message_type, name } => write!(
+                f,
+                "extension [{name}] of {message_type} is declared nowhere in the input: \
+                 skipped"
+            ),
+        }
+    }
+}
+
+/// What [`parse_reporting`] returns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Parsed {
+    pub bytes: Vec<u8>,
+    pub warnings: Vec<Warning>,
+}
+
 /// Parse `text` as a message of type `def`, into the binary format.
 pub fn parse(def: &Message, text: &str, options: Options) -> Result<Vec<u8>, TextError> {
+    parse_reporting(def, text, options).map(|p| p.bytes)
+}
+
+/// [`parse`], with what the pool could not settle.
+pub fn parse_reporting(def: &Message, text: &str, options: Options) -> Result<Parsed, TextError> {
     let tokens = lex(text)?;
     let mut p = Parser {
         tokens,
         pos: 0,
         options,
         end: end_position(text),
+        warnings: Vec::new(),
     };
     let mut frame = Frame::default();
     p.fields(def, &mut frame, None)?;
     if p.pos < p.tokens.len() {
         return Err(p.error_here("unexpected token"));
     }
-    Ok(frame.finish())
+    Ok(Parsed {
+        bytes: frame.finish(),
+        warnings: p.warnings,
+    })
+}
+
+/// The pool of an input's files (spec 0427 S2): `set`, a serialized
+/// `FileDescriptorSet`, loaded imports first, after the vendored
+/// `descriptor.proto` when `set` has no file named `descriptor_file`.
+pub fn load_input(set: &[u8], descriptor_file: &str) -> (Pool, LoadReport) {
+    let pool = Pool::new();
+    let has_descriptor = crate::set::split_set(set).is_ok_and(|files| {
+        files
+            .iter()
+            .any(|f| crate::set::name_and_imports(f).is_ok_and(|(name, _)| name == descriptor_file))
+    });
+    if !has_descriptor {
+        pool.load_set(DESCRIPTOR_SET);
+    }
+    let mut report = pool.load_set(set);
+    if !report.skipped.is_empty() {
+        retry_mended(&pool, set, &mut report);
+    }
+    (pool, report)
+}
+
+/// Retry each file `pool` refused, mended ([`crate::mend`]), imports
+/// first: a file is retried once none of its imports is still waiting,
+/// or, in a cycle, when nothing else is. What still fails stays in
+/// `report.skipped`, with the reason it first failed.
+fn retry_mended(pool: &Pool, set: &[u8], report: &mut LoadReport) {
+    let Ok(files) = crate::set::split_set(set) else {
+        return;
+    };
+    let mut by_name: HashMap<String, (&[u8], Vec<String>)> = HashMap::new();
+    for f in files {
+        if let Ok((name, imports)) = crate::set::name_and_imports(f) {
+            by_name.entry(name).or_insert((f, imports));
+        }
+    }
+    let mut pending: Vec<String> = report
+        .skipped
+        .iter()
+        .map(|(name, _)| name.clone())
+        .filter(|name| by_name.contains_key(name))
+        .collect();
+    while !pending.is_empty() {
+        let waiting = |name: &String| {
+            by_name[name]
+                .1
+                .iter()
+                .any(|i| i != name && pending.contains(i))
+        };
+        let mut ready: Vec<String> = pending.iter().filter(|n| !waiting(n)).cloned().collect();
+        if ready.is_empty() {
+            ready = pending.clone();
+        }
+        for name in &ready {
+            let loaded = crate::mend::mend(pool, by_name[name].0)
+                .is_some_and(|mended| pool.add_file(&mended).is_ok());
+            if loaded {
+                report.skipped.retain(|(n, _)| n != name);
+                report.loaded.push(name.clone());
+            }
+        }
+        pending.retain(|n| !ready.contains(n));
+    }
+}
+
+/// Message `name` (`FileDescriptorProto`, `FileDescriptorSet`) of the
+/// package of `pool`'s `descriptor_file` (spec 0427 S3): `proto2.…` for
+/// `net/proto2/proto/descriptor.proto`, `google.protobuf.…` when the pool
+/// has no such file. When the pool does not declare it (a variant's
+/// `descriptor.proto` may declare the options messages alone), the
+/// vendored `descriptor.proto`'s: its text then parses, its options
+/// unresolved. `None` only for a `name` neither declares.
+pub fn descriptor_type(pool: &Pool, descriptor_file: &str, name: &str) -> Option<Message> {
+    let package = pool
+        .file(descriptor_file)
+        .map_or("google.protobuf".to_string(), |f| {
+            f.package_name().to_string()
+        });
+    pool.get_message_by_name(&format!("{package}.{name}"))
+        .or_else(|| pool.get_message_by_name(&format!("google.protobuf.{name}")))
+        .or_else(|| vendored().get_message_by_name(&format!("google.protobuf.{name}")))
+}
+
+/// The vendored `descriptor.proto`, alone.
+fn vendored() -> &'static Pool {
+    static POOL: std::sync::OnceLock<Pool> = std::sync::OnceLock::new();
+    POOL.get_or_init(Pool::with_descriptor_proto)
 }
 
 // ── Lexer ───────────────────────────────────────────────────────────────────
@@ -378,6 +527,17 @@ struct Parser {
     pos: usize,
     options: Options,
     end: (usize, usize),
+    warnings: Vec<Warning>,
+}
+
+/// How `N { … }` is framed inside a value of no known type.
+#[derive(Clone, Copy)]
+enum Raw {
+    /// Inside a string protoc printed as a message: as protoc read it, a
+    /// group (spec 0426 S3).
+    Group,
+    /// Inside a value declared nowhere: length-delimited (0426 S2).
+    Len,
 }
 
 /// A scalar value as written: its sign and token.
@@ -488,7 +648,13 @@ impl Parser {
                 .filter(|e| e.containing_message() == *def);
             return match ext {
                 Some(f) => self.known_field(&f, frame, start),
-                None if self.options.allow_unknown_extension => self.skip_field_value(),
+                None if self.options.allow_unknown_extension => {
+                    self.warnings.push(Warning::UnknownExtension {
+                        message_type: def.full_name().to_string(),
+                        name: name.trim_start_matches('.').to_string(),
+                    });
+                    self.skip_field_value()
+                }
                 None => Err(self.error_at(
                     start,
                     format!("extension \"{name}\" of \"{}\" not found", def.full_name()),
@@ -500,15 +666,10 @@ impl Parser {
                 self.pos += 1;
                 let number = parse_decimal_u32(&n)
                     .ok_or_else(|| self.error_at(start, "malformed field number"))?;
-                match def.get_field(number) {
-                    Some(f) => self.known_field(&f, frame, start),
-                    None => {
-                        let mut out = Vec::new();
-                        self.unknown_field(number, &mut out)?;
-                        frame.raw(out);
-                        Ok(())
-                    }
-                }
+                let mut out = Vec::new();
+                self.by_number(def, number, &mut out)?;
+                frame.raw(out);
+                Ok(())
             }
             Some(Tok::Ident(name)) => {
                 self.pos += 1;
@@ -698,33 +859,113 @@ impl Parser {
         Ok(Written { negative, tok })
     }
 
-    /// A field the type does not have, by number: kept as protoc printed
-    /// it (the module's documentation), `N { … }` as a group.
-    fn unknown_field(&mut self, number: u32, out: &mut Vec<u8>) -> Result<(), TextError> {
-        if self.at_message_start() || (self.try_sym(':') && self.at_message_start()) {
-            let end = self.open()?;
-            put_tag(out, number, WT_START_GROUP);
-            loop {
-                if self.try_sym(end) {
-                    break;
-                }
-                let start = self.pos;
-                let inner = match self.peek() {
-                    Some(Tok::Int(n)) => parse_decimal_u32(n),
-                    _ => None,
-                }
-                .ok_or_else(|| {
-                    self.error_at(start, "expected a field number in a value of unknown type")
-                })?;
-                self.pos += 1;
-                self.unknown_field(inner, out)?;
-                if !self.try_sym(',') {
-                    self.try_sym(';');
+    /// Whether `N` is followed by a message, `{ … }` or `: { … }`, rather
+    /// than by a scalar; the `:` is consumed.
+    fn message_follows(&mut self) -> bool {
+        self.at_message_start() || (self.try_sym(':') && self.at_message_start())
+    }
+
+    /// Field `number` of a message of type `def`, given by number (spec
+    /// 0426, 0427 S5): a scalar as protoc printed it, `N { … }` framed as
+    /// the field or extension of that number is declared in the pool.
+    fn by_number(
+        &mut self,
+        def: &Message,
+        number: u32,
+        out: &mut Vec<u8>,
+    ) -> Result<(), TextError> {
+        if !self.message_follows() {
+            return self.wire_scalar(number, out);
+        }
+        let end = self.open()?;
+        let declared = def.get_field(number).or_else(|| def.get_extension(number));
+        let message_type = || def.full_name().to_string();
+        match declared.as_ref().map(|f| (f, f.kind())) {
+            Some((f, Kind::Message(sub))) => {
+                let mut inner = Frame::default();
+                self.fields(&sub, &mut inner, Some(end))?;
+                let payload = inner.finish();
+                if f.is_group() {
+                    put_tag(out, number, WT_START_GROUP);
+                    out.extend(payload);
+                    put_tag(out, number, WT_END_GROUP);
+                } else {
+                    put_len(out, number, &payload);
                 }
             }
-            put_tag(out, number, WT_END_GROUP);
-            return Ok(());
+            Some((_, Kind::String | Kind::Bytes)) => {
+                let (body, nested) = self.raw_body(end, Raw::Group)?;
+                if nested {
+                    self.warnings.push(Warning::StringAsMessage {
+                        message_type: message_type(),
+                        number,
+                    });
+                }
+                put_len(out, number, &body);
+            }
+            Some(_) => {
+                // A scalar printed as a message: kept as protoc read it.
+                let (body, _) = self.raw_body(end, Raw::Group)?;
+                put_tag(out, number, WT_START_GROUP);
+                out.extend(body);
+                put_tag(out, number, WT_END_GROUP);
+            }
+            None => {
+                self.warnings.push(Warning::Undeclared {
+                    message_type: message_type(),
+                    number,
+                });
+                let (body, _) = self.raw_body(end, Raw::Len)?;
+                put_len(out, number, &body);
+            }
         }
+        Ok(())
+    }
+
+    /// Fields by number until `end`, in a value of no known type, `N { … }`
+    /// framed as `raw` says: the bytes, and whether a non-empty group is
+    /// among them, at any depth.
+    fn raw_body(&mut self, end: char, raw: Raw) -> Result<(Vec<u8>, bool), TextError> {
+        let mut out = Vec::new();
+        let mut nested = false;
+        loop {
+            if self.try_sym(end) {
+                return Ok((out, nested));
+            }
+            let start = self.pos;
+            let number = match self.peek() {
+                Some(Tok::Int(n)) => parse_decimal_u32(n),
+                _ => None,
+            }
+            .ok_or_else(|| {
+                self.error_at(start, "expected a field number in a value of unknown type")
+            })?;
+            self.pos += 1;
+            if self.message_follows() {
+                let inner_end = self.open()?;
+                let (body, deeper) = self.raw_body(inner_end, raw)?;
+                match raw {
+                    Raw::Group => {
+                        nested |= !body.is_empty() || deeper;
+                        put_tag(&mut out, number, WT_START_GROUP);
+                        out.extend(body);
+                        put_tag(&mut out, number, WT_END_GROUP);
+                    }
+                    Raw::Len => put_len(&mut out, number, &body),
+                }
+            } else {
+                self.wire_scalar(number, &mut out)?;
+            }
+            if !self.try_sym(',') {
+                self.try_sym(';');
+            }
+        }
+    }
+
+    /// A scalar by number, as protoc printed it: a decimal number is a
+    /// varint, `0x` and 8 or 16 hex digits a fixed32 or a fixed64, a string
+    /// length-delimited.
+    fn wire_scalar(&mut self, number: u32, out: &mut Vec<u8>) -> Result<(), TextError> {
         let start = self.pos;
         let written = self.scalar()?;
         match &written.tok {

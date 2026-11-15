@@ -624,7 +624,7 @@ let
     rust.prototext rust.protolens
     rust.prototextCodec rust.fdpScanLib rust.prototextGraphLib
     rust.protoscan python.reproto
-    python.reprotoTests python.fdpScanTests python.prototextCodecTests
+    python.reprotoTests python.reprotoTestsViaText python.fdpScanTests python.prototextCodecTests
     python.pythonLint python.pythonRuff
     treeSitterTextprotoHighlightTest treeSitterTextprotoCheck
     reprotoWktCheck
@@ -644,7 +644,7 @@ let
     rust.prototext rust.protolens
     rust.prototextCodec rust.fdpScanLib rust.prototextGraphLib
     rust.protoscan python.reproto
-    python.reprotoTests python.fdpScanTests python.prototextCodecTests
+    python.reprotoTests python.reprotoTestsViaText python.fdpScanTests python.prototextCodecTests
     python.pythonLint python.pythonRuff
     treeSitterTextprotoHighlightTest treeSitterTextprotoCheck
     wktDb wktPrebuiltCheck prototextFixturesCheck

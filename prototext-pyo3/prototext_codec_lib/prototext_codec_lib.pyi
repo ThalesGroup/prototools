@@ -4,11 +4,54 @@
 import builtins
 import typing
 __all__ = [
+    "DescriptorPool",
     "SchemaHandle",
     "format_as_bytes",
     "format_as_text",
+    "parse_descriptor_text",
     "register_schema",
 ]
+
+@typing.final
+class DescriptorPool:
+    r"""
+    The pool of an input's files, to parse its text files with in a
+    second pass (spec 0427).
+    
+    Built from every file of the input, binary as it is, text as
+    `parse_descriptor_text` gave it; `parse_file_text` then parses a text
+    file again, its options by name resolved and by number framed from the
+    input's declarations.
+    """
+    @property
+    def skipped(self) -> builtins.list[tuple[builtins.str, builtins.str]]:
+        r"""
+        ``(file, reason)`` for each file that did not load: its
+        declarations are not in the pool.
+        """
+    def __new__(cls, files: typing.Sequence[bytes], descriptor_file: builtins.str) -> DescriptorPool:
+        r"""
+        Parameters
+        ----------
+        files : list[bytes]
+            Every file of the input, serialized ``FileDescriptorProto``\ s,
+            in any order: they are loaded imports first.
+        descriptor_file : str
+            The input's ``descriptor.proto`` (the variant's, e.g.
+            ``net/proto2/proto/descriptor.proto``): its ``FileDescriptorProto``
+            is the type text files are parsed as.  The vendored one is
+            added when no file of ``files`` has that name.
+        """
+    def parse_file_text(self, text: builtins.str) -> tuple[bytes, builtins.list[builtins.str]]:
+        r"""
+        Parse ``text``, one ``FileDescriptorProto`` in the text format, with
+        the pool.
+        
+        Returns the serialized file, and one warning per value the pool
+        could not settle (spec 0426 S4, spec 0427 S4).  Raises
+        ``ValueError`` (``"LINE:COLUMN: message"``) when ``text`` does not
+        parse.
+        """
 
 @typing.final
 class SchemaHandle:
@@ -77,6 +120,35 @@ def format_as_text(data: bytes, schema: typing.Optional[SchemaHandle] = None, as
         Protoc-style text representation of the decoded message, encoded as
         UTF-8 bytes.  The fast path returns the original ``data`` object
         unchanged (zero copy).
+    """
+
+def parse_descriptor_text(text: builtins.str, is_set: builtins.bool = False) -> bytes:
+    r"""
+    Parse a descriptor in the text format into the binary format.
+    
+    Parameters
+    ----------
+    text : str
+        A ``FileDescriptorProto`` in the text format, or a
+        ``FileDescriptorSet`` when ``is_set`` is true, as
+        ``protoc --decode`` prints it.
+    is_set : bool, optional
+        Parse ``text`` as a ``FileDescriptorSet``.  Default ``False``.
+    
+    Returns
+    -------
+    bytes
+        The serialized message, read with the vendored ``descriptor.proto``
+        alone: the first pass of spec 0427, which gives a file's imports
+        and declarations.  A field printed by number is kept, ``N { … }``
+        length-delimited; a field or an extension by a name
+        ``descriptor.proto`` does not declare is skipped.  Parse the file
+        again with a `DescriptorPool` of the input for its options.
+    
+    Raises
+    ------
+    ValueError
+        ``"LINE:COLUMN: message"`` when ``text`` does not parse.
     """
 
 def register_schema(schema_data: bytes, root_message: builtins.str) -> SchemaHandle:

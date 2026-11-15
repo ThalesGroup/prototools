@@ -66,14 +66,6 @@ def _parse(raw: dict, root: object, stem: str) -> dict:
     for kind, names in (raw.get('orphans') or {}).items():
         orphans_raw[kind] = list(names)
 
-    annotation_modules_raw = raw.get('annotation_modules') or []
-    if not isinstance(annotation_modules_raw, list) or not all(
-        isinstance(m, str) for m in annotation_modules_raw
-    ):
-        raise ValueError(
-            f"'annotation_modules' must be a list of strings, got: {annotation_modules_raw!r}"
-        )
-
     return {
         'variant_descriptor_proto': raw.get(
             'descriptor_proto', 'google/protobuf/descriptor.proto'
@@ -84,7 +76,6 @@ def _parse(raw: dict, root: object, stem: str) -> dict:
         'variant_orphans':      _merge_orphans(_EDITION_ORPHANS, orphans_raw),
         'variant_root':         root,
         'variant_stem':         stem,
-        'variant_annotation_modules': list(annotation_modules_raw),
     }
 
 

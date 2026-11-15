@@ -10,6 +10,9 @@ SPDX-License-Identifier: MIT
 **App:** reproto
 **Implemented in:** 2026-05-01
 
+P1's annotation modules are gone since spec 0427 (the key removed);
+the uniform resource loading of the `.pb` fallbacks stands.
+
 ---
 
 ## Problem

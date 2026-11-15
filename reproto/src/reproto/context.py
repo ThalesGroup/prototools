@@ -128,8 +128,6 @@ class Options:
     # for external variants it is the parent Path of the YAML file.
     variant_root: Traversable = field(default_factory=_default_variant_root)
     variant_stem: str = 'google-protobuf'
-    # Modules to import at startup (spec 0018); default empty for OSS variant.
-    variant_annotation_modules: list[str] = field(default_factory=list)
     write_variant_descriptor: bool = True
     # Hidden diagnostic flag (spec 0025): when set to a proto file name, skip
     # rendering and dump resolved FeatureSet YAML for that file to stdout.

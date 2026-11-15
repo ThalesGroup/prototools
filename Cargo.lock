@@ -1876,6 +1876,7 @@ name = "prototext_codec_lib"
 version = "0.3.6"
 dependencies = [
  "prototext-core",
+ "prototext-upb",
  "pyo3",
  "pyo3-build-config",
  "pyo3-stub-gen",

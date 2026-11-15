@@ -929,7 +929,6 @@ def main(
         variant_orphans=variant['variant_orphans'],
         variant_root=variant['variant_root'],
         variant_stem=variant['variant_stem'],
-        variant_annotation_modules=variant['variant_annotation_modules'],
         write_variant_descriptor=emit_descriptor,
         dry_run=dry_run,
         go_root=go_root,

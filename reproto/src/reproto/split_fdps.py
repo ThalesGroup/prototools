@@ -15,7 +15,6 @@ import logging
 from collections.abc import Sequence as _Sequence
 
 import prototext_codec_lib as _pt_codec
-from google.protobuf import text_format
 from google.protobuf.descriptor_pb2 import FileDescriptorProto, FileDescriptorSet
 from google.protobuf.message import DecodeError
 import tree_sitter_textproto as _textproto_mod
@@ -363,21 +362,21 @@ def split_fdps(contents: str | bytes, ext: str) -> FdpFragments:
 
     # str input that produced no results
     if isinstance(contents, str):
-        # try as text FDP/FDS via text_format as a last resort
-        for proto in (FileDescriptorSet(), FileDescriptorProto()):
+        # try as text FDS/FDP, parsed whole, as a last resort. A set's
+        # files come back as bytes, from the first pass alone (spec 0427
+        # S1): without their own text, they are not parsed again.
+        for is_set, proto in ((True, FileDescriptorSet()),
+                              (False, FileDescriptorProto())):
             try:
-                msg = text_format.Parse(
-                    contents, proto,
-                    allow_unknown_field=True,
-                    allow_unknown_extension=True,
-                )
-                if isinstance(msg, FileDescriptorSet) and msg.file:
-                    return [(fdp.name, fdp.SerializeToString())
-                            for fdp in msg.file if fdp.name]
-                if isinstance(msg, FileDescriptorProto) and msg.name:
-                    return [(msg.name, contents)]
-            except Exception:
-                pass
+                data = _pt_codec.parse_descriptor_text(contents, is_set=is_set)
+                proto.ParseFromString(data)
+            except (ValueError, DecodeError):
+                continue
+            if isinstance(proto, FileDescriptorSet) and proto.file:
+                return [(fdp.name, fdp.SerializeToString())
+                        for fdp in proto.file if fdp.name]
+            if isinstance(proto, FileDescriptorProto) and proto.name:
+                return [(proto.name, contents)]
 
     raise ValueError(
         f"input with extension {ext!r} is not a recognised FDS or FDP"

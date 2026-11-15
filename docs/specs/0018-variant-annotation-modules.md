@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0018 — Variant YAML format and annotation_modules
 
-**Status:** implemented
+**Status:** superseded by docs/specs/0427-text-input-parsed-with-the-inputs-schema.md
+(the key and `import_annotations()` removed; declarations come from the input)
 **Implemented in:** 2026-04-29
 **App:** reproto
 

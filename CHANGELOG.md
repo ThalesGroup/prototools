@@ -8,6 +8,23 @@ SPDX-License-Identifier: MIT
 
 ## [Unreleased]
 
+### Changed
+
+- reproto reads descriptors in the text format with prototext's own
+  parser, in two passes, the second with the input's own declarations
+  (specs 0426, 0427), instead of Python's `text_format`. Custom options
+  printed by number, which `text_format` dropped, are kept; options
+  printed by name resolve from the input; where the text leaves a value's
+  framing open, the likely one is taken, with a warning naming the field.
+
+### Removed
+
+- reproto: the variant key `annotation_modules` (spec 0018) and the
+  Python modules it imported. Declarations come from the input: a file
+  declaring options is given as any dependency, on the command line or
+  under `-I`. A variant that still has the key is read as before, the key
+  ignored.
+
 ### Fixed
 
 - reproto: an import it leaves out, its file missing or pruned, no

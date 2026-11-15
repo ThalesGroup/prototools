@@ -10,7 +10,6 @@ The public entry point reproto() in reproto.py calls these in sequence.
 
 from __future__ import annotations
 
-import importlib.resources
 import itertools
 from collections.abc import Callable
 from typing import Any
@@ -19,7 +18,8 @@ import sys
 from pathlib import Path
 
 import re2 as re
-from google.protobuf import message, text_format
+import prototext_codec_lib as _pt_codec
+from google.protobuf import message
 from google.protobuf.descriptor_pb2 import (
     DescriptorProto,
     EnumDescriptorProto,
@@ -176,27 +176,6 @@ def _strip_unresolvable_field_types(
 # import other fallback files (e.g. type.proto imports any + source_context).
 # class WellKnownTypeHasTargetsError(Exception):
 #     """Raised when a well-known type proto has targets (imports)."""
-
-
-def import_annotations(modules: list[str], resource_root: str | None = None) -> None:
-    """Import annotation modules declared by the active variant.
-
-    If resource_root is given and not already on sys.path, it is prepended
-    before any import is attempted.  This allows *_pb2.py files that live
-    inside the variant bundle to be found without any extra setup.
-
-    Does nothing when modules is empty.  Logs a warning for each module
-    that cannot be imported, but continues execution.
-    """
-    if not modules:
-        return
-    if resource_root is not None and resource_root not in sys.path:
-        sys.path.insert(0, resource_root)
-    for full_module_name in modules:
-        try:
-            importlib.import_module(full_module_name)
-        except ModuleNotFoundError:
-            cli_warning(f"Module '{full_module_name}' not found.")
 
 
 def fqdn_to_path(fqdn: Fqdn) -> Path:
@@ -472,10 +451,6 @@ def _make_context(
     else:
         ctx = Context.from_options(set(prunings), pruned_paths, seed_paths, options)
     ctx.fdp_plugin_fn = _resolve_fdp_plugin(ctx)
-    import_annotations(
-        ctx.variant_annotation_modules,
-        str(ctx.variant_root.joinpath(ctx.variant_stem)),
-    )
     return ctx
 
 
@@ -620,8 +595,51 @@ def _phase1_load_files(
         # Those imports must appear earlier in ctx.fallback_protos so the
         # topo-sort sees them in the right order — enforced by cli.py ordering.
 
+    _reparse_text_files(ctx, topo)
     return seed_files
 
+
+def _reparse_text_files(ctx: Context, topo: Topology) -> None:
+    """Parse the files read from text again, with the input's pool (spec
+    0427 S3).
+
+    The first pass, as each file was loaded, knew descriptor.proto alone:
+    enough for imports and declarations, not for custom options. Now that
+    every file of the input is loaded, binary and text, a pool of all of
+    them declares the options: by name, they resolve; by number, each is
+    framed as declared, and where nothing is declared the likely framing is
+    taken, with a warning (spec 0426). Each file's desc is rebuilt from its
+    new contents (spec 0369 S1).
+    """
+    qfiles = [f.qfile for f in topo.files.values() if not f.is_ref()]
+    from_text = [qf for qf in qfiles if qf.text is not None]
+    if not from_text:
+        return
+    contents: list[bytes] = []
+    for qf in qfiles:
+        assert isinstance(qf.contents, bytes)
+        contents.append(qf.contents)
+    pool = _pt_codec.DescriptorPool(contents, ctx.variant_descriptor_proto)
+    if ctx.debug:
+        for name, reason in pool.skipped:
+            cli_info(f"  Not in the text files' pool: {name}: {reason}")
+    for qf in from_text:
+        assert qf.text is not None
+        try:
+            parsed, warnings = pool.parse_file_text(qf.text)
+        except ValueError as e:
+            cli_warning("%s: cannot parse it with the input's pool: %s", qf.name, e)
+            continue
+        finally:
+            qf.text = None
+        for warning in warnings:
+            cli_warning("%s: %s", qf.name, warning)
+        if parsed != qf.contents:
+            qf.contents = parsed
+            fdp = FileDescriptorProto()
+            fdp.ParseFromString(parsed)
+            apply_fdp_plugin(ctx, fdp)
+            qf.desc = fdp
 
 def _strip_self_dependency(fdp: FileDescriptorProto) -> None:
     """Remove any self-referential entries from fdp.dependency in-place.
@@ -942,48 +960,27 @@ def _phase2_build_pool(
                 qf = n.qfile
                 contents = qf.contents
                 try:
-                    match contents:
-                        case str():
-                            # Text format — contents is a bare FDP fragment (already
-                            # decapsulated by split_fdps; no entry{} wrapper present)
-                            fdp = text_format.Parse(
-                                contents,
-                                FileDescriptorProto(),
-                                allow_unknown_field=True,
-                                allow_unknown_extension=True,
-                                descriptor_pool=ctx.pool,
-                            )
-                            apply_fdp_plugin(ctx, fdp)
-                            patch_go_package(ctx, fdp)
-                            _strip_self_dependency(fdp)
-                            if not ctx.keep_duplicates and _prune_if_duplicate(ctx, n, fdp):
-                                advance()
-                                continue
-                            _strip_unresolvable_dependencies(ctx, n, fdp)
-                            _strip_unresolvable_field_types(ctx, n, fdp)
-                            ctx.pool_db.Add(fdp)
-                            ctx.pool_db_fdps.append(fdp)
-
-                        case bytes():
-                            # Binary format — contents is a serialised single FDP
-                            fdp = FileDescriptorProto()
-                            fdp.ParseFromString(contents)
-                            try:
-                                apply_fdp_plugin(ctx, fdp)
-                                patch_go_package(ctx, fdp)
-                                _strip_self_dependency(fdp)
-                                if not ctx.keep_duplicates and _prune_if_duplicate(ctx, n, fdp):
-                                    advance()
-                                    continue
-                                _strip_unresolvable_dependencies(ctx, n, fdp)
-                                _strip_unresolvable_field_types(ctx, n, fdp)
-                                ctx.pool_db.Add(fdp)
-                                ctx.pool_db_fdps.append(fdp)
-                            except TypeError as e:
-                                # NOTE: TypeError can occur when attempting to add a descriptor
-                                # that conflicts with an existing one in the pool (e.g., duplicate
-                                # symbol names or incompatible descriptor types).
-                                cli_warning("Could not add descriptor from '%s' to pool: %s", n.name, e)
+                    # A serialised single FDP: text was parsed into binary
+                    # on loading (load.parse_qfile).
+                    assert isinstance(contents, bytes)
+                    fdp = FileDescriptorProto()
+                    fdp.ParseFromString(contents)
+                    try:
+                        apply_fdp_plugin(ctx, fdp)
+                        patch_go_package(ctx, fdp)
+                        _strip_self_dependency(fdp)
+                        if not ctx.keep_duplicates and _prune_if_duplicate(ctx, n, fdp):
+                            advance()
+                            continue
+                        _strip_unresolvable_dependencies(ctx, n, fdp)
+                        _strip_unresolvable_field_types(ctx, n, fdp)
+                        ctx.pool_db.Add(fdp)
+                        ctx.pool_db_fdps.append(fdp)
+                    except TypeError as e:
+                        # NOTE: TypeError can occur when attempting to add a descriptor
+                        # that conflicts with an existing one in the pool (e.g., duplicate
+                        # symbol names or incompatible descriptor types).
+                        cli_warning("Could not add descriptor from '%s' to pool: %s", n.name, e)
                 except message.DecodeError:
                     cli_warning(f"Skipping unparseable file: {n.name}")
                     n.is_pruned = True

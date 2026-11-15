@@ -7,14 +7,12 @@
 from __future__ import annotations
 
 import importlib.resources
-import sys
 import textwrap
 from pathlib import Path
 
 import pytest
 
 from reproto import variant as V
-from reproto.reproto import import_annotations
 
 
 # ---------------------------------------------------------------------------
@@ -147,33 +145,6 @@ def test_external_variant_root_and_stem(monkeypatch: pytest.MonkeyPatch, tmp_pat
     assert result['variant_stem'] == 'proto2'
     # Root is the parent directory; joining the stem YAML must give the original file.
     assert result['variant_root'].joinpath('proto2.yaml').read_text() == 'name: proto2\n'
-
-
-def test_import_annotations_prepends_resource_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """import_annotations() prepends resource_root to sys.path when modules are listed."""
-    root = str(tmp_path)
-    # Ensure root is not already on sys.path.
-    monkeypatch.setattr(sys, 'path', [p for p in sys.path if p != root])
-    # Use a module name that won't be found — we only care about sys.path mutation.
-    import_annotations(['_nonexistent_module_xyz'], resource_root=root)
-    assert root in sys.path
-    assert sys.path[0] == root
-
-
-def test_import_annotations_no_duplicate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """import_annotations() does not add resource_root twice."""
-    root = str(tmp_path)
-    monkeypatch.setattr(sys, 'path', [root] + [p for p in sys.path if p != root])
-    import_annotations(['_nonexistent_module_xyz'], resource_root=root)
-    assert sys.path.count(root) == 1
-
-
-def test_import_annotations_empty_modules_no_side_effects(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """import_annotations() with empty modules list does not touch sys.path."""
-    root = str(tmp_path)
-    monkeypatch.setattr(sys, 'path', [p for p in sys.path if p != root])
-    import_annotations([], resource_root=root)
-    assert root not in sys.path
 
 
 def test_load_embedded_proto_fallback_uses_variant_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

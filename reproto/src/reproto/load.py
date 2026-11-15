@@ -5,7 +5,7 @@
 import logging
 from pathlib import Path
 
-from google.protobuf import text_format
+import prototext_codec_lib as _pt_codec
 from google.protobuf.descriptor_pb2 import FileDescriptorProto
 
 from reproto import Context, Fqdn
@@ -112,6 +112,9 @@ class QualFile:
         self.root = root
         self.rel_path = rel_path
         self.contents = contents
+        # A file read from the text format keeps its text until it is
+        # parsed again with the input's pool (spec 0427 S3).
+        self.text: str | None = None
         self._name: str
         self._desc: FileDescriptorProto
 
@@ -312,18 +315,26 @@ def parse_qfile(
 
     result: list[QualFile] = []
     for name, fragment in fragments:
+        text: str | None = None
+        if isinstance(fragment, str):
+            # The first pass (spec 0427 S1): bytes enough for the file's
+            # imports and declarations, everything past this point reads
+            # bytes; the options come with the second pass, once every
+            # file is loaded (phases._reparse_text_files).
+            text = fragment
+            try:
+                fragment = _pt_codec.parse_descriptor_text(fragment)
+            except ValueError as e:
+                logger.warning(
+                    "Cannot parse '%s' (file '%s'): %s", file.rel_path, name, e,
+                    extra={"cli_warn": True},
+                )
+                continue
         qf = QualFile(file.root, file.rel_path, fragment)
+        qf.text = text
         qf.name = name
-        if isinstance(fragment, bytes):
-            fdp = FileDescriptorProto()
-            fdp.ParseFromString(fragment)
-        else:
-            fdp = text_format.Parse(
-                fragment,
-                FileDescriptorProto(),
-                allow_unknown_field=True,
-                allow_unknown_extension=True,
-            )
+        fdp = FileDescriptorProto()
+        fdp.ParseFromString(fragment)
         # Before the QualFile reaches ReFile, hence before targets is
         # built from fdp.dependency — this is the application that lets
         # a plugin-added import be discovered at all (spec 0369 S2).

@@ -7,6 +7,14 @@
 // descriptor.proto, by:
 //
 //   protoc --include_imports --descriptor_set_out=options.pb options.proto
+//
+// and printed, its options by number into options.txtpb, by name into
+// options_named.txtpb (spec 0427), by:
+//
+//   protoc --decode=google.protobuf.FileDescriptorSet \
+//       google/protobuf/descriptor.proto < options.pb > options.txtpb
+//   protoc --decode=google.protobuf.FileDescriptorSet \
+//       options.proto < options.pb > options_named.txtpb
 
 syntax = "proto2";
 
