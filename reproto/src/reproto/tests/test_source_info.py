@@ -157,7 +157,8 @@ def _span_lines(span: list[int]) -> tuple[int, int, int, int]:
     if len(span) == 3:
         start_line, start_col, end_col = span
         return start_line, start_col, start_line, end_col
-    return tuple(span)  # type: ignore[return-value]
+    start_line, start_col, end_line, end_col = span
+    return start_line, start_col, end_line, end_col
 
 
 def _kind_and_name(breadcrumb: str) -> tuple[str, str]:

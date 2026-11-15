@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
+from typing import Protocol
 
 from rich.console import Console
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeElapsedColumn
@@ -21,6 +22,20 @@ from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, T
 # highlight=False: prevents Rich from auto-highlighting numbers/strings in
 # log messages, which would alter their appearance unexpectedly.
 console = Console(stderr=True, highlight=False)
+
+
+class Advance(Protocol):
+    """What `progress` and `progress_lazy` yield to move their bar."""
+
+    def __call__(self, n: int = 1) -> None: ...
+
+
+def _no_advance(n: int = 1) -> None:
+    """No bar to move."""
+
+
+def _no_total(n: int) -> None:
+    """No bar to size."""
 
 
 def rprint(message: str, *, style: str | None = None) -> None:
@@ -33,7 +48,7 @@ def rprint(message: str, *, style: str | None = None) -> None:
 
 
 @contextmanager
-def progress(label: str, total: int, quiet: bool = False) -> Generator[Callable[..., None], None, None]:
+def progress(label: str, total: int, quiet: bool = False) -> Generator[Advance, None, None]:
     """Context manager that shows a progress bar for a countable step.
 
     Yields an advance(n=1) callable.  Calling advance() moves the bar forward
@@ -45,7 +60,7 @@ def progress(label: str, total: int, quiet: bool = False) -> Generator[Callable[
     Label is suppressed when quiet=True.
     """
     if not console.is_terminal or total == 0:
-        yield lambda n=1: None  # type: ignore[misc]
+        yield _no_advance
         if not quiet:
             rprint(label)
         return
@@ -58,14 +73,18 @@ def progress(label: str, total: int, quiet: bool = False) -> Generator[Callable[
         transient=True,
     ) as prog:
         task = prog.add_task(label, total=total)
-        yield lambda n=1: prog.advance(task, advance=n)  # type: ignore[misc]
+
+        def advance(n: int = 1) -> None:
+            prog.advance(task, advance=n)
+
+        yield advance
     rprint(label)
 
 
 @contextmanager
 def progress_lazy(
     label: str, quiet: bool = False
-) -> Generator[tuple[Callable[..., None], Callable[[int], None]], None, None]:
+) -> Generator[tuple[Advance, Callable[[int], None]], None, None]:
     """Context manager for a progress bar whose total is not known upfront.
 
     Yields (advance, set_total) where:
@@ -77,7 +96,7 @@ def progress_lazy(
     Prints label on completion.
     """
     if quiet or not console.is_terminal:
-        yield (lambda n=1: None, lambda n: None)  # type: ignore[misc]
+        yield (_no_advance, _no_total)
         if not quiet and console.is_terminal:
             rprint(label)
         return
@@ -94,7 +113,10 @@ def progress_lazy(
         def set_total(n: int) -> None:
             prog.update(task, total=n)
 
-        yield (lambda n=1: prog.advance(task, advance=n), set_total)  # type: ignore[misc]
+        def advance(n: int = 1) -> None:
+            prog.advance(task, advance=n)
+
+        yield (advance, set_total)
     rprint(label)
 
 

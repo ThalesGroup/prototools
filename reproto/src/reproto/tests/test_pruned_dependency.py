@@ -20,7 +20,10 @@ from __future__ import annotations
 
 import os
 import subprocess
+from collections.abc import Sequence
 from pathlib import Path
+
+from google.protobuf.descriptor_pb2 import FileDescriptorProto, FileDescriptorSet
 
 from reproto.tests.conftest import FIXTURES_DIR, REPROTO_CMD, compile_proto
 
@@ -188,17 +191,15 @@ def test_w1_loading_miss_appears_as_w5(tmp_path: Path) -> None:
 # TC-R4  Stripping an import keeps the public and weak indices on their files
 # ---------------------------------------------------------------------------
 
-def _write_set(path: Path, *fdps: object) -> Path:
-    from google.protobuf.descriptor_pb2 import FileDescriptorSet
+def _write_set(path: Path, *fdps: FileDescriptorProto) -> Path:
     fds = FileDescriptorSet()
     for fdp in fdps:
-        fds.file.add().CopyFrom(fdp)  # type: ignore[arg-type]
+        fds.file.add().CopyFrom(fdp)
     path.write_bytes(fds.SerializeToString())
     return path
 
 
-def _file(name: str, message: str, deps: list[str] = []) -> object:
-    from google.protobuf.descriptor_pb2 import FileDescriptorProto
+def _file(name: str, message: str, deps: Sequence[str] = ()) -> FileDescriptorProto:
     fdp = FileDescriptorProto(name=name, package="strip_test", syntax="proto2")
     fdp.dependency.extend(deps)
     fdp.message_type.add(name=message)
@@ -219,8 +220,8 @@ def test_stripped_import_keeps_public_and_weak_on_their_files(tmp_path: Path) ->
         "importer.proto", "Importer",
         ["missing.proto", "weak.proto", "public.proto"],
     )
-    importer.weak_dependency.append(1)  # type: ignore[attr-defined]
-    importer.public_dependency.append(2)  # type: ignore[attr-defined]
+    importer.weak_dependency.append(1)
+    importer.public_dependency.append(2)
     pb = _write_set(
         tmp_path / "set.pb",
         _file("weak.proto", "Weak"),

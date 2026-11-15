@@ -31,7 +31,7 @@ def fd_is_repeated(field: FieldDescriptor) -> bool:
     .label is absent even before its official deprecation in 6.x).
     """
     try:
-        return field.is_repeated  # type: ignore[attr-defined]
+        return field.is_repeated
     except AttributeError:
         return field.label == FieldDescriptor.LABEL_REPEATED
 
@@ -42,7 +42,7 @@ def fd_is_required(field: FieldDescriptor) -> bool:
     Same compatibility rationale as fd_is_repeated.
     """
     try:
-        return field.is_required  # type: ignore[attr-defined]
+        return field.is_required
     except AttributeError:
         return field.label == FieldDescriptor.LABEL_REQUIRED
 
@@ -66,7 +66,7 @@ def fd_is_packed(field: FieldDescriptor) -> bool:
     if not fd_is_repeated(field) or field.type not in PACKABLE_TYPES:
         return False
     try:
-        return bool(field.is_packed)  # type: ignore[attr-defined]
+        return bool(field.is_packed)
     except AttributeError:
         return field.has_options and field.GetOptions().packed
 
