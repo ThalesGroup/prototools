@@ -9,6 +9,7 @@ mod cli;
 mod db;
 mod dump;
 mod events;
+mod graph;
 mod load;
 mod pathmatch;
 mod phase1;
@@ -216,6 +217,7 @@ fn main() -> ExitCode {
         events: Events::default(),
         blobs,
         db: db::Database::default(),
+        graph: graph::Graph::default(),
         edition_defaults: Default::default(),
     };
     let mut topo = topology::Topology::default();
@@ -227,6 +229,12 @@ fn main() -> ExitCode {
         eprintln!("Error: {}", fatal.message());
         return ExitCode::from(1);
     }
+    run.graph = graph::run(
+        &topo,
+        &run.db,
+        cli.force_proto2_output,
+        &run.edition_defaults,
+    );
 
     if let Err(e) = std::fs::write(&dump_path, dump::write(&run, &topo)) {
         eprintln!("Error: {}: {e}", dump_path.display());

@@ -111,6 +111,11 @@ impl Database {
         self.by_name.get(name).map(|&i| &self.files[i])
     }
 
+    /// The position of the file named `name`, if added.
+    pub fn index_of(&self, name: &str) -> Option<usize> {
+        self.by_name.get(name).copied()
+    }
+
     /// `DescriptorDatabase.FindFileContainingSymbol`: the symbol, else the
     /// one it is nested in (a field, an enum value), one level up only. A
     /// symbol with a single `.`, its first character, loses it.

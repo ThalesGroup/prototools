@@ -10,6 +10,7 @@ use std::path::PathBuf;
 
 use crate::db::Database;
 use crate::events::Events;
+use crate::graph::Graph;
 use crate::pathmatch::PathPatterns;
 use crate::phase2::EditionDefaults;
 use crate::variant::Variant;
@@ -39,4 +40,6 @@ pub struct Run {
     /// descriptor.proto.
     pub db: Database,
     pub edition_defaults: EditionDefaults,
+    /// Phase 3's nodes.
+    pub graph: Graph,
 }

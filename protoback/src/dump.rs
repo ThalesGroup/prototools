@@ -10,6 +10,7 @@ use std::fmt::Write as _;
 use prototext_upb::descriptor_access::FileDescriptorProto;
 use sha2::{Digest, Sha256};
 
+use crate::graph::TypeRef;
 use crate::pathmatch::posix_str;
 use crate::phase2::EditionDefault;
 use crate::run::Run;
@@ -87,6 +88,52 @@ fn context(r: &Run, out: &mut String) {
     let _ = writeln!(out, "schema db extra nodes | []");
 }
 
+fn nodes(r: &Run, out: &mut String) {
+    let g = &r.graph;
+    let fqdns = |set: &std::collections::BTreeSet<usize>| -> String {
+        let mut v: Vec<&str> = set.iter().map(|&i| g.nodes[i].fqdn.as_str()).collect();
+        v.sort();
+        list(v)
+    };
+    for n in &g.nodes {
+        let flags = format!(
+            "{}{}{}",
+            if n.is_pruned { "P" } else { "-" },
+            if n.is_reachable { "R" } else { "-" },
+            if n.is_summoned { "S" } else { "-" }
+        );
+        let mut attrs = Vec::new();
+        if n.is_group {
+            attrs.push("group".to_string());
+        }
+        match n.type_descriptor {
+            Some(TypeRef::Node(t)) => attrs.push(format!("type {}", g.nodes[t].fqdn)),
+            Some(TypeRef::Scalar(t)) => attrs.push(format!("type {t}")),
+            None => {}
+        }
+        if let Some(name) = &n.editions_group_name {
+            attrs.push(format!("editions-group {name}"));
+        }
+        let _ = writeln!(
+            out,
+            "{} | {} | {} | {flags} | {} | contains {} | targets {} | attrs {}",
+            n.kind.class_name(),
+            n.fqdn,
+            if n.present { "present" } else { "stub" },
+            n.parent.map_or("-", |p| g.nodes[p].fqdn.as_str()),
+            fqdns(&n.contains),
+            fqdns(&n.targets),
+            list(attrs),
+        );
+        for rec in &n.stripped_fields {
+            let _ = writeln!(out, "  stripped field | {}", rec.join(" | "));
+        }
+        for rec in &n.stripped_methods {
+            let _ = writeln!(out, "  stripped method | {}", rec.join(" | "));
+        }
+    }
+}
+
 /// The dump of what the phases ran so far leave.
 pub fn write(r: &Run, topo: &Topology) -> String {
     let mut out = String::new();
@@ -96,7 +143,9 @@ pub fn write(r: &Run, topo: &Topology) -> String {
     pool(r, &mut out);
     out.push_str("[context]\n");
     context(r, &mut out);
-    out.push_str("[nodes]\n[seeds]\n[warnings]\n");
+    out.push_str("[nodes]\n");
+    nodes(r, &mut out);
+    out.push_str("[seeds]\n[warnings]\n");
     for line in &r.events.lines {
         out.push_str(line);
         out.push('\n');
