@@ -86,8 +86,12 @@ sorted copy: rendering will walk nodes in it (spec 0424 S17, S18).
   (`schema_db_extra_nodes`, in order).
 - **S5. `[nodes]`**, every node, in `ctx.nodes` order: its kind (the
   node class), FQDN, `present` or `stub` (an unresolved reference), the
-  flags pruned, reachable and summoned, its parent's FQDN or `-`, and its
-  `contains` and `targets` (sorted).
+  flags pruned, reachable and summoned, its parent's FQDN or `-` (a stub,
+  an unresolved reference, has none), its `contains` and `targets`
+  (sorted), and `attrs`, what phase 3 decided of it beyond its links: a
+  message used as a group, a field's resolved type (a node's FQDN, or the
+  scalar type's number), and the synthetic group of an editions DELIMITED
+  field under `--force-proto2-output`.
 - **S6. `[seeds]`**, the nodes phase 5 started from (sorted), then
   **`[warnings]`**, everything phases 1 to 6 warned about, in the order
   warned: the collector's calls (`w1` to `w7`, with their arguments), and
@@ -132,6 +136,8 @@ sorted copy: rendering will walk nodes in it (spec 0424 S17, S18).
   FQDNs and path patterns; `-C`/`--filter-config`; `--proto-variant`,
   `--use-variant` and `REPROTO_VARIANT`; `--keep-descriptor-path`;
   `--keep-duplicates`; `--go-root` (phase 2's `go_package` patching);
+  `--force-proto2-output` (phase 3's synthetic groups for an editions
+  file's DELIMITED fields);
   `--schema-db-out` (phase 6's third sub-pass); `--quiet`, `--debug`,
   `--debug-fqdn` (phase 5's report); and the hidden `--dump-graph`. Every
   other option of reproto's is parsed, with its arguments: under

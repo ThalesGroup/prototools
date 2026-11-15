@@ -179,7 +179,6 @@ impl Cli {
         note(self.no_source_info, "--no-source-info", 5);
         note(self.dry_run, "--dry-run", 5);
         note(self.no_emit_descriptor, "--no-emit-descriptor", 5);
-        note(self.force_proto2_output, "--force-proto2-output", 5);
         note(
             self.force_proto2_for_editions || self.prost_workaround,
             "--force-proto2-for-editions",

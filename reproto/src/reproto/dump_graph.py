@@ -131,6 +131,22 @@ def _context(ctx: Context) -> list[str]:
     return lines
 
 
+def _attrs(n: Any) -> list[str]:
+    """What phase 3 decided of a node, beyond its links: a message used as
+    a group; a field's resolved type, and the synthetic group of an
+    editions DELIMITED field under --force-proto2-output."""
+    attrs = []
+    if getattr(n, "_is_group", False):
+        attrs.append("group")
+    if hasattr(n, "type_descriptor"):
+        t = n.type_descriptor
+        attrs.append(f"type {t.fqdn if hasattr(t, 'fqdn') else t}")
+    name = getattr(n, "_editions_group_name", None)
+    if name is not None:
+        attrs.append(f"editions-group {name}")
+    return attrs
+
+
 def _nodes(ctx: Context) -> list[str]:
     lines = []
     for fqdn, n in ctx.nodes.items():
@@ -142,6 +158,7 @@ def _nodes(ctx: Context) -> list[str]:
             flags, parent,
             "contains " + _list(sorted(c.fqdn for c in n.contains)),
             "targets " + _list(sorted(t.fqdn for t in n.targets)),
+            "attrs " + _list(_attrs(n)),
         ]))
         for attr, tag in (("stripped_fields", "stripped field"),
                           ("stripped_methods", "stripped method")):
