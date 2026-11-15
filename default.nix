@@ -485,7 +485,7 @@ let
   shells = import ./nix/shells.nix {
     inherit pkgs pythonPkgs pythonBin pythonExecutable buf;
     inherit (rust) prototext protolens;
-    inherit (python) reprotoSrc reprotoTestDeps reproto;
+    inherit (python) reprotoSrc reprotoTestDeps reproto lintSettings;
     inherit (rust) protoscan;
     inherit wktDb;
     # The demos' inputs — the googleapis database, the grpconf stage, the
