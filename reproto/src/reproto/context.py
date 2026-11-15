@@ -226,7 +226,11 @@ class Context(Options):
         self.files: dict[str, 'ReFileDescriptorProto'] = {}
         self.new_files: dict[str, 'ReFileDescriptorProto'] = {}
 
-        # Built-in protobuf option descriptors and classes
+        # Built-in protobuf option descriptors and classes, of the variant's
+        # descriptor.proto, in the package it declares (option_messages).
+        self.options_package: str = 'google.protobuf'
+        # The *Options a proto3 file may extend (syntax.descriptor_options_fqns).
+        self.descriptor_options_fqns: frozenset[str] | None = None
 
         # EnumOptions
         self.eno_desc: Descriptor

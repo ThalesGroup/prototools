@@ -263,6 +263,60 @@ reproto first.)
     renders with no render failure at all (2026-11-15). It is written
     `internal error` until a reproducer names its cause.
 
+### The variant's renaming, after the port
+
+- **S17. One renaming table, after the port.** reproto applies a
+  variant's `namespace_rewrites` and `import_rewrites` (`mappings.py`) as
+  it writes each name, at a dozen call sites (`re_file.py`,
+  `re_field.py`, `re_method.py`, `utils.py`'s `short_ref` and
+  `shorten_type_name`, `phases.py`, `syntax.py`); the input is never
+  rewritten. Recorded, like S11–S15, to change once protoback is
+  complete, in protoback first; until then protoback writes reproto's
+  names, byte for byte:
+  - each call site repeats the `keep_variant_descriptor` guard (one
+    leaves it to its callers), so the text and the descriptor can drift;
+  - a rewritten type is never shortened: `short_ref` returns the full
+    rewritten name before scope shortening, its existence checks being
+    in the input's names;
+  - two input types rewritten to one name (a private package's `Empty`
+    and `google.protobuf.Empty`, under a rule from that package to
+    `google.protobuf`) pass without a word in the `.proto` output;
+  - every reference is rewritten again, at each of S11's repeated
+    renders (not profiled).
+
+  The change: one table from each input name (type, package, file) to
+  its output name, built once after phase 3 with the rules and the
+  `keep_variant_descriptor` exception; collisions reported when it is
+  built; rendering looks names up; shortening done in the output's
+  names. protoback may build the table during the port if its output
+  stays reproto's (to be confirmed by the harness).
+
+### The options types, from the variant's descriptor.proto
+
+- **S18. No options package assumed** (done in reproto, 2026-11-15,
+  before stage 1, as S16). The package of the options types, and of the
+  nine `*Options` a proto3 file may extend, was guessed by reproto in
+  three places: `option_messages.py` (`google.protobuf` for a
+  `descriptor_proto` path under `google/`, a fixed second package
+  otherwise), `mappings.py` (two fixed patterns recognizing built-in
+  option names), `syntax.py` (A5's list, the same two packages written
+  out). A variant whose `descriptor.proto` declared any other package
+  stopped reproto at startup. Now:
+  - the options types are those of the variant's `descriptor.proto`, in
+    the package that file declares (`ctx.options_package`), and built-in
+    option names are recognized in that package;
+  - A5 accepts the nine `*Options` of `google.protobuf` and of every
+    `descriptor.proto` in the input (a file declaring
+    `FileDescriptorProto`), each also under the variant's rewritten
+    name; and an extendee the input does not define when its name ends
+    in one of the nine, whatever its package (input compiled against a
+    `descriptor.proto` the input lacks). A message the input does define
+    and is not one of them is refused, as before.
+  - Tests: `test_variant_descriptor_package.py` (a variant's
+    `descriptor.proto` in a package of its own), failing before;
+    `test_A5_proto2_options_extendee_not_omitted` still passing. Every
+    harness case's output unchanged, reproto before against after.
+
 ## Alternatives considered
 
 ### Porting rendering in one go

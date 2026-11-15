@@ -115,10 +115,11 @@ def parse_options(
 
 
 def create_option_message_classes(ctx: Context) -> None:
-    if ctx.variant_descriptor_proto.startswith('google/'):
-        pkg = 'google.protobuf'
-    else:
-        pkg = 'proto2'
+    # The options types are those of the variant's descriptor.proto, in the
+    # package that file declares: nothing is assumed from its path.
+    # Phase 2 has refused a run whose input lacks it.
+    pkg = ctx.pool_db.FindFileByName(ctx.variant_descriptor_proto).package
+    ctx.options_package = pkg
     ctx.options_pool = DescriptorPool(_MapsAsRepeatedDatabase(ctx.pool_db))
     ctx.options_pool_files = set()
     pool = ctx.options_pool

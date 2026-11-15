@@ -51,6 +51,7 @@ Implementation Notes:
 
 from __future__ import annotations
 
+import functools
 
 import re2 as re
 
@@ -94,12 +95,18 @@ def apply_variant_namespace_to_package(ctx: Context, package: str) -> str:
     return rewritten.strip('.')
 
 
-# match.group(3) is the intangible part of the option, e.g.: FileOptions.java_package
-# match.group(5) it the option short name, e.g.: java_package
-proto2_options_pattern: re._Regexp = re.compile(
-    r'^(\.?)(proto2)\.((Enum|EnumValue|ExtensionRange|Field|File|Message|Method|Service)Options\.(.*))$')
-googleprotobuf_options_patterns: re._Regexp = re.compile(
-    r'^(\.?)(google\.protobuf)\.((Enum|EnumValue|ExtensionRange|Field|File|Message|Method|Service)Options\.(.*))$')
+@functools.cache
+def builtin_option_pattern(package: str) -> re._Regexp:
+    """A built-in option's full name: a field of one of the options types of
+    `package`, the variant descriptor.proto's (ctx.options_package).
+
+    match.group(3) is the intangible part of the option, e.g.: FileOptions.java_package
+    match.group(5) it the option short name, e.g.: java_package
+    """
+    return re.compile(
+        rf'^(\.?)({re.escape(package)})\.'
+        r'((Enum|EnumValue|ExtensionRange|Field|File|Message|Method|Service)Options\.(.*))$')
+
 
 FileOptions_extensions: dict[int, str] = dict()
 
@@ -107,11 +114,11 @@ def canonize_opt_name(ctx: Context, n: str, custom: bool = False) -> tuple[str, 
     """
     Canonize an option name to its shortest safe form.
 
-    For builtin options (google.protobuf.* or proto2.*):
+    For builtin options (fields of the options types of ctx.options_package,
+    the variant descriptor.proto's package):
         Converts to canonical short form:
         - .google.protobuf.FieldOptions.deprecated -> deprecated
         - .google.protobuf.MessageOptions.map_entry -> map_entry
-        - .proto2.FieldOptions.packed -> packed
 
     For custom extensions (custom=True):
         Returns full FQDN unchanged (conservative, protoc-compatible approach).
@@ -176,10 +183,10 @@ def canonize_opt_name(ctx: Context, n: str, custom: bool = False) -> tuple[str, 
             return n, False
         # Extension exists but not summoned - orphan
         return n, True
-    match = proto2_options_pattern.fullmatch(n) or googleprotobuf_options_patterns.fullmatch(n)
+    match = builtin_option_pattern(ctx.options_package).fullmatch(n)
     if not match:
-        # NOTE: For unrecognized option patterns (neither proto2.* nor
-        # google.protobuf.*), we conservatively return the full name unchanged
+        # NOTE: For unrecognized option patterns (not a field of the options
+        # types), we conservatively return the full name unchanged
         # to avoid breaking custom options. These will always use their FQDN.
         return n, False
     kind = match.group(4)
