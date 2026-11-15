@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0428 — protoback, phases 1 to 6, and the graph dump
 
-Status: draft
+Status: implemented
+Implemented in: 2026-11-15
 App: protoback, reproto
 Refs: docs/specs/0424-protoback-reproto-in-rust-on-upb.md (step 4 of its
       work plan; S7, the crate's structure; S11, the harness; S14, the
@@ -198,4 +199,45 @@ Written, never read, and dependent on set iteration order (N4).
 
 ## Measured outcome
 
-Filled in at implementation.
+- **G1–G3, the dumps** (2026-11-15): `scripts/protoback-harness run
+  --dump-graph`, reproto against protoback, every section compared,
+  nothing masked: 542 cases (541 in `ci`, `protobackDumpHarness`; with
+  googleapis, 246,171 nodes, in `full-tests`), none differs, none exits
+  with an error.
+- **Coverage added on the way**, each case found missing when a
+  comparison passed without exercising a decision:
+  - seeds and prunes: 3 cases before, 12 after (near misses and their
+    suggestion, a glob naming nothing, a pruned seed, a node pruned with
+    its field, path seeds, pruned path seeds, `--debug-fqdn`);
+  - summoning under a seed, test_summoning.py's 8 sets: without a seed
+    every file is summoned, and import bridging decides nothing;
+  - a duplicate symbol (W3, with and without `--keep-duplicates`) and a
+    file shadowed under two roots (W7): reproto's collector prints both
+    at once, and protoback left out that second record until these
+    cases showed it.
+- **reproto's bugs found and fixed**, each with a failing test first:
+  the directory walk's order (S7), the pool's rank order (S8), phase 4's
+  assertion and phase 5's path seed order (S7).
+- **G4, the timings** (2026-11-15, at ee6edf9): `BENCH_DUMP_GRAPH=1
+  scripts/bench-protoback`, phases 1 to 6 and the dump, then the run
+  stops; each case with the flags of its database (`wktRkyv`,
+  `customDb`, `googleapisDb`); vCPUs 0–7, host idle; reproto
+  `python3 -m reproto.cli`, protoback a release build, one thread:
+
+  | Case | reproto | protoback | Peak memory, reproto / protoback |
+  |---|---|---|---|
+  | WKT | 0.328 s ± 0.009, 9 runs | 4.8 ms ± 0.7, 214 runs | 45 / 14 MB |
+  | custom | 0.350 s ± 0.009, 8 runs | 8.9 ms ± 0.6, 154 runs | 47 / 14 MB |
+  | googleapis | 12.58 s ± 0.13 (12.53, 12.74, 12.49) | 2.22 s ± 0.07 (2.14, 2.23, 2.28) | 674 / 443 MB |
+
+  googleapis 5.7 times faster. reproto's phases, one run under
+  `scripts/reproto-phase-times` (wall 10.7 s from its start, interpreter
+  and imports before it): phase 3 5.1 s, phase 6 2.2, phase 2 1.1,
+  phase 5 0.5, phase 1 0.3, phase 4 0.0; the rest, the dump.
+  protoback's, one run under `perf record`: no phase dominates; SipHash
+  (`std`'s default `HashMap` hasher) 11 %, the allocator about 20 %
+  (`malloc_consolidate`, `_int_malloc`, `free`), phase 6 5 % (its
+  `type_targets` recomputed for every summoned file on every bridging
+  round), upb's decoding and encoding 7 %. Not pursued in step 4: a
+  faster hasher and fewer allocations are the first leads if these
+  phases come to matter beside rendering (step 5).

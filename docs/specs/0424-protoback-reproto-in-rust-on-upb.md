@@ -699,3 +699,11 @@ development VM pinned to vCPUs 0–7, on mains power, host idle.
     each, and, if a phase differs, a profile of that phase in both
     (`python -m cProfile -o …`), several runs each, `PYTHONHASHSEED`
     fixed to separate the seed's effect from the code's.
+- **Step 4** (2026-11-15), spec 0428: protoback's loading, pool and
+  phases 1 to 6, against reproto's by the graph dump (`--dump-graph`,
+  hidden, in both): identical on all 542 harness cases, googleapis
+  included, every section, in `ci` (`protobackDumpHarness`) and
+  `full-tests`. Four reproto bugs fixed on the way, each with a failing
+  test first (spec 0428 S7, S8). Phases 1 to 6 and the dump on
+  googleapis, one thread: 2.22 s against reproto's 12.58 s, 443 MB
+  against 674 MB (spec 0428, measured outcome).
