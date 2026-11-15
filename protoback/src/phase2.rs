@@ -214,7 +214,7 @@ fn prune_if_duplicate(r: &mut Run, topo: &mut Topology, i: usize, fdp: &DynamicM
         let noun = if count == 1 { "symbol" } else { "symbols" };
         parts.push(format!("    file:{f} ({count} {noun})"));
     }
-    r.events.w(&["w3", &parts.join("\n")]);
+    r.events.w3(&parts.join("\n"));
     topo.files[i].is_pruned = true;
     r.pruned_file_names.insert(name);
     true
@@ -286,13 +286,12 @@ fn strip_unresolvable_dependencies(
         }
         if r.pruned_file_names.contains(&dep) {
             if !r.quiet {
-                r.events.w(&[
-                    "w3",
-                    &format!("Warning: stripped pruned dependency \"{dep}\" from {file_name}"),
-                ]);
+                r.events.w3(&format!(
+                    "Warning: stripped pruned dependency \"{dep}\" from {file_name}"
+                ));
             }
         } else {
-            r.events.w(&["w1", &dep]);
+            r.events.w1(&dep);
         }
     }
 }
@@ -346,7 +345,7 @@ fn strip_unresolvable_field_types(
             .or_default()
             .push(record);
         if !r.quiet {
-            r.events.w(&["w4", &type_name]);
+            r.events.w4(&type_name);
         }
     }
     for (owner, record, types) in methods {
@@ -356,7 +355,7 @@ fn strip_unresolvable_field_types(
             .push(record);
         if !r.quiet {
             for t in types {
-                r.events.w(&["w4", &t]);
+                r.events.w4(&t);
             }
         }
     }

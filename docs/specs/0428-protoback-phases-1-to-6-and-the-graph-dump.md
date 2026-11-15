@@ -104,10 +104,13 @@ sorted copy: rendering will walk nodes in it (spec 0424 S17, S18).
 ### protoback
 
 - **S7. The crate.** `protoback/`, in the workspace, one binary
-  `protoback`, structured as reproto (spec 0424 S7): `load` (phase 1,
-  the input's files and their splitting), `pool` (phase 2), `graph` (the
-  node arena, phase 3), `prune`, `reach`, `summon` (phases 4 to 6),
-  `dump` (S1–S6), `variant` (the variant YAML and its resources), `cli`.
+  `protoback`, structured as reproto (spec 0424 S7): `load` (the input's
+  files and their splitting), `topology`, `phase1` (discovery), `db` and
+  `phase2` (the pool), `graph` (the node arena, phase 3), `phase4`,
+  `phase5`, `phase6` (pruning, reachability, summoning), `select` (the
+  nodes a pattern names, and the "Did you mean" suggestion), `events`
+  (S6), `dump` (S1–S6), `variant` (the variant YAML and its resources),
+  `cli`.
   - Text input through `prototext_upb::input::read_input` (spec 0427):
     no tree-sitter.
   - A directory is walked in sorted path order, component by component,
@@ -115,6 +118,19 @@ sorted copy: rendering will walk nodes in it (spec 0424 S17, S18).
     filesystem's listing order (`Path.rglob`), on which W7's "first
     occurrence" and the topology's order depended
     (`test_a_directory_is_read_in_sorted_order`).
+  - Phase 4 prunes a node the user named along with one it contains, as
+    reproto does since 2026-11-15: before, reproto failed an assertion on
+    it (`--prune desc:X --prune fdsc:X.f`,
+    `test_a_node_pruned_with_one_of_its_children`).
+  - Phase 5 tries the path seeds' files in FQDN order, as reproto does
+    since 2026-11-15: before, reproto took them from a set of strings, so
+    their "Seed not found" and "Skipping pruned seed" messages came in an
+    order `PYTHONHASHSEED` set (`test_path_seeds_are_tried_in_sorted_order`).
+  - The "Did you mean" suggestion ranks nodes by rapidfuzz's
+    `fuzz.ratio`, from the `rapidfuzz` crate, by the author of Python's;
+    a table of Python's scores (`protoback/src/fuzz/cases.rs`) checks the
+    two agree bit for bit. The crate's `fuzz::ratio`, not its
+    `RatioBatchComparator`, which in 0.5.0 scores some pairs differently.
   - The built-in variant's resources (its `.pb` fallbacks) are reproto's,
     `reproto/src/reproto/variants/`, embedded at build time: protoback is
     not published yet (spec 0424 S15), and the two tools must load the

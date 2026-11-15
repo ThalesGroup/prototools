@@ -24,11 +24,16 @@ pub struct Run {
     pub pruned_fqdns: BTreeSet<String>,
     pub pruned_file_names: BTreeSet<String>,
     pub pruned_paths: PathPatterns,
+    /// The `--seed` FQDN patterns, which phase 5 matches nodes with.
+    pub seed_fqdns: Vec<String>,
     pub path_seeds: PathPatterns,
     pub path_seed_fqdns: BTreeSet<String>,
     pub fallback_protos: Vec<String>,
     pub variant: Variant,
     pub keep_duplicates: bool,
+    /// `--schema-db-out`: phase 6 sets the schema database's extra files
+    /// aside.
+    pub build_schema_db: bool,
     pub go_root: Option<String>,
     pub quiet: bool,
     pub debug: bool,
@@ -40,6 +45,10 @@ pub struct Run {
     /// descriptor.proto.
     pub db: Database,
     pub edition_defaults: EditionDefaults,
-    /// Phase 3's nodes.
+    /// Phase 3's nodes, which phases 4 to 6 mark.
     pub graph: Graph,
+    /// Phase 5's seeds.
+    pub seed_nodes: BTreeSet<usize>,
+    /// Phase 6's files for the schema database, beyond the summoned ones.
+    pub schema_db_extra_nodes: Vec<usize>,
 }

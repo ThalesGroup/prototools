@@ -122,6 +122,16 @@ def prepare(work: Path, googleapis: Path | None, otel: Path | None) -> None:
                   b"\x00\xff" * 512]
     (blob / "blob.bin").write_bytes(b"".join(parts))
 
+    # Two files defining the same message, each compiled alone: phase 2
+    # prunes the second (W3), unless --keep-duplicates.
+    dup = corpus / "duplicates"
+    (dup / "src").mkdir(parents=True)
+    for name in ("dup_one", "dup_two"):
+        (dup / "src" / f"{name}.proto").write_text(
+            'syntax = "proto2";\npackage dup;\nmessage Same {}\n')
+        assert protoc(f"-I{dup / 'src'}", f"--descriptor_set_out={dup / name}.pb",
+                      f"{name}.proto") is not None
+
     # The demos' anomalies set.
     demo = corpus / "demo"
     demo.mkdir()
@@ -185,9 +195,49 @@ def cases(corpus: Path) -> list[Case]:
         ("seed-desc", ["--seed", "desc:tutorial.Person"]),
         ("prune-file", ["--prune", "file:google/protobuf/timestamp.proto"]),
         ("prune-glob", ["--prune", "desc:tutorial.*"]),
+        # Phases 4 and 5's messages: a near miss and its suggestion, a
+        # glob matching nothing (no suggestion), a pruned seed.
+        ("seed-near-miss", ["--seed", "desc:tutorial.Persn"]),
+        ("prune-near-miss", ["--prune", "desc:tutorial.Persn"]),
+        ("seed-glob-none", ["--seed", "desc:nowhere.*"]),
+        ("seed-pruned", ["--seed", "desc:tutorial.Person", "--prune", "desc:tutorial.Person"]),
+        # A message and one of its fields, both named.
+        ("prune-with-child", ["--prune", "desc:tutorial.Person",
+                              "--prune", "fdsc:tutorial.Person.id"]),
+        ("seed-glob", ["--seed", "desc:tutorial.*"]),
+        # Path seeds: the files they match, then pruned.
+        ("seed-path", ["--seed", "*"]),
+        ("seed-path-pruned", ["--seed", "*", "--prune", "file:address_book.proto"]),
+        ("debug-fqdn", ["--seed", "desc:tutorial.Person", "--debug-fqdn"]),
     ):
         out.append(Case(f"patterns/address_book/{name}",
                         ["-I", str(ab), *proto_out, *flags, "address_book.pb"]))
+
+    # Summoning (spec 0046) under a seed or prune, as test_summoning.py
+    # runs it: each set's top file, its imports included.
+    for top, flags in (
+        ("tc1_a", ["--seed", "desc:.tc1.TA"]),
+        ("tc2_a", ["--seed", "desc:.tc2.TA"]),
+        ("tc3_a", ["--seed", "desc:.tc3.TA"]),
+        ("tc4_user", ["--seed", "desc:.tc4.Leaf"]),
+        ("bridge_lex_a", ["--seed", "desc:.bridgelex.LexA"]),
+        ("tc6_a", ["--seed", "desc:.tc6.TA"]),
+        ("tc7_u", ["--seed", "desc:.tc7.TS"]),
+        ("tc8_q", ["--prune", "file:tc8_p.proto"]),
+    ):
+        d = corpus / "imports" / top
+        out.append(Case(f"summoning/{top}",
+                        ["-I", str(d), *proto_out, *flags, f"{top}.pb"]))
+
+    # The collector's warnings printed at once: W3 for a duplicate, W7
+    # for one file under two roots (binary and text).
+    dup = corpus / "duplicates"
+    for name, flags in (("default", []), ("keep", ["--keep-duplicates"])):
+        out.append(Case(f"duplicates/{name}",
+                        ["-I", str(dup), *proto_out, *flags, "dup_one.pb", "dup_two.pb"]))
+    out.append(Case("shadowed/default",
+                    ["-I", str(corpus / "imports" / "address_book"),
+                     "-I", str(corpus / "text" / "address_book"), *proto_out]))
 
     blob = corpus / "blob" / "blob.bin"
     out.append(Case("blob/default", ["-I", str(blob), *proto_out]))

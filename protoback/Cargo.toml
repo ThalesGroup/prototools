@@ -26,3 +26,4 @@ serde_yaml     = "0.9"
 sha2           = "0.10"
 regex          = "1"
 workspace-hack = { version = "0.1", path = "../workspace-hack" }
+rapidfuzz = "0.5"

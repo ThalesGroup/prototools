@@ -451,8 +451,7 @@ fn load_files(ctx: &mut LoadCtx, roots: &[PathBuf], rel_path: &Path) -> Vec<RawF
         }
     }
     if loaded.is_empty() {
-        ctx.events
-            .w(&["w1", &posix_str(&rel_path.to_string_lossy())]);
+        ctx.events.w1(&posix_str(&rel_path.to_string_lossy()));
     }
     loaded
 }
@@ -516,12 +515,11 @@ pub fn load_from_path(ctx: &mut LoadCtx, roots: &[PathBuf], rel_path: &Path) -> 
                 deduped.push(qf);
             }
             Some((root, rel)) => {
-                ctx.events.w(&[
-                    "w7",
+                ctx.events.w7(
                     &qf.name,
                     &py_join(&qf.root, &qf.rel_path),
                     &py_join(root, rel),
-                ]);
+                );
             }
         }
     }

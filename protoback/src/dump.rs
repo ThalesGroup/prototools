@@ -85,7 +85,11 @@ fn context(r: &Run, out: &mut String) {
             }
         }
     }
-    let _ = writeln!(out, "schema db extra nodes | []");
+    let extra = r
+        .schema_db_extra_nodes
+        .iter()
+        .map(|&i| r.graph.nodes[i].fqdn.as_str());
+    let _ = writeln!(out, "schema db extra nodes | {}", list(extra));
 }
 
 fn nodes(r: &Run, out: &mut String) {
@@ -134,7 +138,7 @@ fn nodes(r: &Run, out: &mut String) {
     }
 }
 
-/// The dump of what the phases ran so far leave.
+/// The dump of what phases 1 to 6 leave.
 pub fn write(r: &Run, topo: &Topology) -> String {
     let mut out = String::new();
     out.push_str("[files]\n");
@@ -145,7 +149,18 @@ pub fn write(r: &Run, topo: &Topology) -> String {
     context(r, &mut out);
     out.push_str("[nodes]\n");
     nodes(r, &mut out);
-    out.push_str("[seeds]\n[warnings]\n");
+    out.push_str("[seeds]\n");
+    let mut seeds: Vec<&str> = r
+        .seed_nodes
+        .iter()
+        .map(|&i| r.graph.nodes[i].fqdn.as_str())
+        .collect();
+    seeds.sort();
+    for s in seeds {
+        out.push_str(s);
+        out.push('\n');
+    }
+    out.push_str("[warnings]\n");
     for line in &r.events.lines {
         out.push_str(line);
         out.push('\n');

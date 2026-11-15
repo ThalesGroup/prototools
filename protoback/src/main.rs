@@ -9,12 +9,17 @@ mod cli;
 mod db;
 mod dump;
 mod events;
+mod fuzz;
 mod graph;
 mod load;
 mod pathmatch;
 mod phase1;
 mod phase2;
+mod phase4;
+mod phase5;
+mod phase6;
 mod run;
+mod select;
 mod topology;
 mod variant;
 
@@ -179,8 +184,7 @@ fn main() -> ExitCode {
     }
     let all_seeds: Vec<String> = cli.seeds.iter().cloned().chain(config_seeds).collect();
     let all_stumps: Vec<String> = cli.stumps.iter().cloned().chain(config_prunes).collect();
-    // FQDN seeds are validated here; phase 5 reads them (milestone 4).
-    let ((_, seed_paths), (prune_fqdns, prune_paths)) =
+    let ((seed_fqdns, seed_paths), (prune_fqdns, prune_paths)) =
         match (partition(&all_seeds), partition(&all_stumps)) {
             (Ok(s), Ok(p)) => (s, p),
             (Err(e), _) | (_, Err(e)) => return usage(&e),
@@ -205,11 +209,13 @@ fn main() -> ExitCode {
         pruned_fqdns: prune_fqdns.into_iter().collect(),
         pruned_file_names: BTreeSet::new(),
         pruned_paths: PathPatterns::new(&prune_paths),
+        seed_fqdns,
         path_seeds: PathPatterns::new(&seed_paths),
         path_seed_fqdns: BTreeSet::new(),
         fallback_protos: fallback,
         variant,
         keep_duplicates: cli.keep_duplicates,
+        build_schema_db: cli.build_schema_db.is_some() || cli.build_schema_db_deprecated.is_some(),
         go_root: cli.go_root.clone(),
         quiet: cli.quiet,
         debug: cli.debug,
@@ -219,6 +225,8 @@ fn main() -> ExitCode {
         db: db::Database::default(),
         graph: graph::Graph::default(),
         edition_defaults: Default::default(),
+        seed_nodes: BTreeSet::new(),
+        schema_db_extra_nodes: Vec::new(),
     };
     let mut topo = topology::Topology::default();
     phase1::run(&mut run, &mut topo);
@@ -235,6 +243,9 @@ fn main() -> ExitCode {
         cli.force_proto2_output,
         &run.edition_defaults,
     );
+    phase4::run(&mut run, &mut topo);
+    phase5::run(&mut run, &topo);
+    phase6::run(&mut run);
 
     if let Err(e) = std::fs::write(&dump_path, dump::write(&run, &topo)) {
         eprintln!("Error: {}: {e}", dump_path.display());
