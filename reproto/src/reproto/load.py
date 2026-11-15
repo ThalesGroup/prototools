@@ -211,7 +211,10 @@ def _load_files(
             # Do not stop here (spec 0148 G1): a directory-shaped seed
             # argument (e.g. ".") must be scanned under every -I root, not
             # just the first one that happens to resolve as a directory.
-            for f in res_path.rglob('*'):
+            # Sorted by path (spec 0428): rglob lists entries in the
+            # filesystem's order, which W7's "first occurrence" and the
+            # topology's order would otherwise depend on.
+            for f in sorted(res_path.rglob('*')):
                 if f.suffix in ALL_EXTENSIONS:
                     f_rel = f.relative_to(root)
                     if ctx.pruned_paths.matches(f_rel):

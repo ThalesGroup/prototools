@@ -106,6 +106,11 @@ sorted copy: rendering will walk nodes in it (spec 0424 S17, S18).
   `dump` (S1–S6), `variant` (the variant YAML and its resources), `cli`.
   - Text input through `prototext_upb::input::read_input` (spec 0427):
     no tree-sitter.
+  - A directory is walked in sorted path order, component by component,
+    as reproto walks it since 2026-11-15: before, reproto took the
+    filesystem's listing order (`Path.rglob`), on which W7's "first
+    occurrence" and the topology's order depended
+    (`test_a_directory_is_read_in_sorted_order`).
   - The built-in variant's resources (its `.pb` fallbacks) are reproto's,
     `reproto/src/reproto/variants/`, embedded at build time: protoback is
     not published yet (spec 0424 S15), and the two tools must load the

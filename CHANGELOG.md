@@ -27,6 +27,11 @@ SPDX-License-Identifier: MIT
 
 ### Fixed
 
+- reproto reads a directory input, or a directory under `-I`, in sorted
+  path order, not in the order the filesystem lists it: which of two
+  files holding the same descriptor is kept (W7), and the order files are
+  processed in, no longer depend on how the directory was written
+  (spec 0428).
 - reproto: an import it leaves out, its file missing or pruned, no
   longer shifts the `public` and `weak` imports after it onto other
   files; the file's options, which upb then refused, render again

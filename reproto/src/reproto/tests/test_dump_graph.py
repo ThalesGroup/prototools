@@ -137,3 +137,54 @@ def test_seeds_and_pruning_show(tmp_path: Path) -> None:
     svc = next(line for line in text.splitlines()
                if line.startswith("ReServiceDescriptorProto | serv:.dg.Svc |"))
     assert svc.split(" | ")[3].startswith("P")
+
+
+def test_a_directory_is_read_in_sorted_order(tmp_path: Path) -> None:
+    """Files under a directory input are found sorted by path, whatever
+    order the filesystem lists them in; so the first of two files holding
+    the same descriptor, which W7 keeps, is the first by path."""
+    src = tmp_path / "src"
+    src.mkdir()
+    root = tmp_path / "root"
+    (root / "sub").mkdir(parents=True)
+    # Created out of order: a directory's listing order is the
+    # filesystem's, insertion order on a small ext4 or tmpfs directory.
+    names = ["zeta", "alpha", "sub/mu", "beta", "sub/kappa"]
+    for name in names:
+        proto = src / f"{name.replace('/', '_')}.proto"
+        proto.write_text(f'syntax = "proto2";\npackage {proto.stem};\n'
+                         f'message M {{}}\n', encoding="utf-8")
+        result = subprocess.run(
+            ["protoc", f"--descriptor_set_out={root / name}.pb", f"-I{src}",
+             str(proto)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, result.stderr
+    # Two files holding the same descriptor, the later by path created
+    # first: W7 keeps the first by path, b_second.pb, not y_first.pb.
+    omega = src / "omega.proto"
+    omega.write_text('syntax = "proto2";\npackage omega;\n', encoding="utf-8")
+    result = subprocess.run(
+        ["protoc", f"--descriptor_set_out={root / 'y_first.pb'}", f"-I{src}",
+         str(omega)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    (root / "b_second.pb").write_bytes((root / "y_first.pb").read_bytes())
+    dump = tmp_path / "graph.txt"
+    env = {**os.environ}
+    env.pop("REPROTO_VARIANT", None)
+    result = subprocess.run(
+        [*REPROTO_CMD, "--use-variant", "descriptor", f"-I{root}",
+         f"--dump-graph={dump}", "."],
+        capture_output=True, text=True, env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    files = dump.read_text(encoding="utf-8").split("[pool]", 1)[0]
+    paths = [line.split(" | ")[2].removeprefix(f"{root}/")
+             for line in files.splitlines() if " | file | " in line
+             and not line.split(" | ")[2].startswith("internal/")]
+    assert paths == ["alpha.pb", "b_second.pb", "beta.pb", "sub/kappa.pb",
+                     "sub/mu.pb", "zeta.pb"]
+    assert (f"w7 | omega.proto | {root}/y_first.pb | {root}/b_second.pb"
+            in dump.read_text())
