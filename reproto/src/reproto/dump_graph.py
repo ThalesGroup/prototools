@@ -136,7 +136,7 @@ def _nodes(ctx: Context) -> list[str]:
     for fqdn, n in ctx.nodes.items():
         flags = ("P" if n.is_pruned else "-") + ("R" if n.is_reachable else "-") \
             + ("S" if n.is_summoned else "-")
-        parent = n.parent.fqdn if n.parent is not None else "-"
+        parent = n.stored_parent.fqdn if n.stored_parent is not None else "-"
         lines.append(" | ".join([
             type(n).__name__, fqdn, "present" if n.is_present() else "stub",
             flags, parent,

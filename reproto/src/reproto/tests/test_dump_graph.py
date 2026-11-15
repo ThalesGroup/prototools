@@ -227,3 +227,34 @@ def test_files_of_one_rank_enter_the_pool_in_topology_order(tmp_path: Path) -> N
     # topology order; then root.proto.
     first_rank = [f for f in files if f != "root.proto"]
     assert pool == first_rank + ["root.proto"]
+
+
+def test_a_stub_node_is_dumped_without_a_parent(tmp_path: Path) -> None:
+    """A message named by a file whose import is missing is a stub node,
+    with no parent: the dump writes `-`, and does not fail on it."""
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "config.proto").write_text(
+        'syntax = "proto2";\npackage ext_test;\nmessage Config { extensions 100 to 200; }\n',
+        encoding="utf-8")
+    (src / "ext.proto").write_text(
+        'syntax = "proto2";\npackage ext_test;\nimport "config.proto";\n'
+        'extend Config { optional int32 x = 101; }\n', encoding="utf-8")
+    full = src / "full.pb"
+    result = subprocess.run(
+        ["protoc", "--include_imports", f"--descriptor_set_out={full}", f"-I{src}",
+         str(src / "ext.proto")],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    from google.protobuf.descriptor_pb2 import FileDescriptorSet
+    fds = FileDescriptorSet()
+    fds.ParseFromString(full.read_bytes())
+    kept = FileDescriptorSet()
+    kept.file.extend(f for f in fds.file if f.name != "config.proto")
+    pb = src / "set.pb"
+    pb.write_bytes(kept.SerializeToString())
+    text, _ = _dump(tmp_path, pb, "1")
+    stub = next(line for line in text.splitlines()
+                if line.startswith("ReDescriptorProto | desc:.ext_test.Config |"))
+    assert stub.split(" | ")[2:5] == ["stub", "---", "-"]

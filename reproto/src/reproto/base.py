@@ -215,6 +215,12 @@ class NodeBase(Generic[MessageT], ABC):
     def parent(self, value: 'NodeBase[Any]') -> None:
         self._parent = value
 
+    @property
+    def stored_parent(self) -> 'NodeBase[Any] | None':
+        """The parent as stored: None for a file, and for a stub node (an
+        unresolved reference), which subclasses' `parent` refuses."""
+        return self._parent
+
     # === Utility Methods ===
 
     def is_present(self) -> bool:
