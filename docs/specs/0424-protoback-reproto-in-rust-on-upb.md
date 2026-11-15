@@ -650,3 +650,52 @@ development VM pinned to vCPUs 0–7, on mains power, host idle.
     and on a cut-down `descriptor.proto` in package `proto2`, where what
     the version lacks reads as absent, cannot be written, and comes back
     complete in its unknown fields.
+- **Step 3** (2026-11-14/15): the text format (S5), read in import order
+  (specs 0426, 0427); the variants' import section removed.
+  - Text input: googleapis' text (`protoc --decode`, descriptor.proto
+    alone, 56 MB) comes back byte for byte; read in 2.04 s on one E-core,
+    against 3.35 s for the two passes it replaced (spec 0427's measured
+    outcome). Python's `text_format` took 75 s on the same text and
+    dropped every option by number.
+  - S21, reproto at 7268428 (step 3 and the pragma cleanup) against
+    18dce2f (the baseline), 2026-11-15, the same session, back to back,
+    the same libraries (the dev shell's `prototext_codec_lib`,
+    `prototext_graph_lib`, `fdp_scan_lib`, built from 7268428; only
+    reproto's Python differs, from a worktree for 18dce2f),
+    `scripts/bench-protoback "python3 -m reproto.cli"`, default pinning
+    (vCPUs 0–7), host idle:
+
+    | Case | 18dce2f | 7268428 | Peak memory, both |
+    |---|---|---|---|
+    | WKT | 0.48 s ± 0.01, 6 runs | 0.47 s ± 0.01, 6 runs | 42 MB |
+    | custom | 0.63 s ± 0.01, 5 runs | 0.62 s ± 0.01, 5 runs | 45 MB |
+    | googleapis | 168.2 s ± 0.3 (168.5, 168.0, 168.0) | 170.2 s ± 0.8 (170.3, 171.0, 169.4) | 1.29 GB |
+
+    googleapis is 2.0 s (1.2 %) slower. One run of each under
+    `scripts/reproto-phase-times`, same flags and pinning, puts all of
+    it in rendering: `_phase7_output` 109.6 s against 111.2 s (+1.6 s;
+    wall 165.7 s against 167.2 s); every other phase within 0.2 s
+    (`_phase_build_schema_db` 24.1, `_phase_emit_scoring_graphs` 23.1,
+    `yaml.dump` 41.0 and 40.9 in all, counted in its callers' phases too,
+    `_phase3_build_graph` 4.8–4.9,
+    `_phase6_summoning` 2.2, `_phase2_build_pool` 1.1,
+    `_phase5_reachability` 0.5, `_phase1_load_files` 0.4). Not
+    explained: no code rendering runs changed between the two commits
+    (`_phase7_output` and the `re_*` modules are identical); on binary
+    input the text path returns at once; the changes on the path are a
+    `QualFile.imports` property the topology reads (phase 1, unchanged
+    in time), a `None` check in `QualFile.desc`, which the `re_*`
+    modules do not read, and the progress callback, a named function
+    instead of a lambda, called once per file (7,771 calls). Left: an
+    effect of the same order as Python's per-run hash seed and memory
+    layout. Recorded, not pursued: rendering is replaced by protoback's
+    in later steps.
+  - To come back to it: rebuild the corpus (`scripts/protoback-harness
+    prepare DIR --googleapis googleapis.pb --otel OTEL`, OTEL the
+    `corpusOtel` fetch of nix/python.nix), add a worktree for each
+    commit, and run `scripts/bench-protoback` with
+    `PYTHONPATH=WORKTREE/reproto/src` for each, back to back; then
+    `scripts/reproto-phase-times` with the googleapis case's flags for
+    each, and, if a phase differs, a profile of that phase in both
+    (`python -m cProfile -o …`), several runs each, `PYTHONHASHSEED`
+    fixed to separate the seed's effect from the code's.

@@ -205,8 +205,21 @@ files.
   its own options' declarations (S4's mending).
 - googleapis (7,771 files, 56 MB of text by number), read in import
   order: every file byte for byte, 19 W2, no W1, no file parsed twice.
-- Time: the two passes took, googleapis, one E-core, `release` (the
-  test's own timers): first pass 1.45 s, pool 0.57 s, second pass 1.45 s,
-  3.4 s in all. The single pass is to be timed the same way, on an idle
-  host. The split, lexed first (0.71 s), is now skimmed at the byte
-  level.
+- Time, googleapis' text, 2026-11-15, one E-core (vCPU 2), `release`,
+  the large-set test's own timers, five runs of each version
+  alternating, on an idle host:
+
+  | | split | reading | total |
+  |---|---|---|---|
+  | two passes (a9930d6) | none | 1.40 s, pool 0.55 s, 1.39 s | 3.35 s |
+  | one parse in import order | 0.09 s | 1.95 s | 2.04 s |
+
+  The runs agree within 4 %. One parse in import order costs a parse and
+  the pool, x1.46 a parse alone, against x2.4: 39 % less. The pool (0.55
+  s for 7,771 files) is what any reading with the input's declarations
+  pays; the scan is too small to show. The split, lexed in a first
+  version (0.71 s), is skimmed at the byte level.
+- End to end, binary input, which the text path leaves alone: googleapis
+  170.2 s ± 0.8 against 168.2 s ± 0.3 before step 3, same session, all
+  of it in rendering, whose code did not change; the record, and how to
+  come back to it, in spec 0424's measured outcome, step 3.

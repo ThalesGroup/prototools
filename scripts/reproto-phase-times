@@ -1,0 +1,67 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+#
+# SPDX-License-Identifier: MIT
+
+"""reproto with each phase timed (spec 0424 S21).
+
+Usage: scripts/reproto-phase-times REPROTO-ARGS...
+
+Runs the reproto found on PYTHONPATH (a worktree's ``reproto/src`` to time
+another commit) with the given arguments, and prints on stderr, after
+reproto's own output, the wall clock and the time spent in each
+``_phase*`` function and in ``yaml.dump``. ``yaml.dump`` is called from
+several phases: its time is counted in theirs too.
+
+Run it as the bench runs reproto (scripts/bench-protoback: pinned, in an
+empty directory, REPROTO_VARIANT and PROTOTEXT_* unset); one run gives
+the phase where a difference between two commits lies, hyperfine's
+several runs whether there is one.
+"""
+
+import atexit
+import sys
+import time
+from collections import defaultdict
+
+import yaml
+
+import reproto.phases as phases
+import reproto.reproto as driver
+from reproto.cli import main
+
+spent: dict[str, float] = defaultdict(float)
+start = time.perf_counter()
+
+
+def timed(name, fn):
+    def wrapper(*args, **kwargs):
+        t = time.perf_counter()
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            spent[name] += time.perf_counter() - t
+    return wrapper
+
+
+# One wrapper per phase, set in both modules: reproto.reproto imports the
+# phases by name, so wrapping each module on its own would time them twice.
+for name in dir(phases):
+    if name.startswith("_phase"):
+        wrapped = timed(name, getattr(phases, name))
+        setattr(phases, name, wrapped)
+        if hasattr(driver, name):
+            setattr(driver, name, wrapped)
+yaml.dump = timed("yaml.dump", yaml.dump)
+
+
+@atexit.register
+def report() -> None:
+    print(f"== wall {time.perf_counter() - start:.1f} s", file=sys.stderr)
+    for name, s in sorted(spent.items(), key=lambda kv: -kv[1]):
+        print(f"   {s:6.1f} s  {name}", file=sys.stderr)
+
+
+# The phases are looked up in the modules when they run: wrapped above.
+sys.argv = ["reproto", *sys.argv[1:]]
+main()
