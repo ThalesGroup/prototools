@@ -1,0 +1,30 @@
+#!/bin/sh
+# A pyo3-stub-gen stub, its ruff header dropped (spec 0409 S2).
+#
+# Usage: scripts/strip-stub-header < GENERATED > COMMITTED
+#
+# pyo3-stub-gen (0.23, generate/module.rs) writes, as every stub's second
+# line, a `# ruff: noqa` header, with no option to leave it out. It
+# silences nothing in these stubs, and the repo keeps no silencing pragma:
+# the committed stubs are the generator's output without that line. This
+# is the one place that says which line: scripts/refresh-stubs writes the
+# committed stubs through it, and workspaceBuild (nix/rust.nix) compares
+# them through it. A stub whose second line is anything else fails, so a
+# generator that changes the header is noticed, not silently passed.
+exec awk -v header='# ruff: noqa: E501, F401, F403, F405' '
+    NR == 2 {
+        if ($0 != header) {
+            print "strip-stub-header: line 2 is not the expected header: " $0 > "/dev/stderr"
+            failed = 1
+            exit 1
+        }
+        next
+    }
+    { print }
+    END {
+        if (!failed && NR < 2) {
+            print "strip-stub-header: no header line" > "/dev/stderr"
+            exit 1
+        }
+    }
+'

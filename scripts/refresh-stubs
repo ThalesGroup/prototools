@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Regenerate the committed stubs of every pyo3 extension (spec 0409 S2).
+#
+# Usage: scripts/refresh-stubs
+#
+# Each extension is a crate with a `*_post_build` binary, which writes its
+# stub aside, under target/stubs/; the committed stub, which the wheel
+# ships, is that output through scripts/strip-stub-header. workspaceBuild
+# (nix/rust.nix) fails on a committed stub that differs from it.
+set -euo pipefail
+root=$(cd "$(dirname "$0")/.." && pwd)
+cd "$root"
+for manifest in */Cargo.toml; do
+    crate=$(dirname "$manifest")
+    bin=$(sed -n 's/^name *= *"\(.*_post_build\)"$/\1/p' "$manifest")
+    [[ -n $bin ]] || continue
+    for committed in "$crate"/*/*.pyi; do
+        lib=$(basename "$committed" .pyi)
+        generated=target/stubs/$crate/$lib/$lib/__init__.pyi
+        CARGO_MANIFEST_DIR="$root/$crate" cargo run -q --profile quick --bin "$bin"
+        scripts/strip-stub-header < "$generated" > "$committed"
+        echo "refreshed $committed"
+    done
+done

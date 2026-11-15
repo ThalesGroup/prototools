@@ -111,6 +111,9 @@ let
         (pythonPackageFilter ./prototext-pyo3/prototext_codec_lib)
         (pythonPackageFilter ./fdp-scan-pyo3/fdp_scan_lib)
         (pythonPackageFilter ./prototext-graph-pyo3/prototext_graph_lib)
+        # What drops the stub generator's ruff header before that
+        # comparison (spec 0409 S2).
+        ./scripts/strip-stub-header
         (fixtureFilter ./prototext/fixtures)
         (fixtureFilter ./reproto/src/reproto/tests/fixtures)
         (fixtureFilter ./prototext-graph/tests/fixtures)

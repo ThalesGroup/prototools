@@ -77,6 +77,15 @@ them. It is the pattern prototext's fixtures had before spec 0405 S1.
   (`StubInfo::python_root`, a public field) to a scratch directory, and
   the existing comparison in `workspaceBuild` reads from there. A stale
   committed stub still fails with the diff and the refresh command.
+  - The committed stub is the generator's output without its second
+    line, the `# ruff: noqa: E501, F401, F403, F405` header pyo3-stub-gen
+    0.23 writes unconditionally: it silences nothing in these stubs, and
+    the repo keeps no silencing pragma (2026-11-15).
+    `scripts/strip-stub-header` drops it, and fails on any other second
+    line, so a generator that changes the header is noticed; both the
+    comparison and `scripts/refresh-stubs`, the refresh command, go
+    through it. The nixpkgs recipes ship the committed stub and do not
+    run the generator: they are unchanged.
 - **S3. Our build uses maturin too.** `makePyo3Extension` becomes
   `buildPythonPackage` with `maturinBuildHook`, as in nixpkgs, and
   `nix/pypi.nix` takes the wheels maturin produces instead of assembling

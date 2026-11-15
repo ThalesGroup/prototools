@@ -366,11 +366,13 @@ let
       in whenRunnable ''
       CARGO_MANIFEST_DIR="$PWD/${e.crateDir}" ./${profileDir}/${e.postBuildBin}
       # The committed stub is what the wheel ships: it must be what the
-      # generator writes. (A cross build cannot run the generator, and
-      # relies on the native builds' comparison.)
-      if ! diff -u ${committed} ${generated} >&2; then
+      # generator writes, without the ruff header it cannot be told to
+      # leave out (scripts/strip-stub-header). (A cross build cannot run
+      # the generator, and relies on the native builds' comparison.)
+      sh scripts/strip-stub-header < ${generated} > "$TMPDIR/${e.libName}.pyi"
+      if ! diff -u ${committed} "$TMPDIR/${e.libName}.pyi" >&2; then
         echo "${committed} is stale (diff above). Refresh it with:" >&2
-        echo "  (cd ${e.crateDir} && CARGO_MANIFEST_DIR=\$PWD cargo run --release --bin ${e.postBuildBin}) && cp ${generated} ${committed}" >&2
+        echo "  scripts/refresh-stubs" >&2
         exit 1
       fi
     '' + ''
