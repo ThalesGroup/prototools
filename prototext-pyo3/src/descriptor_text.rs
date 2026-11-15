@@ -12,8 +12,6 @@
 // `parse_descriptor_text` parses with `descriptor.proto` alone, for what
 // must see a file before the input is complete (an FDP plugin).
 
-use std::sync::OnceLock;
-
 use prototext_upb::input::{read_input, Input, Read};
 use prototext_upb::text_format::{self, Options};
 use prototext_upb::Pool;
@@ -22,13 +20,6 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use pyo3_stub_gen::derive::gen_stub_pyfunction;
-
-/// The vendored `descriptor.proto`, alone: the types of a descriptor, and
-/// none of the extensions an input declares.
-fn pool() -> &'static Pool {
-    static POOL: OnceLock<Pool> = OnceLock::new();
-    POOL.get_or_init(Pool::with_descriptor_proto)
-}
 
 /// Unknown names skipped: a field of a newer `descriptor.proto`, an
 /// extension the pool does not declare (reported, spec 0427 S4).
@@ -75,7 +66,7 @@ pub fn parse_descriptor_text<'py>(
     } else {
         "google.protobuf.FileDescriptorProto"
     };
-    let def = pool()
+    let def = Pool::vendored()
         .get_message_by_name(name)
         .expect("the vendored descriptor.proto declares it");
     let bytes = text_format::parse(&def, text, LENIENT)

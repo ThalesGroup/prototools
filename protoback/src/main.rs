@@ -115,58 +115,14 @@ fn filter_config(path: &Path) -> Result<(Vec<String>, Vec<String>), String> {
 
 /// The fallbacks `--use-variant` asks for, in reproto's order.
 fn fallback_protos(use_variant: &[UseVariant], variant: &Variant) -> Vec<String> {
-    use UseVariant as U;
-    let mut set: BTreeSet<&str> = use_variant
-        .iter()
-        .map(|u| match u {
-            U::Any => "any",
-            U::Empty => "empty",
-            U::Timestamp => "timestamp",
-            U::Duration => "duration",
-            U::Struct => "struct",
-            U::Wrappers => "wrappers",
-            U::Descriptor => "descriptor",
-            U::SourceContext => "source_context",
-            U::FieldMask => "field_mask",
-            U::Type => "type",
-            U::Api => "api",
-            U::All => "all",
-        })
-        .collect();
-    if set.contains("all") {
-        set = [
-            "any",
-            "empty",
-            "timestamp",
-            "duration",
-            "struct",
-            "wrappers",
-            "descriptor",
-            "source_context",
-            "field_mask",
-            "type",
-            "api",
-        ]
-        .into();
-    }
+    let wanted = |u: UseVariant| use_variant.contains(&UseVariant::All) || use_variant.contains(&u);
     let mut out = Vec::new();
-    if set.contains("descriptor") {
+    if wanted(UseVariant::Descriptor) {
         out.push(variant.descriptor_proto.clone());
     }
-    for name in [
-        "any",
-        "empty",
-        "timestamp",
-        "duration",
-        "struct",
-        "wrappers",
-        "source_context",
-        "field_mask",
-        "type",
-        "api",
-    ] {
-        if set.contains(name) {
-            out.push(variant.well_known(&format!("google/protobuf/{name}.proto")));
+    for &u in UseVariant::WELL_KNOWN {
+        if wanted(u) {
+            out.push(variant.well_known(&format!("google/protobuf/{}.proto", u.name())));
         }
     }
     out

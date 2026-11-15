@@ -28,6 +28,7 @@ mod mend;
 mod message;
 mod set;
 pub mod text_format;
+pub mod wire;
 
 pub use message::{
     DynamicMessage, List, MapRef, MessageError, MessageMut, MessageRef, Scalar, Value,
@@ -197,6 +198,13 @@ impl Pool {
         let report = pool.load_set(DESCRIPTOR_SET);
         debug_assert!(report.skipped.is_empty() && report.set_error.is_none());
         pool
+    }
+
+    /// The one [`with_descriptor_proto`](Pool::with_descriptor_proto) pool
+    /// of the process, built when first asked for.
+    pub fn vendored() -> &'static Pool {
+        static POOL: std::sync::OnceLock<Pool> = std::sync::OnceLock::new();
+        POOL.get_or_init(Pool::with_descriptor_proto)
     }
 
     fn raw(&self) -> *mut ffi::DefPool {

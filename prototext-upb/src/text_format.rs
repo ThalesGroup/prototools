@@ -28,6 +28,9 @@
 use std::collections::HashMap;
 use std::fmt;
 
+use crate::wire::{
+    put_len, put_tag, put_varint, END_GROUP, FIXED32, FIXED64, LEN, START_GROUP, VARINT,
+};
 use crate::{Cardinality, Field, Kind, Message, Pool};
 
 /// What to do with names the type does not know.
@@ -346,13 +349,7 @@ pub fn descriptor_type(pool: &Pool, descriptor_file: &str, name: &str) -> Option
         });
     pool.get_message_by_name(&format!("{package}.{name}"))
         .or_else(|| pool.get_message_by_name(&format!("google.protobuf.{name}")))
-        .or_else(|| vendored().get_message_by_name(&format!("google.protobuf.{name}")))
-}
-
-/// The vendored `descriptor.proto`, alone.
-pub(crate) fn vendored() -> &'static Pool {
-    static POOL: std::sync::OnceLock<Pool> = std::sync::OnceLock::new();
-    POOL.get_or_init(Pool::with_descriptor_proto)
+        .or_else(|| Pool::vendored().get_message_by_name(&format!("google.protobuf.{name}")))
 }
 
 // ── Lexer ───────────────────────────────────────────────────────────────────
@@ -590,31 +587,6 @@ fn lex_string(b: &[u8], start: usize) -> Result<(Vec<u8>, usize), String> {
 }
 
 // ── Encoder ─────────────────────────────────────────────────────────────────
-
-const WT_VARINT: u32 = 0;
-const WT_FIXED64: u32 = 1;
-const WT_LEN: u32 = 2;
-const WT_START_GROUP: u32 = 3;
-const WT_END_GROUP: u32 = 4;
-const WT_FIXED32: u32 = 5;
-
-fn put_varint(out: &mut Vec<u8>, mut v: u64) {
-    while v >= 0x80 {
-        out.push((v as u8) | 0x80);
-        v >>= 7;
-    }
-    out.push(v as u8);
-}
-
-fn put_tag(out: &mut Vec<u8>, number: u32, wire_type: u32) {
-    put_varint(out, (u64::from(number) << 3) | u64::from(wire_type));
-}
-
-fn put_len(out: &mut Vec<u8>, number: u32, payload: &[u8]) {
-    put_tag(out, number, WT_LEN);
-    put_varint(out, payload.len() as u64);
-    out.extend_from_slice(payload);
-}
 
 /// The fields of one message, in text order. A packed field's values are
 /// gathered into one record, where the field first appears.
@@ -952,9 +924,9 @@ impl Parser {
             let payload = inner.finish();
             let mut out = Vec::new();
             if f.is_group() {
-                put_tag(&mut out, n, WT_START_GROUP);
+                put_tag(&mut out, n, START_GROUP);
                 out.extend(payload);
-                put_tag(&mut out, n, WT_END_GROUP);
+                put_tag(&mut out, n, END_GROUP);
             } else {
                 put_len(&mut out, n, &payload);
             }
@@ -965,7 +937,7 @@ impl Parser {
         let written = self.scalar()?;
         let (wire_type, payload) =
             encode_scalar(f, &written).map_err(|m| self.error_at(start, m))?;
-        if f.cardinality() == Cardinality::Repeated && f.is_packed() && wire_type != WT_LEN {
+        if f.cardinality() == Cardinality::Repeated && f.is_packed() && wire_type != LEN {
             frame.packed(n).extend(payload);
         } else {
             let mut out = Vec::new();
@@ -1027,9 +999,9 @@ impl Parser {
                 self.fields(&sub, &mut inner, Some(end))?;
                 let payload = inner.finish();
                 if f.is_group() {
-                    put_tag(out, number, WT_START_GROUP);
+                    put_tag(out, number, START_GROUP);
                     out.extend(payload);
-                    put_tag(out, number, WT_END_GROUP);
+                    put_tag(out, number, END_GROUP);
                 } else {
                     put_len(out, number, &payload);
                 }
@@ -1047,9 +1019,9 @@ impl Parser {
             Some(_) => {
                 // A scalar printed as a message: kept as protoc read it.
                 let (body, _) = self.raw_body(end, Raw::Group)?;
-                put_tag(out, number, WT_START_GROUP);
+                put_tag(out, number, START_GROUP);
                 out.extend(body);
-                put_tag(out, number, WT_END_GROUP);
+                put_tag(out, number, END_GROUP);
             }
             None => {
                 self.warnings.push(Warning::Undeclared {
@@ -1088,9 +1060,9 @@ impl Parser {
                 match raw {
                     Raw::Group => {
                         nested |= !body.is_empty() || deeper;
-                        put_tag(&mut out, number, WT_START_GROUP);
+                        put_tag(&mut out, number, START_GROUP);
                         out.extend(body);
-                        put_tag(&mut out, number, WT_END_GROUP);
+                        put_tag(&mut out, number, END_GROUP);
                     }
                     Raw::Len => put_len(&mut out, number, &body),
                 }
@@ -1117,11 +1089,11 @@ impl Parser {
                     .map_err(|_| self.error_at(start, "malformed number"))?;
                 match digits.len() {
                     8 => {
-                        put_tag(out, number, WT_FIXED32);
+                        put_tag(out, number, FIXED32);
                         out.extend((v as u32).to_le_bytes());
                     }
                     16 => {
-                        put_tag(out, number, WT_FIXED64);
+                        put_tag(out, number, FIXED64);
                         out.extend(v.to_le_bytes());
                     }
                     _ => {
@@ -1135,7 +1107,7 @@ impl Parser {
             Tok::Int(t) => {
                 let v = parse_integer(t, written.negative)
                     .ok_or_else(|| self.error_at(start, "malformed integer"))?;
-                put_tag(out, number, WT_VARINT);
+                put_tag(out, number, VARINT);
                 put_varint(out, v as u64);
             }
             _ => {
@@ -1258,48 +1230,48 @@ fn encode_scalar(f: &Field, w: &Written) -> Result<(u32, Vec<u8>), String> {
                 &mut out,
                 integer(i32::MIN.into(), i32::MAX.into())? as i64 as u64,
             );
-            WT_VARINT
+            VARINT
         }
         Kind::Int64 => {
             put_varint(
                 &mut out,
                 integer(i64::MIN.into(), i64::MAX.into())? as i64 as u64,
             );
-            WT_VARINT
+            VARINT
         }
         Kind::Uint32 => {
             put_varint(&mut out, integer(0, u32::MAX.into())? as u64);
-            WT_VARINT
+            VARINT
         }
         Kind::Uint64 => {
             put_varint(&mut out, integer(0, u64::MAX.into())? as u64);
-            WT_VARINT
+            VARINT
         }
         Kind::Sint32 => {
             let v = integer(i32::MIN.into(), i32::MAX.into())? as i32;
             put_varint(&mut out, u64::from(((v << 1) ^ (v >> 31)) as u32));
-            WT_VARINT
+            VARINT
         }
         Kind::Sint64 => {
             let v = integer(i64::MIN.into(), i64::MAX.into())? as i64;
             put_varint(&mut out, ((v << 1) ^ (v >> 63)) as u64);
-            WT_VARINT
+            VARINT
         }
         Kind::Fixed32 => {
             out.extend((integer(0, u32::MAX.into())? as u32).to_le_bytes());
-            WT_FIXED32
+            FIXED32
         }
         Kind::Sfixed32 => {
             out.extend((integer(i32::MIN.into(), i32::MAX.into())? as i32).to_le_bytes());
-            WT_FIXED32
+            FIXED32
         }
         Kind::Fixed64 => {
             out.extend((integer(0, u64::MAX.into())? as u64).to_le_bytes());
-            WT_FIXED64
+            FIXED64
         }
         Kind::Sfixed64 => {
             out.extend((integer(i64::MIN.into(), i64::MAX.into())? as i64).to_le_bytes());
-            WT_FIXED64
+            FIXED64
         }
         Kind::Bool => {
             let v = match (&w.tok, w.negative) {
@@ -1310,19 +1282,19 @@ fn encode_scalar(f: &Field, w: &Written) -> Result<(u32, Vec<u8>), String> {
                 _ => return Err(format!("expected a bool for \"{}\"", f.name())),
             };
             out.push(u8::from(v));
-            WT_VARINT
+            VARINT
         }
         Kind::Float => {
             let v =
                 parse_float(w).ok_or_else(|| format!("expected a float for \"{}\"", f.name()))?;
             out.extend((v as f32).to_le_bytes());
-            WT_FIXED32
+            FIXED32
         }
         Kind::Double => {
             let v =
                 parse_float(w).ok_or_else(|| format!("expected a double for \"{}\"", f.name()))?;
             out.extend(v.to_le_bytes());
-            WT_FIXED64
+            FIXED64
         }
         Kind::String | Kind::Bytes => {
             let Tok::Str(s) = &w.tok else {
@@ -1330,7 +1302,7 @@ fn encode_scalar(f: &Field, w: &Written) -> Result<(u32, Vec<u8>), String> {
             };
             put_varint(&mut out, s.len() as u64);
             out.extend_from_slice(s);
-            WT_LEN
+            LEN
         }
         Kind::Enum(e) => {
             let number = match (&w.tok, w.negative) {
@@ -1352,7 +1324,7 @@ fn encode_scalar(f: &Field, w: &Written) -> Result<(u32, Vec<u8>), String> {
                 _ => return Err(format!("expected an enum value for \"{}\"", f.name())),
             };
             put_varint(&mut out, i64::from(number) as u64);
-            WT_VARINT
+            VARINT
         }
         Kind::Message(_) => unreachable!("messages are not scalars"),
     };

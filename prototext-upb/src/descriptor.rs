@@ -20,6 +20,8 @@
 
 use std::fmt;
 
+use crate::wire::{put_len, put_tag, put_varint, read_varint, VARINT};
+
 // ── Wire ────────────────────────────────────────────────────────────────────
 
 /// Why bytes did not decode as the requested structure.
@@ -110,19 +112,6 @@ fn fields(buf: &[u8]) -> Result<Vec<(u32, Value<'_>)>, DecodeError> {
     Ok(out)
 }
 
-fn read_varint(buf: &[u8], pos: &mut usize) -> Option<u64> {
-    let mut value = 0u64;
-    for i in 0..10 {
-        let byte = *buf.get(*pos)?;
-        *pos += 1;
-        value |= u64::from(byte & 0x7f) << (7 * i);
-        if byte & 0x80 == 0 {
-            return Some(value);
-        }
-    }
-    None
-}
-
 fn string(v: Value<'_>) -> Result<String, DecodeError> {
     match v {
         Value::Len(b) => match std::str::from_utf8(b) {
@@ -156,37 +145,15 @@ fn boolean(v: Value<'_>) -> Result<bool, DecodeError> {
     }
 }
 
-fn put_varint(out: &mut Vec<u8>, mut v: u64) {
-    loop {
-        let byte = (v & 0x7f) as u8;
-        v >>= 7;
-        if v == 0 {
-            out.push(byte);
-            return;
-        }
-        out.push(byte | 0x80);
-    }
-}
-
-fn put_tag(out: &mut Vec<u8>, number: u32, wire_type: u8) {
-    put_varint(out, u64::from(number) << 3 | u64::from(wire_type));
-}
-
-fn put_bytes(out: &mut Vec<u8>, number: u32, b: &[u8]) {
-    put_tag(out, number, 2);
-    put_varint(out, b.len() as u64);
-    out.extend_from_slice(b);
-}
-
 fn put_str(out: &mut Vec<u8>, number: u32, s: &Option<String>) {
     if let Some(s) = s {
-        put_bytes(out, number, s.as_bytes());
+        put_len(out, number, s.as_bytes());
     }
 }
 
 fn put_int32(out: &mut Vec<u8>, number: u32, v: &Option<i32>) {
     if let Some(v) = *v {
-        put_tag(out, number, 0);
+        put_tag(out, number, VARINT);
         // Negative int32 values are sign-extended to ten bytes.
         put_varint(out, i64::from(v) as u64);
     }
@@ -194,13 +161,13 @@ fn put_int32(out: &mut Vec<u8>, number: u32, v: &Option<i32>) {
 
 fn put_bool(out: &mut Vec<u8>, number: u32, v: &Option<bool>) {
     if let Some(v) = *v {
-        put_tag(out, number, 0);
+        put_tag(out, number, VARINT);
         put_varint(out, u64::from(v));
     }
 }
 
 fn put_msg<M: Encode>(out: &mut Vec<u8>, number: u32, m: &M) {
-    put_bytes(out, number, &m.encode_to_vec());
+    put_len(out, number, &m.encode_to_vec());
 }
 
 /// Encoding and decoding, as prost's `Message` spells them.
@@ -303,7 +270,7 @@ impl Encode for FileDescriptorProto {
         put_str(out, 1, &self.name);
         put_str(out, 2, &self.package);
         for d in &self.dependency {
-            put_bytes(out, 3, d.as_bytes());
+            put_len(out, 3, d.as_bytes());
         }
         for m in &self.message_type {
             put_msg(out, 4, m);
@@ -787,7 +754,8 @@ impl Encode for SourceCodeInfo {
 }
 
 pub mod source_code_info {
-    use super::{fields, put_bytes, put_varint, read_varint, DecodeError, Encode, Value};
+    use super::{fields, DecodeError, Encode, Value};
+    use crate::wire::{put_len, put_varint, read_varint};
 
     /// `google.protobuf.SourceCodeInfo.Location`, without comments.
     #[derive(Debug, Clone, Default, PartialEq)]
@@ -824,7 +792,7 @@ pub mod source_code_info {
         for v in values {
             put_varint(&mut payload, i64::from(*v) as u64);
         }
-        put_bytes(out, number, &payload);
+        put_len(out, number, &payload);
     }
 
     impl Encode for Location {
@@ -1015,7 +983,7 @@ mod tests {
             put_int32(&mut expanded, 2, &Some(v));
         }
         let mut info = Vec::new();
-        put_bytes(&mut info, 1, &expanded);
+        put_len(&mut info, 1, &expanded);
         assert_eq!(SourceCodeInfo::decode(&info).unwrap(), packed);
         assert_eq!(
             SourceCodeInfo::decode(&packed.encode_to_vec()).unwrap(),

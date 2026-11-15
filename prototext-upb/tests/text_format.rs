@@ -74,14 +74,7 @@ fn files(pool: &Pool, set: &[u8]) -> Vec<Vec<u8>> {
 fn set_of(files: &[Vec<u8>]) -> Vec<u8> {
     let mut out = Vec::new();
     for f in files {
-        out.push(0x0a);
-        let mut n = f.len();
-        while n >= 0x80 {
-            out.push((n as u8) | 0x80);
-            n >>= 7;
-        }
-        out.push(n as u8);
-        out.extend_from_slice(f);
+        prototext_upb::wire::put_len(&mut out, 1, f);
     }
     out
 }

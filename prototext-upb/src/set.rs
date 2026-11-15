@@ -8,20 +8,7 @@
 //! Only two facts are read from each file: its name (field 1) and its
 //! imports (field 3). Everything else is upb's to parse.
 
-/// Read a varint at `*pos`, advancing it. `None` if the buffer ends inside
-/// the varint or it runs past ten bytes.
-fn read_varint(buf: &[u8], pos: &mut usize) -> Option<u64> {
-    let mut value = 0u64;
-    for i in 0..10 {
-        let byte = *buf.get(*pos)?;
-        *pos += 1;
-        value |= u64::from(byte & 0x7f) << (7 * i);
-        if byte & 0x80 == 0 {
-            return Some(value);
-        }
-    }
-    None
-}
+use crate::wire::read_varint;
 
 /// The fields of one message: `(field number, payload)` for each
 /// length-delimited field, the others skipped. Groups are skipped by

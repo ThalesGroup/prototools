@@ -638,29 +638,44 @@ impl MessageMut<'_> {
         unsafe { ffi::upb_Message_ClearFieldByDef(self.msg.as_ptr(), field.raw()) }
     }
 
+    /// The type of message field `field`, or an error naming it.
+    fn message_type(field: &Field) -> Result<Message, MessageError> {
+        match field.kind() {
+            Kind::Message(sub) => Ok(sub),
+            _ => Err(MessageError(format!(
+                "{} is not a message",
+                field.full_name()
+            ))),
+        }
+    }
+
+    /// `msg`, a message of type `def` in this message's arena, to change;
+    /// null is upb out of memory.
+    fn wrap(
+        &self,
+        msg: *mut ffi::RawMessage,
+        def: Message,
+    ) -> Result<MessageMut<'_>, MessageError> {
+        let msg = NonNull::new(msg).ok_or_else(|| MessageError("out of memory".into()))?;
+        Ok(MessageMut {
+            msg,
+            def,
+            arena: self.arena,
+            _life: PhantomData,
+        })
+    }
+
     /// A singular message field, created when it is not set.
     pub fn message_mut(&mut self, field: &Field) -> Result<MessageMut<'_>, MessageError> {
         check_field(&self.def, field);
-        let Kind::Message(sub) = field.kind() else {
-            return Err(MessageError(format!(
-                "{} is not a message",
-                field.full_name()
-            )));
-        };
+        let sub = Self::message_type(field)?;
         if field.cardinality() == Cardinality::Repeated {
             return Err(MessageError(format!("{} is repeated", field.full_name())));
         }
         // SAFETY: a singular message field of this message.
         let value = unsafe { ffi::upb_Message_Mutable(self.msg.as_ptr(), field.raw(), self.arena) };
         // SAFETY: for a message field, upb returns the sub-message.
-        let msg = NonNull::new(unsafe { value.msg })
-            .ok_or_else(|| MessageError("out of memory".into()))?;
-        Ok(MessageMut {
-            msg,
-            def: sub,
-            arena: self.arena,
-            _life: PhantomData,
-        })
+        self.wrap(unsafe { value.msg }, sub)
     }
 
     /// The array of a list field, created when it is empty.
@@ -679,6 +694,21 @@ impl MessageMut<'_> {
         Ok(arr)
     }
 
+    /// The array of a list field, `index` checked to be one of its
+    /// elements.
+    fn array_at(&mut self, field: &Field, index: usize) -> Result<*mut ffi::Array, MessageError> {
+        let arr = self.array(field)?;
+        // SAFETY: a valid array.
+        let len = unsafe { ffi::upb_Array_Size(arr) };
+        if index >= len {
+            return Err(MessageError(format!(
+                "{}: no element {index} of {len}",
+                field.full_name()
+            )));
+        }
+        Ok(arr)
+    }
+
     /// Append a scalar to a list field.
     pub fn push(&mut self, field: &Field, value: Scalar<'_>) -> Result<(), MessageError> {
         let arr = self.array(field)?;
@@ -691,32 +721,42 @@ impl MessageMut<'_> {
         }
     }
 
+    /// Remove element `index` of a list field; the ones after it move up.
+    pub fn remove(&mut self, field: &Field, index: usize) -> Result<(), MessageError> {
+        let arr = self.array_at(field, index)?;
+        // SAFETY: a valid array, and `index` within it.
+        unsafe { ffi::upb_Array_Delete(arr, index, 1) };
+        Ok(())
+    }
+
+    /// Element `index` of a list of messages, to change in place.
+    pub fn list_message_mut(
+        &mut self,
+        field: &Field,
+        index: usize,
+    ) -> Result<MessageMut<'_>, MessageError> {
+        let sub = Self::message_type(field)?;
+        let arr = self.array_at(field, index)?;
+        // SAFETY: an array of messages, and `index` within it.
+        self.wrap(unsafe { ffi::upb_Array_GetMutable(arr, index) }, sub)
+    }
+
     /// Append an empty message to a list of messages, and return it.
     pub fn push_message(&mut self, field: &Field) -> Result<MessageMut<'_>, MessageError> {
-        let Kind::Message(sub) = field.kind() else {
-            return Err(MessageError(format!(
-                "{} is not a message",
-                field.full_name()
-            )));
-        };
+        let sub = Self::message_type(field)?;
         let arr = self.array(field)?;
         // SAFETY: a valid table and arena.
-        let msg = NonNull::new(unsafe { ffi::upb_Message_New(mini_table(&sub), self.arena) })
-            .ok_or_else(|| MessageError("out of memory".into()))?;
-        let raw = ffi::MessageValue {
-            msg_val: msg.as_ptr(),
-        };
+        let msg = unsafe { ffi::upb_Message_New(mini_table(&sub), self.arena) };
+        if msg.is_null() {
+            return Err(MessageError("out of memory".into()));
+        }
+        let raw = ffi::MessageValue { msg_val: msg };
         // SAFETY: an array of messages of type `sub`; the message lives in
         // the same arena.
         if !unsafe { ffi::upb_Array_Append(arr, raw, self.arena) } {
             return Err(MessageError("out of memory".into()));
         }
-        Ok(MessageMut {
-            msg,
-            def: sub,
-            arena: self.arena,
-            _life: PhantomData,
-        })
+        self.wrap(msg, sub)
     }
 
     /// The field with this number in the message's type, or an error

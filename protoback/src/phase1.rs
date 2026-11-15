@@ -10,9 +10,9 @@ use std::path::{Path, PathBuf};
 
 use prototext_upb::descriptor_access::FileDescriptorSet;
 use prototext_upb::input::{read_input, Input, Read};
-use prototext_upb::DynamicMessage;
+use prototext_upb::{DynamicMessage, Pool};
 
-use crate::load::{descriptor_pool, load_from_path, name_and_imports, LoadCtx, QualFile};
+use crate::load::{load_from_path, name_and_imports, LoadCtx, QualFile};
 use crate::run::Run;
 use crate::topology::Topology;
 
@@ -82,7 +82,7 @@ fn embedded_fallback(r: &Run, proto_name: &str) -> Option<QualFile> {
         proto_name.strip_suffix(".proto").unwrap_or(proto_name)
     );
     let data = r.variant.resource(&pb_name)?;
-    let def = descriptor_pool().get_message_by_name("google.protobuf.FileDescriptorSet")?;
+    let def = Pool::vendored().get_message_by_name("google.protobuf.FileDescriptorSet")?;
     let set = DynamicMessage::decode(&def, &data).ok()?;
     let first = FileDescriptorSet(set.as_ref()).file().into_iter().next()?;
     let bytes = first.0.encode().ok()?;

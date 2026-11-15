@@ -31,6 +31,31 @@ pub enum UseVariant {
     All,
 }
 
+impl UseVariant {
+    /// The well-known types, in the order reproto loads their fallbacks:
+    /// leaves before the files importing them. `descriptor` comes first,
+    /// apart: its file is the variant's.
+    pub const WELL_KNOWN: &'static [UseVariant] = &[
+        UseVariant::Any,
+        UseVariant::Empty,
+        UseVariant::Timestamp,
+        UseVariant::Duration,
+        UseVariant::Struct,
+        UseVariant::Wrappers,
+        UseVariant::SourceContext,
+        UseVariant::FieldMask,
+        UseVariant::Type,
+        UseVariant::Api,
+    ];
+
+    /// Its spelling, which is also its well-known file's stem.
+    pub fn name(self) -> String {
+        self.to_possible_value()
+            .map(|v| v.get_name().to_string())
+            .unwrap_or_default()
+    }
+}
+
 #[derive(Debug, Parser)]
 #[command(
     name = "protoback",

@@ -289,6 +289,8 @@ extern "C" {
     pub fn upb_Array_Size(arr: *const Array) -> usize;
     pub fn upb_Array_Get(arr: *const Array, i: usize) -> MessageValue;
     pub fn upb_Array_Append(array: *mut Array, val: MessageValue, arena: *mut Arena) -> bool;
+    pub fn upb_Array_Delete(array: *mut Array, i: usize, count: usize);
+    pub fn upb_Array_GetMutable(arr: *mut Array, i: usize) -> *mut RawMessage;
     pub fn upb_Map_Size(map: *const Map) -> usize;
     pub fn upb_Map_Next(
         map: *const Map,
@@ -409,6 +411,8 @@ mod tests {
             super::upb_Array_Size as *const (),
             super::upb_Array_Get as *const (),
             super::upb_Array_Append as *const (),
+            super::upb_Array_Delete as *const (),
+            super::upb_Array_GetMutable as *const (),
             super::upb_Map_Size as *const (),
             super::upb_Map_Next as *const (),
             super::upb_Map_Set as *const (),

@@ -72,14 +72,8 @@ pub fn py_join(root: &Path, rel: &Path) -> String {
     posix_str(&format!("{}/{}", root.to_string_lossy(), rel_s))
 }
 
-/// The pool that reads descriptors before any input is known.
-pub fn descriptor_pool() -> &'static Pool {
-    static POOL: std::sync::OnceLock<Pool> = std::sync::OnceLock::new();
-    POOL.get_or_init(Pool::with_descriptor_proto)
-}
-
 fn decode_fdp(bytes: &[u8]) -> Option<DynamicMessage> {
-    let def = descriptor_pool().get_message_by_name("google.protobuf.FileDescriptorProto")?;
+    let def = Pool::vendored().get_message_by_name("google.protobuf.FileDescriptorProto")?;
     DynamicMessage::decode(&def, bytes).ok()
 }
 
@@ -98,45 +92,90 @@ pub fn name_and_imports(bytes: &[u8]) -> Option<(String, Vec<String>)> {
 
 // ── split_fdps ──────────────────────────────────────────────────────────────
 
-fn read_varint(b: &[u8], pos: &mut usize) -> u64 {
-    let (mut v, mut shift) = (0u64, 0u32);
-    while *pos < b.len() {
-        let byte = b[*pos];
-        *pos += 1;
-        if shift < 64 {
-            v |= u64::from(byte & 0x7f) << shift;
+/// A varint as Python's `_scan_wire_tags` reads it: an integer of any
+/// size, read to the end of the data when it is cut short. Not
+/// `prototext_upb::wire::read_varint`, which refuses both: this one must
+/// accept what Python's scan accepts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PyInt {
+    /// Its low 128 bits, exact.
+    low: u128,
+    /// Whether a bit above them is set: then it equals no field number or
+    /// length a message can hold.
+    big: bool,
+}
+
+impl PyInt {
+    fn read(b: &[u8], pos: &mut usize) -> PyInt {
+        let (mut low, mut big, mut shift) = (0u128, false, 0u32);
+        while *pos < b.len() {
+            let byte = b[*pos];
+            *pos += 1;
+            let bits = u128::from(byte & 0x7f);
+            if shift < 128 {
+                low |= bits << shift;
+                big |= shift > 121 && bits >> (128 - shift) != 0;
+            } else {
+                big |= bits != 0;
+            }
+            if byte & 0x80 == 0 {
+                break;
+            }
+            shift += 7;
         }
-        if byte & 0x80 == 0 {
-            break;
-        }
-        shift += 7;
+        PyInt { low, big }
     }
-    v
+
+    /// As a length or an offset: past any data when it does not fit.
+    fn as_len(self) -> usize {
+        if self.big {
+            usize::MAX
+        } else {
+            usize::try_from(self.low).unwrap_or(usize::MAX)
+        }
+    }
+}
+
+/// A field number as Python reads it from a tag: the tag shifted right by
+/// three, of any size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PyFieldNumber {
+    low: u128,
+    big: bool,
+}
+
+impl PyFieldNumber {
+    fn is(self, n: u128) -> bool {
+        !self.big && self.low == n
+    }
 }
 
 /// `_scan_wire_tags`: the top level's field numbers, how many field 1s,
 /// and the first field 1's payload when it is length-delimited.
-fn scan_wire_tags(data: &[u8]) -> (Vec<u64>, usize, Option<&[u8]>) {
+fn scan_wire_tags(data: &[u8]) -> (Vec<PyFieldNumber>, usize, Option<&[u8]>) {
     let (mut numbers, mut count, mut first) = (Vec::new(), 0, None);
     let mut pos = 0;
     while pos < data.len() {
-        let tag = read_varint(data, &mut pos);
-        let (number, wire_type) = (tag >> 3, tag & 7);
+        let tag = PyInt::read(data, &mut pos);
+        let number = PyFieldNumber {
+            low: tag.low >> 3,
+            big: tag.big,
+        };
         if !numbers.contains(&number) {
             numbers.push(number);
         }
-        match wire_type {
+        match tag.low & 7 {
             0 => {
                 while pos < data.len() && data[pos] & 0x80 != 0 {
                     pos += 1;
                 }
-                pos += 1;
+                pos = pos.saturating_add(1);
             }
-            1 => pos += 8,
+            1 => pos = pos.saturating_add(8),
             2 => {
-                let len = read_varint(data, &mut pos) as usize;
+                let len = PyInt::read(data, &mut pos).as_len();
                 let end = pos.saturating_add(len).min(data.len());
-                if number == 1 {
+                if number.is(1) {
                     count += 1;
                     if first.is_none() {
                         first = Some(&data[pos.min(data.len())..end]);
@@ -144,7 +183,7 @@ fn scan_wire_tags(data: &[u8]) -> (Vec<u64>, usize, Option<&[u8]>) {
                 }
                 pos = pos.saturating_add(len);
             }
-            5 => pos += 4,
+            5 => pos = pos.saturating_add(4),
             _ => break,
         }
     }
@@ -154,7 +193,7 @@ fn scan_wire_tags(data: &[u8]) -> (Vec<u64>, usize, Option<&[u8]>) {
 /// `_is_fdp`: a bare `FileDescriptorProto`, or a set.
 fn is_fdp(data: &[u8]) -> bool {
     let (numbers, count, first) = scan_wire_tags(data);
-    if numbers.iter().any(|&n| n != 1) {
+    if numbers.iter().any(|n| !n.is(1)) {
         return true;
     }
     if count > 1 {
@@ -175,7 +214,7 @@ fn split_binary(data: &[u8]) -> Option<Vec<(String, Vec<u8>)>> {
         let (name, _) = name_and_imports(data)?;
         return (!name.is_empty()).then(|| vec![(name, data.to_vec())]);
     }
-    let def = descriptor_pool().get_message_by_name("google.protobuf.FileDescriptorSet")?;
+    let def = Pool::vendored().get_message_by_name("google.protobuf.FileDescriptorSet")?;
     let set = DynamicMessage::decode(&def, data).ok()?;
     let files: Vec<(String, Vec<u8>)> = FileDescriptorSet(set.as_ref())
         .file()
@@ -487,4 +526,28 @@ pub fn load_from_path(ctx: &mut LoadCtx, roots: &[PathBuf], rel_path: &Path) -> 
         }
     }
     deduped
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod cases {
+        include!("load/is_fdp_cases.rs");
+    }
+
+    #[test]
+    fn a_bare_file_or_a_set_as_python_decides() {
+        let wrong: Vec<&str> = cases::CASES
+            .iter()
+            .filter(|(_, data, want)| is_fdp(data) != *want)
+            .map(|(name, _, _)| *name)
+            .collect();
+        assert!(
+            wrong.is_empty(),
+            "{} of {} differ: {wrong:?}",
+            wrong.len(),
+            cases::CASES.len()
+        );
+    }
 }

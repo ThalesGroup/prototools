@@ -14,87 +14,15 @@
 
 use std::collections::HashSet;
 
+use crate::wire::{put_len, put_tag, put_varint, read_varint, records, LEN, VARINT};
 use crate::Pool;
 
-fn read_varint(b: &[u8], pos: &mut usize) -> Option<u64> {
-    let mut v = 0u64;
-    for shift in (0..64).step_by(7) {
-        let byte = *b.get(*pos)?;
-        *pos += 1;
-        v |= u64::from(byte & 0x7f) << shift;
-        if byte & 0x80 == 0 {
-            return Some(v);
-        }
-    }
-    None
-}
-
-fn put_varint(out: &mut Vec<u8>, mut v: u64) {
-    while v >= 0x80 {
-        out.push((v as u8) | 0x80);
-        v >>= 7;
-    }
-    out.push(v as u8);
-}
-
-/// One record of a message: its field number, wire type, payload (the
-/// length-delimited content, or the varint's value as `value`), and all
-/// its bytes.
-struct Record<'a> {
-    number: u64,
-    wire_type: u64,
-    payload: &'a [u8],
-    value: u64,
-    bytes: &'a [u8],
-}
-
-/// The records of `b`, or `None` when it is not well formed.
-fn records(b: &[u8]) -> Option<Vec<Record<'_>>> {
-    let mut out = Vec::new();
-    let mut pos = 0;
-    while pos < b.len() {
-        let start = pos;
-        let tag = read_varint(b, &mut pos)?;
-        let (number, wire_type) = (tag >> 3, tag & 7);
-        let (mut payload, mut value): (&[u8], u64) = (&[], 0);
-        match wire_type {
-            0 => value = read_varint(b, &mut pos)?,
-            1 => pos = pos.checked_add(8).filter(|&p| p <= b.len())?,
-            5 => pos = pos.checked_add(4).filter(|&p| p <= b.len())?,
-            2 => {
-                let len = usize::try_from(read_varint(b, &mut pos)?).ok()?;
-                let end = pos.checked_add(len).filter(|&e| e <= b.len())?;
-                payload = &b[pos..end];
-                pos = end;
-            }
-            // Groups do not occur in a descriptor's own fields; their
-            // options' content is copied whole, inside a length-delimited
-            // record.
-            _ => return None,
-        }
-        out.push(Record {
-            number,
-            wire_type,
-            payload,
-            value,
-            bytes: &b[start..pos],
-        });
-    }
-    Some(out)
-}
-
-fn put_len(out: &mut Vec<u8>, number: u64, payload: &[u8]) {
-    put_varint(out, (number << 3) | 2);
-    put_varint(out, payload.len() as u64);
-    out.extend_from_slice(payload);
-}
-
 /// The field of `b` numbered `number`, as text (a name), if any.
-fn string_field(b: &[u8], number: u64) -> Option<String> {
+fn string_field(b: &[u8], number: u32) -> Option<String> {
     records(b)?
         .into_iter()
         .rev()
-        .find(|r| r.number == number && r.wire_type == 2)
+        .find(|r| r.number == number && r.wire_type == LEN)
         .map(|r| String::from_utf8_lossy(r.payload).into_owned())
 }
 
@@ -126,8 +54,8 @@ impl Mender<'_> {
         let mut out = Vec::with_capacity(b.len());
         for r in records(b)? {
             match (r.number, r.wire_type) {
-                (2 | 6, 2) if !self.field_resolves(r.payload) => {}
-                (3, 2) => put_len(&mut out, 3, &self.message(r.payload)?),
+                (2 | 6, LEN) if !self.field_resolves(r.payload) => {}
+                (3, LEN) => put_len(&mut out, 3, &self.message(r.payload)?),
                 _ => out.extend_from_slice(r.bytes),
             }
         }
@@ -140,7 +68,7 @@ impl Mender<'_> {
         let mut out = Vec::with_capacity(b.len());
         for r in records(b)? {
             let unresolvable = r.number == 2
-                && r.wire_type == 2
+                && r.wire_type == LEN
                 && [2, 3]
                     .iter()
                     .any(|&n| string_field(r.payload, n).is_some_and(|t| !self.resolves(&t)));
@@ -163,8 +91,8 @@ fn collect_types(b: &[u8], scope: &str, own: &mut HashSet<String>) -> Option<()>
     };
     for r in records(b)? {
         match (r.number, r.wire_type) {
-            (3, 2) => collect_types(r.payload, &full, own)?,
-            (4, 2) => {
+            (3, LEN) => collect_types(r.payload, &full, own)?,
+            (4, LEN) => {
                 if let Some(e) = string_field(r.payload, 1) {
                     own.insert(format!("{full}.{e}"));
                 }
@@ -187,8 +115,8 @@ pub(crate) fn mend(pool: &Pool, fdp: &[u8]) -> Option<Vec<u8>> {
     let mut own = HashSet::new();
     for r in &top {
         match (r.number, r.wire_type) {
-            (4, 2) => collect_types(r.payload, &package, &mut own)?,
-            (5, 2) => {
+            (4, LEN) => collect_types(r.payload, &package, &mut own)?,
+            (5, LEN) => {
                 if let Some(e) = string_field(r.payload, 1) {
                     own.insert(if package.is_empty() {
                         e
@@ -204,7 +132,7 @@ pub(crate) fn mend(pool: &Pool, fdp: &[u8]) -> Option<Vec<u8>> {
     // Each import's new index, `None` when it goes.
     let mut new_index = Vec::new();
     let mut kept = 0u64;
-    for r in top.iter().filter(|r| r.number == 3 && r.wire_type == 2) {
+    for r in top.iter().filter(|r| r.number == 3 && r.wire_type == LEN) {
         let name = String::from_utf8_lossy(r.payload);
         if pool.file(&name).is_some() {
             new_index.push(Some(kept));
@@ -218,19 +146,19 @@ pub(crate) fn mend(pool: &Pool, fdp: &[u8]) -> Option<Vec<u8>> {
     let mut import = 0usize;
     for r in &top {
         match (r.number, r.wire_type) {
-            (3, 2) => {
+            (3, LEN) => {
                 if new_index[import].is_some() {
                     out.extend_from_slice(r.bytes);
                 }
                 import += 1;
             }
-            (10 | 11, 0) => {
+            (10 | 11, VARINT) => {
                 if let Some(i) = renumber(r.value) {
-                    put_varint(&mut out, r.number << 3);
+                    put_tag(&mut out, r.number, VARINT);
                     put_varint(&mut out, i);
                 }
             }
-            (10 | 11, 2) => {
+            (10 | 11, LEN) => {
                 // Packed.
                 let mut pos = 0;
                 let mut packed = Vec::new();
@@ -243,9 +171,9 @@ pub(crate) fn mend(pool: &Pool, fdp: &[u8]) -> Option<Vec<u8>> {
                     put_len(&mut out, r.number, &packed);
                 }
             }
-            (4, 2) => put_len(&mut out, 4, &mender.message(r.payload)?),
-            (6, 2) => put_len(&mut out, 6, &mender.service(r.payload)?),
-            (7, 2) if !mender.field_resolves(r.payload) => {}
+            (4, LEN) => put_len(&mut out, 4, &mender.message(r.payload)?),
+            (6, LEN) => put_len(&mut out, 6, &mender.service(r.payload)?),
+            (7, LEN) if !mender.field_resolves(r.payload) => {}
             _ => out.extend_from_slice(r.bytes),
         }
     }
