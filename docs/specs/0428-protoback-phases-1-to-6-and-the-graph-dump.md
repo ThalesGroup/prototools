@@ -116,7 +116,12 @@ sorted copy: rendering will walk nodes in it (spec 0424 S17, S18).
     not published yet (spec 0424 S15), and the two tools must load the
     same fallbacks.
 - **S8. The pool, upb's.** Files are added to a upb pool as phase 2 adds
-  them to Python's, imports first, with phase 2's mending before each.
+  them to Python's, imports first, with phase 2's mending before each;
+  within a rank, in topology order, as reproto does since 2026-11-15:
+  before, a rank was a set of file objects, iterated in an order set by
+  memory addresses, on which the pool's order, the W3 winner and the
+  warnings' order depended
+  (`test_files_of_one_rank_enter_the_pool_in_topology_order`).
   Where upb and Python's pool judge a file differently (one accepts,
   the other refuses), the dump shows it in `[pool]` and `[warnings]`;
   each such case is resolved toward reproto's outcome and listed under

@@ -193,3 +193,37 @@ def test_a_directory_is_read_in_sorted_order(tmp_path: Path) -> None:
     assert rel == ["alpha", "b_second", "beta", "sub/kappa", "sub/mu", "zeta"]
     assert re.search(r"^w7 \| omega\.proto \| \S+/y_first\.\w+ \| \S+/b_second\.\w+$",
                      text, re.M)
+
+
+def test_files_of_one_rank_enter_the_pool_in_topology_order(tmp_path: Path) -> None:
+    """Phase 2 adds files to the pool rank by rank, imports first; within a
+    rank, in the order phase 1 found them, not in an order set by memory
+    addresses (a set of file objects)."""
+    src = tmp_path / "src"
+    src.mkdir()
+    # Leaves imported by a root, in an order that is neither sorted nor
+    # reversed: one rank of eight files, then the root.
+    leaves = ["m", "c", "x", "a", "q", "f", "z", "k"]
+    for name in leaves:
+        (src / f"{name}.proto").write_text(
+            f'syntax = "proto2";\npackage {name};\nmessage M {{}}\n', encoding="utf-8")
+    imports = "".join(f'import "{n}.proto";\n' for n in leaves)
+    (src / "root.proto").write_text(
+        f'syntax = "proto2";\npackage root;\n{imports}message R {{}}\n', encoding="utf-8")
+    pb = src / "set.pb"
+    result = subprocess.run(
+        ["protoc", "--include_imports", f"--descriptor_set_out={pb}", f"-I{src}",
+         str(src / "root.proto")],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    text, _ = _dump(tmp_path, pb, "1")
+    files = [line.split(" | ")[0]
+             for line in text.split("[pool]", 1)[0].splitlines()
+             if " | file | " in line]
+    pool = [line.split(" | ")[0]
+            for line in text.split("[pool]\n", 1)[1].split("[context]", 1)[0].splitlines()]
+    # descriptor.proto and the eight leaves import nothing: one rank, in
+    # topology order; then root.proto.
+    first_rank = [f for f in files if f != "root.proto"]
+    assert pool == first_rank + ["root.proto"]

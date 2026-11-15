@@ -32,6 +32,11 @@ SPDX-License-Identifier: MIT
   files holding the same descriptor is kept (W7), and the order files are
   processed in, no longer depend on how the directory was written
   (spec 0428).
+- reproto adds the files of one rank to its descriptor pool in the order
+  it found them, not in an order set by memory addresses: the schema
+  database's file order, which of two files defining one symbol is kept
+  (W3), and the order of the warnings no longer depend on the machine or
+  the Python running it (spec 0428).
 - reproto: an import it leaves out, its file missing or pruned, no
   longer shifts the `public` and `weak` imports after it onto other
   files; the file's options, which upb then refused, render again

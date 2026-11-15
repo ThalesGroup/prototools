@@ -931,6 +931,11 @@ def _phase2_build_pool(
     }
     leaves: set[ReFile] = set()
     non_leaves: set[ReFile] = set()
+    # A rank's files are taken in topology order (spec 0428): a set of file
+    # objects iterates in an order set by memory addresses, and the pool's
+    # order, which file wins a symbol conflict (W3), and the order of the
+    # warnings would otherwise depend on it.
+    topo_order = {file: i for i, file in enumerate(topo.files.values())}
 
     total_files = 0 if ctx.quiet else len(topo.files)
     with _progress('Loading descriptors', total_files, quiet=ctx.quiet) as advance:
@@ -948,7 +953,7 @@ def _phase2_build_pool(
             # Merge the leaf-FDPs into the descriptors pool
             if ctx.debug:
                 cli_info(f"  Rank {i}: processing {len(leaves)} files")
-            for n in leaves:
+            for n in sorted(leaves, key=topo_order.__getitem__):
                 if ctx.debug:
                     cli_info(f"  Merging: {n.name}")
                 if n.is_ref():
@@ -995,7 +1000,7 @@ def _phase2_build_pool(
     if non_leaves:
         # The remaining files have a circular dependency; mark them pruned so
         # that phase 3 skips them (they were never added to the pool).
-        for n in non_leaves:
+        for n in sorted(non_leaves, key=topo_order.__getitem__):
             cli_warning(f"Circular dependency detected: {n.name}")
             n.is_pruned = True
 
