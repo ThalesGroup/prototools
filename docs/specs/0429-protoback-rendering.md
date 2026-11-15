@@ -167,13 +167,29 @@ reproto's behavior.
 
 ### Text that is Python's
 
-- **S13. Exception text in the output.** A3 and C5 put a caught
-  exception's text in a `.proto` comment and in a W4 to W6 key
-  (`anomalies.py`): Python's `str(KeyError(...))`, quoted, and Python
-  protobuf's messages. To decide before S4: reproduce those texts, as
-  S8 of spec 0424 reproduces formatting, or replace them in reproto with
-  texts of its own, which both tools then write (as spec 0428 S6 does
-  for the pool's refusals).
+- **S13. Fixed messages for render failures, in both tools.** Today a
+  failed render writes a caught exception's text: in the `.proto`
+  comment of A3 (file options) and C5 (field options), and in the W4 to
+  W6 warning of a file skipped (`_phase7_output`) or an option dropped.
+  The text is Python's (`str(KeyError(...))`, quoted) or Python
+  protobuf's, and reproto even parses it to classify the failure
+  (`_classify_exc`: `couldn't resolve name '…'` is W4, `Depends on file
+  '…'` is W5, anything else W6). Reproducing that text in Rust would tie
+  protoback to Python's and to Python protobuf's wording, which can
+  change in any release.
+  - reproto changes first, with a failing test per cause: each failure
+    it can name raises its own error, carrying its cause and subject
+    (an unresolved type, a missing dependency, an unknown extension
+    number, an enum value with no name, …), and the message, the
+    comment and the W4 to W6 classification come from that cause, not
+    from the text. `_classify_exc` goes.
+  - What no named cause covers is a bug: it is written as one fixed
+    message naming the element (file, and field or option), the same in
+    both tools, so that the harness compares it; the exception is shown
+    in full under `--debug` only.
+  - Before S4: the causes listed, each reached by a fixture (the
+    harness's and the test suite's), by an inventory of what
+    `render()`'s `except` clauses catch in practice.
 
 ## Alternatives considered
 
