@@ -91,8 +91,56 @@ pub struct Variant {
     pub descriptor_proto: String,
     /// Canonical path → the variant's path, in the file's order.
     pub well_known: Vec<(String, String)>,
+    /// `import_rewrites`, applied to file names.
+    pub import_rules: Vec<Rule>,
+    /// `namespace_rewrites`, applied to type names and packages.
+    pub namespace_rules: Vec<Rule>,
     pub root: Root,
     pub stem: String,
+}
+
+/// A rewrite rule: names starting with `prefix` are rewritten (`to`, the
+/// prefix replaced) or kept (`to` none); the rules after it are tried too
+/// only when `cont` (`continue: true`).
+#[derive(Debug, Clone)]
+pub struct Rule {
+    pub prefix: String,
+    pub to: Option<String>,
+    pub cont: bool,
+}
+
+/// reproto's `apply_variant_namespace` and `canonize_dependency`: the rules
+/// in order, the first matching one ending the walk unless it continues.
+fn apply_rules(rules: &[Rule], name: &str) -> String {
+    let mut s = name.to_string();
+    for rule in rules {
+        if s.starts_with(&rule.prefix) {
+            if let Some(to) = &rule.to {
+                s = format!("{to}{}", &s[rule.prefix.len()..]);
+            }
+            if !rule.cont {
+                return s;
+            }
+        }
+    }
+    s
+}
+
+fn rules(value: &Value) -> Vec<Rule> {
+    let Some(seq) = value.as_sequence() else {
+        return Vec::new();
+    };
+    seq.iter()
+        .filter_map(|r| {
+            let m = r.as_mapping()?;
+            let field = |k: &str| m.get(k).and_then(Value::as_str).map(str::to_string);
+            let prefix = field("match")?;
+            let to = (field("action").as_deref() == Some("rewrite"))
+                .then(|| field("to").unwrap_or_default());
+            let cont = m.get("continue").and_then(Value::as_bool).unwrap_or(false);
+            Some(Rule { prefix, to, cont })
+        })
+        .collect()
 }
 
 impl Variant {
@@ -138,9 +186,36 @@ impl Variant {
                 .unwrap_or("google/protobuf/descriptor.proto")
                 .to_string(),
             well_known,
+            import_rules: rules(&get("import_rewrites")),
+            namespace_rules: rules(&get("namespace_rewrites")),
             root,
             stem,
         })
+    }
+
+    /// `apply_variant_namespace`: a type reference (`.pkg.Type`).
+    pub fn namespace(&self, name: &str) -> String {
+        apply_rules(&self.namespace_rules, name)
+    }
+
+    /// `apply_variant_namespace_to_package`: a file's package, matched as
+    /// `.package.`.
+    pub fn namespace_package(&self, package: &str) -> String {
+        if package.is_empty() {
+            return String::new();
+        }
+        self.namespace(&format!(".{package}."))
+            .trim_matches('.')
+            .to_string()
+    }
+
+    /// `canonize_dependency`: a file name, the variant's descriptor.proto
+    /// kept as it is under `--keep-descriptor-path`.
+    pub fn canonize_dependency(&self, name: &str, keep_descriptor: bool) -> String {
+        if keep_descriptor && name == self.descriptor_proto {
+            return name.to_string();
+        }
+        apply_rules(&self.import_rules, name)
     }
 
     /// A well-known type's path in this variant.

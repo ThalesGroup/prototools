@@ -68,7 +68,8 @@ stages, each with its own gate.
   written under the given paths of the run directory (`out/proto`,
   then `out/proto` and the `.pb` files); stdout and stderr are not
   compared until step 9 (N1), as under `--dump-graph` (spec 0428 S10).
-  Run once with `--jobs 1` passed to protoback and once without.
+  Once files render in parallel (S4), run once with `--jobs 1` passed to
+  protoback and once without.
 - **S3. The gates.** Almost every file has options, so before stage 3
   almost every file differs from reproto's. The early stages live with
   that: their diffs are read, on a sample of cases, and every hunk must
@@ -80,11 +81,13 @@ stages, each with its own gate.
 ### Threads
 
 - **S4. A render context per file** (spec 0424 S17) from the first
-  stage: phases 1 to 6's state is read-only during rendering, and
-  everything reproto keeps on its `Context` for the file being rendered
-  lives in a context of its own, one per file. Files render on a rayon
-  pool; their outputs are written, and their warnings recorded, in
-  reproto's file order (spec 0424 S18).
+  stage: phases 1 to 6's state is read-only during rendering (`Shared`),
+  and everything reproto keeps on its `Context` for the file being
+  rendered lives in a context of its own, one per file (`Ctx`). The six
+  stages render on one thread; once rendering is complete, files render
+  on a rayon pool, their outputs written, and their warnings recorded, in
+  reproto's file order (spec 0424 S18), with `--jobs`, and the harness
+  checks `--jobs 1` against all cores then.
   - **What a file sees of the pool.** reproto's `ctx.pool` builds a file
     when first asked for it (`DescriptorPool(pool_db)`), and rendering
     asks for each file in turn with its imports (`re_file.py:141`);
@@ -196,6 +199,12 @@ reproto first.)
   `ctx.out_sci` carried from one file into the next when a render fails;
   a file's, message's, service's or method's options dropped without a
   warning when the pool does not know the element.
+- **S15b. `short_ref`'s collision test misses** (read 2026-11-15,
+  `utils.py`): it looks a shortened candidate up under the reference's
+  own FQDN prefix, so a message never collides with an enum of the same
+  name, and an extendee, looked up as `message:…` (a prefix no node has,
+  `_render_extend_blocks`), never collides at all. protoback reproduces
+  both (`render/names.rs`).
 
 ### Text that is Python's
 
@@ -325,15 +334,21 @@ A difference in googleapis' output, found at the end, would have its
 cause anywhere in ten modules; a stage's gate finds it in the stage
 that made it.
 
-### Single-threaded first, threads later
+### Threads from the first stage
 
-Spec 0424 S18's check would then come after all six stages, and a context shared
-by mistake would show only then, across every stage's code. With a
-context per file from the start, each gate checks it.
+Chosen first, then dropped (2026-11-15): each gate would have checked
+that no state is shared by mistake. But every gate's criterion is the
+output's bytes, which threads cannot improve, and their own check means
+more on a complete output; the cost of a mistake is kept low instead by
+the split S4 makes from the start (`Shared` never written while
+rendering, `Ctx` per file), which turns the file loop parallel in one
+place once rendering is complete. What a file sees of the pool (S4) is
+not deferred with it: stage 3 needs it on one thread already.
 
 ## Test plan
 
-1. Each stage: S3's gate, `--jobs 1` and all cores.
+1. Each stage: S3's gate; once files render in parallel, `--jobs 1`
+   and all cores.
 2. reproto's CLI tests that check rendered output, run against
    protoback through `REPROTO_CMD` (spec 0424 S2), each from the stage
    it needs: `test_roundtrip`, `test_aggregate_options`,
@@ -347,4 +362,27 @@ context per file from the start, each gate checks it.
 
 ## Measured outcome
 
-Filled in stage by stage.
+- **Stage 1, first cut** (2026-11-15): `protoback/src/render/` (the line
+  model, `short_ref`, files, messages, fields, oneofs, maps, groups,
+  enums, services, methods, ranges, extend blocks, the structure
+  anomalies A2, A4, A5, B1–B3, C1–C4; phase 7's paths, `buf.yaml`,
+  `--dry-run`, `--no-emit-descriptor`, the redactions); options, source
+  comments, features blocks and binary output not yet. The harness with
+  `--compare out/proto`, every corpus: 542 cases; 223 refused by
+  protoback, their flag sets needing later stages (`--emit-binary`,
+  `--schema-db-out`, the `--force-proto2-*`); of the 319 it renders, 232
+  identical byte for byte, and the other 87 identical once what later
+  stages bring is taken out of reproto's files (option and features
+  lines, inline and multi-line `[…]` options, A3), but for one message
+  of `name_resolution` (in its three cases) whose only body is an option,
+  which reproto therefore does not collapse to `{}` (S3's review: every
+  remaining hunk is a later stage's).
+  - Read in reproto while porting, where the map S5 is built from was
+    wrong: a blank orphan line two levels deep keeps trailing spaces
+    (`/// `); `json.dumps` escapes DEL (`\u007f`); a message's
+    trailing-blank trim keeps one line; whether a oneof is synthetic, and
+    whether a field is a group, read resolved features in an editions
+    file, so `field_presence` and `message_encoding` resolve in stage 1
+    (`features.rs`, shared with phase 3).
+  - Not yet: S4's render-order fixture (stage 3), and files rendered in
+    parallel (after stage 6, S4).

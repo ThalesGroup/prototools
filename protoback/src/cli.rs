@@ -161,8 +161,9 @@ pub struct Cli {
 }
 
 impl Cli {
-    /// The options that act after phase 6, set on this command line, each
-    /// with the step of spec 0424 that brings it.
+    /// The options that act after phase 6 and that protoback does not
+    /// render yet, set on this command line, each with the step of spec
+    /// 0424 that brings it (spec 0429 S1).
     pub fn later_options(&self) -> Vec<(&'static str, u8)> {
         let mut later = Vec::new();
         let mut note = |set: bool, name: &'static str, step: u8| {
@@ -170,22 +171,19 @@ impl Cli {
                 later.push((name, step));
             }
         };
-        note(
-            self.proto_out.is_some() || self.output_root_deprecated.is_some(),
-            "--proto-out",
-            5,
-        );
         note(self.emit_binary, "--emit-binary", 5);
         note(self.no_source_info, "--no-source-info", 5);
-        note(self.dry_run, "--dry-run", 5);
-        note(self.no_emit_descriptor, "--no-emit-descriptor", 5);
+        note(self.force_proto2_output, "--force-proto2-output", 5);
         note(
             self.force_proto2_for_editions || self.prost_workaround,
             "--force-proto2-for-editions",
             5,
         );
-        note(self.redact_comments, "--redact-comments", 5);
-        note(self.redact_orphans, "--redact-orphans", 5);
+        note(
+            self.build_schema_db.is_some() || self.build_schema_db_deprecated.is_some(),
+            "--schema-db-out",
+            6,
+        );
         note(
             self.emit_scoring_yaml || self.emit_scoring_graphs,
             "--emit-scoring-yaml",

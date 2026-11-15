@@ -18,7 +18,8 @@ use prototext_upb::descriptor_access::{
 };
 
 use crate::db::Database;
-use crate::phase2::{EditionDefault, EditionDefaults};
+use crate::features::{self, Feature, MESSAGE_ENCODING_DELIMITED};
+use crate::phase2::EditionDefaults;
 use crate::topology::{Stripped, Topology};
 
 /// A node's class, by reproto's name for it.
@@ -44,7 +45,7 @@ impl Kind {
         }
     }
 
-    fn prefix(self) -> &'static str {
+    pub fn prefix(self) -> &'static str {
         match self {
             Kind::File => "file",
             Kind::Message => "desc",
@@ -150,38 +151,9 @@ fn text(b: &[u8]) -> String {
     String::from_utf8_lossy(b).into_owned()
 }
 
-/// `MESSAGE_ENCODING_DELIMITED`.
-const DELIMITED: i32 = 2;
 const TYPE_GROUP: i32 = 10;
 const TYPE_MESSAGE: i32 = 11;
 const TYPE_ENUM: i32 = 14;
-
-/// What a field's message encoding resolves to (`resolve_features`, the
-/// one feature phase 3 reads): the default of the latest edition at or
-/// before the file's, then each feature set, coarsest to finest, that sets
-/// it.
-fn message_encoding(table: &EditionDefaults, edition: i32, sets: &[Option<FeatureSet<'_>>]) -> i32 {
-    let defaults: &[(i32, String)] = match table.get("message_encoding") {
-        Some(EditionDefault::Defaults(d)) => d,
-        _ => &[],
-    };
-    let numbers = match table.get("_enum_message_encoding") {
-        Some(EditionDefault::Numbers(n)) => Some(n),
-        _ => None,
-    };
-    let mut result = defaults
-        .iter()
-        .rev()
-        .find(|(e, _)| *e <= edition)
-        .and_then(|(_, name)| numbers.and_then(|n| n.get(name)).copied())
-        .unwrap_or(0);
-    for fs in sets.iter().flatten() {
-        if fs.has_message_encoding() {
-            result = fs.message_encoding();
-        }
-    }
-    result
-}
 
 /// What phase 3 reads of the run.
 pub struct Build<'a> {
@@ -433,7 +405,13 @@ impl Build<'_> {
             let mut sets: Vec<Option<FeatureSet<'_>>> = vec![file_fs.clone()];
             sets.extend(chain.iter().map(|c| c.options().and_then(|o| o.features())));
             sets.push(f.options().and_then(|o| o.features()));
-            if message_encoding(self.edition_defaults, file.edition(), &sets) != DELIMITED {
+            if features::resolve(
+                self.edition_defaults,
+                Feature::MessageEncoding,
+                file.edition(),
+                &sets,
+            ) != MESSAGE_ENCODING_DELIMITED
+            {
                 continue;
             }
             let raw: String = text(f.name())

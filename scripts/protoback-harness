@@ -9,7 +9,7 @@ Usage:
   scripts/protoback-harness prepare WORK [--googleapis PB] [--otel DIR]
   scripts/protoback-harness run WORK --reference CMD --candidate CMD
                                 [--jobs N] [--only REGEX] [--rename OLD=NEW]
-                                [--dump-graph]
+                                [--dump-graph | --compare PATH...]
 
 `prepare` builds the corpora under WORK/corpus with protoc; `run` runs
 every case on them and writes WORK/report.txt. CMD is a command line,
@@ -26,6 +26,11 @@ the graph dump. The exit status and the files written are compared, the
 dump's first differing line reported; stdout and stderr are not, since
 printing warnings as reproto does is step 9 (spec 0428 N2), and the dump
 holds what was warned about.
+
+With --compare PATH... (spec 0429 S2), only the exit status and the files
+written under those run-directory paths are compared, each differing
+.proto file reported by its first differing line; stdout and stderr are
+not compared, as with --dump-graph.
 """
 
 from __future__ import annotations
@@ -288,12 +293,37 @@ class Run:
 DUMP = "graph.txt"
 
 
-def run_side(cmd: list[str], case: Case, rundir: Path, dump_graph: bool) -> Run:
+@dataclass(frozen=True)
+class Mode:
+    """What a run compares. By default everything: the exit status, stdout,
+    stderr and every file written. --dump-graph adds the option and
+    compares the dump; --compare restricts the files to some paths. Either
+    leaves out stdout and stderr (spec 0428 S10, spec 0429 S2)."""
+    dump_graph: bool = False
+    compare: tuple[str, ...] = ()
+
+    @property
+    def streams(self) -> bool:
+        return not self.dump_graph and not self.compare
+
+    def selected(self, rel: str) -> bool:
+        return not self.compare or any(
+            rel == p or rel.startswith(p.rstrip("/") + "/") for p in self.compare)
+
+    def label(self) -> str:
+        if self.dump_graph:
+            return "graph dumps (--dump-graph), "
+        if self.compare:
+            return f"files under {', '.join(self.compare)} (--compare), "
+        return ""
+
+
+def run_side(cmd: list[str], case: Case, rundir: Path, mode: Mode) -> Run:
     if rundir.exists():
         shutil.rmtree(rundir)
     rundir.mkdir(parents=True)
     env = {k: v for k, v in os.environ.items() if k not in ENV_DROP}
-    extra = [f"--dump-graph={DUMP}"] if dump_graph else []
+    extra = [f"--dump-graph={DUMP}"] if mode.dump_graph else []
     start = time.monotonic()
     r = subprocess.run([*cmd, *case.args, *extra], cwd=rundir, env=env,
                        capture_output=True)
@@ -309,20 +339,21 @@ def tree(root: Path) -> dict[str, Path]:
             if p.is_file()}
 
 
-def first_difference(ref: Path, cand: Path) -> str:
-    """Where two graph dumps first differ: the line, its section, and the
-    two versions of it."""
+def first_difference(ref: Path, cand: Path, sections: bool) -> str:
+    """Where two text files first differ: the line, its dump section (with
+    `sections`), and the two versions of it."""
     a = ref.read_text(encoding="utf-8", errors="replace").splitlines()
     b = cand.read_text(encoding="utf-8", errors="replace").splitlines()
     section = "?"
     for n, (x, y) in enumerate(zip(a, b), 1):
-        if x.startswith("["):
+        if sections and x.startswith("["):
             section = x
         if x != y:
-            return f"line {n}, in {section}:\n    - {x[:300]}\n    + {y[:300]}"
+            where = f"line {n}, in {section}" if sections else f"line {n}"
+            return f"{where}:\n    - {x[:300]}\n    + {y[:300]}"
     n = min(len(a), len(b)) + 1
     longer = "reference" if len(a) > len(b) else "candidate"
-    return f"line {n}: only the {longer}'s dump goes on"
+    return f"line {n}: only the {longer}'s file goes on"
 
 
 def last_line(stderr: bytes) -> str:
@@ -331,7 +362,7 @@ def last_line(stderr: bytes) -> str:
 
 
 def compare(ref_dir: Path, cand_dir: Path, ref: Run, cand: Run,
-            rename: tuple[bytes, bytes] | None, dump_graph: bool) -> list[str]:
+            rename: tuple[bytes, bytes] | None, mode: Mode) -> list[str]:
     """The differences between two runs, empty if none."""
     diffs: list[str] = []
     ref_out, ref_err = ref.stdout, ref.stderr
@@ -340,14 +371,15 @@ def compare(ref_dir: Path, cand_dir: Path, ref: Run, cand: Run,
         ref_err = ref_err.replace(*rename)
     if ref.exit != cand.exit:
         diffs.append(f"exit status {ref.exit} != {cand.exit}")
-        if dump_graph:
+        if not mode.streams:
             diffs.append(f"reference stderr: {last_line(ref_err)}")
             diffs.append(f"candidate stderr: {last_line(cand.stderr)}")
-    if not dump_graph and ref_out != cand.stdout:
+    if mode.streams and ref_out != cand.stdout:
         diffs.append("stdout")
-    if not dump_graph and ref_err != cand.stderr:
+    if mode.streams and ref_err != cand.stderr:
         diffs.append("stderr")
-    a, b = tree(ref_dir), tree(cand_dir)
+    a = {rel: p for rel, p in tree(ref_dir).items() if mode.selected(rel)}
+    b = {rel: p for rel, p in tree(cand_dir).items() if mode.selected(rel)}
     for rel in sorted(a.keys() - b.keys()):
         diffs.append(f"only in reference: {rel}")
     for rel in sorted(b.keys() - a.keys()):
@@ -355,14 +387,16 @@ def compare(ref_dir: Path, cand_dir: Path, ref: Run, cand: Run,
     for rel in sorted(a.keys() & b.keys()):
         if a[rel].read_bytes() != b[rel].read_bytes():
             diffs.append(f"differs: {rel}")
-            if dump_graph and rel == DUMP:
-                diffs.append(first_difference(a[rel], b[rel]))
+            if mode.dump_graph and rel == DUMP:
+                diffs.append(first_difference(a[rel], b[rel], sections=True))
+            elif mode.compare and rel.endswith(".proto"):
+                diffs.append(first_difference(a[rel], b[rel], sections=False))
     return diffs
 
 
 def run(work: Path, reference: list[str], candidate: list[str], jobs: int,
         only: str | None, rename: tuple[bytes, bytes] | None,
-        dump_graph: bool) -> int:
+        mode: Mode) -> int:
     all_cases = cases(work / "corpus")
     if only:
         all_cases = [c for c in all_cases if re.search(only, c.name)]
@@ -370,10 +404,10 @@ def run(work: Path, reference: list[str], candidate: list[str], jobs: int,
 
     def one(case: Case) -> tuple[Case, list[str], Run, Run]:
         base = runs / case.name
-        ref = run_side(reference, case, base / "reference", dump_graph)
-        cand = run_side(candidate, case, base / "candidate", dump_graph)
+        ref = run_side(reference, case, base / "reference", mode)
+        cand = run_side(candidate, case, base / "candidate", mode)
         diffs = compare(base / "reference", base / "candidate", ref, cand, rename,
-                        dump_graph)
+                        mode)
         if not diffs:
             shutil.rmtree(base)
         return case, diffs, ref, cand
@@ -391,8 +425,7 @@ def run(work: Path, reference: list[str], candidate: list[str], jobs: int,
     # A case where both sides fail alike compares equal: list them, so that
     # a corpus that only exercises an error path does not pass unnoticed.
     errors = [(c, r.exit) for c, _, r, _ in results if r.exit != 0]
-    mode = "graph dumps (--dump-graph), " if dump_graph else ""
-    lines = [f"{mode}{len(results)} cases, {len(failed)} differ, "
+    lines = [f"{mode.label()}{len(results)} cases, {len(failed)} differ, "
              f"{len(errors)} where the reference exits with an error",
              f"reference: {shlex.join(reference)}, {ref_time:.1f} s in all",
              f"candidate: {shlex.join(candidate)}, {cand_time:.1f} s in all", ""]
@@ -426,6 +459,9 @@ def main() -> int:
                    "read as the candidate's")
     r.add_argument("--dump-graph", action="store_true",
                    help="compare the graph dumps of phases 1 to 6 (spec 0428 S10)")
+    r.add_argument("--compare", nargs="+", default=[], metavar="PATH",
+                   help="compare only the exit status and the files under these "
+                   "run-directory paths (spec 0429 S2)")
     args = parser.parse_args()
     if args.command == "prepare":
         prepare(args.work.resolve(), args.googleapis, args.otel)
@@ -436,7 +472,7 @@ def main() -> int:
         rename = (old.encode(), new.encode())
     return run(args.work.resolve(), shlex.split(args.reference),
                shlex.split(args.candidate), args.jobs, args.only, rename,
-               args.dump_graph)
+               Mode(args.dump_graph, tuple(args.compare)))
 
 
 if __name__ == "__main__":

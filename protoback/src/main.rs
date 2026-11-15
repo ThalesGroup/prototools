@@ -9,6 +9,7 @@ mod cli;
 mod db;
 mod dump;
 mod events;
+mod features;
 mod fuzz;
 mod graph;
 mod load;
@@ -18,6 +19,7 @@ mod phase2;
 mod phase4;
 mod phase5;
 mod phase6;
+mod render;
 mod run;
 mod select;
 mod topology;
@@ -143,10 +145,20 @@ fn usage(message: &str) -> ExitCode {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    let Some(dump_path) = cli.dump_graph.clone() else {
-        return usage("protoback renders nothing yet (spec 0424 step 5): run it with --dump-graph");
+    let dump_path = cli.dump_graph.clone();
+    // Under --dump-graph, what acts after phase 6 is ignored; otherwise
+    // protoback refuses what it does not render yet (spec 0429 S1).
+    if dump_path.is_none() {
+        if let Some((name, step)) = cli.later_options().first() {
+            return usage(&format!(
+                "{name} is not supported by protoback yet (spec 0424 step {step})"
+            ));
+        }
+    }
+    let out_repo = match proto_out(&cli) {
+        Ok(o) => o,
+        Err(e) => return usage(&e),
     };
-    let _ = cli.later_options();
 
     let mut roots: Vec<PathBuf> = cli
         .pb_path
@@ -247,9 +259,75 @@ fn main() -> ExitCode {
     phase5::run(&mut run, &topo);
     phase6::run(&mut run);
 
-    if let Err(e) = std::fs::write(&dump_path, dump::write(&run, &topo)) {
-        eprintln!("Error: {}: {e}", dump_path.display());
+    if let Some(dump_path) = dump_path {
+        if let Err(e) = std::fs::write(&dump_path, dump::write(&run, &topo)) {
+            eprintln!("Error: {}: {e}", dump_path.display());
+            return ExitCode::from(1);
+        }
+        return ExitCode::SUCCESS;
+    }
+
+    let shared = render::Shared {
+        graph: &run.graph,
+        db: &run.db,
+        topo: &topo,
+        variant: &run.variant,
+        edition_defaults: &run.edition_defaults,
+        options_fqns: render::options_fqns(&run.db, &run.variant),
+        keep_variant_descriptor: cli.keep_descriptor_path,
+        redact_comments: cli.redact_comments,
+        redact_orphans: cli.redact_orphans,
+    };
+    let output = render::Output {
+        out_repo,
+        dry_run: cli.dry_run,
+        write_variant_descriptor: !cli.no_emit_descriptor,
+    };
+    if let Err(e) = render::run(&shared, &output) {
+        eprintln!("Error: {e}");
+        eprintln!("Cannot continue due to I/O error.");
         return ExitCode::from(1);
     }
     ExitCode::SUCCESS
+}
+
+/// reproto's output root: `-O` (or its deprecated spelling), or, with
+/// `--schema-db-out` and no `--no-proto-out`, that file's stem's `proto`
+/// child; required unless nothing is written. Created at once, as reproto
+/// creates it before phase 1.
+fn proto_out(cli: &Cli) -> Result<Option<PathBuf>, String> {
+    let mut proto_out = cli.proto_out.clone().or(cli.output_root_deprecated.clone());
+    if cli.no_proto_out && proto_out.is_some() {
+        return Err("--no-proto-out contradicts '-O' / '--proto-out'; drop one.".into());
+    }
+    let schema_db = cli
+        .build_schema_db
+        .clone()
+        .or(cli.build_schema_db_deprecated.clone());
+    if proto_out.is_none() && !cli.no_proto_out {
+        if let Some(db) = &schema_db {
+            proto_out = Some(db.with_extension("").join("proto"));
+        }
+    }
+    let output_only = cli.no_proto_out
+        || cli.dry_run
+        || cli.emit_scoring_html.is_some()
+        || cli.emit_scoring_html_deprecated.is_some()
+        || cli.dump_resolved_features.is_some()
+        || cli.dump_graph.is_some();
+    if proto_out.is_none() && !output_only {
+        return Err("Missing option '-O' / '--proto-out'.\n\
+             Required when generating .proto output.  Alternatives:\n  \
+             - Add -O DIR                   to write .proto files to DIR\n  \
+             - Add --schema-db-out FILE     to write a schema DB, and .proto\n                                 \
+             files under FILE's 'proto' child\n  \
+             - Add --no-proto-out           to write no .proto files\n  \
+             - Add --scoring-html-out FILE  to write HTML graphs only\n  \
+             - Add --dry-run                to run without writing any files"
+            .into());
+    }
+    if let Some(p) = &proto_out {
+        std::fs::create_dir_all(p).map_err(|e| format!("{}: {e}", p.display()))?;
+    }
+    Ok(proto_out)
 }
