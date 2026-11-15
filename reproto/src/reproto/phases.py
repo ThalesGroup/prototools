@@ -1455,16 +1455,12 @@ def _phase7_output(ctx: Context, out_repo: Path) -> None:
                 try:
                     content = re_fdp.render(ctx)[0].flush(ctx)
                 except (KeyError, ValueError, TypeError, AttributeError) as e:
+                    # A bug: the file is not rendered (spec 0429 S16).
                     ctx.out_desc = None
                     from .lib.warnings import get_collector
-                    from .anomalies import _classify_exc
-                    clean_msg, w4, w5 = _classify_exc(str(e))
-                    if w4 is not None:
-                        get_collector().w4(w4)
-                    elif w5 is not None:
-                        get_collector().w5(w5)
-                    else:
-                        get_collector().w6(re_fdp.name, '', clean_msg)
+                    from .anomalies import INTERNAL_ERROR, debug_exception
+                    get_collector().w6(re_fdp.name, '', INTERNAL_ERROR)
+                    debug_exception(ctx.debug, f"'{re_fdp.name}'", e)
                     if ctx.debug:
                         cli_warning(str(re_fdp.this))
                     advance()

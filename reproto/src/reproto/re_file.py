@@ -137,9 +137,15 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
         fio_desc = ctx.fio_desc
         FiOClass = ctx.fio_cls
 
+        from .anomalies import INTERNAL_ERROR, POOL_REFUSED, debug_exception, report
         try:
             f_desc: FileDescriptor = ctx.pool.FindFileByName(self.name)
+        except (KeyError, ValueError, TypeError, AttributeError) as e:
+            debug_exception(ctx.debug, f"'{self.name}': file options", e)
+            out.append(report("A3", depth, file=self.name, reason=POOL_REFUSED))
+            return out
 
+        try:
             fio_msg: Message = parse_options(
                 ctx, fio_desc, FiOClass, f_desc.GetOptions().SerializeToString())
 
@@ -160,9 +166,8 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
             for block in blocks:
                 out.extend(block)
         except (KeyError, ValueError, TypeError, AttributeError) as e:
-            from .anomalies import report
-            out.append(report("A3", depth,
-                               file=self.name, exc_type=type(e).__name__, exc_msg=str(e)))
+            debug_exception(ctx.debug, f"'{self.name}': file options", e)
+            out.append(report("A3", depth, file=self.name, reason=INTERNAL_ERROR))
 
         return out
 

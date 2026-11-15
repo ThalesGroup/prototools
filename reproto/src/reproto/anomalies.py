@@ -75,8 +75,8 @@ ANOMALIES: dict[str, Anomaly] = {
     "A3": Anomaly(
         tag="render",
         severity="OMITTED",
-        stderr="'{file}': failed to render file options: {exc_msg}",
-        comment="file options could not be rendered ({exc_msg})",
+        stderr="'{file}': failed to render file options: {reason}",
+        comment="file options could not be rendered ({reason})",
     ),
 
     "A4": Anomaly(
@@ -149,8 +149,8 @@ ANOMALIES: dict[str, Anomaly] = {
     "C5": Anomaly(
         tag="render",
         severity="WARNING",
-        stderr="'{file}' field '{name}': failed to render options: {exc_msg}",
-        comment="field options could not be rendered ({exc_msg})",
+        stderr="'{file}' field '{name}': failed to render options: {reason}",
+        comment="field options could not be rendered ({reason})",
     ),
 
     # -- D. Option rendering --------------------------------------------------
@@ -175,33 +175,24 @@ ANOMALIES: dict[str, Anomaly] = {
 # Public helper
 # ---------------------------------------------------------------------------
 
-# Prefix injected by the C extension on pool lookup failures — not user-actionable.
-_POOL_PREFIX = "Couldn't build proto file into descriptor pool: "
-_RESOLVE_PREFIX = "couldn't resolve name '"
-_DEPENDS_PREFIX = "Depends on file '"
+# The reasons a render failure is written with (spec 0429 S16): fixed,
+# named by the failure's cause, never the exception's text, which is upb's
+# (it changes with upb's version, and the two tools' upb differ) or
+# Python's. The text is shown under --debug only (debug_exception).
+
+# The pool could not build the file being rendered, or one of its imports:
+# a name that does not resolve, a duplicate symbol, a definition upb
+# refuses.
+POOL_REFUSED = "the descriptor pool refused this file or one of its imports"
+
+# Any other failure: a bug in reproto, named by the element it occurred in.
+INTERNAL_ERROR = "internal error"
 
 
-def _classify_exc(exc_msg: str) -> tuple[str, str | None, str | None]:
-    """Parse a pool TypeError message into (clean_msg, w4_type, w5_file).
-
-    Returns:
-        clean_msg: exc_msg with the pool boilerplate prefix stripped.
-        w4_type:   the unresolvable type name, or None.
-        w5_file:   the missing dependency file path, or None.
-    """
-    msg = exc_msg
-    if msg.startswith(_POOL_PREFIX):
-        msg = msg[len(_POOL_PREFIX):]
-    w4: str | None = None
-    w5: str | None = None
-    if msg.startswith(_RESOLVE_PREFIX):
-        # "couldn't resolve name '.pkg.Type'"
-        w4 = msg[len(_RESOLVE_PREFIX):].rstrip("'")
-    elif msg.startswith(_DEPENDS_PREFIX):
-        # "Depends on file 'path/to/file.proto', but it has not been loaded"
-        inner = msg[len(_DEPENDS_PREFIX):]
-        w5 = inner.split("'")[0]
-    return msg, w4, w5
+def debug_exception(debug: bool, where: str, exc: BaseException) -> None:
+    """Under --debug, the exception behind a fixed reason, in full."""
+    if debug:
+        cli_warning("%s: %s: %s", where, type(exc).__name__, exc)
 
 
 def report(code: str, depth: int, *, suppress_stderr: bool = False, **kwargs: Any) -> BlockLine:
@@ -221,23 +212,13 @@ def report(code: str, depth: int, *, suppress_stderr: bool = False, **kwargs: An
     """
     anomaly = ANOMALIES[code]
 
-    # For A3/C5: classify W4/W5 and route through WarningCollector.
-    exc_msg: str = kwargs.get('exc_msg', '')
-    if code in ('A3', 'C5') and exc_msg:
-        clean_msg, w4, w5 = _classify_exc(exc_msg)
-        collector = get_collector()
-        if w4 is not None:
-            collector.w4(w4)
-        elif w5 is not None:
-            collector.w5(w5)
-        else:
-            # Other render error (e.g. "Couldn't find Extension N") — route
-            # through W6 so it is buffered and sorted with the rest.
-            proto_file = kwargs.get('file', '')
-            field_name = kwargs.get('name', '')
-            field_ctx = f"field '{field_name}'" if field_name else ''
-            collector.w6(proto_file, field_ctx, clean_msg)
-        kwargs = dict(kwargs, exc_msg=clean_msg)
+    # A3/C5, a render failure: W6, buffered and sorted with the rest, under
+    # its fixed reason (POOL_REFUSED, INTERNAL_ERROR).
+    if code in ('A3', 'C5'):
+        proto_file = kwargs.get('file', '')
+        field_name = kwargs.get('name', '')
+        field_ctx = f"field '{field_name}'" if field_name else ''
+        get_collector().w6(proto_file, field_ctx, kwargs['reason'])
     else:
         ctx_map = _Ignore(kwargs)
         if anomaly.stderr and not suppress_stderr:

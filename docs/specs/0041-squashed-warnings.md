@@ -587,7 +587,9 @@ phases and the user sees them in chronological order anyway.
 ## Test coverage
 
 Tests live in `reproto/src/reproto/tests/`.  New unit tests for
-`WarningCollector` and `_classify_exc` go in `test_warnings.py`; new
+`WarningCollector` go in `test_warnings.py` (`_classify_exc`, which
+parsed exception text into W4/W5/W6, and its TC-C tests were removed by
+spec 0429 S16: a render failure is W6 under a fixed reason); new
 integration/regression tests extend `test_pruned_dependency.py`.
 
 ### Unit tests — `WarningCollector` (`test_warnings.py`)
@@ -633,29 +635,6 @@ empty and the hint line is absent.
 **TC-W8  Multiple W5 keys sorted alphabetically.**
 Feed `w5("z/z.proto")` and `w5("a/a.proto")` in that order.  Assert the
 flushed W5 block is sorted: `a/a.proto` line precedes `z/z.proto` line.
-
-### Unit tests — `_classify_exc` (`test_warnings.py`)
-
-**TC-C1  `_POOL_PREFIX` stripped.**
-Pass a message starting with `"Couldn't build proto file into descriptor
-pool: "` followed by an unrelated body.  Assert `clean_msg` equals the body
-with the prefix removed, and `w4` and `w5` are `None`.
-
-**TC-C2  `_RESOLVE_PREFIX` → W4.**
-Pass `"couldn't resolve name '.pkg.Type'"`.  Assert `w4 == ".pkg.Type"` and
-`w5 is None`.
-
-**TC-C3  `_DEPENDS_PREFIX` → W5.**
-Pass `"Depends on file 'path/to/dep.proto', but it has not been loaded"`.
-Assert `w5 == "path/to/dep.proto"` and `w4 is None`.
-
-**TC-C4  Other error → W6 (neither W4 nor W5).**
-Pass `"Couldn't find Extension 42"`.  Assert both `w4` and `w5` are `None`
-and `clean_msg == "Couldn't find Extension 42"`.
-
-**TC-C5  Combined prefix + resolve.**
-Pass the full pool prefix concatenated with `"couldn't resolve name
-'.foo.Bar'"`.  Assert `w4 == ".foo.Bar"`.
 
 ### Regression tests — `test_pruned_dependency.py`
 

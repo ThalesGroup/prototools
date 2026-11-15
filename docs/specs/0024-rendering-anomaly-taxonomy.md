@@ -160,9 +160,12 @@ each entry are listed; any subset may be used by either string.
 
 - **Current severity:** Fatal (no comment)
 - **Target severity:** Fatal
-- **Available kwargs:** `file`, `exc_type`, `exc_msg`
-- **stderr:** `"'{file}': failed to render file options: {exc_type}: {exc_msg}"`
-- **comment:** `"file options could not be rendered ({exc_type}: {exc_msg})"`
+- **Available kwargs:** `file`, `reason`
+- **stderr:** `"'{file}': failed to render file options: {reason}"`
+- **comment:** `"file options could not be rendered ({reason})"`
+- **reason:** fixed, named by the cause, never the exception's text (spec
+  0429 S16): `POOL_REFUSED` when the pool cannot build the file,
+  `INTERNAL_ERROR` otherwise; the exception under `--debug`.
 
 ---
 
@@ -264,9 +267,11 @@ each entry are listed; any subset may be used by either string.
 
 - **Current severity:** Warning (no comment)
 - **Target severity:** Warning
-- **Available kwargs:** `name`, `exc_type`, `exc_msg`
-- **stderr:** `"field '{name}': failed to render options: {exc_type}: {exc_msg}"`
-- **comment:** `"field options could not be rendered ({exc_type}: {exc_msg})"`
+- **Available kwargs:** `file`, `name`, `reason`
+- **stderr:** `"'{file}' field '{name}': failed to render options: {reason}"`
+- **comment:** `"field options could not be rendered ({reason})"`
+- **reason:** `INTERNAL_ERROR` (spec 0429 S16); the exception under
+  `--debug`.
 
 ---
 

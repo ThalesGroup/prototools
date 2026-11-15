@@ -245,6 +245,20 @@ reproto first.)
     protobuf 7.34.1, upb of protobuf 34.1; protoback's, 36.2). The fixed
     message therefore names the cause and the file, not upb's reason,
     which `--debug` shows.
+  - **Done in reproto** (2026-11-15, `test_render_failures.py`, each
+    test failing before): A3 and C5 take a `reason`, `POOL_REFUSED` or
+    `INTERNAL_ERROR` (`anomalies.py`), filed as W6 under it;
+    `_classify_exc` and its tests are gone. The file's own pool lookup
+    has its own `try` in `render_file_options`, so that a refusal is
+    told from a failure in what follows it. A file `_phase7_output`
+    skips is W6 `internal error`. `render_options`' failed lookups are
+    unchanged: they go to a logger nothing shows, not even `--debug`,
+    and reach no output.
+  - **Open: C5's cause seen in the wild.** Spec 0041's corpus (not in
+    the repository) met `Couldn't find Extension N` rendering a
+    `message_set_extension` field's options; neither the harness, the
+    tests, nor a MessageSet fixture made for it reaches it. It is
+    written `internal error` until a reproducer names its cause.
 
 ## Alternatives considered
 

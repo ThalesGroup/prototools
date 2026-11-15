@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: MIT
 
-"""Unit tests for WarningCollector and _classify_exc (spec 0041 TC-W* and TC-C*)."""
+"""Unit tests for WarningCollector (spec 0041 TC-W*)."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ import logging
 from io import StringIO
 
 from reproto.lib.warnings import WarningCollector
-from reproto.anomalies import _classify_exc
 
 
 # ---------------------------------------------------------------------------
@@ -226,60 +225,3 @@ def test_W8_w5_alphabetical_sort() -> None:
     assert len(w5_lines) == 2
     assert "a/a.proto" in w5_lines[0]
     assert "z/z.proto" in w5_lines[1]
-
-
-# ---------------------------------------------------------------------------
-# TC-C1  _POOL_PREFIX stripped, no W4/W5
-# ---------------------------------------------------------------------------
-
-def test_C1_pool_prefix_stripped() -> None:
-    prefix = "Couldn't build proto file into descriptor pool: "
-    clean, w4, w5 = _classify_exc(prefix + "some other error")
-    assert clean == "some other error"
-    assert w4 is None
-    assert w5 is None
-
-
-# ---------------------------------------------------------------------------
-# TC-C2  _RESOLVE_PREFIX → W4
-# ---------------------------------------------------------------------------
-
-def test_C2_resolve_prefix_gives_w4() -> None:
-    clean, w4, w5 = _classify_exc("couldn't resolve name '.pkg.Type'")
-    assert w4 == ".pkg.Type"
-    assert w5 is None
-    assert "couldn't resolve" in clean
-
-
-# ---------------------------------------------------------------------------
-# TC-C3  _DEPENDS_PREFIX → W5
-# ---------------------------------------------------------------------------
-
-def test_C3_depends_prefix_gives_w5() -> None:
-    clean, w4, w5 = _classify_exc(
-        "Depends on file 'path/to/dep.proto', but it has not been loaded"
-    )
-    assert w5 == "path/to/dep.proto"
-    assert w4 is None
-
-
-# ---------------------------------------------------------------------------
-# TC-C4  Other error → neither W4 nor W5 (W6 bucket)
-# ---------------------------------------------------------------------------
-
-def test_C4_other_error_neither_w4_nor_w5() -> None:
-    clean, w4, w5 = _classify_exc("Couldn't find Extension 42")
-    assert w4 is None
-    assert w5 is None
-    assert clean == "Couldn't find Extension 42"
-
-
-# ---------------------------------------------------------------------------
-# TC-C5  Combined pool prefix + resolve prefix
-# ---------------------------------------------------------------------------
-
-def test_C5_combined_prefix_and_resolve() -> None:
-    prefix = "Couldn't build proto file into descriptor pool: "
-    clean, w4, w5 = _classify_exc(prefix + "couldn't resolve name '.foo.Bar'")
-    assert w4 == ".foo.Bar"
-    assert w5 is None
