@@ -219,9 +219,32 @@ reproto first.)
     message naming the element (file, and field or option), the same in
     both tools, so that the harness compares it; the exception is shown
     in full under `--debug` only.
-  - Before S5: the causes listed, each reached by a fixture (the
-    harness's and the test suite's), by an inventory of what
-    `render()`'s `except` clauses catch in practice.
+  - **What they catch in practice** (2026-11-15): every exception an
+    `except` clause in reproto caught, recorded with `sys.monitoring`
+    (`EXCEPTION_HANDLED`), over the 542 harness cases and reproto's
+    312 tests. In rendering, two causes only:
+    - **The pool refuses the file.** `ctx.pool` cannot build it, and
+      A3 (file options) and `render_options` (message, enum, service
+      and method options) fail on it, the file rendered without them.
+      Reasons met: a name that does not resolve
+      (`ext_no_options_extender`, `test_A5_…`), a duplicate symbol
+      under `--keep-duplicates` (`duplicates/keep`, `test_P3_…`), a
+      proto3 required field (`test_C3_…`), an implicit-presence field
+      with a default (`test_C4_…`), a non-canonical map entry, which
+      upb reports as `out of memory` (`test_C1_…`).
+    - **A synthetic group has no descriptor in the pool**: under
+      `--force-proto2-output`, `render_options` looks up the group
+      made for a DELIMITED field (spec 0428), which exists only in the
+      graph (`KeyError`, the four editions fixtures and three tests).
+      Logged, and there is nothing to render: not a failure.
+    Never reached: C5 (a field's options), `_phase7_output`'s skipped
+    file, `Couldn't find Extension N`, an enum value with no name.
+  - The pool's reasons are upb's C text, prefixed by Python protobuf
+    (`Couldn't build proto file into descriptor pool: `); upb's text
+    changes with its version, and the two tools' upb differ (Python
+    protobuf 7.34.1, upb of protobuf 34.1; protoback's, 36.2). The fixed
+    message therefore names the cause and the file, not upb's reason,
+    which `--debug` shows.
 
 ## Alternatives considered
 
