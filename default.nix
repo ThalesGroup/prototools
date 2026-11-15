@@ -369,7 +369,7 @@ let
     inherit pkgs pythonPkgs pythonBin;
     inherit (rust) metaCommon pyprojectVersion;
     prototext = rust.prototext;
-    inherit (rust) prototextCodec fdpScanLib prototextGraphLib;
+    inherit (rust) prototextCodec fdpScanLib prototextGraphLib protoback;
   };
 
   cratesIo = import ./nix/crates-io.nix {
@@ -639,7 +639,7 @@ let
     wktDb wktPrebuiltCheck prototextFixturesCheck
     prototoolsClosureCheck
     completionTests
-    python.protobackHarness
+    python.protobackHarness python.protobackDumpHarness
     # nixpkgsStaging builds in its own workflow (nixpkgs-staging.yml): two
     # more full Rust builds would weigh on every CI run. The check stays.
     nixpkgsStagingCheck
@@ -819,7 +819,7 @@ let
 
   full-tests = pkgs.linkFarmFromDrvs "full-tests" [
     ci python.googleapisDb python.googleapisTests python.customDb python.customTests
-    python.protobackHarnessFull
+    python.protobackHarnessFull python.protobackDumpHarnessFull
   ];
 
 in
@@ -852,6 +852,8 @@ in
   custom-tests         = python.customTests;
   protoback-harness    = python.protobackHarness;
   protoback-harness-full = python.protobackHarnessFull;
+  protoback-dump-harness = python.protobackDumpHarness;
+  protoback-dump-harness-full = python.protobackDumpHarnessFull;
   bobapp-desc          = python.bobappDesc;
   bobapp-extra-desc    = python.bobappExtraDesc;
   bobapp               = bobappDemo;

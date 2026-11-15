@@ -27,6 +27,7 @@
 , prototextCodec
 , fdpScanLib
 , prototextGraphLib
+, protoback         # nix/rust.nix: the harness's candidate (spec 0428 S10)
 }:
 
 let
@@ -638,9 +639,11 @@ print('\n'.join(lines[:$N_EXTRA]))
 
   # The differential harness of spec 0424 S11: a reference and a candidate
   # run the same cases, every output compared byte for byte. Until protoback
-  # exists, reproto runs on both sides, so a difference is nondeterminism in
-  # reproto itself. protobackHarness is part of `ci`; protobackHarnessFull
-  # adds googleapis, three minutes a side, and is part of `full-tests`.
+  # renders (step 5), reproto runs on both sides of protobackHarness, so a
+  # difference is nondeterminism in reproto itself; protobackDumpHarness
+  # compares the graph dumps of phases 1 to 6, reproto's and protoback's
+  # (spec 0428 S10). The two are part of `ci`; their -full versions add
+  # googleapis, and are part of `full-tests`.
   protobackHarnessSrc =
     let fs = pkgs.lib.fileset; in
     fs.toSource {
@@ -655,26 +658,41 @@ print('\n'.join(lines[:$N_EXTRA]))
         (fs.fileFilter (f: f.hasExt "pyc") ../reproto/src/reproto/tests/fixtures);
     };
 
-  mkProtobackHarness = name: prepareFlags: pkgs.runCommand name {
-    strictDeps = true;
-    nativeBuildInputs = [ pkgs.protobuf reproto pythonPkgs.python ];
-  } ''
-    set -euo pipefail
-    harness=${protobackHarnessSrc}/scripts/protoback-harness
-    python3 "$harness" prepare "$TMPDIR/work" --otel ${corpusOtel} ${prepareFlags}
-    python3 "$harness" run "$TMPDIR/work" \
-      --reference reproto --candidate reproto --jobs "$NIX_BUILD_CORES"
-    cp "$TMPDIR/work/report.txt" "$out"
-  '';
+  mkProtobackHarness = { name, prepareFlags ? "", candidate ? "reproto", runFlags ? "" }:
+    pkgs.runCommand name {
+      strictDeps = true;
+      nativeBuildInputs = [ pkgs.protobuf reproto protoback pythonPkgs.python ];
+    } ''
+      set -euo pipefail
+      harness=${protobackHarnessSrc}/scripts/protoback-harness
+      python3 "$harness" prepare "$TMPDIR/work" --otel ${corpusOtel} ${prepareFlags}
+      python3 "$harness" run "$TMPDIR/work" ${runFlags} \
+        --reference reproto --candidate ${candidate} --jobs "$NIX_BUILD_CORES"
+      cp "$TMPDIR/work/report.txt" "$out"
+    '';
 
-  protobackHarness = mkProtobackHarness "protoback-harness" "";
-  protobackHarnessFull = mkProtobackHarness "protoback-harness-full"
-    "--googleapis ${googleapisPbs}/googleapis.pb";
+  withGoogleapis = "--googleapis ${googleapisPbs}/googleapis.pb";
+  dumpGraph = { candidate = "protoback"; runFlags = "--dump-graph"; };
+
+  protobackHarness = mkProtobackHarness { name = "protoback-harness"; };
+  protobackHarnessFull = mkProtobackHarness {
+    name = "protoback-harness-full";
+    prepareFlags = withGoogleapis;
+  };
+  protobackDumpHarness = mkProtobackHarness (dumpGraph // {
+    name = "protoback-dump-harness";
+  });
+  protobackDumpHarnessFull = mkProtobackHarness (dumpGraph // {
+    name = "protoback-dump-harness-full";
+    prepareFlags = withGoogleapis;
+  });
 
 in {
   inherit
     protobackHarness
     protobackHarnessFull
+    protobackDumpHarness
+    protobackDumpHarnessFull
     reprotoSrc
     treeSitterTextprotoPkg
     reprotoPropagatedDeps

@@ -358,7 +358,8 @@ let
     installPhaseCommand                = ''
       mkdir -p $out/bin $out/wheels
       cp ${profileDir}/prototext \
-         ${profileDir}/protolens ${profileDir}/protoscan $out/bin/
+         ${profileDir}/protolens ${profileDir}/protoscan \
+         ${profileDir}/protoback $out/bin/
     '' + pkgs.lib.concatMapStrings (e:
       let
         committed = "${e.crateDir}/${e.libName}/${e.libName}.pyi";
@@ -394,6 +395,20 @@ let
     mkdir -p $out/bin
     cp ${workspaceBuild}/bin/prototext $out/bin/
     ${prototextPostInstall}
+  '';
+
+  # ---------------------------------------------------------------------------
+  # protoback — reproto in Rust, under way (spec 0424). Not published, and
+  # not packaged: the differential harness's candidate (spec 0428 S10).
+  # ---------------------------------------------------------------------------
+  protoback = pkgs.runCommand "protoback-${workspaceVersion}" {
+    meta = metaCommon // {
+      description = "reproto in Rust, on upb (under way)";
+      mainProgram = "protoback";
+    };
+  } ''
+    mkdir -p $out/bin
+    cp ${workspaceBuild}/bin/protoback $out/bin/
   '';
 
   # ---------------------------------------------------------------------------
@@ -529,6 +544,7 @@ in {
     workspaceBuild
     prototext
     protoscan
+    protoback
     protolens
     neovimLean
     bufLean
