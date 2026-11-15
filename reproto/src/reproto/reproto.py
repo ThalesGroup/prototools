@@ -249,8 +249,9 @@ def reproto(
         _phase4_pruning(ctx, topo, prunings)
         # Seed-by-path (spec 0149 G4): path_seed_fqdns is populated by
         # load_from_path() during phase 1 for every FDP produced by a
-        # physical candidate matching a path seed pattern.
-        _phase5_reachability(ctx, seeds + list(ctx.path_seed_fqdns), topo)
+        # physical candidate matching a path seed pattern. Sorted: a set of
+        # strings iterates in an order PYTHONHASHSEED sets.
+        _phase5_reachability(ctx, seeds + sorted(ctx.path_seed_fqdns), topo)
         _phase6_summoning(ctx)
 
         if recorder is not None:

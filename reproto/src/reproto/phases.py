@@ -1117,9 +1117,9 @@ def _phase4_pruning(ctx: Context, topo: Topology, prunings: list[Fqdn]) -> None:
             new_prunings: set[Node] = set()
             for node in current_prunings:
                 for child in node.contains:
-                    assert (isinstance(child, Node)
-                            and child is not None
-                            and not child.is_pruned)
+                    # A child may be pruned already: the user named it
+                    # too, and it is among the first prunings.
+                    assert isinstance(child, Node)
                     if not child.is_present():
                         continue
                     if child not in transitive_prunnings:

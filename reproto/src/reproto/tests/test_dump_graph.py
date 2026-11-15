@@ -258,3 +258,56 @@ def test_a_stub_node_is_dumped_without_a_parent(tmp_path: Path) -> None:
     stub = next(line for line in text.splitlines()
                 if line.startswith("ReDescriptorProto | desc:.ext_test.Config |"))
     assert stub.split(" | ")[2:5] == ["stub", "---", "-"]
+
+
+def test_a_node_pruned_with_one_of_its_children(tmp_path: Path) -> None:
+    """Two --prune patterns, a message and the field it contains: both
+    are pruned, the field the user named not a second time by pruning
+    the message, which reaches it."""
+    src = tmp_path / "src"
+    src.mkdir()
+    text, _ = _dump(tmp_path, _set(src), "1", "--prune", "desc:dg.Holder",
+                    "--prune", "fdsc:dg.Holder.inner")
+    flags = {line.split(" | ")[1]: line.split(" | ")[3]
+             for line in text.split("[nodes]\n", 1)[1].split("[seeds]", 1)[0].splitlines()
+             if not line.startswith(" ")}
+    for fqdn in ("desc:.dg.Holder", "fdsc:.dg.Holder.inner"):
+        assert flags[fqdn].startswith("P"), fqdn
+
+
+def test_path_seeds_are_tried_in_sorted_order(tmp_path: Path) -> None:
+    """A path seed stands for the files it matched; phase 5 tries them in
+    the order of their names, not in a set's, which a string's hash, so
+    PYTHONHASHSEED, decides. Each is pruned here, so each is warned about,
+    in that order."""
+    src = tmp_path / "src"
+    src.mkdir()
+    root = tmp_path / "root"
+    root.mkdir()
+    names = ["m", "c", "x", "a", "q", "f"]
+    for name in names:
+        proto = src / f"{name}.proto"
+        proto.write_text(f'syntax = "proto2";\npackage {name};\nmessage M {{}}\n',
+                         encoding="utf-8")
+        result = subprocess.run(
+            ["protoc", f"--descriptor_set_out={root / name}.pb", f"-I{src}", str(proto)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, result.stderr
+    prunes = [arg for n in names for arg in ("--prune", f"file:{n}.proto")]
+    warnings = []
+    for seed in ("1", "2", "3"):
+        dump = tmp_path / f"graph-{seed}.txt"
+        env = {**os.environ, "PYTHONHASHSEED": seed}
+        env.pop("REPROTO_VARIANT", None)
+        result = subprocess.run(
+            [*REPROTO_CMD, "--use-variant", "descriptor", f"-I{root}",
+             f"--dump-graph={dump}", "--seed", "*", *prunes],
+            capture_output=True, text=True, env=env,
+        )
+        assert result.returncode == 0, result.stderr
+        text = dump.read_text(encoding="utf-8")
+        warnings.append([line for line in text.split("[warnings]\n", 1)[1].splitlines()
+                         if "Seed not found" in line])
+    expected = [f"warning | Seed not found: file:{n}.proto" for n in sorted(names)]
+    assert warnings == [expected] * 3
