@@ -51,4 +51,6 @@ pub struct Run {
     pub seed_nodes: BTreeSet<usize>,
     /// Phase 6's files for the schema database, beyond the summoned ones.
     pub schema_db_extra_nodes: Vec<usize>,
+    /// `--fdp-plugin` or `--fdp-plugin-cmd`, running (spec 0431).
+    pub plugin: Option<crate::plugin::Plugin>,
 }

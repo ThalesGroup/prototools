@@ -149,6 +149,11 @@ pub struct Cli {
     pub fdp_plugin: Option<PathBuf>,
     #[arg(long = "phase2-plugin", hide = true)]
     pub phase2_plugin_deprecated: Option<PathBuf>,
+    /// A plugin in any language: the shell command line run once, spoken
+    /// to in frames on its stdin and stdout (spec 0431 S2). protoback's
+    /// own.
+    #[arg(long = "fdp-plugin-cmd", value_name = "CMD")]
+    pub fdp_plugin_cmd: Option<String>,
     #[arg(long = "keep-duplicates")]
     pub keep_duplicates: bool,
     #[arg(long = "detailed-warnings")]
@@ -175,11 +180,6 @@ impl Cli {
                 later.push((name, step));
             }
         };
-        note(
-            self.fdp_plugin.is_some() || self.phase2_plugin_deprecated.is_some(),
-            "--fdp-plugin",
-            7,
-        );
         note(
             self.dump_resolved_features.is_some(),
             "--dump-resolved-features",

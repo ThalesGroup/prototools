@@ -19,6 +19,7 @@ mod phase2;
 mod phase4;
 mod phase5;
 mod phase6;
+mod plugin;
 mod render;
 mod run;
 mod schema_db;
@@ -189,6 +190,24 @@ fn main() -> ExitCode {
         Ok(v) => v,
         Err(e) => return usage(&e),
     };
+    // The plugin options: one at most (spec 0369 S3, spec 0431).
+    if cli.fdp_plugin.is_some() && cli.phase2_plugin_deprecated.is_some() {
+        return usage(
+            "--fdp-plugin and --phase2-plugin are mutually exclusive; \
+             --phase2-plugin is deprecated, use --fdp-plugin alone",
+        );
+    }
+    if cli.fdp_plugin_cmd.is_some()
+        && (cli.fdp_plugin.is_some() || cli.phase2_plugin_deprecated.is_some())
+    {
+        return usage("--fdp-plugin-cmd and --fdp-plugin are mutually exclusive");
+    }
+    if cli.phase2_plugin_deprecated.is_some() && !cli.quiet {
+        eprintln!(
+            "warning: --phase2-plugin is deprecated; use --fdp-plugin \
+             (protoback calls phase2_plugin(ctx, fdp) with ctx None)"
+        );
+    }
     // reproto's `--hide` check: `desc:` patterns only, normalised as
     // seeds and prunes are. show.py then matches them against bare FQDNs
     // (spec 0430 S8).
@@ -231,6 +250,32 @@ fn main() -> ExitCode {
         }
     }
 
+    // The plugin, started once and ready before any file is read (spec
+    // 0431 S2).
+    let source = match (
+        &cli.fdp_plugin,
+        &cli.phase2_plugin_deprecated,
+        &cli.fdp_plugin_cmd,
+    ) {
+        (Some(file), _, _) => Some(plugin::Source::Python {
+            file: file.display().to_string(),
+            legacy: false,
+        }),
+        (_, Some(file), _) => Some(plugin::Source::Python {
+            file: file.display().to_string(),
+            legacy: true,
+        }),
+        (_, _, Some(cmd)) => Some(plugin::Source::Command(cmd.clone())),
+        _ => None,
+    };
+    let plugin = match source.map(plugin::Plugin::start).transpose() {
+        Ok(p) => p,
+        Err(message) => {
+            eprintln!("{message}");
+            return ExitCode::from(1);
+        }
+    };
+
     let fallback = fallback_protos(&cli.use_variant, &variant);
     let mut run = Run {
         roots,
@@ -257,14 +302,23 @@ fn main() -> ExitCode {
         edition_defaults: Default::default(),
         seed_nodes: BTreeSet::new(),
         schema_db_extra_nodes: Vec::new(),
+        plugin,
     };
     let mut topo = topology::Topology::default();
     phase1::run(&mut run, &mut topo);
+    if let Some(failure) = run.plugin.as_ref().and_then(plugin::Plugin::failure) {
+        eprintln!("{failure}");
+        return ExitCode::from(1);
+    }
     if let Err(fatal) = phase2::run(&mut run, &mut topo) {
         if let Some(detail) = fatal.detail() {
             eprintln!("{detail}");
         }
         eprintln!("Error: {}", fatal.message());
+        return ExitCode::from(1);
+    }
+    if let Some(failure) = run.plugin.as_ref().and_then(plugin::Plugin::failure) {
+        eprintln!("{failure}");
         return ExitCode::from(1);
     }
     run.graph = graph::run(

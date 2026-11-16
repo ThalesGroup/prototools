@@ -281,6 +281,40 @@ class Case:
     args: list[str]
 
 
+# The plugins of the plugin cases (spec 0431), written into the corpus.
+PLUGINS: dict[str, str] = {
+    "add_field.py": """\
+def fdp_plugin(fdp):
+    if fdp.name != 'plugin_subject.proto':
+        return
+    fdp.dependency.append('plugin_target.proto')
+    field = fdp.message_type[0].field.add()
+    field.name = 'target'
+    field.number = 99
+    field.label = field.LABEL_OPTIONAL
+    field.type = field.TYPE_MESSAGE
+    field.type_name = '.plugin_test.Target'
+""",
+    "add_field_phase2.py": """\
+def phase2_plugin(ctx, fdp):
+    if fdp.name != 'plugin_subject.proto':
+        return
+    fdp.dependency.append('plugin_target.proto')
+""",
+    "raises.py": """\
+def fdp_plugin(fdp):
+    if fdp.name == 'plugin_subject.proto':
+        raise ValueError('refused')
+""",
+    "no_entry_point.py": "x = 1\n",
+    "rename_package.py": """\
+def fdp_plugin(fdp):
+    if fdp.package:
+        fdp.package = fdp.package + '.renamed'
+""",
+}
+
+
 def cases(corpus: Path) -> list[Case]:
     out: list[Case] = []
     proto_out = ["--proto-out=out/proto"]
@@ -370,6 +404,31 @@ def cases(corpus: Path) -> list[Case]:
 
     blob = corpus / "blob" / "blob.bin"
     out.append(Case("blob/default", ["-I", str(blob), *proto_out]))
+
+    # Plugins (spec 0431): reproto's own test plugin, which adds an import
+    # and a field typed by it; the same through the deprecated
+    # --phase2-plugin; one that raises; one over text input. The plugin
+    # files are written here, so a corpus prepared before them works.
+    plugins = corpus / "plugins"
+    plugins.mkdir(exist_ok=True)
+    for name, source in PLUGINS.items():
+        path = plugins / name
+        if not path.exists() or path.read_text() != source:
+            path.write_text(source)
+    subject = ["-I", str(corpus / "imports" / "plugin_subject"),
+               "-I", str(corpus / "imports" / "plugin_target"), *proto_out]
+    for name, flags in (
+        ("add-field", ["--fdp-plugin", str(plugins / "add_field.py")]),
+        ("add-field-binary", ["--fdp-plugin", str(plugins / "add_field.py"),
+                              "--emit-binary"]),
+        ("phase2", ["--phase2-plugin", str(plugins / "add_field_phase2.py")]),
+        ("raises", ["--fdp-plugin", str(plugins / "raises.py")]),
+        ("no-entry-point", ["--fdp-plugin", str(plugins / "no_entry_point.py")]),
+    ):
+        out.append(Case(f"plugins/{name}", [*subject, *flags, "plugin_subject.pb"]))
+    out.append(Case("plugins/text", ["-I", str(corpus / "text" / "address_book"),
+                                     *proto_out, "--fdp-plugin",
+                                     str(plugins / "rename_package.py")]))
 
     demo = corpus / "demo"
     for flag_name in ("default", "schema-db"):

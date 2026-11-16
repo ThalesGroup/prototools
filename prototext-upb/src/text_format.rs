@@ -108,6 +108,31 @@ pub struct Parsed {
     pub warnings: Vec<Warning>,
 }
 
+/// Unknown names skipped: a field of a newer `descriptor.proto`, an
+/// extension the pool does not declare (reported, spec 0427 S4).
+pub const LENIENT: Options = Options {
+    allow_unknown_field: true,
+    allow_unknown_extension: true,
+};
+
+/// A `FileDescriptorProto` in the text format, or a `FileDescriptorSet`
+/// when `is_set`, into the binary format, read with the vendored
+/// `descriptor.proto` alone and [`LENIENT`]ly: for what must see a file
+/// before the input is complete (an FDP plugin, specs 0369 and 0431). A
+/// field printed by number is kept; a field or an extension by a name
+/// `descriptor.proto` does not declare is skipped.
+pub fn parse_descriptor(text: &str, is_set: bool) -> Result<Vec<u8>, TextError> {
+    let name = if is_set {
+        "google.protobuf.FileDescriptorSet"
+    } else {
+        "google.protobuf.FileDescriptorProto"
+    };
+    let def = Pool::vendored()
+        .get_message_by_name(name)
+        .expect("the vendored descriptor.proto declares it");
+    parse(&def, text, LENIENT)
+}
+
 /// Parse `text` as a message of type `def`, into the binary format.
 pub fn parse(def: &Message, text: &str, options: Options) -> Result<Vec<u8>, TextError> {
     parse_reporting(def, text, options).map(|p| p.bytes)

@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0431 — protoback, plugins
 
-Status: draft
+Status: implemented
+Implemented in: 2026-11-16
 App: protoback
 Refs: docs/specs/0424-protoback-reproto-in-rust-on-upb.md (step 7 of its
       work plan; S9, plugins out of process; test plan 5);
@@ -74,8 +75,8 @@ plugins through an adapter protoback embeds.
     ready, `1` and a message when it cannot run (a Python plugin without
     its entry point). protoback waits for it before reading any file.
 - **S3. The Python adapter.** `--fdp-plugin FILE` runs `python3`, or
-  `$PROTOBACK_PYTHON`, on an adapter protoback embeds (`plugin.py`,
-  written to a temporary file). It `exec()`s `FILE`, checks its entry
+  `$PROTOBACK_PYTHON`, on an adapter protoback embeds
+  (`plugin/adapter.py`, given to `python3 -c`). It `exec()`s `FILE`, checks its entry
   point with reproto's messages, answers the ready frame, then calls
   `fdp_plugin(fdp)` on each descriptor, parsed and serialized with the
   installed Python `protobuf`. `--phase2-plugin` calls
@@ -135,4 +136,31 @@ and pipelines a command line is expected to take.
 
 ## Measured outcome
 
-Filled in at implementation.
+- **Step 7** (2026-11-16): `plugin.rs` (the process, the frames, the
+  cache), `plugin/adapter.py`, and the four places: `load::parse_qfile`
+  (a text file parsed with descriptor.proto alone when there is a
+  plugin, its imports the answer's), `phase1::embedded_fallback` and
+  `read_text_files` (the imports the answer's, the contents unpatched,
+  as reproto's `qf.desc` setter has it), `phase2::merge` (the answer
+  merged). A failure is kept and ends the run after the phase it
+  happened in: nothing is written, but that phase's remaining files are
+  read first (their plugin calls skipped), where reproto stops at once.
+  - The text parse with descriptor.proto alone moved to `prototext-upb`
+    (`text_format::parse_descriptor`); the Python binding's
+    `parse_descriptor_text` calls it.
+  - reproto's `test_fdp_plugin.py` against protoback: 7 of 8 pass. The
+    eighth checks the output, which is right, then the stripped import's
+    warning on stderr, which protoback prints in step 9 (N2).
+  - The harness's plugin cases (an import and a field added, also under
+    `--emit-binary`; `--phase2-plugin`; text input; a plugin that
+    raises; one without its entry point): identical, exit statuses
+    included. The whole harness, every corpus, on all cores and with
+    `--jobs 1`: 1,573 cases, all identical.
+  - `protoback/tests/plugin.rs`: a command plugin in bare Python changes
+    a descriptor; each distinct descriptor is sent once (fails with the
+    cache off); exiting, a wrong status byte, an answer that is not a
+    descriptor, an error frame, no ready frame: exit status 1, the file
+    or the command named, nothing written.
+  - Not measured: what a plugin costs on googleapis, the adapter against
+    a command plugin and reproto's in-process call. Deferred until the
+    port is complete (the user's decision).

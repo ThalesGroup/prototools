@@ -148,6 +148,14 @@ fn merge(r: &mut Run, topo: &mut Topology, i: usize) {
         topo.files[i].is_pruned = true;
         return;
     };
+    // The plugin, on the file as parsed, before anything reads it (spec
+    // 0431 S1); its answer decodes, the plugin checked it.
+    if let Some(p) = &r.plugin {
+        let answer = p.apply(&name, &qf.contents);
+        if let Ok(patched) = DynamicMessage::decode(&def, &answer) {
+            fdp = patched;
+        }
+    }
     patch_go_package(r, &mut fdp);
     strip_self_dependency(r, &mut fdp);
     if !r.keep_duplicates && prune_if_duplicate(r, topo, i, &fdp) {

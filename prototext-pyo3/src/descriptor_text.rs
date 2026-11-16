@@ -13,20 +13,12 @@
 // must see a file before the input is complete (an FDP plugin).
 
 use prototext_upb::input::{read_input, Input, Read};
-use prototext_upb::text_format::{self, Options};
-use prototext_upb::Pool;
+use prototext_upb::text_format;
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use pyo3_stub_gen::derive::gen_stub_pyfunction;
-
-/// Unknown names skipped: a field of a newer `descriptor.proto`, an
-/// extension the pool does not declare (reported, spec 0427 S4).
-const LENIENT: Options = Options {
-    allow_unknown_field: true,
-    allow_unknown_extension: true,
-};
 
 /// Parse a descriptor in the text format into the binary format.
 ///
@@ -61,15 +53,7 @@ pub fn parse_descriptor_text<'py>(
     text: &str,
     is_set: bool,
 ) -> PyResult<Bound<'py, PyBytes>> {
-    let name = if is_set {
-        "google.protobuf.FileDescriptorSet"
-    } else {
-        "google.protobuf.FileDescriptorProto"
-    };
-    let def = Pool::vendored()
-        .get_message_by_name(name)
-        .expect("the vendored descriptor.proto declares it");
-    let bytes = text_format::parse(&def, text, LENIENT)
+    let bytes = text_format::parse_descriptor(text, is_set)
         .map_err(|e| PyValueError::new_err(format!("{}:{}: {}", e.line, e.column, e.message)))?;
     Ok(PyBytes::new(py, &bytes))
 }

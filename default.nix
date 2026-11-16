@@ -122,6 +122,8 @@ let
         # pyvis's page, which protoback embeds to write reproto's
         # --scoring-html-out byte for byte (spec 0430 S8).
         ./protoback/src/scoring/html
+        # The adapter protoback runs Python plugins through (spec 0431 S3).
+        ./protoback/src/plugin/adapter.py
         (fixtureFilter ./prototext/fixtures)
         (fixtureFilter ./reproto/src/reproto/tests/fixtures)
         (fixtureFilter ./prototext-graph/tests/fixtures)

@@ -302,6 +302,8 @@ pub struct LoadCtx<'a> {
     pub blobs: &'a mut HashMap<PathBuf, Vec<(PathBuf, Vec<u8>)>>,
     /// `file:<name>` for each file seeded by path.
     pub path_seed_fqdns: &'a mut std::collections::BTreeSet<String>,
+    /// The plugin, which sees each file as it is read (spec 0431 S1).
+    pub plugin: Option<&'a crate::plugin::Plugin>,
 }
 
 /// `blob_members`: the descriptors fdp-scan finds in a file-shaped root,
@@ -465,7 +467,30 @@ fn parse_qfile(ctx: &mut LoadCtx, file: &RawFile) -> Vec<QualFile> {
     };
     let mut out = Vec::new();
     for (name, fragment) in fragments {
+        // With a plugin, a text file is parsed now, with descriptor.proto
+        // alone, and its imports are the plugin's answer's (spec 0431 S1).
+        let patched_imports = |bytes: &[u8]| -> Vec<String> {
+            let answer = ctx.plugin.map(|p| p.apply(&name, bytes));
+            name_and_imports(answer.as_deref().unwrap_or(bytes))
+                .map(|(_, i)| i)
+                .unwrap_or_default()
+        };
         let (contents, text, imports) = match fragment {
+            Fragment::Text(t) if ctx.plugin.is_some() => {
+                match prototext_upb::text_format::parse_descriptor(&t, false) {
+                    Ok(bytes) => {
+                        let imports = patched_imports(&bytes);
+                        (bytes, Some(t), imports)
+                    }
+                    Err(e) => {
+                        ctx.events.warning(&format!(
+                            "Cannot parse '{rel}' (file '{name}'): {}:{}: {}",
+                            e.line, e.column, e.message
+                        ));
+                        continue;
+                    }
+                }
+            }
             Fragment::Text(t) => match prototext_upb::text_format::scan_imports(&t) {
                 Ok((_, imports)) => (Vec::new(), Some(t), imports),
                 Err(e) => {
@@ -475,7 +500,7 @@ fn parse_qfile(ctx: &mut LoadCtx, file: &RawFile) -> Vec<QualFile> {
                 }
             },
             Fragment::Binary(b) => {
-                let imports = name_and_imports(&b).map(|(_, i)| i).unwrap_or_default();
+                let imports = patched_imports(&b);
                 (b, None, imports)
             }
         };

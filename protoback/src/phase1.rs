@@ -25,6 +25,7 @@ pub fn run(r: &mut Run, topo: &mut Topology) {
         events: &mut r.events,
         blobs: &mut r.blobs,
         path_seed_fqdns: &mut r.path_seed_fqdns,
+        plugin: r.plugin.as_ref(),
     };
     let mut qual_files = Vec::new();
     for path in &seeds {
@@ -86,7 +87,14 @@ fn embedded_fallback(r: &Run, proto_name: &str) -> Option<QualFile> {
     let set = DynamicMessage::decode(&def, &data).ok()?;
     let first = FileDescriptorSet(set.as_ref()).file().into_iter().next()?;
     let bytes = first.0.encode().ok()?;
-    let (name, imports) = name_and_imports(&bytes)?;
+    let (name, mut imports) = name_and_imports(&bytes)?;
+    // The plugin sees the fallback too; the contents stay unpatched
+    // (spec 0369 S1, spec 0431 S1).
+    if let Some(p) = &r.plugin {
+        imports = name_and_imports(&p.apply(&name, &bytes))
+            .map(|(_, i)| i)
+            .unwrap_or_default();
+    }
     Some(QualFile {
         root: PathBuf::from("internal"),
         rel_path: PathBuf::from(proto_name),
@@ -149,9 +157,12 @@ fn read_text_files(r: &mut Run, topo: &mut Topology) {
                 for w in warnings {
                     r.events.warning(&format!("{name}: {w}"));
                 }
+                // The plugin sees the file read again; its imports are the
+                // answer's, its contents the unpatched read (spec 0431 S1).
+                let answer = r.plugin.as_ref().map(|p| p.apply(&name, &bytes));
                 let qf = topo.files[i].qfile.as_mut().expect("loaded");
                 qf.text = None;
-                if let Some((_, imports)) = name_and_imports(&bytes) {
+                if let Some((_, imports)) = name_and_imports(answer.as_deref().unwrap_or(&bytes)) {
                     qf.imports = imports;
                 }
                 qf.contents = bytes;
