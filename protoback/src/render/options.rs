@@ -29,6 +29,9 @@ pub enum Options {
     EnumValue,
     Service,
     Method,
+    /// Not an options message, but read as one for its extensions, the
+    /// custom features (spec 0435).
+    FeatureSet,
 }
 
 impl Options {
@@ -43,6 +46,7 @@ impl Options {
             Options::EnumValue => "EnumValueOptions",
             Options::Service => "ServiceOptions",
             Options::Method => "MethodOptions",
+            Options::FeatureSet => "FeatureSet",
         }
     }
 }
@@ -432,16 +436,54 @@ pub fn options(
             entries.push((name, orphan, field, value));
         }
     }
+    entries.extend(custom_entries(scope, &fields, ""));
+    render_entries(scope, entries, composite, depth)
+}
+
+/// The extensions set on `msg`, the custom options of a message read as an
+/// options message, by number (`ReExtensions`), each name after `prefix`:
+/// a feature set's, the custom features, after `features.` (spec 0435).
+pub fn extensions(
+    scope: &Scope<'_>,
+    msg: &DynamicMessage,
+    composite: bool,
+    depth: usize,
+    prefix: &str,
+) -> Result<Vec<Block>, Unrenderable> {
+    let fields = msg.as_ref().set_fields();
+    let entries = custom_entries(scope, &fields, prefix);
+    render_entries(scope, entries, composite, depth)
+}
+
+/// The extensions among `fields` reproto's options pool knows, by number,
+/// each with its name (after `prefix`) and whether it is an orphan.
+fn custom_entries<'f, 'v>(
+    scope: &Scope<'_>,
+    fields: &'f [(Field, Value<'v>)],
+    prefix: &str,
+) -> Vec<(String, bool, &'f Field, &'f Value<'v>)> {
     let mut custom: Vec<&(Field, Value<'_>)> = fields
         .iter()
         .filter(|(f, _)| f.is_extension() && scope.visible(f))
         .collect();
     custom.sort_by_key(|(f, _)| f.number());
-    for (field, value) in custom {
-        let (name, orphan) = scope.custom_name(field);
-        entries.push((name, orphan, field, value));
-    }
+    custom
+        .into_iter()
+        .map(|(field, value)| {
+            let (name, orphan) = scope.custom_name(field);
+            (format!("{prefix}{name}"), orphan, field, value)
+        })
+        .collect()
+}
 
+/// Each option a block: `option NAME = V;` standalone, `NAME = V,` in a
+/// composite, a repeated one's values one each; an orphan's lines marked.
+fn render_entries(
+    scope: &Scope<'_>,
+    entries: Vec<(String, bool, &Field, &Value<'_>)>,
+    composite: bool,
+    depth: usize,
+) -> Result<Vec<Block>, Unrenderable> {
     let mut blocks = Vec::new();
     for (name, orphan, field, value) in entries {
         let values: Vec<Value<'_>> = match (field.cardinality(), value) {

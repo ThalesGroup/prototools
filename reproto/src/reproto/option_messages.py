@@ -171,3 +171,13 @@ def create_option_message_classes(ctx: Context) -> None:
     except KeyError:
         ctx.ero_desc = None
         ctx.ero_cls = None
+
+    # FeatureSet, whose extensions are the custom features (spec 0435). A
+    # descriptor.proto older than editions has none.
+    try:
+        fts_desc = pool.FindMessageTypeByName(pkg + ".FeatureSet")
+        ctx.fts_desc = fts_desc
+        ctx.fts_cls = GetMessageClass(fts_desc)
+    except KeyError:
+        ctx.fts_desc = None
+        ctx.fts_cls = None

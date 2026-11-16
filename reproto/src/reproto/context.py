@@ -264,6 +264,9 @@ class Context(Options):
         # predates it (proto2).
         self.ero_desc: Descriptor | None
         self.ero_cls: type[Message] | None
+        # FeatureSet, for its extensions, the custom features (spec 0435).
+        self.fts_desc: Descriptor | None
+        self.fts_cls: type[Message] | None
         # The pool the option classes above come from: pool_db with maps as
         # the repeated messages they are on the wire (option_messages.py).
         self.options_pool: DescriptorPool

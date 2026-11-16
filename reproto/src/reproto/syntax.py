@@ -424,4 +424,16 @@ def render_features_block(
         else:
             out.append(BlockLine(f'option features.{fname} = {value_name};', depth))
 
+    # The custom features, the feature set's extensions (spec 0435): written
+    # as custom options are, after `features.`. The FDP's feature set holds
+    # them as unknown fields: parsed again where their extensions are known.
+    if ctx.fts_desc is not None and ctx.fts_cls is not None:
+        from .option_messages import parse_options
+        from .option_renderers import ReExtensions
+        msg = parse_options(ctx, ctx.fts_desc, ctx.fts_cls, fs.SerializeToString())
+        blocks, _ = ReExtensions(msg).render(
+            ctx, ctx.fts_desc, composite=inline, lev=depth, prefix='features.')
+        for block in blocks:
+            out.extend(block)
+
     return out

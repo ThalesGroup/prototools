@@ -96,7 +96,11 @@ class ReExtensions:
         options_desc: Descriptor,
         composite: bool,
         lev: int,
+        prefix: str = '',
     ) -> tuple[list[Block], bool]:
+        """The extensions set on the message, by number: `option NAME = V;`,
+        or `NAME = V,` in a composite; NAME after `prefix` (`features.`
+        for a feature set's, the custom features, spec 0435)."""
         assert isinstance(lev, int)
         blocks: list[Block] = list()
         is_orphan = True
@@ -112,6 +116,7 @@ class ReExtensions:
                     block, is_orp = opt.dump_option(
                         ctx, v, lev, True)
                     is_orphan &= is_orp
+                    block.prepend(prefix)
                     if not composite:
                         block.prepend('option ')
                         block.postpend(';')
@@ -124,6 +129,7 @@ class ReExtensions:
                     block, is_orp = opt.dump_option(
                         ctx, val, lev, True)
                     is_orphan &= is_orp
+                    block.prepend(prefix)
                     if not composite:
                         block.prepend('option ')
                         block.postpend(';')

@@ -176,6 +176,16 @@ pub fn features_block(
             depth,
         ));
     }
+    // The custom features, the feature set's extensions (spec 0435): written
+    // as custom options are, after `features.`, the feature set read again
+    // where their extensions are known.
+    let custom = ctx.shared.options.and_then(|pool| {
+        let msg = pool.parse_ref(super::options::Options::FeatureSet, &fs.0)?;
+        super::options::extensions(&ctx.scope(), &msg, inline, depth, "features.").ok()
+    });
+    for block in custom.into_iter().flatten() {
+        out.extend(block);
+    }
     out
 }
 
