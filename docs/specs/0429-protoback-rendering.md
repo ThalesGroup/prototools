@@ -484,3 +484,23 @@ not deferred with it: stage 3 needs it on one thread already.
     12 threads mostly allocation (45.8 s of CPU for 12 s of wall). Each
     step now reads the one child it names: 19.9 s of CPU, 8.6 s of wall
     (unpinned, a quick build; G4 measures).
+- **G4, the timings** (2026-11-16, at 233b27c): `BENCH_RENDER=1
+  scripts/bench-protoback`, phases 1 to 7, each case with the flags of
+  its database but the schema database's (`--schema-db-out`,
+  `--emit-scoring-yaml`, `--emit-extension-ranges`: step 6), googleapis
+  with `--emit-binary`; vCPUs 0–7, host idle; reproto `python3 -m
+  reproto.cli`, protoback a release build, on the 8 vCPUs and on one
+  thread (`--jobs 1`):
+
+  | Case | reproto | protoback, 8 threads | protoback, `--jobs 1` | Peak memory, reproto / 8 threads / 1 |
+  |---|---|---|---|---|
+  | WKT | 351 ms ± 8, 8 runs | 7.9 ms ± 0.7, 185 runs | 7.8 ms ± 0.8, 169 runs | 45 / 13 / 13 MB |
+  | custom | 393 ms ± 11, 7 runs | 13.1 ms ± 0.9, 133 runs | 13.2 ms ± 0.6, 126 runs | 46 / 13 / 13 MB |
+  | googleapis | 122 s ± 1.4 (123.8, 122.4, 120.9) | 5.54 s ± 0.07 (5.62, 5.49, 5.51) | 6.11 s ± 0.13 (5.97, 6.13, 6.23) | 811 / 639 / 610 MB |
+
+  googleapis 22 times faster (20 on one thread); rendering is most of
+  reproto's run (phases 1 to 6, 12.6 s, spec 0428). The threads gain
+  0.6 s for 14 s more CPU (19.4 s user, against 5.4 s): unexplained, not
+  pursued in step 5. Leads: what of the 3.9 s past phases 1 to 6 is
+  sequential (the pool loads, the options pool, writing the files), and
+  what in rendering contends (the allocator).

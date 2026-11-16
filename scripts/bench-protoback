@@ -17,6 +17,10 @@
 #   BENCH_DUMP_GRAPH  if 1, each case runs with --dump-graph added: phases
 #                 1 to 6 and the graph dump, then the run stops (spec 0428
 #                 G4), for both tools alike
+#   BENCH_RENDER  if 1, each case runs without its schema database's flags
+#                 (--schema-db-out, --emit-scoring-yaml,
+#                 --emit-extension-ranges): phases 1 to 7, rendering
+#                 (spec 0429 G4), for both tools alike
 #
 # Pinned and exclusive like bin/bench: the machine-wide bench lock, so a
 # build cannot overlap a measurement. Each run starts in an empty directory.
@@ -38,6 +42,14 @@ declare -A cases=(
     [custom]="$cmd --use-variant all --force-proto2-for-editions -I $corpus/custom --proto-out=out/custom/proto --emit-scoring-yaml --schema-db-out=out/custom.desc ."
     [googleapis]="$cmd --use-variant all --force-proto2-for-editions -I $corpus/googleapis --proto-out=out/googleapis/proto --emit-scoring-yaml --emit-binary --schema-db-out=out/googleapis.desc googleapis.pb"
 )
+if [[ ${BENCH_RENDER:-} == 1 ]]; then
+    for n in "${!cases[@]}"; do
+        c=" ${cases[$n]} "
+        for f in --emit-scoring-yaml --emit-extension-ranges; do c=${c// $f / }; done
+        c=$(sed -E 's/ --schema-db-out=[^ ]+ / /' <<< "$c")
+        cases[$n]=${c# }
+    done
+fi
 if [[ ${BENCH_DUMP_GRAPH:-} == 1 ]]; then
     for n in "${!cases[@]}"; do cases[$n]+=" --dump-graph=graph.txt"; done
 fi
