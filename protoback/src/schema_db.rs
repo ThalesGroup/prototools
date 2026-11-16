@@ -19,7 +19,7 @@ use prototext_upb::descriptor_access::{DescriptorProto, FileDescriptorProto};
 use prototext_upb::{DynamicMessage, Pool};
 
 use crate::graph::Graph;
-use crate::render::{self, Failure, Shared};
+use crate::render::{self, Failure, Output, Shared};
 
 /// A descriptor collected for the database: the input file it was
 /// rendered from, and its bytes.
@@ -49,10 +49,11 @@ fn name(graph: &Graph, i: usize) -> String {
 /// phase 6's `schema_db_extra_nodes`.
 pub fn build(
     shared: &Shared<'_>,
-    extras: &[usize],
+    output: &Output,
     mut collected: Collected,
     db_path: &Path,
 ) -> Result<(), Failure> {
+    let extras = &output.extra_nodes;
     use rayon::prelude::*;
 
     // 1. The WKT dependencies, rendered after phase 7, one by one: each
@@ -112,8 +113,10 @@ pub fn build(
         return Ok(());
     }
 
-    // 3. The merged, minimized graph.
-    let (rkyv, _, _) = build_from_files(&graphs, false, false, |_, _| {})
+    // 3. The merged, minimized graph; with --scoring-html-out, the raw and
+    // minimized graphs' YAML the pages are drawn from.
+    let html = output.scoring_html.is_some();
+    let (rkyv, minimized_yaml, raw_yaml) = build_from_files(&graphs, html, html, |_, _| {})
         .map_err(|e| Failure::Fatal(format!("Error: building the scoring graph: {e}")))?;
 
     // 4. The descriptors: a name given two contents stops the run; the
@@ -202,6 +205,14 @@ pub fn build(
     std::fs::create_dir_all(&dir)?;
     std::fs::write(dir.join("hopcroft.rkyv"), rkyv)?;
     std::fs::write(dir.join("index.rkyv"), index)?;
+
+    // 7. The pages (spec 0430 S8).
+    if let (Some(path), Some(raw), Some(minimized)) =
+        (&output.scoring_html, raw_yaml, minimized_yaml)
+    {
+        crate::scoring::html::write(path, &raw, &minimized, output.with_leaf_nodes, &output.hide)
+            .map_err(|e| Failure::Fatal(format!("Error: --scoring-html-out: {e}")))?;
+    }
     Ok(())
 }
 

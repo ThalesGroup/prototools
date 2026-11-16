@@ -189,6 +189,22 @@ fn main() -> ExitCode {
         Ok(v) => v,
         Err(e) => return usage(&e),
     };
+    // reproto's `--hide` check: `desc:` patterns only, normalised as
+    // seeds and prunes are. show.py then matches them against bare FQDNs
+    // (spec 0430 S8).
+    let mut hide = Vec::new();
+    for h in &cli.pyvis_hide {
+        if h.split_once(':').map_or("", |(p, _)| p) != "desc" {
+            return usage(&format!(
+                "--hide only accepts desc: patterns (got {})",
+                render::pyfmt::str_repr(h)
+            ));
+        }
+        match normalise_fqdn(h) {
+            Ok(n) => hide.push(n),
+            Err(e) => return usage(&e),
+        }
+    }
     let (mut config_seeds, mut config_prunes) = (Vec::new(), Vec::new());
     if let Some(path) = &cli.filter_config {
         match filter_config(path) {
@@ -317,6 +333,13 @@ fn main() -> ExitCode {
         }),
         schema_db,
         extra_nodes: run.schema_db_extra_nodes.clone(),
+        scoring_html: cli
+            .emit_scoring_html
+            .clone()
+            .or(cli.emit_scoring_html_deprecated.clone())
+            .or(cli.emit_pyvis.clone()),
+        with_leaf_nodes: cli.with_leaf_nodes,
+        hide,
     };
     match render::run(&shared, &output) {
         Ok(()) => {}

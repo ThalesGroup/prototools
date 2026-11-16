@@ -99,3 +99,28 @@ SPDX-FileCopyrightText = [
   "Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)",
 ]
 SPDX-License-Identifier = "MIT AND BSD-3-Clause"
+
+# pyvis 0.3.2's page, as reproto's --scoring-html-out writes it, embedded
+# by protoback to write the same bytes (spec 0430 S8): its template
+# rendered for reproto's settings, with markers where the data and the
+# assets go, and its bindings script, unchanged.
+[[annotations]]
+path = [
+  "protoback/src/scoring/html/page-small.html",
+  "protoback/src/scoring/html/page-large.html",
+  "protoback/src/scoring/html/utils.js",
+]
+SPDX-FileCopyrightText = "2018, West Health Institute"
+SPDX-License-Identifier = "BSD-3-Clause"
+
+# vis-network 9.1.2, as pyvis 0.3.2 ships it, unchanged (spec 0430 S8).
+[[annotations]]
+path = [
+  "protoback/src/scoring/html/vis-network.css",
+  "protoback/src/scoring/html/vis-network.min.js",
+]
+SPDX-FileCopyrightText = [
+  "2011-2017 Almende B.V, http://almende.com",
+  "2017-2019 visjs contributors, https://github.com/visjs",
+]
+SPDX-License-Identifier = "Apache-2.0 OR MIT"

@@ -72,6 +72,15 @@ FLAG_SETS: dict[str, list[str]] = {
     "scoring-yaml": ["--emit-scoring-yaml"],
     "scoring-yaml-extension-ranges": ["--emit-scoring-yaml", "--emit-extension-ranges"],
     "scoring-yaml-dry-run": ["--emit-scoring-yaml", "--emit-extension-ranges", "--dry-run"],
+    # The schema database's graph drawn (spec 0430 S8): raw and minimized,
+    # with the leaves, with a --hide pattern, and with one reproto refuses.
+    "scoring-html": ["--schema-db-out=out/db.desc", "--scoring-html-out=out/graph.html"],
+    "scoring-html-leaves": ["--schema-db-out=out/db.desc", "--scoring-html-out=out/graph.html",
+                            "--with-leaf-nodes"],
+    "scoring-html-hide": ["--schema-db-out=out/db.desc", "--scoring-html-out=out/graph.html",
+                          "--hide", "desc:**.Field*"],
+    "scoring-html-bad-hide": ["--schema-db-out=out/db.desc", "--scoring-html-out=out/graph.html",
+                              "--hide", "google.*"],
 }
 DEFAULT_VARIANT = ["--use-variant", "descriptor"]
 
@@ -372,6 +381,13 @@ def cases(corpus: Path) -> list[Case]:
         out.append(Case("custom/custom-db", ["-I", str(corpus / "custom"),
                                              "--proto-out=out/custom/proto",
                                              *CUSTOM_FLAGS, "."]))
+        # A graph of more than 100 nodes: pyvis's page with its loading bar
+        # (spec 0430 S8).
+        out.append(Case("custom/custom-db-html", ["-I", str(corpus / "custom"),
+                                                  "--proto-out=out/custom/proto",
+                                                  *CUSTOM_FLAGS,
+                                                  "--scoring-html-out=out/graph.html",
+                                                  "--with-leaf-nodes", "."]))
     if (corpus / "googleapis").is_dir():
         out.append(Case("googleapis/googleapis-db",
                         ["-I", str(corpus / "googleapis"),

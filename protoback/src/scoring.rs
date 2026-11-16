@@ -11,6 +11,7 @@
 //! ever does; what reproto's held at the moment it collected a file is the
 //! files of rank `upto` or less, and only their extensions are seen.
 
+pub mod html;
 pub mod pyyaml;
 
 use std::collections::{HashMap, HashSet};

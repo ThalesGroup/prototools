@@ -176,15 +176,6 @@ impl Cli {
             }
         };
         note(
-            self.emit_scoring_html.is_some()
-                || self.emit_scoring_html_deprecated.is_some()
-                || self.emit_pyvis.is_some(),
-            "--scoring-html-out",
-            6,
-        );
-        note(self.with_leaf_nodes, "--with-leaf-nodes", 6);
-        note(!self.pyvis_hide.is_empty(), "--hide", 6);
-        note(
             self.fdp_plugin.is_some() || self.phase2_plugin_deprecated.is_some(),
             "--fdp-plugin",
             7,

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: MIT
 
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import cast
 
 import yaml
@@ -10,10 +10,11 @@ from pyvis.network import Network
 
 
 def _fqdn_matches_any(fqdn: str, patterns: tuple[str, ...]) -> bool:
-    for p in patterns:
-        if PurePosixPath(f'/{fqdn}').full_match(f'/{p}'):
-            return True
-    return False
+    """Whether a root's FQDN matches a `--hide` pattern: `desc:` patterns,
+    normalised as `--prune`'s are, matched as `--prune` matches them."""
+    from .phases import fqdn_match
+    from .context import Fqdn
+    return any(fqdn_match(Fqdn(p), Fqdn(f'desc:{fqdn}')) for p in patterns)
 
 
 def _make_network(title: str) -> Network:
@@ -94,17 +95,22 @@ def render_scoring_graph(
 ) -> None:
     """Render a compiled scoring graph (states/transitions/roots YAML) to HTML."""
     data = cast(dict, yaml.safe_load(compiled_yaml))
+    # `dump_compiled` writes an empty list as nothing, which YAML reads as
+    # null: a graph without transitions draws empty.
+    states = data.get('states') or []
+    transitions = data.get('transitions') or []
+    roots = data.get('roots') or []
     net = _make_network(title)
 
     # Determine which states have outgoing transitions (non-leaf) vs leaf.
-    states_with_outgoing: set[int] = {t['from'] for t in data.get('transitions', [])}
+    states_with_outgoing: set[int] = {t['from'] for t in transitions}
     leaf_states: set[int] = {
-        s['id'] for s in data.get('states', []) if s['id'] not in states_with_outgoing
+        s['id'] for s in states if s['id'] not in states_with_outgoing
     }
 
     # Build tooltip: state_id -> sorted list of FQDNs from roots.
     state_fqdns: dict[int, list[str]] = {}
-    for root in data.get('roots', []):
+    for root in roots:
         sid = root['state']
         state_fqdns.setdefault(sid, []).append(root['fqdn'])
     for fqdns in state_fqdns.values():
@@ -117,7 +123,7 @@ def render_scoring_graph(
             if any(_fqdn_matches_any(f, hide) for f in fqdns):
                 hidden_ids.add(sid)
 
-    for state in data.get('states', []):
+    for state in states:
         sid = state['id']
         wt = state['type']
         is_leaf = sid in leaf_states
@@ -180,7 +186,7 @@ def render_scoring_graph(
         'packed':   '#884488',
         'required': '#cc2222',
     }
-    for t in data.get('transitions', []):
+    for t in transitions:
         if t['from'] in hidden_ids or t['to'] in hidden_ids:
             continue
         if not with_leaf_nodes and t['to'] in leaf_states:

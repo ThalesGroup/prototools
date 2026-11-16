@@ -12,7 +12,7 @@ mod file;
 mod message;
 mod names;
 mod options;
-mod pyfmt;
+pub(crate) mod pyfmt;
 mod sci;
 mod text;
 
@@ -184,6 +184,12 @@ pub struct Output {
     /// Phase 6's `schema_db_extra_nodes`: the WKT dependencies the
     /// database adds.
     pub extra_nodes: Vec<usize>,
+    /// `--scoring-html-out`: the database's graph drawn, raw and minimized.
+    pub scoring_html: Option<PathBuf>,
+    /// `--with-leaf-nodes`: the leaves drawn too.
+    pub with_leaf_nodes: bool,
+    /// `--hide`: the states a root of which matches one of these globs.
+    pub hide: Vec<String>,
 }
 
 /// What `buf lsp serve` needs at the output's root (spec 0146).
@@ -249,7 +255,7 @@ pub fn run(shared: &Shared<'_>, output: &Output) -> Result<(), Failure> {
             write_scoring_yaml(shared, out_repo, rendered)?;
         }
         if let Some(db) = &output.schema_db {
-            crate::schema_db::build(shared, &output.extra_nodes, collected, db)?;
+            crate::schema_db::build(shared, output, collected, db)?;
         }
         Ok(())
     })
