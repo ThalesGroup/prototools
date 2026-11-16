@@ -729,3 +729,11 @@ development VM pinned to vCPUs 0–7, on mains power, host idle.
   sent once (counted by a test). The harness's plugin cases identical;
   the whole harness 1,573 cases, all identical. Test plan 5's cost on
   googleapis not measured: deferred until the port is complete.
+- **Step 8** (2026-11-16), spec 0432: `protoback instantiate` (S10).
+  CPython's `random.Random` matches on 66 sequences of a million draws;
+  every googleapis type's instance (43,111) byte-identical with
+  reproto's. Three reproto defects fixed in both tools (instances are
+  serialized deterministically, singular groups are set, the set's own
+  `descriptor.proto` is used); `tests/stress` and `tests/custom` pass
+  unchanged. The harness, instances included: 1,587 cases, all
+  identical.
