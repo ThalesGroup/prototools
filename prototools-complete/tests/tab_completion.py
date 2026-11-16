@@ -51,19 +51,55 @@ PROTOSCAN_ROWS = [
     for typed, expected in PATH_ROWS
 ] + [("--proto-o", "--proto-out ")]
 
+# protoback (spec 0433 S7, as reproto, spec 0422): DESCRIPTOR_FILES relative
+# to the -I roots on the line, which the shell cannot see from where it runs
+# ("sub/" with no space), or the members of an -I blob; -O's directories,
+# --proto-variant's .yaml files. Without -I, the current directory.
+PROTOBACK_ROWS = [
+    (typed.replace("--descriptor-set", "--proto-out"),
+     expected.replace("--descriptor-set", "--proto-out"))
+    for typed, expected in PATH_ROWS
+] + [
+    ("-I roots/r1 f", "-I roots/r1 f.pb "),
+    ("-I roots/r1 su", "-I roots/r1 sub/"),
+    ("-I roots/r1 sub/", "-I roots/r1 sub/s.pb "),
+    ("--desc-root=roots/r1 f", "--desc-root=roots/r1 f.pb "),
+    ("-I roots/r1 no", "-I roots/r1 no"),
+    ("-I roots/blob.bin fi", "-I roots/blob.bin first.pb "),
+    ("--proto-variant v", "--proto-variant v.yaml "),
+    ("--use-variant=desc", "--use-variant=descriptor "),
+]
+
 TOOLS = {
-    "prototext": PATH_ROWS + [("decode --t", "decode --type "), ("dec", "decode ")],
+    # "decode -I …": bash hands the completer the raw line, whose words
+    # args::flag_values reads only once Bash has split them.
+    "prototext": PATH_ROWS + [("decode --t", "decode --type "), ("dec", "decode "),
+                              ("decode -I roots/r1 f", "decode -I roots/r1 f.pb ")],
     "protolens": PATH_ROWS + [("--ty", "--type ")],
     "protoscan": PROTOSCAN_ROWS,
+    "protoback": PROTOBACK_ROWS,
 }
-SUB = {"prototext": "decode ", "protolens": "", "protoscan": ""}
+SUB = {"prototext": "decode ", "protolens": "", "protoscan": "", "protoback": ""}
+
+
+def field(number, payload):
+    """A length-delimited protobuf field, its length one byte."""
+    assert len(payload) < 128
+    return bytes([number << 3 | 2, len(payload)]) + payload
 
 
 def make_tree(root):
-    for d in ["data", "dir with space", "a:b", "été"]:
+    for d in ["data", "dir with space", "a:b", "été", "roots/r1/sub"]:
         os.makedirs(os.path.join(root, d))
-    for f in ["data/x.pb", "dir with space/y.pb", "a:b/z.pb", "ka:li.pb"]:
+    for f in ["data/x.pb", "dir with space/y.pb", "a:b/z.pb", "ka:li.pb",
+              "roots/r1/f.pb", "roots/r1/notes.txt", "roots/r1/sub/s.pb", "v.yaml"]:
         open(os.path.join(root, f), "w").close()
+    # A blob: a FileDescriptorProto (name, package, a message with a field)
+    # among other bytes, as protoscan finds them in a binary.
+    message = field(1, b"M") + field(2, field(1, b"x") + b"\x18\x01\x20\x01\x28\x05")
+    fdp = field(1, b"first.proto") + field(2, b"p") + field(4, message)
+    with open(os.path.join(root, "roots/blob.bin"), "wb") as f:
+        f.write(bytes(range(256)) * 4 + fdp + b"\x00\xff" * 64)
 
 
 def tab(bindir, root, tool, typed):

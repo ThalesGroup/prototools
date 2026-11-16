@@ -15,6 +15,8 @@
 //! Only bash is replaced: [`shells`] lists clap_complete's other shells
 //! unchanged.
 
+pub mod args;
+
 use std::borrow::Cow;
 use std::ffi::OsString;
 use std::io::Write;
@@ -122,7 +124,10 @@ pub fn complete_line(
     let split = split_line(line);
     let index = split.words.len() - 1;
     let current = split.words[index].clone();
-    let args = split.words.into_iter().map(OsString::from).collect();
+    let args: Vec<OsString> = split.words.into_iter().map(OsString::from).collect();
+    // For completers that read the other words (`args::flag_values`): bash
+    // hands the binary the raw line, not its words.
+    args::set_words(args.clone());
     let candidates = clap_complete::engine::complete(cmd, args, index, current_dir)?;
     let values = candidates
         .iter()
