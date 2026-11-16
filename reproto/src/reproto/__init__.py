@@ -41,7 +41,7 @@ if TYPE_CHECKING:
     from .re_method import ReMethodDescriptorProto
     from .re_service import ReServiceDescriptorProto
     from .reproto import reproto
-    from .utils import short_ref, shorten_type_name
+    from .utils import type_ref
 
 __all__ = [
     "Node", "NodeBase",
@@ -55,7 +55,7 @@ __all__ = [
     "ReMethodDescriptorProto",
     "ReServiceDescriptorProto",
     "reproto",
-    "short_ref", "shorten_type_name",
+    "type_ref",
     "version",
 ]
 
@@ -74,8 +74,7 @@ _module_map = {
     "ReMethodDescriptorProto": ".re_method",
     "ReServiceDescriptorProto": ".re_service",
     "reproto":                 ".reproto",
-    "short_ref":               ".utils",
-    "shorten_type_name":       ".utils",
+    "type_ref":                ".utils",
 }
 
 

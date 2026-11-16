@@ -12,7 +12,7 @@ use prototext_upb::descriptor_access::{DescriptorProto, FeatureSet, FieldDescrip
 use prototext_upb::MessageRef;
 
 use super::file::{anomaly, extend_blocks, features_block, Ctx};
-use super::names::{short_ref, shorten_method_type, type_name};
+use super::names::{scope_name, type_name, type_ref, Mode};
 use super::options::Options;
 use super::pyfmt::{bytes_default, float_repr, json_dumps, render_bytes};
 use super::text::{Block, Line, LineType, MAX_LINE_LENGTH, TAB_SIZE};
@@ -274,15 +274,21 @@ fn field_label(
     }
 }
 
-/// A type's name from `scope`: a scalar's own, a node's `short_ref`.
-fn type_ref(
+/// A field's type name (`ReFieldDescriptorProto.type_ref`): a scalar's
+/// own, else the name protoc resolves back to the type from `scope` (the
+/// message the field is in), among types only (spec 0434).
+fn field_type(
     ctx: &Ctx<'_, '_>,
     t: Option<TypeRef>,
     f: &FieldDescriptorProto<'_>,
     scope: usize,
 ) -> String {
     match t {
-        Some(TypeRef::Node(n)) => short_ref(ctx.shared, &ctx.shared.graph.nodes[n].fqdn, scope),
+        Some(TypeRef::Node(n)) => {
+            let fqdn = &ctx.shared.graph.nodes[n].fqdn;
+            let target = fqdn.split_once(':').map_or(fqdn.as_str(), |(_, r)| r);
+            type_ref(ctx, target, &scope_name(ctx.shared, scope), Mode::Types)
+        }
         Some(TypeRef::Scalar(t)) => type_name(t),
         None => type_name(f.r#type()),
     }
@@ -306,10 +312,13 @@ pub fn field(ctx: &Ctx<'_, '_>, fd: usize, depth: usize, is_oneof: bool) -> Bloc
     match map_kind(ctx, fd, &f) {
         MapKind::NotMap => {}
         MapKind::Map(k, v) => {
+            // The entry's fields are resolved from the entry, where the
+            // parser declares them (spec 0434 S3).
+            let entry_scope = text(f.type_name()).trim_start_matches('.').to_string();
             map_string = Some(format!(
                 "map<{}, {}> {name} = {}",
-                map_type(ctx, &k, parent),
-                map_type(ctx, &v, parent),
+                map_type(ctx, &k, &entry_scope),
+                map_type(ctx, &v, &entry_scope),
                 f.number()
             ));
         }
@@ -327,7 +336,7 @@ pub fn field(ctx: &Ctx<'_, '_>, fd: usize, depth: usize, is_oneof: bool) -> Bloc
                 ),
                 depth,
             ));
-            let r = type_ref(ctx, node.type_descriptor, &f, parent);
+            let r = field_type(ctx, node.type_descriptor, &f, parent);
             out.push(Line::code(
                 format!("repeated {r} {name} = {};", f.number()),
                 depth,
@@ -374,12 +383,17 @@ pub fn field(ctx: &Ctx<'_, '_>, fd: usize, depth: usize, is_oneof: bool) -> Bloc
                         depth,
                     ));
                 }
-                let r = type_ref(ctx, node.type_descriptor, &f, parent);
+                let r = field_type(ctx, node.type_descriptor, &f, parent);
                 s.push_str(&format!("{r} {name}"));
             } else {
                 let r = match &node.editions_group_name {
                     Some(name) => name.clone(),
-                    None => type_ref(ctx, node.type_descriptor, &f, fd),
+                    // A group declares its type: the nested message's own name.
+                    None => text(f.type_name())
+                        .rsplit('.')
+                        .next()
+                        .unwrap_or_default()
+                        .to_string(),
                 };
                 s.push_str(&format!("group {r}"));
             }
@@ -643,11 +657,10 @@ fn field_options(
     Ok(opt_block)
 }
 
-/// A map entry field's type name (`_get_field_type_name`).
-fn map_type(ctx: &Ctx<'_, '_>, f: &FieldDescriptorProto<'_>, scope: usize) -> String {
+/// A map entry field's type name, from `scope`, the entry.
+fn map_type(ctx: &Ctx<'_, '_>, f: &FieldDescriptorProto<'_>, scope: &str) -> String {
     match f.r#type() {
-        TYPE_MESSAGE => short_ref(ctx.shared, &format!("desc:{}", text(f.type_name())), scope),
-        TYPE_ENUM => short_ref(ctx.shared, &format!("enum:{}", text(f.type_name())), scope),
+        TYPE_MESSAGE | TYPE_ENUM => type_ref(ctx, &text(f.type_name()), scope, Mode::Types),
         t => type_name(t),
     }
 }
@@ -1201,8 +1214,12 @@ fn method(
     depth: usize,
 ) -> Block {
     let shared = ctx.shared;
-    let input = shorten_method_type(shared, ctx.file, &text(m.input_type()));
-    let output = shorten_method_type(shared, ctx.file, &text(m.output_type()));
+    // Looked up among every symbol of the service (spec 0434 S3): a method
+    // named as its type shadows it.
+    let service = shared.graph.nodes[meth].parent.unwrap_or(ctx.file);
+    let scope = scope_name(shared, service);
+    let input = type_ref(ctx, &text(m.input_type()), &scope, Mode::All);
+    let output = type_ref(ctx, &text(m.output_type()), &scope, Mode::All);
     let cs = if m.client_streaming() { "stream " } else { "" };
     let ss = if m.server_streaming() { "stream " } else { "" };
     let s1 = format!("rpc {}({cs}{input}) ", text(m.name()));

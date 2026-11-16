@@ -10,7 +10,7 @@ mod binary;
 mod comments;
 mod file;
 mod message;
-mod names;
+pub mod names;
 mod options;
 pub(crate) mod pyfmt;
 mod sci;
@@ -78,6 +78,8 @@ pub struct Shared<'a> {
     pub schema_db: bool,
     /// `--debug`: the reasons behind fixed ones.
     pub debug: bool,
+    /// Every loaded file's symbols, for the type names written (spec 0434).
+    pub names: &'a names::SymbolTable,
 }
 
 /// A node's definition, read from the pool's file it is in.
@@ -142,12 +144,6 @@ impl<'a> Shared<'a> {
             Def::Message(m) => Some(m),
             _ => None,
         }
-    }
-
-    /// A file node's package (empty for a stub).
-    pub fn file_package(&self, file: usize) -> String {
-        self.file_def(file)
-            .map_or_else(String::new, |f| text(f.package()))
     }
 
     /// The node of `kind` named `name` under node `parent`'s prefix

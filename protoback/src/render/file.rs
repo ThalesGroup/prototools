@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 
 use prototext_upb::descriptor_access::FieldDescriptorProto;
 
-use super::names::short_ref;
+use super::names::{scope_name, type_ref, Mode, Visible};
 use super::pyfmt::{edition_name, json_dumps};
 use super::text::{Block, Line, LineType};
 use super::{text, Shared};
@@ -41,6 +41,9 @@ pub struct Ctx<'s, 'a> {
     /// What the render reports on stderr, in order (spec 0433 S3): replayed
     /// in file order once the files are rendered.
     pub events: std::cell::RefCell<Vec<RenderEvent>>,
+    /// The symbols protoc sees from the file, for the type names written
+    /// (spec 0434 S2).
+    pub visible: Visible,
 }
 
 /// A render's report: an immediate warning, a counted W6, or a file
@@ -338,7 +341,9 @@ pub fn extend_blocks(
             Some(super::Def::Field(f)) => text(f.extendee()),
             _ => extendee,
         };
-        let r = short_ref(shared, &format!("message:{node_extendee}"), owner);
+        // Looked up among every symbol of the scope the extension is
+        // declared in (spec 0434 S3).
+        let r = type_ref(ctx, &node_extendee, &scope_name(shared, owner), Mode::All);
         if !refs.contains(&r) {
             refs.push(r.clone());
         }
@@ -427,6 +432,7 @@ pub fn render(shared: &Shared<'_>, file: usize, k: usize) -> FileRender {
         failed: std::cell::Cell::new(false),
         sci: (shared.wants_descriptor() && shared.source_info).then(super::sci::Sci::default),
         events: std::cell::RefCell::new(Vec::new()),
+        visible: shared.names.visible(&text(f.name())),
     };
     // `_set_target_syntax`: a file --force-proto2-for-editions patches.
     if !shared.force_proto2_output && shared.force_proto2_for_editions && ctx.syntax == "editions" {

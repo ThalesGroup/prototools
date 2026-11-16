@@ -62,7 +62,8 @@ class ReMethodDescriptorProto(NodeBase[MethodDescriptorProto]):
     
     def render(self, ctx: Context, depth: int = 0) -> tuple[Block, Block]:
         """Reconstruct a MethodDescriptorProto as .proto."""
-        from .utils import shorten_type_name
+        from .names import Mode
+        from .utils import scope_name, type_ref
 
         assert isinstance(depth, int)
         out = Block()
@@ -78,9 +79,12 @@ class ReMethodDescriptorProto(NodeBase[MethodDescriptorProto]):
         )
 
         # --- Method signature -------------------------------------------------
-        input = shorten_type_name(ctx, self.parent, self.input_type)
+        # Looked up among every symbol of the service (spec 0434 S3): a
+        # method named as its type shadows it.
+        scope = scope_name(self.parent)
+        input = type_ref(ctx, self.input_type, scope, Mode.ALL)
         client_streaming = 'stream ' if self.client_streaming else ''
-        output = shorten_type_name(ctx, self.parent, self.output_type)
+        output = type_ref(ctx, self.output_type, scope, Mode.ALL)
         server_streaming = 'stream ' if self.server_streaming else ''
 
         # Use semicolon syntax if no options, brace syntax if options exist

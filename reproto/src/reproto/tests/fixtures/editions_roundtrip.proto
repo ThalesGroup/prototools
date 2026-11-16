@@ -76,7 +76,7 @@ message AllFeatures {
   Status status = 7 [features.field_presence = EXPLICIT];
 
   // Field referencing the weakly-imported type (exercises import weak).
-  WeakDep weak_ref = 8 [features.field_presence = EXPLICIT];
+  mockup.WeakDep weak_ref = 8 [features.field_presence = EXPLICIT];
   reserved old_field;
   reserved another_old_field;
 }

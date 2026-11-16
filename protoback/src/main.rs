@@ -406,6 +406,12 @@ fn main() -> ExitCode {
     }
     let loads = render::pool_loads(&run.db, &loaded);
     let options = render::OptionsPool::new(&run.db, &run.variant, &loads);
+    let names = render::names::SymbolTable::build(
+        run.db
+            .files
+            .iter()
+            .map(|f| prototext_upb::descriptor_access::FileDescriptorProto(f.as_ref())),
+    );
     let shared = render::Shared {
         graph: &run.graph,
         db: &run.db,
@@ -426,6 +432,7 @@ fn main() -> ExitCode {
         options: options.as_ref(),
         schema_db: schema_db.is_some(),
         debug: cli.debug,
+        names: &names,
     };
     let output = render::Output {
         out_repo,

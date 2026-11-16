@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from .base import NodeBase
     from .feature_resolution import EditionDefaultTable
     from .load import PathPatterns
+    from .names import SymbolTable
     from .re_file import ReFileDescriptorProto
     from .text import BlockLine
 
@@ -168,6 +169,9 @@ class Context(Options):
         self.syntax: str = "proto2"         # input file syntax
         self.target_syntax: str = "proto2"  # output syntax
         self.current_file: str = ""         # name of the .proto file being rendered
+        # Every loaded file's symbols, for the type names written (spec 0434),
+        # built on first use by names.symbol_table.
+        self.symbol_table: SymbolTable | None = None
 
         # Binary output side-channel (spec 0076). When set to a DescOut instance,
         # render() additionally populates out_desc.out with the binary descriptor

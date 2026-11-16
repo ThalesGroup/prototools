@@ -61,7 +61,8 @@ def _render_extend_blocks(
     from .re_field import ReFieldDescriptorProto
     from .re_file import ReFileDescriptorProto
     from .syntax import allow_extend_block
-    from .utils import short_ref
+    from .names import Mode
+    from .utils import scope_name, type_ref
 
     out = Block()
 
@@ -87,8 +88,11 @@ def _render_extend_blocks(
             ext_paths[id(extension_proto)] = prefix + [ext_field_num, counter]
             counter += 1
 
-    # Pass 1: collect distinct extendee short refs in encounter order.
-    extendee_refs: list[str] = []
+    # The extensions by extendee, as written, in encounter order: one
+    # extend { } block each. An extendee is looked up among every symbol of
+    # the scope the extension is declared in (spec 0434 S3).
+    scope = scope_name(owner)
+    by_extendee: dict[str, list[tuple[FieldDescriptorProto, ReFieldDescriptorProto]]] = {}
     for e in extensions:
         extension_proto = cast(FieldDescriptorProto, e)
         if not allow_extend_block(ctx, extension_proto.extendee):
@@ -98,21 +102,13 @@ def _render_extend_blocks(
                               extendee=extension_proto.extendee))
             continue
         fd = ReFieldDescriptorProto(ctx, extension_proto, parent=owner)
-        ref = str(short_ref(ctx, Fqdn(f'message:{fd.extendee}'), owner))
-        if ref not in extendee_refs:
-            extendee_refs.append(ref)
+        ref = type_ref(ctx, fd.extendee, scope, Mode.ALL)
+        by_extendee.setdefault(ref, []).append((extension_proto, fd))
 
-    # Pass 2: emit one extend { } block per extendee.
-    for ref in extendee_refs:
+    for ref, members in by_extendee.items():
         block = Block()
         is_orphan = True
-        for e in extensions:
-            extension_proto = cast(FieldDescriptorProto, e)
-            if not allow_extend_block(ctx, extension_proto.extendee):
-                continue
-            fd = ReFieldDescriptorProto(ctx, extension_proto, parent=owner)
-            if str(short_ref(ctx, Fqdn(f'message:{fd.extendee}'), owner)) != ref:
-                continue
+        for extension_proto, fd in members:
             blk = fd.render(ctx, depth + 1)
             ext_sci_path = ext_paths.get(id(extension_proto))
             if track_orphans:

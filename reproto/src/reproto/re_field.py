@@ -17,7 +17,7 @@ from .context import Context, Fqdn
 if TYPE_CHECKING:
     from .re_descriptor import ReDescriptorProto
     from .re_file import ReFileDescriptorProto
-from .fake_types import Ref
+from .fake_types import Ref, parse_fqdn
 from .feature_resolution import ResolvedFeatures, resolve_features
 from .globals import FIELD, type_names
 from .option_messages import parse_options
@@ -120,9 +120,18 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
     def type_name(self) -> str:
         return self.this.type_name
 
-    def short_type_name(self, ctx: Context, name: str = '') -> str:
-        from .utils import shorten_type_name
-        return shorten_type_name(ctx, self, name)
+    @staticmethod
+    def type_ref(ctx: Context, descriptor: 'int | str | NodeBase[Any]', scope: str) -> str:
+        """The name written for a field's type (spec 0434): a scalar's own
+        (`descriptor` its type number), else the name protoc resolves back
+        to the type (its node, or its full name) from `scope` (the message
+        the field is in, or a map's entry), among types only."""
+        from .names import Mode
+        from .utils import type_ref
+        if isinstance(descriptor, int):
+            return type_names.get(descriptor, f'<unknown type {descriptor}>')
+        target = descriptor if isinstance(descriptor, str) else str(parse_fqdn(descriptor.fqdn)[1])
+        return type_ref(ctx, target, scope, Mode.TYPES)
 
     @classmethod
     def fqdn_from_ref(cls, ref: Ref) -> Fqdn:
@@ -193,39 +202,23 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
 
         if key_field is None or value_field is None:
             from .anomalies import report
-            from .utils import short_ref
+            from .utils import scope_name
             found = [f.number for f in map_entry_msg.field]
             anomaly = Block()
             anomaly.append(report("C1", depth,
                                    field=self.name, entry=map_entry_msg.name, found=found))
-            ref = short_ref(ctx, self.type_descriptor, self.parent)
+            ref = self.type_ref(ctx, self.type_descriptor, scope_name(self.parent))
             anomaly.append(BlockLine(f'repeated {ref} {self.name} = {self.number};', depth))
             return '', anomaly
 
-        key_type = self._get_field_type_name(ctx, key_field)
-        value_type = self._get_field_type_name(ctx, value_field)
+        # The entry's fields are resolved from the entry, where the parser
+        # declares them (spec 0434 S3).
+        entry_scope = self.type_name.lstrip('.')
+        key_type, value_type = (
+            self.type_ref(ctx, f.type_name if f.type_name else f.type, entry_scope)
+            for f in (key_field, value_field)
+        )
         return f'map<{key_type}, {value_type}> {self.name} = {self.number}', None
-
-    def _get_field_type_name(self, ctx: Context, field: FieldDescriptorProto) -> str:
-        """Get the type name for a field (used in map<K,V> rendering)."""
-        from .re_descriptor import ReDescriptorProto
-        from .re_enum import ReEnumDescriptorProto
-        from .utils import short_ref
-
-        # Handle complex types that need reference resolution
-        if field.type == FieldDescriptorProto.TYPE_MESSAGE:
-            # For message types, get reference and shorten relative to current scope
-            msg = ReDescriptorProto.from_ref(ctx, Ref(field.type_name))
-            return short_ref(ctx, msg, self.parent)
-        elif field.type == FieldDescriptorProto.TYPE_ENUM:
-            # For enum types, get reference and shorten relative to current scope
-            enum = ReEnumDescriptorProto.from_ref(ctx, Ref(field.type_name))
-            return short_ref(ctx, enum, self.parent)
-        elif field.type in type_names:
-            # Primitive types: use name from globals (double, float, int32, etc.)
-            return type_names[field.type]
-        else:
-            return f'<unknown type {field.type}>'
 
     def _render_default_value(self, depth: int = 0) -> Block:
         """
@@ -277,7 +270,7 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
     def render(self, ctx: Context, depth: int = 0, is_oneof: bool = False) -> Block:
         """Reconstruct field as .proto."""
         from .syntax import allow_groups
-        from .utils import short_ref
+        from .utils import scope_name
 
         assert isinstance(depth, int)
         assert isinstance(is_oneof, bool)
@@ -338,11 +331,13 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
                 if self.type == FieldDescriptorProto.TYPE_GROUP:
                     from .anomalies import report
                     out.append(report("C2", depth, name=self.name))
-                ref = short_ref(ctx, self.type_descriptor, self.parent)
+                ref = self.type_ref(ctx, self.type_descriptor, scope_name(self.parent))
                 string += f'{ref} {self.name}'
             else:
                 editions_grp_name = getattr(self, '_editions_group_name', None)
-                ref = editions_grp_name if editions_grp_name is not None else short_ref(ctx, self.type_descriptor, self)
+                # A group declares its type: the nested message's own name.
+                ref = (editions_grp_name if editions_grp_name is not None
+                       else self.type_name.rpartition('.')[2])
                 string += f'group {ref}'
 
             # --- Field number -------------------------------------------------
@@ -496,9 +491,8 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
             field_out.CopyFrom(self.this)
             # type_name / extendee: canonize via variant namespace rules
             # (spec 0086), unless --keep-descriptor-path suppresses
-            # namespace rewriting entirely (spec 0159 — matches the
-            # existing precedent in utils.py's shorten_type_name/
-            # parse_fqdn for the text-render path)
+            # namespace rewriting entirely (spec 0159, as utils.type_ref
+            # does for the text-render path)
             if not ctx.keep_variant_descriptor:
                 from .mappings import apply_variant_namespace
                 from .fake_types import Ref as _Ref
