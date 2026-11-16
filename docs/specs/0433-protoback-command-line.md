@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0433 — protoback, the command line
 
-Status: draft
+Status: implemented
+Implemented in: 2026-11-16
 App: protoback, reproto
 Refs: docs/specs/0424-protoback-reproto-in-rust-on-upb.md (step 9 of its
       work plan; S11, every stream compared; S12, normalizations; S14,
@@ -254,3 +255,24 @@ Its traces follow reproto's internals, which protoback's do not mirror
     the harness does not compare it.
   - The harness: the stub cases (five `-O` placements) and a run that
     loads nothing (with and without `--use-variant`), identical.
+- **The final timings** (2026-11-16, at 2b87d6f): `scripts/bench-protoback`,
+  as spec 0430 G5 took them (each case with its database's flags; vCPUs
+  0–7, host idle; reproto `python3 -m reproto.cli`, protoback a release
+  build, on the 8 vCPUs and with `--jobs 1`):
+
+  | Case | reproto | protoback, 8 threads | protoback, `--jobs 1` | Peak memory, reproto / 8 threads / 1 |
+  |---|---|---|---|---|
+  | WKT | 539 ms ± 19, 5 runs | 17.7 ms ± 1.1, 106 runs | 16.7 ms ± 0.9, 101 runs | 47 / 14 / 14 MB |
+  | custom | 681 ms ± 13, 5 runs | 28.8 ms ± 2.0, 75 runs | 28.5 ms ± 1.4, 70 runs | 49 / 14 / 14 MB |
+  | googleapis | 185.9 s ± 1.8 (187.9, 184.3, 185.4) | 8.69 s ± 0.21 (8.70, 8.48, 8.89) | 9.21 s ± 0.10 (9.09, 9.23, 9.29) | 1,299 / 1,228 / 1,213 MB |
+
+  The host was slower than at step 6 (spec 0430 G5), for both tools: a
+  first run that session put reproto's googleapis at 221 s and WKT at
+  653 ms (protoback 9.13 s), and was not kept. Against step 6's binary
+  (621c90f), built in a worktree and timed in turns with 2b87d6f's on
+  googleapis, 3 runs each, twice: 9.37 s ± 1.41 and 8.54 s ± 0.17
+  against 8.50 s ± 0.19 and 8.40 s ± 0.05. The command line costs
+  nothing; the difference from step 6's 7.49 s is the host's. protoback
+  is 21 times faster than reproto on googleapis, 24 to 30 on the small
+  cases, in no more memory.
+

@@ -737,3 +737,17 @@ development VM pinned to vCPUs 0–7, on mains power, host idle.
   `descriptor.proto` is used); `tests/stress` and `tests/custom` pass
   unchanged. The harness, instances included: 1,587 cases, all
   identical.
+- **Step 9** (2026-11-16), spec 0433: the command line. stderr is
+  reproto's when piped (one line per message, fixed in reproto), a
+  terminal gets colors and progress bars; `--help` in reproto's
+  sections, `--version`, man pages (`PROTOBACK_GEN_MAN`), completion in
+  bash, zsh and fish (`-I`-relative, blob members; the reader shared in
+  `prototools-complete`, which fixed bash for prototext and protolens),
+  `--dump-resolved-features`; protoback refuses none of reproto's
+  options. Test plan 7, 8 and 9: the harness, every stream compared,
+  1,668 cases identical; reproto's CLI tests, all 320, pass against
+  protoback, in `ci` (`reprotoTestsOnProtoback`). Final timings, the
+  host slower than at step 6 for both tools (spec 0433, measured
+  outcome): googleapis 8.69 s on 8 threads, 9.21 s on one, against
+  reproto's 185.9 s; 1.23 GB against 1.30 GB. Step 6's binary, timed in
+  turns with this one, is no faster.
