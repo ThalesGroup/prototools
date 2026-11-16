@@ -20,31 +20,67 @@ pub const MESSAGE_ENCODING_DELIMITED: i32 = 2;
 /// `RepeatedFieldEncoding.PACKED`.
 pub const REPEATED_FIELD_ENCODING_PACKED: i32 = 1;
 
+/// The six features reproto resolves (`ResolvedFeatures`, its runtime ones).
 #[derive(Debug, Clone, Copy)]
 pub enum Feature {
     FieldPresence,
-    MessageEncoding,
+    EnumType,
     RepeatedFieldEncoding,
+    Utf8Validation,
+    MessageEncoding,
+    JsonFormat,
 }
 
 impl Feature {
-    fn name(self) -> &'static str {
+    /// In `ResolvedFeatures`' order.
+    pub const ALL: [Feature; 6] = [
+        Feature::FieldPresence,
+        Feature::EnumType,
+        Feature::RepeatedFieldEncoding,
+        Feature::Utf8Validation,
+        Feature::MessageEncoding,
+        Feature::JsonFormat,
+    ];
+
+    /// Its field's name in `FeatureSet`.
+    pub fn name(self) -> &'static str {
         match self {
             Feature::FieldPresence => "field_presence",
-            Feature::MessageEncoding => "message_encoding",
+            Feature::EnumType => "enum_type",
             Feature::RepeatedFieldEncoding => "repeated_field_encoding",
+            Feature::Utf8Validation => "utf8_validation",
+            Feature::MessageEncoding => "message_encoding",
+            Feature::JsonFormat => "json_format",
         }
     }
 
-    fn get(self, fs: &FeatureSet<'_>) -> Option<i32> {
+    /// Its value in `fs`, when set there.
+    pub fn get(self, fs: &FeatureSet<'_>) -> Option<i32> {
         match self {
             Feature::FieldPresence => fs.has_field_presence().then(|| fs.field_presence()),
-            Feature::MessageEncoding => fs.has_message_encoding().then(|| fs.message_encoding()),
+            Feature::EnumType => fs.has_enum_type().then(|| fs.enum_type()),
             Feature::RepeatedFieldEncoding => fs
                 .has_repeated_field_encoding()
                 .then(|| fs.repeated_field_encoding()),
+            Feature::Utf8Validation => fs.has_utf8_validation().then(|| fs.utf8_validation()),
+            Feature::MessageEncoding => fs.has_message_encoding().then(|| fs.message_encoding()),
+            Feature::JsonFormat => fs.has_json_format().then(|| fs.json_format()),
         }
     }
+}
+
+/// `feature_value_name`: a value's name in the feature's enum, the
+/// `*_UNKNOWN` name only for 0, else the number written out.
+pub fn value_name(table: &EditionDefaults, feature: Feature, value: i32) -> String {
+    let Some(EditionDefault::Numbers(numbers)) = table.get(&format!("_enum_{}", feature.name()))
+    else {
+        return value.to_string();
+    };
+    numbers
+        .iter()
+        .find(|(name, &n)| n == value && !name.ends_with("_UNKNOWN") && n != 0)
+        .or_else(|| numbers.iter().find(|(_, &n)| n == value))
+        .map_or_else(|| value.to_string(), |(name, _)| name.clone())
 }
 
 /// `feature` resolved, for a file of `edition`, through `sets`, the

@@ -12,6 +12,7 @@ mod db;
 mod dump;
 mod events;
 mod features;
+mod features_dump;
 mod fuzz;
 mod graph;
 mod instantiate;
@@ -174,15 +175,6 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     console::init(cli.quiet);
     let dump_path = cli.dump_graph.clone();
-    // Under --dump-graph, what acts after phase 6 is ignored; otherwise
-    // protoback refuses what it does not render yet (spec 0429 S1).
-    if dump_path.is_none() {
-        if let Some((name, step)) = cli.later_options().first() {
-            return usage(&format!(
-                "{name} is not supported by protoback yet (spec 0424 step {step})"
-            ));
-        }
-    }
     let out_repo = match proto_out(&cli) {
         Ok(o) => o,
         Err(e) => return usage(&e),
@@ -368,6 +360,13 @@ fn main() -> ExitCode {
         &run.edition_defaults,
     );
     phase.done();
+    // --dump-resolved-features: the file's resolved features, then the run
+    // stops (reproto's `_dump_resolved_features_yaml`, spec 0433 G4).
+    if let Some(name) = &cli.dump_resolved_features {
+        features_dump::print(&run, name);
+        run.events.flush();
+        return ExitCode::SUCCESS;
+    }
     phase4::run(&mut run, &mut topo);
     phase5::run(&mut run, &topo);
     phase6::run(&mut run);

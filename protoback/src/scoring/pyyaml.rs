@@ -18,8 +18,8 @@
 
 use prototext_graph::build_scoring_graph::{FieldLabel, NodeKind, ScoringFile};
 
-/// A YAML node of the document.
-enum Y {
+/// A YAML node of a document.
+pub enum Y {
     Map(Vec<(String, Y)>),
     Seq(Vec<Y>),
     Str(String),
@@ -29,9 +29,14 @@ enum Y {
 
 /// The YAML of one file's scoring graph (`_scoring_yaml_doc`).
 pub fn dump(file: &ScoringFile) -> String {
+    dump_map(&document(file))
+}
+
+/// `yaml.dump(doc, sort_keys=False, allow_unicode=True)` of a mapping.
+pub fn dump_map(doc: &Y) -> String {
     let mut out = String::new();
-    if let Y::Map(items) = document(file) {
-        map(&mut out, &items, 0, false);
+    if let Y::Map(items) = doc {
+        map(&mut out, items, 0, false);
     }
     out
 }

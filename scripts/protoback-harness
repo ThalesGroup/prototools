@@ -405,6 +405,15 @@ def cases(corpus: Path) -> list[Case]:
         for flag_name, flags in FLAG_SETS.items():
             out.append(Case(f"imports/{d.name}/{flag_name}",
                             ["-I", str(d), *proto_out, *flags, f"{d.name}.pb"]))
+    # --dump-resolved-features (spec 0433 G4): every fixture's file, and one
+    # not loaded.
+    for d in sorted((corpus / "imports").iterdir()):
+        out.append(Case(f"imports/{d.name}/dump-resolved-features",
+                        ["-I", str(d), "--dump-resolved-features", f"{d.name}.proto",
+                         f"{d.name}.pb"]))
+    out.append(Case("dump-resolved-features/not-loaded",
+                    ["-I", str(corpus / "imports" / "address_book"),
+                     "--dump-resolved-features", "no_such.proto", "address_book.pb"]))
     for d in sorted((corpus / "alone").iterdir()):
         out.append(Case(f"alone/{d.name}/default",
                         ["-I", str(d), *proto_out, f"{d.name}.pb"]))

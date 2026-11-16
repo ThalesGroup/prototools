@@ -365,23 +365,3 @@ pub struct Cli {
     )]
     pub debug_fqdn: bool,
 }
-
-impl Cli {
-    /// The options that act after phase 6 and that protoback does not
-    /// render yet, set on this command line, each with the step of spec
-    /// 0424 that brings it (spec 0429 S1).
-    pub fn later_options(&self) -> Vec<(&'static str, u8)> {
-        let mut later = Vec::new();
-        let mut note = |set: bool, name: &'static str, step: u8| {
-            if set {
-                later.push((name, step));
-            }
-        };
-        note(
-            self.dump_resolved_features.is_some(),
-            "--dump-resolved-features",
-            9,
-        );
-        later
-    }
-}

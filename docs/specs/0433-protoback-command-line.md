@@ -223,3 +223,14 @@ Its traces follow reproto's internals, which protoback's do not mirror
     `.txt` filtered, `--proto-variant`, `--use-variant=`) and a prototext
     `-I` row, in `ci`. zsh (tmux) and fish (`complete -C`) by hand: the
     same candidates, `--option=value` kept.
+- **Stage 5, `--dump-resolved-features`** (2026-11-16): `features_dump.rs`,
+  reproto's `_dump_resolved_features_yaml`: after phase 3, the named
+  file's six features resolved and overridden, for the file and each
+  message, field and enum (the chain: the file, each enclosing message,
+  the element), on stdout, then the run stops; a file not loaded, reproto's
+  warning. `features.rs` resolves all six of `ResolvedFeatures` now, with
+  `feature_value_name`; the YAML is `scoring::pyyaml`'s, its tree public.
+  With it, protoback refuses no option of reproto's: `later_options` is
+  gone.
+  - The harness: each import fixture's file, and one not loaded, 74
+    cases, every stream, identical.
