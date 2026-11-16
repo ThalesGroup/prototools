@@ -15,11 +15,14 @@ use crate::phase2::{EditionDefault, EditionDefaults};
 pub const FIELD_PRESENCE_IMPLICIT: i32 = 2;
 /// `MessageEncoding.DELIMITED`.
 pub const MESSAGE_ENCODING_DELIMITED: i32 = 2;
+/// `RepeatedFieldEncoding.PACKED`.
+pub const REPEATED_FIELD_ENCODING_PACKED: i32 = 1;
 
 #[derive(Debug, Clone, Copy)]
 pub enum Feature {
     FieldPresence,
     MessageEncoding,
+    RepeatedFieldEncoding,
 }
 
 impl Feature {
@@ -27,6 +30,7 @@ impl Feature {
         match self {
             Feature::FieldPresence => "field_presence",
             Feature::MessageEncoding => "message_encoding",
+            Feature::RepeatedFieldEncoding => "repeated_field_encoding",
         }
     }
 
@@ -34,6 +38,9 @@ impl Feature {
         match self {
             Feature::FieldPresence => fs.has_field_presence().then(|| fs.field_presence()),
             Feature::MessageEncoding => fs.has_message_encoding().then(|| fs.message_encoding()),
+            Feature::RepeatedFieldEncoding => fs
+                .has_repeated_field_encoding()
+                .then(|| fs.repeated_field_encoding()),
         }
     }
 }

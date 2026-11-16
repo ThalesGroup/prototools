@@ -27,6 +27,12 @@ pub struct Ctx<'s, 'a> {
     pub target: String,
     /// The file's edition, for an editions file.
     pub edition: Option<i32>,
+    /// reproto's pool refused this file: its elements' options are not
+    /// found, and an enum value's lookup fails the file.
+    pub refused: bool,
+    /// A render step failed that reproto does not catch below the file:
+    /// the file is not written.
+    pub failed: std::cell::Cell<bool>,
 }
 
 impl Ctx<'_, '_> {
@@ -225,6 +231,8 @@ pub fn render(shared: &Shared<'_>, file: usize) -> Option<Block> {
         edition: f.has_edition().then(|| f.edition()),
         syntax,
         target,
+        refused: shared.refused.contains(&text(f.name())),
+        failed: std::cell::Cell::new(false),
     };
     let name = text(f.name());
     let depth = 0;
@@ -264,6 +272,12 @@ pub fn render(shared: &Shared<'_>, file: usize) -> Option<Block> {
         out.push(Line::code("", depth));
     }
     out.div_maybe(depth);
+
+    let options = file_options(&ctx, &f, depth);
+    if !options.is_empty() {
+        out.extend(options);
+        out.div_maybe(depth);
+    }
 
     let public: BTreeSet<i32> = f.public_dependency().into_iter().collect();
     let weak: BTreeSet<i32> = f.weak_dependency().into_iter().collect();
@@ -380,5 +394,44 @@ pub fn render(shared: &Shared<'_>, file: usize) -> Option<Block> {
     out.div_maybe(depth);
 
     out.trim_end(0);
+    if ctx.failed.get() {
+        return None;
+    }
     Some(out)
+}
+
+/// `render_file_options`: the file's options, standalone; A3 when the pool
+/// refused the file, or when they cannot be rendered.
+fn file_options(
+    ctx: &Ctx<'_, '_>,
+    f: &prototext_upb::descriptor_access::FileDescriptorProto<'_>,
+    depth: usize,
+) -> Block {
+    use super::options::{builtin, Options};
+    const POOL_REFUSED: &str = "the descriptor pool refused this file or one of its imports";
+    let a3 = |reason: &str| {
+        let mut b = Block::new();
+        b.push(anomaly(
+            "OMITTED",
+            "render",
+            &format!("file options could not be rendered ({reason})"),
+            depth,
+        ));
+        b
+    };
+    if ctx.refused {
+        return a3(POOL_REFUSED);
+    }
+    let mut out = Block::new();
+    let (Some(pool), Some(o)) = (&ctx.shared.options, f.options()) else {
+        return out;
+    };
+    let Some(msg) = pool.parse_ref(Options::File, &o.0) else {
+        return out;
+    };
+    match builtin(ctx.shared.variant, Options::File, &msg, false, depth, &[]) {
+        Ok(blocks) => blocks.into_iter().for_each(|b| out.extend(b)),
+        Err(_) => return a3("internal error"),
+    }
+    out
 }

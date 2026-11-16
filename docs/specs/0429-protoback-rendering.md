@@ -386,3 +386,24 @@ not deferred with it: stage 3 needs it on one thread already.
     (`features.rs`, shared with phase 3).
   - Not yet: S4's render-order fixture (stage 3), and files rendered in
     parallel (after stage 6, S4).
+- **Stage 2, built-in options** (2026-11-15): `render/options.rs`. Each
+  element's options parsed with the variant's descriptor.proto, as
+  reproto's options pool parses them, and written as its `dump_option`
+  writes them: standalone or composite, orphans from the variant, a
+  oneof's under their full name (`canonize_opt_name`'s pattern lacks
+  `OneofOptions`), message values as aggregates (`edition_defaults`);
+  a field's `default`, `json_name`, `packed`; methods' brace form;
+  extension ranges' three forms. Python's formatting from tables Python
+  generated (`render/pyfmt/`): `repr` of floats (337 values, float32
+  ones widened) and of strings (`str.isprintable`'s 712 ranges, from
+  Unicode 15.1), the bytes default's `unicode-escape` and its failures.
+  reproto's `ctx.pool`, which refuses some files (S16), computed once in
+  render order before rendering (`refused_files`, a upb pool loading
+  each file after its imports): a refused file's options are A3, its
+  elements' are dropped, and an enum value in it fails the file, as in
+  reproto.
+  - The harness, `--compare out/proto`, every corpus: of the 319 cases
+    protoback renders, 290 identical; the 29 others differ only in files
+    holding custom options or features (stages 3, 4), every one of the 78
+    differing hunks touching one. Every rendered descriptor.proto
+    identical.

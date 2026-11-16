@@ -277,6 +277,8 @@ fn main() -> ExitCode {
         keep_variant_descriptor: cli.keep_descriptor_path,
         redact_comments: cli.redact_comments,
         redact_orphans: cli.redact_orphans,
+        options: render::OptionsPool::new(&run.db, &run.variant),
+        refused: render::refused_files(&run.db, &render::summoned_files(&run.graph)),
     };
     let output = render::Output {
         out_repo,

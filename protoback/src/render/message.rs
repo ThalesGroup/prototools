@@ -3,17 +3,24 @@
 // SPDX-License-Identifier: MIT
 
 //! Messages, fields, enums and services (`re_descriptor.py`,
-//! `re_field.py`, `re_enum.py`, `re_service.py`, `re_method.py`), stage 1:
-//! no options, no features block, no source comments.
+//! `re_field.py`, `re_enum.py`, `re_service.py`, `re_method.py`), with
+//! their built-in options (stage 2); no features block, no source comments
+//! yet.
 
 use prototext_upb::descriptor_access::{DescriptorProto, FeatureSet, FieldDescriptorProto};
 
+use prototext_upb::MessageRef;
+
 use super::file::{anomaly, extend_blocks, Ctx};
 use super::names::{short_ref, shorten_method_type, type_name};
-use super::pyfmt::json_dumps;
+use super::options::{builtin, Options};
+use super::pyfmt::{bytes_default, float_repr, json_dumps, render_bytes};
 use super::text::{Block, Line, LineType, MAX_LINE_LENGTH, TAB_SIZE};
 use super::{text, Def};
-use crate::features::{self, Feature, FIELD_PRESENCE_IMPLICIT, MESSAGE_ENCODING_DELIMITED};
+use crate::features::{
+    self, Feature, FIELD_PRESENCE_IMPLICIT, MESSAGE_ENCODING_DELIMITED,
+    REPEATED_FIELD_ENCODING_PACKED,
+};
 use crate::graph::{Kind, TypeRef};
 
 const LABEL_REQUIRED: i32 = 2;
@@ -21,6 +28,134 @@ const LABEL_REPEATED: i32 = 3;
 const TYPE_GROUP: i32 = 10;
 const TYPE_MESSAGE: i32 = 11;
 const TYPE_ENUM: i32 = 14;
+const TYPE_STRING: i32 = 9;
+const TYPE_BYTES: i32 = 12;
+const TYPE_BOOL: i32 = 8;
+const TYPE_FLOAT: i32 = 2;
+const TYPE_DOUBLE: i32 = 1;
+
+/// `globals.PACKABLE_TYPES`: the scalar types, but string, bytes,
+/// message and group.
+fn packable(t: i32) -> bool {
+    !matches!(t, TYPE_STRING | TYPE_BYTES | TYPE_GROUP | TYPE_MESSAGE)
+}
+
+/// `render_options`: the options of a message, enum, service or method,
+/// which reproto finds through its pool: none when the pool refused the
+/// element's file, nor when one of them cannot be rendered (its `except`).
+fn element_options(
+    ctx: &Ctx<'_, '_>,
+    kind: Options,
+    options: Option<MessageRef<'_>>,
+    depth: usize,
+    exclude: &[&str],
+) -> Vec<Block> {
+    if ctx.refused {
+        return Vec::new();
+    }
+    own_options(ctx, kind, options, false, depth, exclude).unwrap_or_default()
+}
+
+/// Options reproto reads from the descriptor itself (a field's, a oneof's,
+/// an extension range's, an enum value's), composite or not; `Err` when
+/// one cannot be rendered.
+fn own_options(
+    ctx: &Ctx<'_, '_>,
+    kind: Options,
+    options: Option<MessageRef<'_>>,
+    composite: bool,
+    depth: usize,
+    exclude: &[&str],
+) -> Result<Vec<Block>, super::options::Unrenderable> {
+    let (Some(pool), Some(o)) = (&ctx.shared.options, options) else {
+        return Ok(Vec::new());
+    };
+    let Some(msg) = pool.parse_ref(kind, &o) else {
+        return Ok(Vec::new());
+    };
+    builtin(ctx.shared.variant, kind, &msg, composite, depth, exclude)
+}
+
+/// `_camel_case`: protoc's default JSON name.
+fn camel_case(name: &str) -> String {
+    let mut out = String::new();
+    let mut up = false;
+    for c in name.chars() {
+        if c == '_' {
+            up = true;
+        } else if up {
+            out.extend(c.to_uppercase());
+            up = false;
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// `_render_default_value`: `default = v,` for a field with a default;
+/// `Err` where Python's reading of it raises (a bytes default it cannot
+/// unescape, a number it cannot parse).
+fn default_value(f: &FieldDescriptorProto<'_>, depth: usize) -> Result<Block, ()> {
+    let mut out = Block::new();
+    if !f.has_default_value() {
+        return Ok(out);
+    }
+    let raw = text(f.default_value());
+    let value = match f.r#type() {
+        TYPE_ENUM => raw,
+        TYPE_STRING => json_dumps(&raw),
+        TYPE_BYTES => render_bytes(&bytes_default(&raw).ok_or(())?),
+        TYPE_BOOL => if raw.to_lowercase() == "true" {
+            "true"
+        } else {
+            "false"
+        }
+        .to_string(),
+        TYPE_FLOAT | TYPE_DOUBLE => float_repr(py_float(&raw).ok_or(())?),
+        _ => raw.trim().parse::<i128>().map_err(|_| ())?.to_string(),
+    };
+    out.push(Line::code(format!("default = {value},"), depth));
+    Ok(out)
+}
+
+/// Python's `float(s)` for the defaults protoc writes: a decimal, or
+/// `inf`, `-inf`, `nan` in any case.
+fn py_float(s: &str) -> Option<f64> {
+    let t = s.trim();
+    match t.to_ascii_lowercase().as_str() {
+        "inf" | "+inf" | "infinity" | "+infinity" => Some(f64::INFINITY),
+        "-inf" | "-infinity" => Some(f64::NEG_INFINITY),
+        "nan" | "+nan" | "-nan" => Some(f64::NAN),
+        _ => t.parse::<f64>().ok(),
+    }
+}
+
+/// `packed_option`: `true`, `false`, or nothing.
+fn packed_option(
+    ctx: &Ctx<'_, '_>,
+    has: bool,
+    effective: bool,
+    editions: bool,
+) -> Option<&'static str> {
+    let v = if effective { "true" } else { "false" };
+    if editions {
+        if has {
+            return Some(v);
+        }
+        if ctx.target == "proto2" {
+            return effective.then_some("true");
+        }
+        return None;
+    }
+    if has {
+        return Some(v);
+    }
+    if ctx.syntax == ctx.target {
+        return None;
+    }
+    effective.then_some("true")
+}
 /// `globals.FIELD_NUM_MAX`.
 const FIELD_NUM_MAX: i32 = 536_870_911;
 
@@ -220,22 +355,25 @@ pub fn field(ctx: &Ctx<'_, '_>, fd: usize, depth: usize, is_oneof: bool) -> Bloc
         }
     };
 
-    // The options block is empty in stage 1, but for proto3's dropped
-    // default (C4), which makes it all orphan.
-    let mut opt_block = Block::new();
-    if ctx.proto3() && presence.is_none() && f.has_default_value() {
-        opt_block.push(anomaly(
-            "WARNING",
-            "proto3",
-            "explicit default value is not valid in proto3; omitted",
-            depth + 1,
-        ));
+    // The options block, in reproto's order: the default, json_name,
+    // packed, then the options; reproto's `try` around it turns a failure
+    // into C5 and the bare declaration.
+    match field_options(ctx, &f, msg, presence, depth) {
+        Ok(opt_block) => out.extend(format_composite(
+            opt_block,
+            Line::code(string, depth),
+            depth,
+        )),
+        Err(()) => {
+            out.push(anomaly(
+                "WARNING",
+                "render",
+                "field options could not be rendered (internal error)",
+                depth,
+            ));
+            out.push(Line::code(string, depth));
+        }
     }
-    out.extend(format_composite(
-        opt_block,
-        Line::code(string, depth),
-        depth,
-    ));
 
     if map_string.is_some() || !is_group_field || !allow_groups {
         out.postpend(";");
@@ -254,6 +392,70 @@ pub fn field(ctx: &Ctx<'_, '_>, fd: usize, depth: usize, is_oneof: bool) -> Bloc
         out.abandon();
     }
     out
+}
+
+/// A field's options block (`ReFieldDescriptorProto.render`'s `try`).
+fn field_options(
+    ctx: &Ctx<'_, '_>,
+    f: &FieldDescriptorProto<'_>,
+    msg: Option<usize>,
+    presence: Option<i32>,
+    depth: usize,
+) -> Result<Block, ()> {
+    let mut opt_block = Block::new();
+    let render_default = f.has_default_value()
+        && match presence {
+            Some(p) => p != FIELD_PRESENCE_IMPLICIT,
+            None => !ctx.proto3(),
+        };
+    if render_default {
+        opt_block.extend(default_value(f, depth + 1)?);
+    } else if ctx.proto3() && f.has_default_value() {
+        opt_block.push(anomaly(
+            "WARNING",
+            "proto3",
+            "explicit default value is not valid in proto3; omitted",
+            depth + 1,
+        ));
+    }
+    let json_name = text(f.json_name());
+    if !json_name.is_empty() && json_name != camel_case(&text(f.name())) {
+        opt_block.push(Line::code(
+            format!("json_name = \"{json_name}\","),
+            depth + 1,
+        ));
+    }
+    let options = f.options();
+    let has_packed = options.as_ref().is_some_and(|o| o.has_packed());
+    let is_packable = f.label() == LABEL_REPEATED && packable(f.r#type());
+    let mut effective = if has_packed {
+        options.as_ref().is_some_and(|o| o.packed())
+    } else {
+        ctx.syntax == "proto3"
+    };
+    let editions = presence.is_some();
+    if editions && !has_packed && is_packable {
+        effective = field_feature(ctx, msg, f, Feature::RepeatedFieldEncoding)
+            == Some(REPEATED_FIELD_ENCODING_PACKED);
+    }
+    if is_packable || has_packed {
+        if let Some(v) = packed_option(ctx, has_packed, effective, editions) {
+            opt_block.push(Line::code(format!("packed = {v},"), depth + 1));
+        }
+    }
+    let blocks = own_options(
+        ctx,
+        Options::Field,
+        options.map(|o| o.0),
+        true,
+        depth + 1,
+        &["packed", "json_name"],
+    )
+    .map_err(|_| ())?;
+    for b in blocks {
+        opt_block.extend(b);
+    }
+    Ok(opt_block)
 }
 
 /// A map entry field's type name (`_get_field_type_name`).
@@ -331,6 +533,23 @@ pub fn message(ctx: &Ctx<'_, '_>, msg: usize, depth: usize, force: bool) -> Bloc
             "'message_set_wire_format = true' is not valid in proto3; omitted",
             depth + 1,
         ));
+    }
+
+    let msf: &[&str] = if ctx.proto2_or_editions() {
+        &[]
+    } else {
+        &["message_set_wire_format"]
+    };
+    let blocks = element_options(
+        ctx,
+        Options::Message,
+        m.options().map(|o| o.0),
+        depth + 1,
+        msf,
+    );
+    if !blocks.is_empty() {
+        blocks.into_iter().for_each(|b| out.extend(b));
+        out.div_maybe(depth);
     }
 
     let node = &shared.graph.nodes[msg];
@@ -416,6 +635,27 @@ pub fn message(ctx: &Ctx<'_, '_>, msg: usize, depth: usize, force: bool) -> Bloc
                 kind,
             },
         );
+        // The oneof's options, from its descriptor (no `try`: a failure
+        // fails the file).
+        match own_options(
+            ctx,
+            Options::Oneof,
+            oneofs[o].options().map(|x| x.0),
+            false,
+            depth + 2,
+            &[],
+        ) {
+            Ok(blocks) => {
+                let mut at = 1;
+                for b in blocks {
+                    for line in b.lines {
+                        block.insert(at, line);
+                        at += 1;
+                    }
+                }
+            }
+            Err(_) => ctx.failed.set(true),
+        }
         block.push(Line {
             text: "}".into(),
             level: depth + 1,
@@ -484,15 +724,66 @@ fn reserved(ctx: &Ctx<'_, '_>, m: &DescriptorProto<'_>, depth: usize) -> Block {
             ));
             continue;
         }
-        let s = if start == end - 1 {
-            format!("extensions {start};")
+        let mut s = if start == end - 1 {
+            format!("extensions {start}")
         } else if end > FIELD_NUM_MAX {
             // reproto's `end - 1 >= FIELD_NUM_MAX`.
-            format!("extensions {start} to max;")
+            format!("extensions {start} to max")
         } else {
-            format!("extensions {start} to {};", end - 1)
+            format!("extensions {start} to {}", end - 1)
         };
-        out.push(Line::code(s, depth));
+        let mut texts = match own_options(
+            ctx,
+            Options::ExtensionRange,
+            r.options().map(|o| o.0),
+            true,
+            depth + 1,
+            &["declaration"],
+        ) {
+            Ok(t) => t,
+            Err(_) => {
+                ctx.failed.set(true);
+                Vec::new()
+            }
+        };
+        // The last option not an orphan loses its comma.
+        if let Some(t) = texts
+            .iter_mut()
+            .rev()
+            .find(|t| t.lines.first().is_some_and(|l| l.kind != LineType::Orphan))
+        {
+            if let Some(last) = t.lines.last_mut() {
+                if last.text.ends_with(',') {
+                    last.text.pop();
+                }
+            }
+        }
+        let set = texts
+            .iter()
+            .filter(|t| t.lines.first().is_some_and(|l| l.kind != LineType::Orphan))
+            .count();
+        if set == 0 {
+            s.push(';');
+            out.push(Line::code(s, depth));
+            if !texts.is_empty() {
+                out.push(Line::orphan("[", depth));
+                texts.into_iter().for_each(|t| out.extend(t));
+                out.push(Line::orphan("]", depth));
+            }
+        } else if set == 1 && texts.len() == 1 && texts[0].len() == 1 {
+            let short = format!("[{}];", texts[0].lines[0].text);
+            let s2 = format!("{s} {short}");
+            if s2.chars().count() <= MAX_LINE_LENGTH - depth * TAB_SIZE {
+                out.push(Line::code(s2, depth));
+            } else {
+                out.push(Line::code(s, depth));
+                out.push(Line::code(short, depth + 1));
+            }
+        } else {
+            out.push(Line::code(format!("{s} ["), depth));
+            texts.into_iter().for_each(|t| out.extend(t));
+            out.push(Line::code("];", depth));
+        }
     }
     for r in m.reserved_range() {
         let (start, end) = (r.start(), r.end());
@@ -521,12 +812,11 @@ pub fn enumeration(ctx: &Ctx<'_, '_>, en: usize, depth: usize) -> Block {
     let Some(Def::Enum(e)) = ctx.shared.def(en) else {
         return out;
     };
+    let blocks = element_options(ctx, Options::Enum, e.options().map(|o| o.0), depth + 1, &[]);
+    blocks.into_iter().for_each(|b| out.extend(b));
     out.div_maybe(depth);
     for v in e.value() {
-        out.push(Line::code(
-            format!("{} = {};", text(v.name()), v.number()),
-            depth + 1,
-        ));
+        out.extend(enum_value(ctx, &v, depth + 1));
     }
     let ranges = e.reserved_range();
     let names = e.reserved_name();
@@ -557,13 +847,57 @@ pub fn enumeration(ctx: &Ctx<'_, '_>, en: usize, depth: usize) -> Block {
     out
 }
 
-/// `ReServiceDescriptorProto.render`, stage 1: its reachable methods.
+/// `ReEnumValueDescriptorProto.render`: `NAME = N`, its options inline.
+/// reproto looks the enum up in its pool first, with no `try`: in a file
+/// the pool refused, that fails the file; so does an option that cannot
+/// be rendered.
+fn enum_value(
+    ctx: &Ctx<'_, '_>,
+    v: &prototext_upb::descriptor_access::EnumValueDescriptorProto<'_>,
+    depth: usize,
+) -> Block {
+    let prolog = Line::code(format!("{} = {}", text(v.name()), v.number()), depth);
+    if ctx.refused {
+        ctx.failed.set(true);
+    }
+    let options = match own_options(
+        ctx,
+        Options::EnumValue,
+        v.options().map(|o| o.0),
+        true,
+        depth + 1,
+        &[],
+    ) {
+        Ok(blocks) => {
+            let mut b = Block::new();
+            blocks.into_iter().for_each(|x| b.extend(x));
+            b
+        }
+        Err(_) => {
+            ctx.failed.set(true);
+            Block::new()
+        }
+    };
+    let mut out = format_composite(options, prolog, depth);
+    out.postpend(";");
+    out
+}
+
+/// `ReServiceDescriptorProto.render`: its options, its reachable methods.
 pub fn service(ctx: &Ctx<'_, '_>, svc: usize, depth: usize) -> Block {
     let shared = ctx.shared;
     let mut out = Block::new();
     let Some(Def::Service(s)) = shared.def(svc) else {
         return out;
     };
+    let blocks = element_options(
+        ctx,
+        Options::Service,
+        s.options().map(|o| o.0),
+        depth + 1,
+        &[],
+    );
+    blocks.into_iter().for_each(|b| out.extend(b));
     out.div_maybe(depth);
     let node = &shared.graph.nodes[svc];
     for sm in &node.stripped_methods {
@@ -618,13 +952,35 @@ fn method(
     let cs = if m.client_streaming() { "stream " } else { "" };
     let ss = if m.server_streaming() { "stream " } else { "" };
     let s1 = format!("rpc {}({cs}{input}) ", text(m.name()));
-    let s2 = format!("returns ({ss}{output});");
+    let blocks = element_options(
+        ctx,
+        Options::Method,
+        m.options().map(|o| o.0),
+        depth + 1,
+        &[],
+    );
     let mut out = Block::new();
-    if depth * TAB_SIZE + s1.chars().count() + s2.chars().count() > MAX_LINE_LENGTH {
-        out.push(Line::code(s1, depth));
-        out.push(Line::code(s2, depth + 2));
+    if blocks.is_empty() {
+        let s2 = format!("returns ({ss}{output});");
+        if depth * TAB_SIZE + s1.chars().count() + s2.chars().count() > MAX_LINE_LENGTH {
+            out.push(Line::code(s1, depth));
+            out.push(Line::code(s2, depth + 2));
+        } else {
+            out.push(Line::code(format!("{s1}{s2}"), depth));
+        }
+        return out;
+    }
+    blocks.into_iter().for_each(|b| out.extend(b));
+    out.div_maybe(depth);
+    out.trim_end(1);
+    out.push(Line::code("}", depth));
+    out.div_maybe(depth);
+    let s2 = format!("returns ({ss}{output}) {{");
+    if depth * TAB_SIZE + s1.chars().count() + 1 + s2.chars().count() > MAX_LINE_LENGTH {
+        out.insert(0, Line::code(s2, depth + 2));
+        out.insert(0, Line::code(s1, depth));
     } else {
-        out.push(Line::code(format!("{s1}{s2}"), depth));
+        out.insert(0, Line::code(format!("{s1}{s2}"), depth));
     }
     out
 }

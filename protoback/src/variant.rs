@@ -95,6 +95,9 @@ pub struct Variant {
     pub import_rules: Vec<Rule>,
     /// `namespace_rewrites`, applied to type names and packages.
     pub namespace_rules: Vec<Rule>,
+    /// Options rendered as orphans, by options message (`orphans`, after
+    /// the edition orphans every variant has).
+    pub orphans: std::collections::BTreeMap<String, Vec<String>>,
     pub root: Root,
     pub stem: String,
 }
@@ -124,6 +127,52 @@ fn apply_rules(rules: &[Rule], name: &str) -> String {
         }
     }
     s
+}
+
+/// `variant._EDITION_ORPHANS`: options every variant renders as orphans.
+const EDITION_ORPHANS: &[(&str, &[&str])] = &[
+    ("EnumOptions", &["features", "feature_support"]),
+    ("EnumValueOptions", &["features", "feature_support"]),
+    (
+        "ExtensionRangeOptions",
+        &["features", "feature_support", "verification"],
+    ),
+    ("FieldOptions", &["features", "feature_support"]),
+    ("FileOptions", &["features", "feature_support"]),
+    ("MessageOptions", &["features", "feature_support"]),
+    ("MethodOptions", &["features", "feature_support"]),
+    ("ServiceOptions", &["features", "feature_support"]),
+];
+
+/// `variant._merge_orphans`: the edition orphans, then the file's, each
+/// list without repeats, in order.
+fn orphans(value: &Value) -> std::collections::BTreeMap<String, Vec<String>> {
+    let mut out: std::collections::BTreeMap<String, Vec<String>> = EDITION_ORPHANS
+        .iter()
+        .map(|(k, v)| {
+            (
+                (*k).to_string(),
+                v.iter().map(|s| (*s).to_string()).collect(),
+            )
+        })
+        .collect();
+    if let Some(m) = value.as_mapping() {
+        for (k, v) in m {
+            let Some(k) = k.as_str() else { continue };
+            let list = out.entry(k.to_string()).or_default();
+            for name in v
+                .as_sequence()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+            {
+                if !list.iter().any(|n| n == name) {
+                    list.push(name.to_string());
+                }
+            }
+        }
+    }
+    out
 }
 
 fn rules(value: &Value) -> Vec<Rule> {
@@ -188,6 +237,7 @@ impl Variant {
             well_known,
             import_rules: rules(&get("import_rewrites")),
             namespace_rules: rules(&get("namespace_rewrites")),
+            orphans: orphans(&get("orphans")),
             root,
             stem,
         })
