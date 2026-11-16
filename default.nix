@@ -804,14 +804,15 @@ let
 
   # Spec 0406 S6: press Tab in an interactive bash, on a pseudo-terminal
   # (the sandbox provides one), and check the line, for prototext,
-  # protolens and protoscan. bashInteractive: stdenv's bash has no readline.
+  # protolens, protoscan and protoback (spec 0433 S7: -I-relative paths and
+  # blob members). bashInteractive: stdenv's bash has no readline.
   completionTests = pkgs.runCommand "completion-tests" {
     strictDeps = true;
     nativeBuildInputs = [ pkgs.bashInteractive pkgs.python3 ];
   } ''
     mkdir bin
     ln -s ${rust.prototext}/bin/prototext ${rust.protolens}/bin/protolens \
-      ${rust.protoscan}/bin/protoscan bin/
+      ${rust.protoscan}/bin/protoscan ${rust.protoback}/bin/protoback bin/
     python3 ${./prototools-complete/tests/tab_completion.py} bin | tee $out
   '';
 

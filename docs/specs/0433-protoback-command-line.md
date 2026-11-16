@@ -193,3 +193,33 @@ Its traces follow reproto's internals, which protoback's do not mirror
     and its text (wrapped lines rejoined, a hyphenated word whole), found
     in protoback's help; no visible option protoback alone shows but its
     own. Both commands pass; `ci` runs it.
+- **Stage 4, completion and man pages** (2026-11-16):
+  - `complete.rs`: reproto's completers (`_complete_paths`,
+    `_complete_blob_members`): DESCRIPTOR_FILES relative to every `-I`
+    on the line (`.` without one), `.pb` and `.textpb`, directories with
+    a `/`; an `-I` blob's members by prefix; `-O`'s directories,
+    `--proto-variant`'s `.yaml`, the plugins' `.py`. A directory is a
+    candidate ending in `/` whether or not the shell can see it, so
+    bash (`prototools-complete`), zsh and fish (clap_complete 4.6.5's
+    scripts) add no space after it. `PROTOBACK_COMPLETE`.
+  - The command line read through `prototools_complete::args`
+    (`flag_values`, `flag_value`, `expand_shell_word`), moved there from
+    prototext and protolens, which carried a copy each (the user's
+    decision; they depend on `prototools-complete` already, so no
+    dependency edge is added, and `Cargo.lock`'s crates are unchanged).
+  - A bug found on the way: bash hands the completer the raw line, not
+    its words (spec 0406), so a reader of argv never found `-I` or
+    `--descriptor-set` there; prototext's `decode -I … <Tab>` and
+    `--descriptor-set FILE … --type <Tab>` completed against the current
+    directory and the fallback. `Bash` now records the words it splits,
+    which `args` reads first.
+  - `man.rs`: `PROTOBACK_GEN_MAN` writes `protoback.1` and
+    `protoback-instantiate.1` (clap_mangen, reproto's extra sections);
+    the Nix package installs them and the three shells' scripts.
+  - Tests: `complete.rs`'s (two roots, a blob, suffixes); `args.rs`'s
+    (every spelling, `--input` not `-I`, expansion, moved from
+    prototext); `tab_completion.py`'s protoback rows (`-I` roots, a
+    directory the shell cannot see, `--desc-root=`, a blob member,
+    `.txt` filtered, `--proto-variant`, `--use-variant=`) and a prototext
+    `-I` row, in `ci`. zsh (tmux) and fish (`complete -C`) by hand: the
+    same candidates, `--option=value` kept.

@@ -1799,11 +1799,14 @@ name = "protoback"
 version = "0.3.6"
 dependencies = [
  "clap",
+ "clap_complete",
+ "clap_mangen",
  "fdp-scan",
  "indicatif",
  "prototext-core",
  "prototext-graph",
  "prototext-upb",
+ "prototools-complete",
  "rapidfuzz",
  "rayon",
  "regex",

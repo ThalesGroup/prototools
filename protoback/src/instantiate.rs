@@ -77,6 +77,11 @@ pub struct Cli {
     fqdns: Vec<String>,
 }
 
+/// The command, for its man page.
+pub fn command() -> clap::Command {
+    <Cli as clap::CommandFactory>::command()
+}
+
 fn usage(message: &str) -> ExitCode {
     eprintln!("Usage: protoback instantiate [OPTIONS] FQDNS...");
     eprintln!("Try 'protoback instantiate --help' for help.");

@@ -6,6 +6,7 @@
 //! loading, the pool, phases 1 to 6, and the graph dump.
 
 mod cli;
+mod complete;
 mod console;
 mod db;
 mod dump;
@@ -15,6 +16,7 @@ mod fuzz;
 mod graph;
 mod instantiate;
 mod load;
+mod man;
 mod pathmatch;
 mod phase1;
 mod phase2;
@@ -155,6 +157,14 @@ fn main() -> ExitCode {
     // `protoback instantiate`, reproto-instantiate-schema (spec 0432 S1):
     // a subcommand of its own options. A descriptor file named
     // `instantiate` is given as `./instantiate`.
+    // PROTOBACK_COMPLETE=<shell>: the completion script, or the candidates
+    // (spec 0433 S7); bash completes from the raw line (spec 0406).
+    clap_complete::CompleteEnv::with_factory(<Cli as clap::CommandFactory>::command)
+        .var("PROTOBACK_COMPLETE")
+        .shells(prototools_complete::shells())
+        .complete();
+    // PROTOBACK_GEN_MAN=<dir>: the man pages (spec 0433 S7).
+    man::generate_and_exit_if_requested();
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("instantiate") {
         let mut sub = vec!["protoback instantiate".to_string()];

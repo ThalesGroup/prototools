@@ -12,6 +12,7 @@
 use std::path::PathBuf;
 
 use clap::{ArgAction, Parser, ValueEnum};
+use clap_complete::engine::ArgValueCompleter;
 
 /// The well-known types `--use-variant` can supply, and `all`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -87,7 +88,7 @@ impl UseVariant {
 )]
 pub struct Cli {
     /// Descriptor files and directories, relative to the -I roots.
-    #[arg(value_name = "DESCRIPTOR_FILES")]
+    #[arg(value_name = "DESCRIPTOR_FILES", add = ArgValueCompleter::new(crate::complete::complete_descriptor_files))]
     pub pb_files: Vec<PathBuf>,
 
     #[arg(short = 'I', long = "desc-root", action = ArgAction::Append, help = "Root for resolving relative DESCRIPTOR_FILES paths and for locating imports (repeatable; like protoc -I). A directory is read as-is; a file is read as a blob, standing for the descriptors embedded in it, one member per FileDescriptorProto found (what protoscan would have extracted). Defaults to the current directory.", help_heading = "Input", value_name = "PATH")]
@@ -98,6 +99,7 @@ pub struct Cli {
     #[arg(
         short = 'O',
         long = "proto-out",
+        add = ArgValueCompleter::new(crate::complete::complete_dir_path),
         help = "Output directory for generated .proto files (created if absent). Not required when using --schema-db-out, --scoring-html-out, or --dry-run. Defaults to the --schema-db-out stub's 'proto' child when that option is given; --no-proto-out suppresses that default. When --schema-db-out is also given, DIR may not be inside its stub directory unless DIR is that stub's immediate 'proto' child.",
         help_heading = "Output",
         value_name = "DIRECTORY"
@@ -145,6 +147,7 @@ pub struct Cli {
 
     #[arg(
         long = "proto-variant",
+        add = ArgValueCompleter::new(crate::complete::complete_yaml_path),
         env = "REPROTO_VARIANT",
         help = "Path to a variant specification YAML file. If omitted, $REPROTO_VARIANT is used; otherwise the built-in google.protobuf default applies.",
         help_heading = "Variant / Schema",
@@ -294,6 +297,7 @@ pub struct Cli {
     pub debug: bool,
     #[arg(
         long = "fdp-plugin",
+        add = ArgValueCompleter::new(crate::complete::complete_py_path),
         help = "Python file executed as a transformation hook on every FileDescriptorProto reproto parses, before anything reads it. Must define fdp_plugin(fdp), which mutates fdp in place. Called more than once per input file, so it must be deterministic; it must not read reproto state.",
         help_heading = "Advanced",
         value_name = "PATH"
@@ -301,6 +305,7 @@ pub struct Cli {
     pub fdp_plugin: Option<PathBuf>,
     #[arg(
         long = "phase2-plugin",
+        add = ArgValueCompleter::new(crate::complete::complete_py_path),
         hide = true,
         help = "Deprecated alias for --fdp-plugin; entry point phase2_plugin(ctx, fdp).",
         value_name = "PATH"

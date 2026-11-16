@@ -399,17 +399,27 @@ let
 
   # ---------------------------------------------------------------------------
   # protoback — reproto in Rust, under way (spec 0424). Not published, and
-  # not packaged: the differential harness's candidate (spec 0428 S10).
+  # not in nixpkgs: the differential harness's candidate (spec 0428 S10). Its
+  # completion and man pages come from the binary itself, as protoscan's
+  # (spec 0433 S7).
   # ---------------------------------------------------------------------------
   protoback = pkgs.runCommand "protoback-${workspaceVersion}" {
+    nativeBuildInputs = [ pkgs.installShellFiles ];
     meta = metaCommon // {
       description = "reproto in Rust, on upb (under way)";
       mainProgram = "protoback";
     };
-  } ''
+  } (''
     mkdir -p $out/bin
     cp ${workspaceBuild}/bin/protoback $out/bin/
-  '';
+  '' + whenRunnable ''
+    installShellCompletion --cmd protoback \
+      --bash <(PROTOBACK_COMPLETE=bash $out/bin/protoback) \
+      --zsh  <(PROTOBACK_COMPLETE=zsh  $out/bin/protoback) \
+      --fish <(PROTOBACK_COMPLETE=fish $out/bin/protoback)
+    PROTOBACK_GEN_MAN=$out/share/man/man1 $out/bin/protoback
+    $out/bin/protoback --version | grep -qF ${workspaceVersion}
+  '');
 
   # ---------------------------------------------------------------------------
   # protoscan — find the protobuf descriptors embedded in a binary (spec 0407).
