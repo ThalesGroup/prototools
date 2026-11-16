@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0430 — protoback, scoring graphs and the schema database
 
-Status: draft
+Status: implemented
+Implemented in: 2026-11-16
 App: protoback, prototext-graph
 Refs: docs/specs/0424-protoback-reproto-in-rust-on-upb.md (step 6 of its
       work plan; S8, Python's formatting; S16, the googleapis target;
@@ -260,3 +261,24 @@ is the binary's size.
     `--hide`, with a refused `--hide`), every fixture, and
     `custom/custom-db-html`, 138 nodes, the large page: all identical,
     exit statuses included; `desc:**.Field*` hides 5 of WKT's 59 nodes.
+- **G5, the timings** (2026-11-16, at 621c90f): `scripts/bench-protoback`,
+  each case with the flags of its database (`wktRkyv`, `customDb`,
+  `googleapisDb`: googleapis with `--emit-binary`, the scoring YAML and
+  the schema database); vCPUs 0–7, host idle; reproto `python3 -m
+  reproto.cli`, protoback a release build, on the 8 vCPUs and on one
+  thread (`--jobs 1`):
+
+  | Case | reproto | protoback, 8 threads | protoback, `--jobs 1` | Peak memory, reproto / 8 threads / 1 |
+  |---|---|---|---|---|
+  | WKT | 468 ms ± 11, 6 runs | 12.1 ms ± 2.1, 145 runs | 12.5 ms ± 1.2, 144 runs | 48 / 14 / 14 MB |
+  | custom | 646 ms ± 6, 5 runs | 19.8 ms ± 0.9, 102 runs | 21.8 ms ± 1.0, 94 runs | 49 / 14 / 14 MB |
+  | googleapis | 176 s ± 6.9 (174.1, 169.8, 183.3) | 7.49 s ± 0.30 (7.76, 7.56, 7.17) | 8.74 s ± 0.15 (8.56, 8.81, 8.84) | 1,297 / 1,250 / 1,214 MB |
+
+  Spec 0424 S16 met, on both counts: under 10 s (23 times faster than
+  reproto) and under 1.29 GB (memory as `ru_maxrss`, in thousands of
+  KiB, as S16's figure is). The memory is the narrow one: rendering
+  alone peaked at 639 MB (spec 0429), so the database's steps add about
+  600 MB; the leads, not pursued here, are the descriptors held twice
+  (collected bytes and their decoded copies) and the raw graph the merge
+  builds. The threads gain 1.25 s for 13.7 s more CPU, as in rendering
+  (spec 0429, measured outcome).

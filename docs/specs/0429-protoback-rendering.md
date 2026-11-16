@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0429 — protoback, rendering
 
-Status: draft
+Status: implemented
+Implemented in: 2026-11-16
 App: protoback, reproto
 Refs: docs/specs/0424-protoback-reproto-in-rust-on-upb.md (step 5 of its
       work plan; S8, Python's formatting; S11, the harness; S17, shared

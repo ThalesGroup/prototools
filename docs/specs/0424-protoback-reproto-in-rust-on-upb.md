@@ -707,3 +707,19 @@ development VM pinned to vCPUs 0–7, on mains power, host idle.
   test first (spec 0428 S7, S8). Phases 1 to 6 and the dump on
   googleapis, one thread: 2.22 s against reproto's 12.58 s, 443 MB
   against 674 MB (spec 0428, measured outcome).
+- **Step 5** (2026-11-16), spec 0429: rendering, in six stages
+  (structure; built-in options; custom options and editions; comments;
+  `--emit-binary` with its SourceCodeInfo), then files rendered in
+  parallel on a rayon pool (`--jobs`): every `.proto` and `.pb` file
+  identical to reproto's, on all cores and with `--jobs 1`. Rendering
+  googleapis under `--emit-binary`, without the schema database: 5.54 s
+  on 8 threads, 6.11 s on one, against reproto's 122 s.
+- **Step 6** (2026-11-16), spec 0430: the scoring graphs and
+  `--emit-scoring-yaml`, the schema database (`prototext-graph` takes
+  the graphs as structures, S20), `--scoring-html-out`. The harness,
+  every output compared, every corpus: 1,567 cases, all identical, on
+  all cores and with `--jobs 1`; `ci`'s `protobackHarness` now runs
+  protoback against reproto. WKT's database reproduces
+  `prototext/wkt/prebuilt`. S16 met: googleapis with `googleapisDb`'s
+  flags, 7.49 s and 1.25 GB, against reproto's 176 s and 1.30 GB (spec
+  0430, measured outcome).
