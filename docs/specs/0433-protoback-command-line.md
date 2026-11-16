@@ -179,3 +179,17 @@ Its traces follow reproto's internals, which protoback's do not mirror
     `cargo hakari verify` passes.
   - `protoback/tests/terminal.rs`: protoback under a pseudo-terminal
     (Python's `pty`): the colors, the labels, a bar drawn and cleared.
+- **Stage 3, `--help` and `--version`** (2026-11-16): `cli.rs` and
+  `instantiate.rs` take reproto's texts, sections and value names from
+  its Click commands (generated, not copied by hand): the options in
+  reproto's order under its headings (Input, Output, Variant / Schema,
+  Filtering, Rendering, Advanced, Diagnostics), its description, and its
+  examples with `protoback` for `reproto`. protoback's own options,
+  `--fdp-plugin-cmd` and `--jobs`, in Advanced. A help text is given as
+  `help = …`: clap drops the period ending a one-sentence doc comment.
+  `--version` on both commands (clap's `protoback 0.3.6`). No
+  `wrap_help`, as the workspace's other tools.
+  - `scripts/protoback-harness help`: each option Click shows, its flags
+    and its text (wrapped lines rejoined, a hyphenated word whole), found
+    in protoback's help; no visible option protoback alone shows but its
+    own. Both commands pass; `ci` runs it.

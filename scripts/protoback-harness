@@ -748,6 +748,62 @@ def run(work: Path, reference: list[str], candidate: list[str], jobs: int,
     return 1 if failed else 0
 
 
+# --help compared by options and texts (spec 0424 S12): clap's layout is
+# not Click's. Each option the reference shows must appear in the
+# candidate's help with its text; the candidate shows no option of its own
+# but these.
+HELP_OWN = {"--help", "--version", "--jobs", "--fdp-plugin-cmd"}
+# Click's built-ins, which clap words otherwise.
+HELP_BUILTIN = {"--help", "--version"}
+
+
+def click_options(text: str) -> list[tuple[list[str], str]]:
+    """The options of a Click --help: their flags, and their text, the
+    wrapped lines joined (a line ending in a hyphen joined without a
+    space, as Click breaks a hyphenated word)."""
+    entries: list[tuple[list[str], list[str]]] = []
+    current: tuple[list[str], list[str]] | None = None
+    for line in text.splitlines():
+        m = re.match(r"^  (-\S.*?)(?:\s{2,}(\S.*))?$", line)
+        if m:
+            flags = [t for t in re.split(r"[ ,/]+", m.group(1)) if t.startswith("-")]
+            current = (flags, [m.group(2)] if m.group(2) else [])
+            entries.append(current)
+        elif current is not None and line.startswith("    ") and line.strip():
+            current[1].append(line.strip())
+        else:
+            current = None
+    out = []
+    for flags, parts in entries:
+        text = ""
+        for part in parts:
+            text += part if not text or text.endswith("-") else " " + part
+        out.append((flags, text))
+    return out
+
+
+def compare_help(reference: list[str], candidate: list[str]) -> list[str]:
+    ref = subprocess.run([*reference, "--help"], capture_output=True, text=True).stdout
+    cand = subprocess.run([*candidate, "--help"], capture_output=True, text=True).stdout
+    flat = " ".join(cand.split())
+    problems = []
+    shown = set()
+    for flags, text in click_options(ref):
+        shown.update(flags)
+        if set(flags) & HELP_BUILTIN:
+            continue
+        for f in flags:
+            if not re.search(rf"(^|[\s,]){re.escape(f)}([\s,<=]|$)", flat):
+                problems.append(f"{shlex.join(candidate)} --help: no {f}")
+        if text and " ".join(text.split()) not in flat:
+            problems.append(f"{shlex.join(candidate)} --help: {flags[-1]}'s text differs: "
+                            f"{text[:80]!r}")
+    for f in sorted(set(re.findall(r"(?:^|\s)(--[a-z0-9][a-z0-9-]*)", cand))):
+        if f not in shown and f not in HELP_OWN:
+            problems.append(f"{shlex.join(candidate)} --help: {f} is not the reference's")
+    return problems
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -774,7 +830,19 @@ def main() -> int:
     r.add_argument("--compare", nargs="+", default=[], metavar="PATH",
                    help="compare only the exit status and the files under these "
                    "run-directory paths (spec 0429 S2)")
+    hp = sub.add_parser("help", help="compare --help by options and texts (spec 0424 S12)")
+    hp.add_argument("--reference", required=True)
+    hp.add_argument("--candidate", required=True)
+    hp.add_argument("--reference-instantiate", default="reproto-instantiate-schema")
+    hp.add_argument("--candidate-instantiate")
     args = parser.parse_args()
+    if args.command == "help":
+        cand_inst = (shlex.split(args.candidate_instantiate) if args.candidate_instantiate
+                     else [*shlex.split(args.candidate), "instantiate"])
+        problems = (compare_help(shlex.split(args.reference), shlex.split(args.candidate))
+                    + compare_help(shlex.split(args.reference_instantiate), cand_inst))
+        print("\n".join(problems) if problems else "--help: the same options and texts")
+        return 1 if problems else 0
     if args.command == "prepare":
         prepare(args.work.resolve(), args.googleapis, args.otel)
         return 0

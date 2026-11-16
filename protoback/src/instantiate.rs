@@ -18,37 +18,60 @@ use sha2::{Digest, Sha256};
 
 use pyrandom::Random;
 
-/// Generate pseudo-random binary protobuf instances from a .desc
-/// FileDescriptorSet.
-///
-/// FQDNS are fully-qualified message type names. For each FQDN an output
-/// file is written to <output-root>/<fqdn-with-dots-as-slashes>.pb.
 #[derive(Parser, Debug)]
-#[command(name = "protoback instantiate")]
+#[command(
+    name = "protoback instantiate",
+    version,
+    about = "Generate pseudo-random binary protobuf instances from a .desc FileDescriptorSet.",
+    long_about = "Generate pseudo-random binary protobuf instances from a .desc FileDescriptorSet.
+
+FQDNS are fully-qualified message type names.  For each FQDN an output file
+is written to <output-root>/<fqdn-with-dots-as-slashes>.pb."
+)]
 pub struct Cli {
-    /// Path to the .desc FileDescriptorSet to load. [env: PROTOTEXT_DESCRIPTOR_SET]
-    #[arg(long = "descriptor-set")]
+    #[arg(
+        long = "descriptor-set",
+        help = "Path to the .desc FileDescriptorSet to load. [env: PROTOTEXT_DESCRIPTOR_SET]"
+    )]
     descriptor_set: Option<PathBuf>,
-    #[arg(long = "descriptor", hide = true)]
+    #[arg(
+        long = "descriptor",
+        hide = true,
+        help = "Deprecated alias for --descriptor-set."
+    )]
     descriptor_deprecated: Option<PathBuf>,
-    /// Root directory for output files (default: current directory).
-    #[arg(short = 'O', long = "output-root")]
+    #[arg(
+        short = 'O',
+        long = "output-root",
+        help = "Root directory for output files (default: current directory)."
+    )]
     output_root: Option<PathBuf>,
-    /// PRNG seed (default: 0).
-    #[arg(long = "seed", default_value_t = 0, allow_negative_numbers = true)]
+    #[arg(
+        long = "seed",
+        default_value_t = 0,
+        allow_negative_numbers = true,
+        help = "PRNG seed (default: 0)."
+    )]
     seed: i64,
-    /// Maximum recursion depth for nested messages (default: 4).
-    #[arg(long = "max-depth", default_value_t = 4, allow_negative_numbers = true)]
+    #[arg(
+        long = "max-depth",
+        default_value_t = 4,
+        allow_negative_numbers = true,
+        help = "Maximum recursion depth for nested messages (default: 4)."
+    )]
     max_depth: i64,
-    /// Maximum number of elements for repeated fields (default: 3).
     #[arg(
         long = "max-repeated",
         default_value_t = 3,
-        allow_negative_numbers = true
+        allow_negative_numbers = true,
+        help = "Maximum number of elements for repeated fields (default: 3)."
     )]
     max_repeated: i64,
-    /// Suppress per-file progress messages.
-    #[arg(short = 'q', long = "quiet")]
+    #[arg(
+        short = 'q',
+        long = "quiet",
+        help = "Suppress per-file progress messages."
+    )]
     quiet: bool,
     #[arg(required = true)]
     fqdns: Vec<String>,

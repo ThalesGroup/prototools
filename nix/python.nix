@@ -659,7 +659,8 @@ print('\n'.join(lines[:$N_EXTRA]))
         (fs.fileFilter (f: f.hasExt "pyc") ../reproto/src/reproto/tests/fixtures);
     };
 
-  mkProtobackHarness = { name, prepareFlags ? "", candidate ? "reproto", runFlags ? "" }:
+  mkProtobackHarness = { name, prepareFlags ? "", candidate ? "reproto", runFlags ? "",
+                         checkHelp ? false }:
     pkgs.runCommand name {
       strictDeps = true;
       nativeBuildInputs = [ pkgs.protobuf reproto protoback pythonPkgs.python ];
@@ -669,6 +670,10 @@ print('\n'.join(lines[:$N_EXTRA]))
       python3 "$harness" prepare "$TMPDIR/work" --otel ${corpusOtel} ${prepareFlags}
       python3 "$harness" run "$TMPDIR/work" ${runFlags} \
         --reference reproto --candidate ${candidate} --jobs "$NIX_BUILD_CORES"
+      ${pkgs.lib.optionalString checkHelp ''
+        # --help compared by options and texts (spec 0433 S6).
+        python3 "$harness" help --reference reproto --candidate ${candidate}
+      ''}
       cp "$TMPDIR/work/report.txt" "$out"
     '';
 
@@ -678,6 +683,7 @@ print('\n'.join(lines[:$N_EXTRA]))
   # their usage lines read as protoback's (spec 0424 S12).
   outputs = {
     candidate = "protoback";
+    checkHelp = true;
     runFlags = pkgs.lib.escapeShellArgs [
       "--rename" "Usage: reproto =Usage: protoback "
       "--rename" "'reproto --help'='protoback --help'"
