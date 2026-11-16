@@ -239,6 +239,9 @@ fn map_entry_fields(field: &Field) -> (Field, Field) {
     (key, value)
 }
 
+/// upb's `kUpb_EncodeOption_Deterministic`.
+const ENCODE_DETERMINISTIC: i32 = 1;
+
 fn mini_table(def: &Message) -> *const ffi::MiniTable {
     // SAFETY: a valid definition; the table lives in the pool.
     unsafe { ffi::upb_MessageDef_MiniTable(def.raw()) }
@@ -309,6 +312,11 @@ impl DynamicMessage {
 
     pub fn encode(&self) -> Result<Vec<u8>, MessageError> {
         self.as_ref().encode()
+    }
+
+    /// [`MessageRef::encode_deterministic`].
+    pub fn encode_deterministic(&self) -> Result<Vec<u8>, MessageError> {
+        self.as_ref().encode_deterministic()
     }
 }
 
@@ -478,6 +486,18 @@ impl<'a> MessageRef<'a> {
     /// The message serialized: its fields in field-number order, then its
     /// extensions, then its unknown fields as they were decoded.
     pub fn encode(&self) -> Result<Vec<u8>, MessageError> {
+        self.encode_with(0)
+    }
+
+    /// [`encode`](Self::encode), deterministically: map entries in upb's
+    /// sorted order (`kUpb_EncodeOption_Deterministic`), where the plain
+    /// encoding writes them in hash-table order, which varies with the
+    /// process's hash seed (Python's `SerializeToString(deterministic=True)`).
+    pub fn encode_deterministic(&self) -> Result<Vec<u8>, MessageError> {
+        self.encode_with(ENCODE_DETERMINISTIC)
+    }
+
+    fn encode_with(&self, options: i32) -> Result<Vec<u8>, MessageError> {
         let arena = Arena::new();
         let mut buf: *mut std::ffi::c_char = std::ptr::null_mut();
         let mut size = 0usize;
@@ -487,7 +507,7 @@ impl<'a> MessageRef<'a> {
             ffi::upb_Encode(
                 self.msg.as_ptr(),
                 mini_table(&self.def),
-                0,
+                options,
                 arena.raw(),
                 &mut buf,
                 &mut size,
@@ -868,5 +888,45 @@ impl MessageMut<'_> {
         } else {
             Err(MessageError("out of memory".into()))
         }
+    }
+
+    /// The entry `key` of a map whose values are messages, set to a new,
+    /// empty message, returned to be filled; an entry already there is
+    /// replaced (Python's `m.map[key].CopyFrom(value)`).
+    pub fn insert_message(
+        &mut self,
+        field: &Field,
+        key: Scalar<'_>,
+    ) -> Result<MessageMut<'_>, MessageError> {
+        check_field(&self.def, field);
+        if !field.is_map() {
+            return Err(MessageError(format!("{} is not a map", field.full_name())));
+        }
+        let (key_field, value_field) = map_entry_fields(field);
+        let Kind::Message(sub) = value_field.kind() else {
+            return Err(MessageError(format!(
+                "{} does not map to messages",
+                field.full_name()
+            )));
+        };
+        let raw_key = write_value(&key_field.kind(), &key, self.arena)?;
+        // SAFETY: a valid table and arena.
+        let msg = unsafe { ffi::upb_Message_New(mini_table(&sub), self.arena) };
+        if msg.is_null() {
+            return Err(MessageError("out of memory".into()));
+        }
+        // SAFETY: a map field of this message.
+        let map =
+            unsafe { ffi::upb_Message_Mutable(self.msg.as_ptr(), field.raw(), self.arena).map };
+        if map.is_null() {
+            return Err(MessageError("out of memory".into()));
+        }
+        let raw_value = ffi::MessageValue { msg_val: msg };
+        // SAFETY: a valid map; the key has its entry's type, the value is a
+        // message of its value type in the same arena.
+        if !unsafe { ffi::upb_Map_Set(map, raw_key, raw_value, self.arena) } {
+            return Err(MessageError("out of memory".into()));
+        }
+        self.wrap(msg, sub)
     }
 }

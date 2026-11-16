@@ -394,3 +394,112 @@ fn a_field_of_another_message_panics() {
     let m = DynamicMessage::new(&target);
     m.as_ref().get(&x);
 }
+
+// ── Maps: message values, and deterministic encoding ────────────────────────
+
+/// `m.Labels`, a map of strings, and `m.Things`, a map to messages.
+fn maps_pool() -> Pool {
+    let text = r#"
+        name: "maps.proto" package: "m" syntax: "proto3"
+        message_type {
+          name: "M"
+          field { name: "labels" number: 1 label: LABEL_REPEATED type: TYPE_MESSAGE
+                  type_name: ".m.M.LabelsEntry" }
+          field { name: "things" number: 2 label: LABEL_REPEATED type: TYPE_MESSAGE
+                  type_name: ".m.M.ThingsEntry" }
+          nested_type { name: "LabelsEntry" options { map_entry: true }
+            field { name: "key" number: 1 label: LABEL_OPTIONAL type: TYPE_STRING }
+            field { name: "value" number: 2 label: LABEL_OPTIONAL type: TYPE_STRING } }
+          nested_type { name: "ThingsEntry" options { map_entry: true }
+            field { name: "key" number: 1 label: LABEL_OPTIONAL type: TYPE_INT32 }
+            field { name: "value" number: 2 label: LABEL_OPTIONAL type: TYPE_MESSAGE
+                    type_name: ".m.Thing" } }
+        }
+        message_type { name: "Thing"
+          field { name: "x" number: 1 label: LABEL_OPTIONAL type: TYPE_INT32 } }
+    "#;
+    let bytes = prototext_upb::text_format::parse_descriptor(text, false).unwrap();
+    let pool = Pool::new();
+    pool.add_file(&bytes).unwrap();
+    pool
+}
+
+#[test]
+fn a_map_to_messages_takes_its_values_by_insert_message() {
+    let pool = maps_pool();
+    let m_def = pool.get_message_by_name("m.M").unwrap();
+    let things = m_def.get_field_by_name("things").unwrap();
+    let mut m = DynamicMessage::new(&m_def);
+    {
+        let mut w = m.as_mut();
+        for (k, x) in [(2, 20), (1, 10), (2, 21)] {
+            let mut t = w.insert_message(&things, Scalar::I32(k)).unwrap();
+            let xf = t.descriptor().get_field_by_name("x").unwrap();
+            t.set(&xf, Scalar::I32(x)).unwrap();
+        }
+    }
+    let r = m.as_ref();
+    let Value::Map(map) = r.get(&things) else {
+        panic!()
+    };
+    let mut got: Vec<(i32, i32)> = map
+        .entries()
+        .into_iter()
+        .map(|(k, v)| {
+            let (Value::I32(k), Value::Message(Some(v))) = (k, v) else {
+                panic!()
+            };
+            let x = v.descriptor().get_field_by_name("x").unwrap();
+            let Value::I32(x) = v.get(&x) else { panic!() };
+            (k, x)
+        })
+        .collect();
+    got.sort_unstable();
+    // The second value of key 2 replaced the first.
+    assert_eq!(got, [(1, 10), (2, 21)]);
+}
+
+#[test]
+fn deterministic_encoding_writes_a_map_in_one_order_whatever_the_insertions() {
+    let pool = maps_pool();
+    let m_def = pool.get_message_by_name("m.M").unwrap();
+    let labels = m_def.get_field_by_name("labels").unwrap();
+    let keys: [&[u8]; 5] = [b"pear", b"", b"apple", b"app", b"zebra"];
+    let build = |order: &[usize]| {
+        let mut m = DynamicMessage::new(&m_def);
+        let mut w = m.as_mut();
+        for &i in order {
+            w.insert(&labels, Scalar::Bytes(keys[i]), Scalar::Bytes(b"v"))
+                .unwrap();
+        }
+        m.encode_deterministic().unwrap()
+    };
+    let one = build(&[0, 1, 2, 3, 4]);
+    assert_eq!(one, build(&[4, 3, 2, 1, 0]));
+    assert_eq!(one, build(&[2, 0, 4, 1, 3]));
+    // upb's order: ascending, a key that is a prefix of another after it
+    // (spec 0432 S5).
+    assert_eq!(
+        map_keys_on_the_wire(&one),
+        [&b"apple"[..], b"app", b"pear", b"zebra", b""]
+    );
+}
+
+/// The keys of the map entries (field 1) of `wire`, in the order written;
+/// each entry is `0a LEN [0a LEN KEY] 12 LEN VALUE`, short here.
+fn map_keys_on_the_wire(wire: &[u8]) -> Vec<&[u8]> {
+    let mut keys = Vec::new();
+    let mut i = 0;
+    while i < wire.len() {
+        assert_eq!(wire[i], 0x0a, "a map entry");
+        let len = wire[i + 1] as usize;
+        let entry = &wire[i + 2..i + 2 + len];
+        keys.push(if entry.first() == Some(&0x0a) {
+            &entry[2..2 + entry[1] as usize]
+        } else {
+            &b""[..]
+        });
+        i += 2 + len;
+    }
+    keys
+}

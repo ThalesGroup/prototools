@@ -12,6 +12,7 @@ mod events;
 mod features;
 mod fuzz;
 mod graph;
+mod instantiate;
 mod load;
 mod pathmatch;
 mod phase1;
@@ -147,6 +148,15 @@ fn usage(message: &str) -> ExitCode {
 }
 
 fn main() -> ExitCode {
+    // `protoback instantiate`, reproto-instantiate-schema (spec 0432 S1):
+    // a subcommand of its own options. A descriptor file named
+    // `instantiate` is given as `./instantiate`.
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("instantiate") {
+        let mut sub = vec!["protoback instantiate".to_string()];
+        sub.extend(args.into_iter().skip(2));
+        return instantiate::main(sub);
+    }
     let cli = Cli::parse();
     let dump_path = cli.dump_graph.clone();
     // Under --dump-graph, what acts after phase 6 is ignored; otherwise

@@ -40,6 +40,11 @@ def _make_rng(seed: int, fqdn: str) -> random.Random:
 
 # ── Value generators ──────────────────────────────────────────────────────────
 
+# A singular message-typed field is set by CopyFrom: Python protobuf refuses
+# setattr on it. A group (proto2, or an editions field with delimited
+# encoding) is one too (spec 0432 S6).
+_MESSAGE_TYPES = (FieldDescriptor.TYPE_MESSAGE, FieldDescriptor.TYPE_GROUP)
+
 def _p_at_depth(depth: int, max_depth: int) -> float:
     """Inclusion probability for optional/repeated fields at `depth`.
 
@@ -156,7 +161,7 @@ def _generate_message(
         if val is not None:
             getattr(msg, chosen.name)  # touch to ensure field exists
             try:
-                if chosen.type == FieldDescriptor.TYPE_MESSAGE:
+                if chosen.type in _MESSAGE_TYPES:
                     getattr(msg, chosen.name).CopyFrom(val)
                 else:
                     setattr(msg, chosen.name, val)
@@ -201,7 +206,7 @@ def _generate_message(
             val = _random_value(field, rng, depth, max_depth, max_repeated, pool)
             if val is not None:
                 try:
-                    if field.type == FieldDescriptor.TYPE_MESSAGE:
+                    if field.type in _MESSAGE_TYPES:
                         getattr(msg, field.name).CopyFrom(val)
                     else:
                         setattr(msg, field.name, val)
@@ -213,7 +218,7 @@ def _generate_message(
                 val = _random_value(field, rng, depth, max_depth, max_repeated, pool)
                 if val is not None:
                     try:
-                        if field.type == FieldDescriptor.TYPE_MESSAGE:
+                        if field.type in _MESSAGE_TYPES:
                             getattr(msg, field.name).CopyFrom(val)
                         else:
                             setattr(msg, field.name, val)
@@ -240,26 +245,37 @@ def generate_instance(
     always included (p=1); fields at max_depth are never included (p=0),
     guaranteeing termination without a separate recursion guard for scalars.
 
-    Returns the raw wire bytes (SerializeToString output).
+    Returns the raw wire bytes, serialized deterministically: map entries
+    sorted by key, where upb's hash-table order varies from one process to
+    the next (spec 0432 S5).
     """
     desc = pool.FindMessageTypeByName(fqdn)
     rng = _make_rng(seed, fqdn)
     msg = _generate_message(desc, rng, 0, max_depth, max_repeated, pool)
-    return msg.SerializeToString()
+    return msg.SerializeToString(deterministic=True)
 
 
 def load_pool(desc_path: Path) -> descriptor_pool.DescriptorPool:
-    """Load a FileDescriptorSet from `desc_path` into a fresh descriptor pool."""
+    """Load a FileDescriptorSet from `desc_path` into a fresh descriptor pool.
+
+    The set's own descriptor.proto is used, not the one Python protobuf
+    carries, so that instances follow the schema given whatever version is
+    installed (spec 0432 S3); Python's is added only for a set without one.
+    A file the pool refuses is skipped.
+    """
     data = desc_path.read_bytes()
     fds = descriptor_pb2.FileDescriptorSet()
     fds.ParseFromString(data)
 
-    pool = descriptor_pool.Default()
+    pool = descriptor_pool.DescriptorPool()
+    if all(f.name != 'google/protobuf/descriptor.proto' for f in fds.file):
+        builtin = descriptor_pb2.FileDescriptorProto()
+        descriptor_pb2.DESCRIPTOR.CopyToProto(builtin)
+        pool.Add(builtin)
     for f in fds.file:
         try:
             pool.Add(f)
         except TypeError:
-            # File already registered (e.g. well-known types).
             pass
 
     return pool

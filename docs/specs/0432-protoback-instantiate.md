@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0432 — protoback instantiate
 
-Status: draft
+Status: implemented
+Implemented in: 2026-11-16
 App: protoback, reproto
 Refs: docs/specs/0424-protoback-reproto-in-rust-on-upb.md (step 8 of its
       work plan; S10, instances reproduced; test plan 6);
@@ -79,17 +80,28 @@ Two defects of reproto's, found by runs (2026-11-16):
   `_randbelow`'s rejection, `random()` from two draws (53 bits),
   `randint`, `choice`, `uniform` as CPython defines them (spec 0424
   S10).
-- **S3. The pool.** reproto's `load_pool`: Python's default pool, which
-  holds its own `descriptor.proto`, each file of the set added, a file
-  it refuses skipped. protoback: the vendored `descriptor.proto`, then
-  each file, a refused one skipped.
+- **S3. The pool: the set's own `descriptor.proto`, fixed in both
+  tools.** Each tool loads the set into a fresh pool, each file added in
+  order, one the pool refuses skipped; a built-in `descriptor.proto` is
+  added first only for a set without one (Python protobuf's in reproto,
+  the vendored one in protoback, which may differ). reproto loaded the
+  set into Python's default pool, which holds the `descriptor.proto` of
+  the installed Python protobuf: the set's own copy, conflicting, was
+  skipped, so the instances of `descriptor.proto`'s types followed
+  whatever version was installed (googleapis: 24 of 43,111 instances,
+  the vendored v36.2 adding `EDITION_2026` to Python 7.34.1's). A third
+  defect fixed in both tools, by the user's decision.
 - **S4. The walk.** reproto's, draw for draw (Background), on upb's
   definitions through `prototext-upb`, building a `DynamicMessage`.
 - **S5. Map order, fixed in both tools.** An instance is serialized
   deterministically: reproto's `SerializeToString(deterministic=True)`,
   protoback's upb encoding with `kUpb_EncodeOption_Deterministic`
-  (`prototext-upb`'s `encode_deterministic`). Map entries are written
-  sorted by key; the rest is unchanged. An instance has no original
+  (`prototext-upb`'s `encode_deterministic`). Map entries are written in
+  upb's deterministic order, the same in both tools, which share upb's
+  encoder: by key, ascending, except that a string key that is a prefix
+  of another comes after it (upb's comparator negates `memcmp` but not
+  the length tie-break, and its encoder writes back to front); the rest
+  is unchanged. An instance has no original
   order to keep: it is generated, so a fixed one is all that is needed,
   and sorted is the canonical one.
 - **S6. Singular groups, fixed in both tools.** A singular group (and an
@@ -114,6 +126,12 @@ is one flag in each tool.
 protoback would match reproto only after both were re-serialized, and
 reproto's instances would stay unreproducible, which defeats `--seed`.
 
+### descriptor.proto matched to Python's built-in
+
+A second vendored copy, kept in step with the Python pin, would make
+protoback match today's reproto; but instances would keep depending on
+an installed version rather than on the schema given.
+
 ### Singular groups reproduced, fixed after the port
 
 The standing rule; set aside by the user for this defect.
@@ -126,8 +144,33 @@ The standing rule; set aside by the user for this defect.
    googleapis' 400 (`full-tests`), on both tools.
 3. reproto's suite, failing before each fix:
    `test_instances_are_reproducible` (a map of several string keys, in
-   fresh processes) and `test_a_singular_group_is_set`.
+   fresh processes), `test_map_entries_are_in_upbs_deterministic_order`,
+   `test_a_singular_group_is_set` and
+   `test_the_sets_own_descriptor_proto_is_used`.
 
 ## Measured outcome
 
-Filled in at implementation.
+- **Step 8** (2026-11-16): `instantiate.rs` (the command, the pool, the
+  walk), `instantiate/pyrandom.rs` (CPython's `random.Random`).
+  `prototext-upb` gains `encode_deterministic` and `insert_message` (a
+  map entry whose value is a message, Python's `m[k].CopyFrom(v)`), each
+  tested; upb's deterministic order checked on a map of five keys.
+  - `random_matches_cpython`: 66 sequences (6 seeds, 11 methods), a
+    million draws each, against SHA-256s CPython generated
+    (`instantiate/pyrandom_cases.rs`): all equal, first run.
+  - Python's `round` is the banker's (`max(1, round(p * max_repeated))`):
+    `round_ties_even`.
+  - Every message type of googleapis' database (43,111 instances, map
+    entries left out of the types): byte-identical with the fixed
+    reproto.
+  - The three fixes change no test expectation: `tests/stress` (88
+    googleapis types) and `tests/custom` (25) pass with the fixed
+    generator; they assert the ranking `list-schemas` gives, not the
+    bytes.
+  - The harness's instance cases (every WKT type, also with other
+    options; every loadable type of each custom fixture; 400 googleapis
+    types, evenly spaced; an unknown type; no descriptor): identical,
+    exit statuses included. Its type lists are read from the sets'
+    wire, the harness running without protobuf.
+  - The whole harness, every corpus, on all cores and with `--jobs 1`:
+    1,587 cases, all identical.

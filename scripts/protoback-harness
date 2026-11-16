@@ -279,6 +279,79 @@ def prepare(work: Path, googleapis: Path | None, otel: Path | None) -> None:
 class Case:
     name: str
     args: list[str]
+    # "reproto", or "instantiate": reproto-instantiate-schema against
+    # protoback instantiate (spec 0432).
+    tool: str = "reproto"
+
+
+def _varint(b: bytes, i: int) -> tuple[int, int]:
+    n, shift = 0, 0
+    while True:
+        c = b[i]
+        i += 1
+        n |= (c & 0x7F) << shift
+        if not c & 0x80:
+            return n, i
+        shift += 7
+
+
+def _fields(b: bytes) -> list[tuple[int, int, bytes | int]]:
+    """A message's records: (number, wire type, bytes or integer)."""
+    out, i = [], 0
+    while i < len(b):
+        tag, i = _varint(b, i)
+        number, wt = tag >> 3, tag & 7
+        if wt == 0:
+            v, i = _varint(b, i)
+            out.append((number, wt, v))
+        elif wt == 2:
+            n, i = _varint(b, i)
+            out.append((number, wt, b[i:i + n]))
+            i += n
+        elif wt == 1:
+            i += 8
+        elif wt == 5:
+            i += 4
+        else:
+            raise ValueError(f"wire type {wt} in a descriptor")
+    return out
+
+
+def message_types(desc: Path) -> list[str]:
+    """The message types of a FileDescriptorSet, map entries left out, in
+    file and declaration order: read from the wire, without protobuf. Only
+    the files that load: their imports in the set, transitively, or
+    descriptor.proto, which both generators supply when the set lacks it."""
+    def walk(prefix: str, msg: bytes, out: list[str]) -> None:
+        recs = _fields(msg)
+        name = next(v.decode() for n, _, v in recs if n == 1 and isinstance(v, bytes))
+        fqdn = prefix + name
+        map_entry = any(n == 7 and wt == 0 and v for o_n, o_wt, o in recs
+                        if o_n == 7 and isinstance(o, bytes)
+                        for n, wt, v in _fields(o))
+        if not map_entry:
+            out.append(fqdn)
+        for n, _, v in recs:
+            if n == 3 and isinstance(v, bytes):
+                walk(fqdn + ".", v, out)
+    out: list[str] = []
+    loaded = {"google/protobuf/descriptor.proto"}
+    for n, _, f in _fields(desc.read_bytes()):
+        if n != 1 or not isinstance(f, bytes):
+            continue
+        recs = _fields(f)
+        name = next((v.decode() for n2, _, v in recs
+                     if n2 == 1 and isinstance(v, bytes)), "")
+        deps = [v.decode() for n2, _, v in recs if n2 == 3 and isinstance(v, bytes)]
+        if not all(d in loaded for d in deps):
+            continue
+        loaded.add(name)
+        package = next((v.decode() for n2, _, v in recs
+                        if n2 == 2 and isinstance(v, bytes)), "")
+        for n2, _, m in recs:
+            if n2 == 4 and isinstance(m, bytes):
+                walk(f"{package}." if package else "", m, out)
+    return out
 
 
 # The plugins of the plugin cases (spec 0431), written into the corpus.
@@ -405,6 +478,38 @@ def cases(corpus: Path) -> list[Case]:
     blob = corpus / "blob" / "blob.bin"
     out.append(Case("blob/default", ["-I", str(blob), *proto_out]))
 
+    # Instances (spec 0432): every WKT type, also with other options; every
+    # type of each custom fixture; 400 of googleapis', evenly spaced; an
+    # unknown type, and no descriptor.
+    inst_out = ["-O", "out/instances", "-q"]
+    wkt = corpus / "wkt" / "wkt.desc"
+    wkt_types = message_types(wkt)
+    out.append(Case("instances/wkt", ["--descriptor-set", str(wkt), *inst_out,
+                                      *wkt_types], "instantiate"))
+    out.append(Case("instances/wkt-options",
+                    ["--descriptor-set", str(wkt), *inst_out, "--seed", "7",
+                     "--max-depth", "6", "--max-repeated", "5", *wkt_types],
+                    "instantiate"))
+    out.append(Case("instances/unknown-type",
+                    ["--descriptor-set", str(wkt), *inst_out, "no.Such"], "instantiate"))
+    out.append(Case("instances/no-descriptor", [*inst_out, "google.protobuf.Any"],
+                    "instantiate"))
+    if (corpus / "custom").is_dir():
+        for pb in sorted((corpus / "custom").glob("*.pb")):
+            # A fixture whose files all need imports it does not hold has
+            # nothing to instantiate.
+            if types := message_types(pb):
+                out.append(Case(f"instances/custom/{pb.stem}",
+                                ["--descriptor-set", str(pb), *inst_out, *types],
+                                "instantiate"))
+    googleapis = corpus / "googleapis" / "googleapis.pb"
+    if googleapis.is_file():
+        types = message_types(googleapis)
+        sample = [types[i * len(types) // 400] for i in range(400)]
+        out.append(Case("instances/googleapis",
+                        ["--descriptor-set", str(googleapis), *inst_out, *sample],
+                        "instantiate"))
+
     # Plugins (spec 0431): reproto's own test plugin, which adds an import
     # and a field typed by it; the same through the deprecated
     # --phase2-plugin; one that raises; one over text input. The plugin
@@ -453,7 +558,7 @@ def cases(corpus: Path) -> list[Case]:
                          "--proto-out=out/googleapis/proto", *GOOGLEAPIS_FLAGS,
                          "googleapis.pb"]))
     for case in out:
-        if "--use-variant" not in case.args:
+        if case.tool == "reproto" and "--use-variant" not in case.args:
             case.args[:0] = DEFAULT_VARIANT
     return out
 
@@ -578,16 +683,26 @@ def compare(ref_dir: Path, cand_dir: Path, ref: Run, cand: Run,
 
 def run(work: Path, reference: list[str], candidate: list[str], jobs: int,
         only: str | None, rename: tuple[bytes, bytes] | None,
-        mode: Mode) -> int:
+        mode: Mode, reference_instantiate: list[str] | None = None,
+        candidate_instantiate: list[str] | None = None) -> int:
     all_cases = cases(work / "corpus")
+    if mode.dump_graph:
+        # Instances have no graph to dump.
+        all_cases = [c for c in all_cases if c.tool == "reproto"]
     if only:
         all_cases = [c for c in all_cases if re.search(only, c.name)]
     runs = work / "runs"
+    commands = {
+        "reproto": (reference, candidate),
+        "instantiate": (reference_instantiate or ["reproto-instantiate-schema"],
+                        candidate_instantiate or [*candidate, "instantiate"]),
+    }
 
     def one(case: Case) -> tuple[Case, list[str], Run, Run]:
         base = runs / case.name
-        ref = run_side(reference, case, base / "reference", mode)
-        cand = run_side(candidate, case, base / "candidate", mode)
+        ref_cmd, cand_cmd = commands[case.tool]
+        ref = run_side(ref_cmd, case, base / "reference", mode)
+        cand = run_side(cand_cmd, case, base / "candidate", mode)
         diffs = compare(base / "reference", base / "candidate", ref, cand, rename,
                         mode)
         if not diffs:
@@ -641,6 +756,11 @@ def main() -> int:
                    "read as the candidate's")
     r.add_argument("--dump-graph", action="store_true",
                    help="compare the graph dumps of phases 1 to 6 (spec 0428 S10)")
+    r.add_argument("--reference-instantiate", default="reproto-instantiate-schema",
+                   help="the reference's instance generator (spec 0432)")
+    r.add_argument("--candidate-instantiate",
+                   help="the candidate's instance generator; default: CANDIDATE "
+                   "instantiate")
     r.add_argument("--compare", nargs="+", default=[], metavar="PATH",
                    help="compare only the exit status and the files under these "
                    "run-directory paths (spec 0429 S2)")
@@ -654,7 +774,10 @@ def main() -> int:
         rename = (old.encode(), new.encode())
     return run(args.work.resolve(), shlex.split(args.reference),
                shlex.split(args.candidate), args.jobs, args.only, rename,
-               Mode(args.dump_graph, tuple(args.compare)))
+               Mode(args.dump_graph, tuple(args.compare)),
+               shlex.split(args.reference_instantiate),
+               shlex.split(args.candidate_instantiate)
+               if args.candidate_instantiate else None)
 
 
 if __name__ == "__main__":
