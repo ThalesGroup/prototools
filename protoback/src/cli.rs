@@ -111,6 +111,10 @@ pub struct Cli {
     pub force_proto2_for_editions: bool,
     #[arg(long = "prost-workaround", hide = true)]
     pub prost_workaround: bool,
+    /// The threads files render on; all cores by default. protoback's own
+    /// (spec 0429 S4): any count writes the same bytes.
+    #[arg(long = "jobs", value_name = "N")]
+    pub jobs: Option<usize>,
     #[arg(long = "redact-comments")]
     pub redact_comments: bool,
     #[arg(long = "redact-orphans")]

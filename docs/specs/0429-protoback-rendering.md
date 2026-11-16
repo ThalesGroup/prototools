@@ -470,5 +470,17 @@ not deferred with it: stage 3 needs it on one thread already.
     also redacted and without source info. `--compare out/proto`, every
     corpus: 1,055 cases, 978 identical, `.pb` files included; the 77
     others are `--schema-db-out`'s (step 6 of spec 0424), refused.
-  - Rendering complete. Not yet: files rendered in parallel, `--jobs`
-    (S4, G3), and rendering timed (G4).
+  - Rendering complete.
+- **Files in parallel, S4 and G3** (2026-11-16): `render_all`, a rayon
+  pool of `--jobs` threads (protoback's own option; all cores by
+  default), each file rendered with its own context over `Shared`, which
+  needed no change to be shared: `par_iter().map().collect()` keeps the
+  plan's order, and the files are written from it, in reproto's order,
+  directories first. googleapis under `--emit-binary`: the 15,543 files
+  identical, byte for byte, on one thread and on 12.
+  - The first parallel run was slower than one thread: `Shared::def`
+    found a node's definition by building every sibling's reader at each
+    step of its path (`message_type()` and the like), quadratic, and on
+    12 threads mostly allocation (45.8 s of CPU for 12 s of wall). Each
+    step now reads the one child it names: 19.9 s of CPU, 8.6 s of wall
+    (unpinned, a quick build; G4 measures).

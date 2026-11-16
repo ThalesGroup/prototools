@@ -1765,6 +1765,7 @@ dependencies = [
  "prototext-core",
  "prototext-upb",
  "rapidfuzz",
+ "rayon",
  "regex",
  "serde",
  "serde_yaml",

@@ -22,6 +22,7 @@ use prototext_upb::descriptor_access::{
     DescriptorProto, EnumDescriptorProto, FieldDescriptorProto, FileDescriptorProto,
     MethodDescriptorProto, ServiceDescriptorProto,
 };
+use prototext_upb::MessageRef;
 
 use std::collections::BTreeSet;
 
@@ -80,21 +81,32 @@ pub enum Def<'a> {
 
 impl<'a> Shared<'a> {
     /// The definition of node `i` (`node.this`): its `DefRef`'s path walked
-    /// from its file. `None` for a stub.
+    /// from its file, each step straight to the one child it names (a
+    /// reader's `message_type()` would build every sibling's, which made a
+    /// lookup quadratic). `None` for a stub.
     pub fn def(&self, i: usize) -> Option<Def<'a>> {
+        fn step<'m>(m: MessageRef<'m>, number: u32, index: usize) -> Option<MessageRef<'m>> {
+            match m.get_by_number(number)? {
+                prototext_upb::Value::List(list) if index < list.len() => match list.get(index) {
+                    prototext_upb::Value::Message(Some(r)) => Some(r),
+                    _ => None,
+                },
+                _ => None,
+            }
+        }
         let r = self.graph.nodes[i].def.as_ref()?;
         let mut cur = Def::File(FileDescriptorProto(self.db.files.get(r.file)?.as_ref()));
         for &(number, index) in &r.path {
             cur = match (cur, number) {
-                (Def::File(f), 4) => Def::Message(f.message_type().into_iter().nth(index)?),
-                (Def::File(f), 5) => Def::Enum(f.enum_type().into_iter().nth(index)?),
-                (Def::File(f), 6) => Def::Service(f.service().into_iter().nth(index)?),
-                (Def::File(f), 7) => Def::Field(f.extension().into_iter().nth(index)?),
-                (Def::Message(m), 2) => Def::Field(m.field().into_iter().nth(index)?),
-                (Def::Message(m), 3) => Def::Message(m.nested_type().into_iter().nth(index)?),
-                (Def::Message(m), 4) => Def::Enum(m.enum_type().into_iter().nth(index)?),
-                (Def::Message(m), 6) => Def::Field(m.extension().into_iter().nth(index)?),
-                (Def::Service(s), 2) => Def::Method(s.method().into_iter().nth(index)?),
+                (Def::File(f), 4) => Def::Message(DescriptorProto(step(f.0, 4, index)?)),
+                (Def::File(f), 5) => Def::Enum(EnumDescriptorProto(step(f.0, 5, index)?)),
+                (Def::File(f), 6) => Def::Service(ServiceDescriptorProto(step(f.0, 6, index)?)),
+                (Def::File(f), 7) => Def::Field(FieldDescriptorProto(step(f.0, 7, index)?)),
+                (Def::Message(m), 2) => Def::Field(FieldDescriptorProto(step(m.0, 2, index)?)),
+                (Def::Message(m), 3) => Def::Message(DescriptorProto(step(m.0, 3, index)?)),
+                (Def::Message(m), 4) => Def::Enum(EnumDescriptorProto(step(m.0, 4, index)?)),
+                (Def::Message(m), 6) => Def::Field(FieldDescriptorProto(step(m.0, 6, index)?)),
+                (Def::Service(s), 2) => Def::Method(MethodDescriptorProto(step(s.0, 2, index)?)),
                 _ => return None,
             };
         }
@@ -151,6 +163,8 @@ pub struct Output {
     /// `--emit-descriptor` (default) or `--no-emit-descriptor`: whether
     /// the variant's descriptor.proto is written.
     pub write_variant_descriptor: bool,
+    /// `--jobs`: the threads files render on (spec 0429 S4).
+    pub jobs: usize,
 }
 
 /// What `buf lsp serve` needs at the output's root (spec 0146).
@@ -191,45 +205,71 @@ pub fn run(shared: &Shared<'_>, output: &Output) -> std::io::Result<()> {
     let Some(out_repo) = &output.out_repo else {
         return Ok(());
     };
+    if output.dry_run {
+        return Ok(());
+    }
     let graph = shared.graph;
+    // The files written, in reproto's order: (k, node, path).
+    let mut plan: Vec<(usize, usize, PathBuf)> = Vec::new();
     for (k, i) in summoned(graph).into_iter().enumerate() {
         let name = graph.nodes[i]
             .fqdn
             .strip_prefix("file:")
             .unwrap_or_default();
-        let suppress = name == shared.variant.descriptor_proto && !output.write_variant_descriptor;
+        if name == shared.variant.descriptor_proto && !output.write_variant_descriptor {
+            continue;
+        }
         let canonical = shared
             .variant
             .canonize_dependency(name, shared.keep_variant_descriptor);
-        let path = out_repo.join(&canonical);
-        if output.dry_run {
-            continue;
-        }
-        if suppress {
-            continue;
-        }
+        plan.push((k, i, out_repo.join(&canonical)));
+    }
+    let rendered = render_all(shared, &plan, output.jobs);
+    for ((_, _, path), r) in plan.iter().zip(rendered) {
+        // reproto makes the directory first, a file it fails to render
+        // (an edition Python protobuf does not name) included.
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        // A file reproto cannot render is not written (an edition Python
-        // protobuf does not name).
-        let Some((block, descriptor)) = file::render(shared, i, k) else {
+        let Some((text, descriptor)) = r else {
             continue;
         };
         // reproto writes the descriptor first (`with_suffix(".pb")`).
         if let Some(bytes) = descriptor {
             std::fs::write(path.with_extension("pb"), bytes)?;
         }
-        std::fs::write(
-            &path,
-            block.flush(shared.redact_comments, shared.redact_orphans),
-        )?;
+        std::fs::write(path, text)?;
     }
-    if !output.dry_run {
-        let buf = out_repo.join("buf.yaml");
-        if !buf.exists() {
-            std::fs::write(buf, BUF_YAML)?;
-        }
+    let buf = out_repo.join("buf.yaml");
+    if !buf.exists() {
+        std::fs::write(buf, BUF_YAML)?;
     }
     Ok(())
+}
+
+/// A file rendered: its text, and its descriptor under `--emit-binary`;
+/// none for a file reproto does not write.
+type Rendered = Option<(String, Option<Vec<u8>>)>;
+
+/// The planned files rendered on a pool of `jobs` threads (spec 0429 S4),
+/// each with a context of its own, over the shared state rendering never
+/// writes; collected in the plan's order, so the output is the same bytes
+/// whatever the threads.
+fn render_all(shared: &Shared<'_>, plan: &[(usize, usize, PathBuf)], jobs: usize) -> Vec<Rendered> {
+    use rayon::prelude::*;
+    let render = |&(k, i, _): &(usize, usize, PathBuf)| -> Rendered {
+        let (block, descriptor) = file::render(shared, i, k)?;
+        Some((
+            block.flush(shared.redact_comments, shared.redact_orphans),
+            descriptor,
+        ))
+    };
+    match rayon::ThreadPoolBuilder::new()
+        .num_threads(jobs.max(1))
+        .build()
+    {
+        Ok(pool) => pool.install(|| plan.par_iter().map(render).collect()),
+        // No pool to be had: render on this thread.
+        Err(_) => plan.iter().map(render).collect(),
+    }
 }

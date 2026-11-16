@@ -290,6 +290,9 @@ fn main() -> ExitCode {
         out_repo,
         dry_run: cli.dry_run,
         write_variant_descriptor: !cli.no_emit_descriptor,
+        jobs: cli.jobs.unwrap_or_else(|| {
+            std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
+        }),
     };
     if let Err(e) = render::run(&shared, &output) {
         eprintln!("Error: {e}");
