@@ -423,7 +423,7 @@ pub fn render(shared: &Shared<'_>, file: usize, k: usize) -> FileRender {
         edition: f.has_edition().then(|| f.edition()),
         syntax,
         target,
-        refused: shared.loads.refused.contains(&text(f.name())),
+        refused: shared.loads.refused.contains_key(&text(f.name())),
         failed: std::cell::Cell::new(false),
         sci: (shared.wants_descriptor() && shared.source_info).then(super::sci::Sci::default),
         events: std::cell::RefCell::new(Vec::new()),
@@ -693,6 +693,13 @@ fn file_options(
         b
     };
     if ctx.refused {
+        // reproto's `debug_exception`: the pool's own reason behind the
+        // fixed one, under --debug.
+        if ctx.shared.debug {
+            if let Some(reason) = ctx.shared.loads.refused.get(&ctx.file_name()) {
+                crate::console::warning(&format!("'{}': file options: {reason}", ctx.file_name()));
+            }
+        }
         return a3(POOL_REFUSED);
     }
     let mut out = Block::new();

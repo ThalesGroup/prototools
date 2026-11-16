@@ -76,6 +76,8 @@ pub struct Shared<'a> {
     /// `--schema-db-out`: each rendered file's descriptor is collected,
     /// written or not (spec 0430 S4).
     pub schema_db: bool,
+    /// `--debug`: the reasons behind fixed ones.
+    pub debug: bool,
 }
 
 /// A node's definition, read from the pool's file it is in.

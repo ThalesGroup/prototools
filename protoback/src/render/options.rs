@@ -7,7 +7,7 @@
 //! options, those of the variant's descriptor.proto, parsed as reproto's
 //! options pool parses them, rendered as its `dump_option` renders them.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 
 use prototext_upb::{Cardinality, DynamicMessage, Field, Kind, Pool};
 use prototext_upb::{MessageRef, Value};
@@ -52,8 +52,10 @@ impl Options {
 /// imports, in the order of the summoned files. Computed once, before
 /// rendering, in that order: rendering itself only reads it.
 pub struct PoolLoads {
-    /// The files whose build fails, or one of whose imports does.
-    pub refused: BTreeSet<String>,
+    /// The files whose build fails, or one of whose imports does, each
+    /// with the pool's reason (what `--debug` shows, as reproto's
+    /// `debug_exception`).
+    pub refused: BTreeMap<String, String>,
     /// Each file loaded: the index, among the summoned files, of the first
     /// one whose render loaded it. While the k-th renders, the pool holds
     /// the files of rank k or less.
@@ -70,6 +72,8 @@ pub fn pool_loads(db: &Database, summoned: &[String]) -> PoolLoads {
         db: &'a Database,
         pool: Pool,
         done: HashMap<String, bool>,
+        /// Why each file failed, as the pool said.
+        reasons: HashMap<String, String>,
         loads: PoolLoads,
         k: usize,
     }
@@ -81,6 +85,8 @@ pub fn pool_loads(db: &Database, summoned: &[String]) -> PoolLoads {
             // In progress: a cycle fails, as an import not yet loaded.
             self.done.insert(name.to_string(), false);
             let Some(fdp) = self.db.file_by_name(name) else {
+                self.reasons
+                    .insert(name.to_string(), format!("file not found: {name}"));
                 return false;
             };
             let f = prototext_upb::descriptor_access::FileDescriptorProto(fdp.as_ref());
@@ -92,10 +98,14 @@ pub fn pool_loads(db: &Database, summoned: &[String]) -> PoolLoads {
             for d in &deps {
                 self.load(d);
             }
-            let ok = fdp
+            let added = fdp
                 .encode()
-                .ok()
-                .is_some_and(|bytes| self.pool.add_file(&bytes).is_ok());
+                .map_err(|e| e.to_string())
+                .and_then(|bytes| self.pool.add_file(&bytes).map_err(|e| e.0));
+            if let Err(reason) = &added {
+                self.reasons.insert(name.to_string(), reason.clone());
+            }
+            let ok = added.is_ok();
             self.done.insert(name.to_string(), ok);
             if ok {
                 self.loads.rank.insert(name.to_string(), self.k);
@@ -108,8 +118,9 @@ pub fn pool_loads(db: &Database, summoned: &[String]) -> PoolLoads {
         db,
         pool: Pool::new(),
         done: HashMap::new(),
+        reasons: HashMap::new(),
         loads: PoolLoads {
-            refused: BTreeSet::new(),
+            refused: BTreeMap::new(),
             rank: HashMap::new(),
             order: Vec::new(),
             pool: Pool::new(),
@@ -119,7 +130,8 @@ pub fn pool_loads(db: &Database, summoned: &[String]) -> PoolLoads {
     for (k, name) in summoned.iter().enumerate() {
         loader.k = k;
         if !loader.load(name) {
-            loader.loads.refused.insert(name.clone());
+            let reason = loader.reasons.get(name).cloned().unwrap_or_default();
+            loader.loads.refused.insert(name.clone(), reason);
         }
     }
     loader.loads.pool = loader.pool;

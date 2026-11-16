@@ -224,6 +224,29 @@ let
     touch $out
   '';
 
+  # The same suite against protoback (spec 0424 test plan 8, spec 0433 G5):
+  # its CLI tests pass whichever tool runs them.
+  # The plugins run under the test interpreter, named: the bare python3
+  # another input puts first on PATH lacks protobuf.
+  reprotoTestsOnProtoback = let
+    testPython = pythonPkgs.python.withPackages (_: reprotoTestDeps);
+  in pkgs.runCommand "reproto-tests-on-protoback" {
+    strictDeps = true;
+    nativeBuildInputs = [
+      pkgs.protobuf
+      pkgs.buf
+      prototext
+      protoback
+      testPython
+    ];
+  } ''
+    export PYTHONPATH="${reprotoSrc}/src"
+    export REPROTO="${protoback}/bin/protoback"
+    export PROTOBACK_PYTHON="${testPython}/bin/python3"
+    pytest -p no:cacheprovider ${reprotoSrc}/src/reproto/tests/ -x
+    touch $out
+  '';
+
   # Tests for fdp_scan_lib — run against the installed extension (no PYTHONPATH
   # override needed; the installed package is already on the Python path via
   # withPackages).
@@ -719,6 +742,7 @@ in {
     reproto
     reprotoTests
     reprotoTestsViaText
+    reprotoTestsOnProtoback
     fdpScanTests
     prototextCodecTests
     pythonLint

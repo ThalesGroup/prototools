@@ -234,3 +234,23 @@ Its traces follow reproto's internals, which protoback's do not mirror
   gone.
   - The harness: each import fixture's file, and one not loaded, 74
     cases, every stream, identical.
+- **Stage 6, reproto's CLI tests** (2026-11-16): all 320 pass against
+  protoback (`REPROTO=protoback`, G5), in `ci` as
+  `reprotoTestsOnProtoback` (its plugins run under the test interpreter,
+  through `PROTOBACK_PYTHON`). Four failed first, three causes, none the
+  harness exercised:
+  - `-O` inside the `--schema-db-out` stub directory, other than as its
+    `proto` child, was not refused (spec 0155 G1); it is now, with
+    reproto's message, the paths resolved as Python's `Path.resolve()`.
+    (reproto creates the rejected directory before refusing it;
+    protoback does not.)
+  - A run that loads no file stops after phase 1, successfully, as
+    reproto's (`if not topo.files: return None`), before descriptor.proto
+    is looked for; protoback went on and failed there.
+  - Under `--debug`, a file the pool refuses shows the pool's reason
+    (reproto's `debug_exception`): `PoolLoads.refused` keeps upb's
+    message. upb's text is Python protobuf's, which runs on upb, without
+    Python's exception wrapper; `--debug` stays protoback's own (S9), so
+    the harness does not compare it.
+  - The harness: the stub cases (five `-O` placements) and a run that
+    loads nothing (with and without `--use-variant`), identical.

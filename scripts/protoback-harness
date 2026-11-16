@@ -440,6 +440,19 @@ def cases(corpus: Path) -> list[Case]:
                                      "--emit-extension-ranges",
                                      "-O", "out/wkt-db/proto", "wkt.desc"]))
 
+    # Spec 0155 G1: -O inside the --schema-db-out stub, only as its 'proto'
+    # child; and a run that loads nothing stops after phase 1, before
+    # descriptor.proto is looked for (spec 0433 stage 6).
+    ab_dir = corpus / "imports" / "address_book"
+    for name, o in (("proto-child", "out/s/proto"), ("stub", "out/s"),
+                    ("other-child", "out/s/desc"), ("nested-proto", "out/s/n/proto"),
+                    ("outside", "out/elsewhere")):
+        out.append(Case(f"stub-dir/{name}", ["-I", str(ab_dir), "--use-variant", "descriptor",
+                                             "--schema-db-out=out/s.desc", f"-O{o}",
+                                             "address_book.pb"]))
+    for name, flags in (("plain", []), ("use-variant", ["--use-variant", "descriptor"])):
+        out.append(Case(f"nothing-loaded/{name}", [*flags, "-O", "out/o", "missing.pb"]))
+
     # Seeds and prunes on one set with imports.
     ab = corpus / "imports" / "address_book"
     for name, flags in (

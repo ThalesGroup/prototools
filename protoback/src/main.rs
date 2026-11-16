@@ -34,7 +34,7 @@ mod topology;
 mod variant;
 
 use std::collections::{BTreeSet, HashMap};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::Parser;
@@ -330,6 +330,12 @@ fn main() -> ExitCode {
         eprintln!("{failure}");
         return ExitCode::from(1);
     }
+    // No file loaded: reproto's run stops here, successfully (`if not
+    // topo.files: return None`), before descriptor.proto is looked for.
+    if topo.files.is_empty() {
+        run.events.flush();
+        return ExitCode::SUCCESS;
+    }
     if let Err(fatal) = phase2::run(&mut run, &mut topo) {
         if let Some(detail) = fatal.detail() {
             // reproto's `cli_error`, before the CLI's `Error:`.
@@ -419,6 +425,7 @@ fn main() -> ExitCode {
         loads: &loads,
         options: options.as_ref(),
         schema_db: schema_db.is_some(),
+        debug: cli.debug,
     };
     let output = render::Output {
         out_repo,
@@ -492,8 +499,61 @@ fn proto_out(cli: &Cli) -> Result<Option<PathBuf>, String> {
              - Add --dry-run                to run without writing any files"
             .into());
     }
+    // Spec 0155 G1: -O may not land inside --schema-db-out's stub directory
+    // (reserved for hopcroft.rkyv/index.rkyv) except as that stub's
+    // immediate 'proto' child.
+    if let (Some(db), Some(out)) = (&schema_db, &proto_out) {
+        let stub_dir = resolve(&db.with_extension(""));
+        if let Ok(rel) = resolve(out).strip_prefix(&stub_dir) {
+            if rel != Path::new("proto") {
+                return Err(format!(
+                    "-O/--proto-out ({}) is inside the --schema-db-out stub directory \
+                     ({}); only an immediate 'proto' child directory is allowed there \
+                     \u{2014} it otherwise holds hopcroft.rkyv/index.rkyv.",
+                    py_str(out),
+                    stub_dir.display()
+                ));
+            }
+        }
+    }
     if let Some(p) = &proto_out {
         std::fs::create_dir_all(p).map_err(|e| format!("{}: {e}", p.display()))?;
     }
     Ok(proto_out)
+}
+
+/// Python's `Path.resolve()` (non-strict): absolute, the longest existing
+/// prefix with its links resolved, the rest appended, `.` and `..` folded.
+fn resolve(p: &Path) -> PathBuf {
+    let abs = std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf());
+    let mut out = PathBuf::new();
+    let mut existing = true;
+    for c in abs.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            c => {
+                out.push(c);
+                if existing {
+                    match out.canonicalize() {
+                        Ok(real) => out = real,
+                        Err(_) => existing = false,
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// `str(Path(p))`: `.` components and a trailing `/` dropped.
+fn py_str(p: &Path) -> String {
+    let s: PathBuf = p.components().filter(|c| *c != Component::CurDir).collect();
+    if s.as_os_str().is_empty() {
+        ".".into()
+    } else {
+        s.display().to_string()
+    }
 }
