@@ -176,10 +176,27 @@ fn schema_db_extra_nodes(run: &Run) -> Vec<usize> {
 }
 
 pub fn run(run: &mut Run) {
+    let phase = crate::console::phase(
+        "Marking summoned nodes",
+        crate::console::Label::Always,
+        if run.quiet {
+            0
+        } else {
+            run.graph.nodes.len() as u64
+        },
+    );
     summon_enclosing(&mut run.graph);
     bridge_imports(&mut run.graph);
-    crate::console::phase_done("Marking summoned nodes");
+    phase.done();
     if run.build_schema_db {
+        let pulling = crate::console::phase(
+            "Pulling in WKT dependencies",
+            crate::console::Label::OnTerminal,
+            0,
+        );
         run.schema_db_extra_nodes = schema_db_extra_nodes(run);
+        let n = run.schema_db_extra_nodes.len() as u64;
+        pulling.set(n, n);
+        pulling.done();
     }
 }

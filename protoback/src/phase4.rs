@@ -11,6 +11,15 @@ use crate::select;
 use crate::topology::Topology;
 
 pub fn run(run: &mut Run, topo: &mut Topology) {
+    let phase = crate::console::phase(
+        if run.prunings.is_empty() {
+            "Applying pruning rules"
+        } else {
+            "Processing exclusions"
+        },
+        crate::console::Label::Always,
+        run.prunings.len() as u64,
+    );
     let graph = &mut run.graph;
     let mut current = Vec::new();
     for pattern in &run.prunings {
@@ -62,9 +71,5 @@ pub fn run(run: &mut Run, topo: &mut Topology) {
             run.events.register_pruned_file(&f.name);
         }
     }
-    crate::console::phase_done(if run.prunings.is_empty() {
-        "Applying pruning rules"
-    } else {
-        "Processing exclusions"
-    });
+    phase.done();
 }

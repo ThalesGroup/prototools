@@ -85,10 +85,11 @@ On a terminal it draws transient progress bars and colors.
   user's decision). Measured on the 73 import fixtures, reproto's stderr
   is the same with and without `--emit-binary`: the repetition does not
   show. Should a corpus show it, reproto is fixed to render once.
-- **S5. The terminal.** On a terminal, each counted phase shows an
-  indicatif bar, removed when it ends, its label then printed as when
-  piped; errors, warnings and notices in reproto's colors (bold red,
-  yellow, blue).
+- **S5. The terminal.** On a terminal, every phase shows a progress bar
+  (indicatif) of protoback's own, removed when it ends, its label then
+  printed; no spinner, and no attempt to copy reproto's bars (the user's
+  decision). Errors, warnings and notices in reproto's colors (bold red,
+  yellow, blue). Piped output, which the harness compares, is reproto's.
 - **S6. `--help` and `--version`**, the options in reproto's sections
   and order, their texts; compared by options and texts (spec 0424 S12).
 - **S7. Man pages and completion**, as protoscan's: `PROTOBACK_GEN_MAN`
@@ -158,3 +159,23 @@ Its traces follow reproto's internals, which protoback's do not mirror
     names), `NORMALIZE` for protoback's `--phase2-plugin` warning (spec
     0431 S3). Every stream compared, every corpus, all cores: 1,587
     cases, all identical. `ci`'s `protobackHarness` compares every stream.
+- **Stage 2, the terminal** (2026-11-16): `console.rs`, on a terminal:
+  each phase a handle that starts with it (`console::phase`), a progress
+  bar with a total where one is known (the files, the nodes, the prune
+  patterns, the seeds, the WKT dependencies, the scoring files, the
+  minimization's own progress, the database's four writes), cleared and
+  its label printed when it ends; the label's rule kept from reproto
+  for piped output (`Label::Always`, `Label::OnTerminal` for its lazy
+  bars); phases 2 and 7 advance per file;
+  messages printed above the bar (`ProgressBar::suspend`); warnings,
+  errors and attention in the SGR sequences Rich writes for reproto's
+  styles (`1;33`, `1;31`, `1;34`), written directly. Piped, nothing
+  changes: the fast corpora, every stream, 1,584 cases identical.
+  - indicatif 0.17 added (spec 0424 S14), with `console`,
+    `encode_unicode`, `number_prefix` and `web-time`. `cargo hakari
+    generate` (run once through `nix-shell -p cargo-hakari`, which no
+    shell of the repository provides) finds no change: only protoback
+    uses them, and `workspace-hack` unifies what two crates share;
+    `cargo hakari verify` passes.
+  - `protoback/tests/terminal.rs`: protoback under a pseudo-terminal
+    (Python's `pty`): the colors, the labels, a bar drawn and cleared.

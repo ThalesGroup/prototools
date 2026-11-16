@@ -18,6 +18,11 @@ pub fn run(run: &mut Run, topo: &Topology) {
     let graph = &mut run.graph;
     // The FQDN seeds as given, then the path seeds' files, sorted.
     let seeds: Vec<&String> = run.seed_fqdns.iter().chain(&run.path_seed_fqdns).collect();
+    let seeding = crate::console::phase(
+        "Marking seeds",
+        crate::console::Label::OnTerminal,
+        seeds.len() as u64,
+    );
     let mut initial = BTreeSet::new();
     if seeds.is_empty() {
         for (i, n) in graph.nodes.iter_mut().enumerate() {
@@ -55,6 +60,16 @@ pub fn run(run: &mut Run, topo: &Topology) {
             }
         }
     }
+    seeding.done();
+    let reaching = crate::console::phase(
+        "Computing reachability",
+        crate::console::Label::Always,
+        if run.quiet {
+            0
+        } else {
+            graph.nodes.len() as u64
+        },
+    );
 
     let mut current: Vec<usize> = initial.iter().copied().collect();
     while !current.is_empty() {
@@ -71,7 +86,7 @@ pub fn run(run: &mut Run, topo: &Topology) {
         }
         current = next;
     }
-    crate::console::phase_done("Computing reachability");
+    reaching.done();
 
     if run.debug_fqdn {
         // reproto tests `node.is_present`, a method, never false: P always.

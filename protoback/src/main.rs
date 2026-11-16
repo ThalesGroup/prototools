@@ -330,7 +330,8 @@ fn main() -> ExitCode {
     }
     if let Err(fatal) = phase2::run(&mut run, &mut topo) {
         if let Some(detail) = fatal.detail() {
-            eprintln!("{detail}");
+            // reproto's `cli_error`, before the CLI's `Error:`.
+            console::error(&detail);
         }
         run.events.flush();
         eprintln!("Error: {}", fatal.message());
@@ -341,13 +342,22 @@ fn main() -> ExitCode {
         eprintln!("{failure}");
         return ExitCode::from(1);
     }
+    let phase = console::phase(
+        "Building type graph",
+        console::Label::Always,
+        if cli.quiet {
+            0
+        } else {
+            topo.files.len() as u64
+        },
+    );
     run.graph = graph::run(
         &topo,
         &run.db,
         cli.force_proto2_output,
         &run.edition_defaults,
     );
-    console::phase_done("Building type graph");
+    phase.done();
     phase4::run(&mut run, &mut topo);
     phase5::run(&mut run, &topo);
     phase6::run(&mut run);
@@ -409,6 +419,7 @@ fn main() -> ExitCode {
             std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
         }),
         schema_db,
+        quiet: cli.quiet,
         extra_nodes: run.schema_db_extra_nodes.clone(),
         scoring_html: cli
             .emit_scoring_html
@@ -422,13 +433,13 @@ fn main() -> ExitCode {
     match outcome {
         Ok(()) => {}
         Err(render::Failure::Io(e)) => {
-            eprintln!("Error: {e}");
-            eprintln!("Cannot continue due to I/O error.");
+            console::error(&format!("Error: {e}"));
+            console::error("Cannot continue due to I/O error.");
             run.events.flush();
             return ExitCode::from(1);
         }
         Err(render::Failure::Fatal(message)) => {
-            eprintln!("{message}");
+            console::error(&message);
             run.events.flush();
             return ExitCode::from(1);
         }

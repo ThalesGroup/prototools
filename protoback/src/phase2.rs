@@ -89,6 +89,11 @@ pub fn run(r: &mut Run, topo: &mut Topology) -> Result<(), DescriptorProtoError>
 
     // Rank by rank: the files none of whose imports wait, in topology order
     // (reproto since spec 0428), then the files they freed.
+    let phase = crate::console::phase(
+        "Loading descriptors",
+        crate::console::Label::Always,
+        if r.quiet { 0 } else { topo.files.len() as u64 },
+    );
     let mut waiting: BTreeSet<usize> = (0..topo.files.len()).collect();
     for rank in 1.. {
         let leaves: Vec<usize> = waiting
@@ -109,9 +114,10 @@ pub fn run(r: &mut Run, topo: &mut Topology) -> Result<(), DescriptorProtoError>
                 r.events.info(&format!("  Merging: {}", topo.files[i].name));
             }
             merge(r, topo, i);
+            phase.advance(1);
         }
     }
-    crate::console::phase_done("Loading descriptors");
+    phase.done();
     for i in waiting {
         r.events.warning(&format!(
             "Circular dependency detected: {}",

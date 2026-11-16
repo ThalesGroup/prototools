@@ -62,6 +62,11 @@ pub fn build(
     // 1. The WKT dependencies, rendered after phase 7, one by one: each
     // sees the promotions before it (spec 0430 S4). A failed render is
     // left out, silently.
+    let wkt = console::phase(
+        "Rendering WKT proto files",
+        console::Label::OnTerminal,
+        extras.len() as u64,
+    );
     let n = render::summoned(shared.graph).len();
     let mut graph = shared.graph.clone();
     for (e, &x) in extras.iter().enumerate() {
@@ -72,6 +77,7 @@ pub fn build(
         };
         let (bytes, reports) = render::descriptor(&promoted, x, n + e);
         render::replay(events, reports);
+        wkt.advance(1);
         if let Some(bytes) = bytes {
             collected.push((name(&graph, x), bytes));
         }
@@ -80,12 +86,22 @@ pub fn build(
     // 2. Each file's scoring graph, once, in collection order, names
     // renamed as `.desc` renames them (spec 0430 S6). A file the pool
     // refused gets none (W6, step 9).
+    wkt.done();
     let mut seen = HashSet::new();
     let scoring_files: Vec<&str> = collected
         .iter()
         .map(|(origin, _)| origin.as_str())
         .filter(|o| seen.insert(*o))
         .collect();
+    let collecting = console::phase(
+        "Collecting scoring data",
+        console::Label::Always,
+        if output.quiet {
+            0
+        } else {
+            scoring_files.len() as u64
+        },
+    );
     let rename = |full: &str| -> String {
         if shared.keep_variant_descriptor {
             full.to_string()
@@ -119,7 +135,7 @@ pub fn build(
         }
     }
     let graphs = kept;
-    console::phase_done("Collecting scoring data");
+    collecting.done();
     if graphs.is_empty() {
         events.w6(
             "--build-schema-db",
@@ -132,8 +148,13 @@ pub fn build(
     // 3. The merged, minimized graph; with --scoring-html-out, the raw and
     // minimized graphs' YAML the pages are drawn from.
     let html = output.scoring_html.is_some();
-    let (rkyv, minimized_yaml, raw_yaml) = build_from_files(&graphs, html, html, |_, _| {})
-        .map_err(|e| Failure::Fatal(format!("Error: building the scoring graph: {e}")))?;
+    let compiling = console::phase("Compiling scoring graph", console::Label::OnTerminal, 0);
+    let built = build_from_files(&graphs, html, html, |current, total| {
+        compiling.set(current, total);
+    });
+    compiling.done();
+    let (rkyv, minimized_yaml, raw_yaml) =
+        built.map_err(|e| Failure::Fatal(format!("Error: building the scoring graph: {e}")))?;
 
     // 4. The descriptors: a name given two contents stops the run; the
     // rest in reproto's dependency order (Kahn's rounds), duplicates kept.
@@ -211,16 +232,23 @@ pub fn build(
         spans.push((raw.len() as u64, (raw.len() + bytes.len()) as u64));
         raw.extend_from_slice(bytes);
     }
+    // Four steps: the set, its bytes written, the graph, the index.
+    let writing = console::phase("Writing schema DB", console::Label::OnTerminal, 4);
     let index = fds_index(&order, &decoded, &spans)
         .map_err(|e| Failure::Fatal(format!("Error: building the index: {e}")))?;
     if let Some(parent) = db_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
+    writing.advance(1);
     std::fs::write(db_path, &raw)?;
+    writing.advance(1);
     let dir = db_path.with_extension("");
     std::fs::create_dir_all(&dir)?;
     std::fs::write(dir.join("hopcroft.rkyv"), rkyv)?;
+    writing.advance(1);
     std::fs::write(dir.join("index.rkyv"), index)?;
+    writing.advance(1);
+    writing.done();
     console::note(&format!("  descriptor: {}", db_path.display()));
     console::note(&format!(
         "  graph:      {}",

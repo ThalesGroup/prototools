@@ -180,6 +180,8 @@ pub struct Output {
     pub write_variant_descriptor: bool,
     /// `--jobs`: the threads files render on (spec 0429 S4).
     pub jobs: usize,
+    /// `--quiet`: reproto's bars count nothing then.
+    pub quiet: bool,
     /// `--schema-db-out`: the database's path.
     pub schema_db: Option<PathBuf>,
     /// Phase 6's `schema_db_extra_nodes`: the WKT dependencies the
@@ -324,8 +326,14 @@ fn write_files(
     events: &mut Events,
 ) -> std::io::Result<crate::schema_db::Collected> {
     let mut collected = Vec::new();
+    let summoned_count = summoned(shared.graph).len() as u64;
+    let phase = crate::console::phase(
+        "Rendering proto files",
+        crate::console::Label::Always,
+        if output.quiet { 0 } else { summoned_count },
+    );
     if dry_run && !shared.wants_descriptor() {
-        crate::console::phase_done("Rendering proto files");
+        phase.done();
         return Ok(collected);
     }
     let graph = shared.graph;
@@ -361,6 +369,7 @@ fn write_files(
             std::fs::create_dir_all(parent)?;
         }
         replay(events, reports);
+        phase.advance(1);
         if failed {
             // reproto's phase 7 catches the failure: W6, internal error.
             events.w6(&p.name, "", "internal error");
@@ -381,7 +390,7 @@ fn write_files(
             std::fs::write(path, text)?;
         }
     }
-    crate::console::phase_done("Rendering proto files");
+    phase.done();
     if let (false, Some(out_repo)) = (dry_run, &output.out_repo) {
         let buf = out_repo.join("buf.yaml");
         if !buf.exists() {
