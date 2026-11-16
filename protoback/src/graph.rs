@@ -137,6 +137,10 @@ pub struct Node {
     pub is_group: bool,
     pub type_descriptor: Option<TypeRef>,
     pub editions_group_name: Option<String>,
+    /// A field's synthetic group, under `--force-proto2-output`.
+    pub editions_group: Option<usize>,
+    /// A synthetic group itself: a node reproto's pool never has.
+    pub synthetic_group: bool,
     pub stripped_fields: Vec<Stripped>,
     pub stripped_methods: Vec<Stripped>,
 }
@@ -191,6 +195,8 @@ impl Graph {
             is_group: false,
             type_descriptor: None,
             editions_group_name: None,
+            editions_group: None,
+            synthetic_group: false,
             stripped_fields: Vec::new(),
             stripped_methods: Vec::new(),
         });
@@ -375,6 +381,7 @@ impl Build<'_> {
             let fd = self.field(f, i, def.then(2, fi));
             if let Some((_, grp, name)) = groups.iter().find(|(n, _, _)| *n == f.number()) {
                 self.graph.nodes[fd].editions_group_name = Some(name.clone());
+                self.graph.nodes[fd].editions_group = Some(*grp);
                 self.graph.link(fd, *grp, false);
             }
             self.graph.link(i, fd, true);
@@ -447,6 +454,7 @@ impl Build<'_> {
                 self.message_body(&d.message, grp, &d.file, &d.enclosing, &inner_def);
             }
             self.graph.nodes[grp].is_group = true;
+            self.graph.nodes[grp].synthetic_group = true;
             out.push((f.number(), grp, candidate));
         }
         out

@@ -99,8 +99,14 @@ stages, each with its own gate.
     protoback reproduces it without shared state: before rendering,
     the files loaded before the k-th file renders are computed (the
     import closures of files 1 to k), and the k-th file's render reads
-    that set. To confirm first, by a fixture that reaches the case, and
-    by a check that no other lookup during rendering loads files.
+    that set. Confirmed 2026-11-15 by the harness's `order/` cases (a
+    file setting an extension its import of was dropped, rendered after
+    and before the extension's file): the option is written, then
+    dropped, by reproto and protoback alike. protoback computes, before
+    rendering, each loaded file's rank (the first summoned file whose
+    render loaded it); while the k-th renders, an extension counts only
+    if its file's rank is at most k (`render/options.rs`, `PoolLoads`,
+    `Scope`).
 
 ### Stages
 
@@ -384,8 +390,7 @@ not deferred with it: stage 3 needs it on one thread already.
     whether a field is a group, read resolved features in an editions
     file, so `field_presence` and `message_encoding` resolve in stage 1
     (`features.rs`, shared with phase 3).
-  - Not yet: S4's render-order fixture (stage 3), and files rendered in
-    parallel (after stage 6, S4).
+  - Not yet: files rendered in parallel (after stage 6, S4).
 - **Stage 2, built-in options** (2026-11-15): `render/options.rs`. Each
   element's options parsed with the variant's descriptor.proto, as
   reproto's options pool parses them, and written as its `dump_option`
@@ -407,3 +412,32 @@ not deferred with it: stage 3 needs it on one thread already.
     holding custom options or features (stages 3, 4), every one of the 78
     differing hunks touching one. Every rendered descriptor.proto
     identical.
+- **Stage 3, custom and message-valued options** (2026-11-16): after the
+  built-in ones, an element's custom options by number, `(.full.name)`,
+  orphans unless their extension is summoned; known only when S4's
+  ranks say reproto's options pool has their file, at the top level and
+  in aggregates alike; the options pool holding each loaded file with
+  `map_entry` cleared (`_MapsAsRepeatedDatabase`), so a map in an option
+  is its entries in wire order. The harness's `order/` cases added (S4).
+  - `--compare out/proto`, every corpus: 544 cases, 223 refused; of the
+    321 rendered, 305 identical; the 16 others differ only in files with
+    features (stage 4), every differing hunk touching one.
+- **Stage 4, editions and `--force-proto2-*`** (2026-11-16): the target
+  syntax per file from the two flags (`_set_target_syntax`), A1; the
+  features blocks, an editions target's only, standalone or inline, the
+  six runtime features in reproto's order, named by the edition
+  defaults' tables; an editions file written as proto2: labels from
+  resolved presence, `packed` from the resolved encoding, and, under
+  `--force-proto2-output`, a DELIMITED field as `group Name { … }` from
+  its synthetic group, which reproto's pool does not have: no options
+  for it or what it encloses, and an enum value under it fails the file
+  (phase 3's graph records the group, `synthetic_group`,
+  `editions_group`).
+  - `--compare out/proto`, every corpus: 544 cases, 467 identical; the
+    77 others refused, their flag sets needing `--emit-binary` or
+    `--schema-db-out` (stage 6, step 6 of spec 0424). Every
+    `--force-proto2-output` and `--force-proto2-for-editions` case
+    identical.
+  - No case differs by source comments: the harness's corpora are
+    compiled without `--include_source_info`; stage 5 needs inputs of
+    its own (`comments`, the CLI tests).

@@ -83,6 +83,62 @@ def protoc(*args: str | Path, stdin: bytes | None = None) -> bytes | None:
     return r.stdout if r.returncode == 0 else None
 
 
+def varint(data: bytes, i: int) -> tuple[int, int]:
+    """A varint at data[i]: its value, and where it ends."""
+    v, shift = 0, 0
+    while True:
+        b = data[i]
+        v |= (b & 0x7F) << shift
+        i += 1
+        if b < 0x80:
+            return v, i
+        shift += 7
+
+
+def put_varint(v: int) -> bytes:
+    out = bytearray()
+    while v >= 0x80:
+        out.append((v & 0x7F) | 0x80)
+        v >>= 7
+    out.append(v)
+    return bytes(out)
+
+
+def drop_dependencies(fds: bytes) -> bytes:
+    """A FileDescriptorSet with every file's `dependency` (field 3) entries
+    dropped, on the wire: what protoc's text round trip cannot do, an
+    option of an undeclared extension being an unknown field to it."""
+    def records(data: bytes):
+        i = 0
+        while i < len(data):
+            start = i
+            key, i = varint(data, i)
+            wire = key & 7
+            if wire == 0:
+                _, i = varint(data, i)
+            elif wire == 2:
+                n, i = varint(data, i)
+                i += n
+            elif wire == 1:
+                i += 8
+            elif wire == 5:
+                i += 4
+            else:
+                raise ValueError(f"wire type {wire}")
+            yield key >> 3, wire, data[start:i]
+
+    out = bytearray()
+    for number, wire, rec in records(fds):
+        if number != 1 or wire != 2:
+            out += rec
+            continue
+        _, body_at = varint(rec, 0)
+        _, body_at = varint(rec, body_at)
+        body = b"".join(r for n, _, r in records(rec[body_at:]) if n != 3)
+        out += put_varint((1 << 3) | 2) + put_varint(len(body)) + body
+    return bytes(out)
+
+
 def to_text(pb: Path, out: Path) -> None:
     """A descriptor set in text format, as protoc --decode prints it."""
     text = protoc("--decode=google.protobuf.FileDescriptorSet",
@@ -144,6 +200,30 @@ def prepare(work: Path, googleapis: Path | None, otel: Path | None) -> None:
             'syntax = "proto2";\npackage dup;\nmessage Same {}\n')
         assert protoc(f"-I{dup / 'src'}", f"--descriptor_set_out={dup / name}.pb",
                       f"{name}.proto") is not None
+
+    # The order files render in decides a custom option whose extension
+    # the file does not import (spec 0429 S4): ord_use.proto sets
+    # ord.tag, declared in ord_ext.proto, its import dropped. Rendered
+    # after ord_ext (1_ext.pb before 2_use.pb), the option is written;
+    # before it, dropped.
+    order = corpus / "order"
+    (order / "src").mkdir(parents=True)
+    (order / "src" / "ord_ext.proto").write_text(
+        'syntax = "proto2";\npackage ord;\nimport "google/protobuf/descriptor.proto";\n'
+        'extend google.protobuf.FileOptions { optional string tag = 50101; }\n')
+    (order / "src" / "ord_use.proto").write_text(
+        'syntax = "proto2";\npackage ord;\nimport "ord_ext.proto";\n'
+        'option (ord.tag) = "set";\nmessage M {}\n')
+    ext, use = order / "src" / "ext.pb", order / "src" / "use.pb"
+    assert protoc(f"-I{order / 'src'}", "--include_imports", f"--descriptor_set_out={ext}",
+                  "ord_ext.proto") is not None
+    assert protoc(f"-I{order / 'src'}", f"--descriptor_set_out={use}",
+                  "ord_use.proto") is not None
+    use.write_bytes(drop_dependencies(use.read_bytes()))
+    for name, first, second in (("ext-first", ext, use), ("use-first", use, ext)):
+        (order / name).mkdir()
+        shutil.copy(first, order / name / f"1_{first.stem}.pb")
+        shutil.copy(second, order / name / f"2_{second.stem}.pb")
 
     # The demos' anomalies set.
     demo = corpus / "demo"
@@ -251,6 +331,9 @@ def cases(corpus: Path) -> list[Case]:
     out.append(Case("shadowed/default",
                     ["-I", str(corpus / "imports" / "address_book"),
                      "-I", str(corpus / "text" / "address_book"), *proto_out]))
+
+    for name in ("ext-first", "use-first"):
+        out.append(Case(f"order/{name}", ["-I", str(corpus / "order" / name), *proto_out]))
 
     blob = corpus / "blob" / "blob.bin"
     out.append(Case("blob/default", ["-I", str(blob), *proto_out]))

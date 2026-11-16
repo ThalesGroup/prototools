@@ -21,6 +21,8 @@ pub struct Ctx<'s, 'a> {
     pub shared: &'s Shared<'a>,
     /// The file node.
     pub file: usize,
+    /// Its index among the summoned files, in render order.
+    pub k: usize,
     /// The file's own syntax (`fdp_syntax`: `proto2` when unset).
     pub syntax: String,
     /// The syntax it is written in.
@@ -36,6 +38,31 @@ pub struct Ctx<'s, 'a> {
 }
 
 impl Ctx<'_, '_> {
+    /// What an option's rendering reads, for this file.
+    pub fn scope(&self) -> super::options::Scope<'_> {
+        super::options::Scope {
+            variant: self.shared.variant,
+            graph: self.shared.graph,
+            rank: &self.shared.loads.rank,
+            k: self.k,
+        }
+    }
+
+    /// Whether reproto's pool has node `i`: not when it is, or is under, a
+    /// synthetic group (`--force-proto2-output`), which only the graph has.
+    pub fn in_pool(&self, mut i: usize) -> bool {
+        loop {
+            let n = &self.shared.graph.nodes[i];
+            if n.synthetic_group {
+                return false;
+            }
+            match n.parent {
+                Some(p) => i = p,
+                None => return true,
+            }
+        }
+    }
+
     pub fn proto3(&self) -> bool {
         self.target == "proto3"
     }
@@ -49,6 +76,77 @@ impl Ctx<'_, '_> {
     pub fn proto2_or_editions(&self) -> bool {
         self.target == "proto2" || self.target == "editions"
     }
+}
+
+/// `render_features_block`: an element's explicit features, in an
+/// editions file written as editions only: `option features.x = V;`
+/// standalone, `features.x = V,` inline; the six runtime features, in
+/// that order, their values named by the edition defaults' tables.
+pub fn features_block(
+    ctx: &Ctx<'_, '_>,
+    fs: Option<prototext_upb::descriptor_access::FeatureSet<'_>>,
+    depth: usize,
+    inline: bool,
+) -> Block {
+    let mut out = Block::new();
+    let Some(fs) = fs else {
+        return out;
+    };
+    if !ctx.editions_target() {
+        return out;
+    }
+    let set: [(&str, Option<i32>); 6] = [
+        (
+            "field_presence",
+            fs.has_field_presence().then(|| fs.field_presence()),
+        ),
+        ("enum_type", fs.has_enum_type().then(|| fs.enum_type())),
+        (
+            "repeated_field_encoding",
+            fs.has_repeated_field_encoding()
+                .then(|| fs.repeated_field_encoding()),
+        ),
+        (
+            "utf8_validation",
+            fs.has_utf8_validation().then(|| fs.utf8_validation()),
+        ),
+        (
+            "message_encoding",
+            fs.has_message_encoding().then(|| fs.message_encoding()),
+        ),
+        (
+            "json_format",
+            fs.has_json_format().then(|| fs.json_format()),
+        ),
+    ];
+    for (name, value) in set {
+        let Some(v) = value else { continue };
+        let value = feature_value_name(ctx.shared.edition_defaults, name, v);
+        out.push(Line::code(
+            if inline {
+                format!("features.{name} = {value},")
+            } else {
+                format!("option features.{name} = {value};")
+            },
+            depth,
+        ));
+    }
+    out
+}
+
+/// `feature_value_name`: a feature value's name in its enum (the edition
+/// defaults' `_enum_` table), not an `_UNKNOWN` one unless the value is
+/// 0; its number when the table has none.
+fn feature_value_name(table: &crate::phase2::EditionDefaults, feature: &str, value: i32) -> String {
+    use crate::phase2::EditionDefault;
+    let Some(EditionDefault::Numbers(numbers)) = table.get(&format!("_enum_{feature}")) else {
+        return value.to_string();
+    };
+    numbers
+        .iter()
+        .find(|(name, &n)| n == value && !name.ends_with("_UNKNOWN") && n != 0)
+        .or_else(|| numbers.iter().find(|(_, &n)| n == value))
+        .map_or_else(|| value.to_string(), |(name, _)| name.clone())
 }
 
 /// `anomalies.report`'s comment line: ` SEVERITY[tag]: body`.
@@ -211,7 +309,7 @@ pub fn extend_blocks(
 
 /// `ReFileDescriptorProto.render`, stage 1: the header, syntax, package,
 /// imports, then services, enums, messages and extensions.
-pub fn render(shared: &Shared<'_>, file: usize) -> Option<Block> {
+pub fn render(shared: &Shared<'_>, file: usize, k: usize) -> Option<Block> {
     let f = shared.file_def(file)?;
     let syntax = {
         let s = text(f.syntax());
@@ -221,17 +319,24 @@ pub fn render(shared: &Shared<'_>, file: usize) -> Option<Block> {
             s
         }
     };
-    let target = match syntax.as_str() {
-        "proto2" | "proto3" | "editions" => syntax.clone(),
-        _ => "proto2".to_string(),
+    let target = if shared.force_proto2_output
+        || (shared.force_proto2_for_editions && syntax == "editions")
+    {
+        "proto2".to_string()
+    } else {
+        match syntax.as_str() {
+            "proto2" | "proto3" | "editions" => syntax.clone(),
+            _ => "proto2".to_string(),
+        }
     };
     let ctx = Ctx {
         shared,
         file,
+        k,
         edition: f.has_edition().then(|| f.edition()),
         syntax,
         target,
-        refused: shared.refused.contains(&text(f.name())),
+        refused: shared.loads.refused.contains(&text(f.name())),
         failed: std::cell::Cell::new(false),
     };
     let name = text(f.name());
@@ -246,15 +351,26 @@ pub fn render(shared: &Shared<'_>, file: usize) -> Option<Block> {
         let e = edition_name(f.edition())?;
         out.push(Line::code(format!("edition = \"{e}\";"), depth));
     } else if ctx.syntax != ctx.target {
-        out.push(anomaly(
-            "WARNING",
-            "downconvert",
-            &format!(
-                "original file used \"{}\" syntax; rendered as proto2",
-                ctx.syntax
-            ),
-            depth,
-        ));
+        // A1: an editions file; A2: any other syntax.
+        let comment = if ctx.syntax == "editions" {
+            anomaly(
+                "WARNING",
+                "editions",
+                "editions file rendered as proto2 (--force-proto2-output)",
+                depth,
+            )
+        } else {
+            anomaly(
+                "WARNING",
+                "downconvert",
+                &format!(
+                    "original file used \"{}\" syntax; rendered as proto2",
+                    ctx.syntax
+                ),
+                depth,
+            )
+        };
+        out.push(comment);
         out.push(Line::code(format!("syntax = \"{}\";", ctx.target), depth));
     } else {
         out.push(Line::code(format!("syntax = \"{}\";", ctx.target), depth));
@@ -407,7 +523,7 @@ fn file_options(
     f: &prototext_upb::descriptor_access::FileDescriptorProto<'_>,
     depth: usize,
 ) -> Block {
-    use super::options::{builtin, Options};
+    use super::options::{options, Options};
     const POOL_REFUSED: &str = "the descriptor pool refused this file or one of its imports";
     let a3 = |reason: &str| {
         let mut b = Block::new();
@@ -429,7 +545,8 @@ fn file_options(
     let Some(msg) = pool.parse_ref(Options::File, &o.0) else {
         return out;
     };
-    match builtin(ctx.shared.variant, Options::File, &msg, false, depth, &[]) {
+    out.extend(features_block(ctx, o.features(), depth, false));
+    match options(&ctx.scope(), Options::File, &msg, false, depth, &[]) {
         Ok(blocks) => blocks.into_iter().for_each(|b| out.extend(b)),
         Err(_) => return a3("internal error"),
     }

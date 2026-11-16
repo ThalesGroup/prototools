@@ -11,15 +11,15 @@ use prototext_upb::descriptor_access::{DescriptorProto, FeatureSet, FieldDescrip
 
 use prototext_upb::MessageRef;
 
-use super::file::{anomaly, extend_blocks, Ctx};
+use super::file::{anomaly, extend_blocks, features_block, Ctx};
 use super::names::{short_ref, shorten_method_type, type_name};
-use super::options::{builtin, Options};
+use super::options::Options;
 use super::pyfmt::{bytes_default, float_repr, json_dumps, render_bytes};
 use super::text::{Block, Line, LineType, MAX_LINE_LENGTH, TAB_SIZE};
 use super::{text, Def};
 use crate::features::{
-    self, Feature, FIELD_PRESENCE_IMPLICIT, MESSAGE_ENCODING_DELIMITED,
-    REPEATED_FIELD_ENCODING_PACKED,
+    self, Feature, FIELD_PRESENCE_IMPLICIT, FIELD_PRESENCE_LEGACY_REQUIRED,
+    MESSAGE_ENCODING_DELIMITED, REPEATED_FIELD_ENCODING_PACKED,
 };
 use crate::graph::{Kind, TypeRef};
 
@@ -40,17 +40,20 @@ fn packable(t: i32) -> bool {
     !matches!(t, TYPE_STRING | TYPE_BYTES | TYPE_GROUP | TYPE_MESSAGE)
 }
 
-/// `render_options`: the options of a message, enum, service or method,
-/// which reproto finds through its pool: none when the pool refused the
-/// element's file, nor when one of them cannot be rendered (its `except`).
+/// `render_options`: the options of node `node`, a message, enum, service
+/// or method, which reproto finds through its pool: none when the pool
+/// refused the element's file or does not have the element (under a
+/// synthetic group), nor when one of them cannot be rendered (its
+/// `except`).
 fn element_options(
     ctx: &Ctx<'_, '_>,
+    node: usize,
     kind: Options,
     options: Option<MessageRef<'_>>,
     depth: usize,
     exclude: &[&str],
 ) -> Vec<Block> {
-    if ctx.refused {
+    if ctx.refused || !ctx.in_pool(node) {
         return Vec::new();
     }
     own_options(ctx, kind, options, false, depth, exclude).unwrap_or_default()
@@ -73,7 +76,7 @@ fn own_options(
     let Some(msg) = pool.parse_ref(kind, &o) else {
         return Ok(Vec::new());
     };
-    builtin(ctx.shared.variant, kind, &msg, composite, depth, exclude)
+    super::options::options(&ctx.scope(), kind, &msg, composite, depth, exclude)
 }
 
 /// `_camel_case`: protoc's default JSON name.
@@ -229,9 +232,13 @@ fn field_label(
     if ctx.editions_target() {
         return "";
     }
-    if presence.is_some() {
-        // An editions file rendered as proto2: stage 4.
-        return "optional ";
+    if let Some(p) = presence {
+        // An editions file written as proto2: presence picks the label.
+        return if p == FIELD_PRESENCE_LEGACY_REQUIRED {
+            "required "
+        } else {
+            "optional "
+        };
     }
     if ctx.proto3() {
         if f.label() == LABEL_REQUIRED {
@@ -321,7 +328,10 @@ pub fn field(ctx: &Ctx<'_, '_>, fd: usize, depth: usize, is_oneof: bool) -> Bloc
         Some(e) => e == MESSAGE_ENCODING_DELIMITED,
         None => ctx.proto2_or_editions(),
     };
-    let is_group_field = f.r#type() == TYPE_GROUP;
+    // A group, or an editions DELIMITED field with its synthetic group
+    // (under --force-proto2-output).
+    let editions_group = node.editions_group;
+    let is_group_field = f.r#type() == TYPE_GROUP || editions_group.is_some();
 
     let string = match &map_string {
         Some(s) => s.clone(),
@@ -347,7 +357,10 @@ pub fn field(ctx: &Ctx<'_, '_>, fd: usize, depth: usize, is_oneof: bool) -> Bloc
                 let r = type_ref(ctx, node.type_descriptor, &f, parent);
                 s.push_str(&format!("{r} {name}"));
             } else {
-                let r = type_ref(ctx, node.type_descriptor, &f, fd);
+                let r = match &node.editions_group_name {
+                    Some(name) => name.clone(),
+                    None => type_ref(ctx, node.type_descriptor, &f, fd),
+                };
                 s.push_str(&format!("group {r}"));
             }
             s.push_str(&format!(" = {}", f.number()));
@@ -379,7 +392,9 @@ pub fn field(ctx: &Ctx<'_, '_>, fd: usize, depth: usize, is_oneof: bool) -> Bloc
         out.postpend(";");
     } else {
         out.postpend(" {");
-        if let Some(group) = shared.graph.find(&format!("desc:{}", text(f.type_name()))) {
+        let group =
+            editions_group.or_else(|| shared.graph.find(&format!("desc:{}", text(f.type_name()))));
+        if let Some(group) = group {
             out.extend(message(ctx, group, depth, true));
         }
     }
@@ -443,6 +458,12 @@ fn field_options(
             opt_block.push(Line::code(format!("packed = {v},"), depth + 1));
         }
     }
+    opt_block.extend(features_block(
+        ctx,
+        options.as_ref().and_then(|o| o.features()),
+        depth + 1,
+        true,
+    ));
     let blocks = own_options(
         ctx,
         Options::Field,
@@ -540,15 +561,20 @@ pub fn message(ctx: &Ctx<'_, '_>, msg: usize, depth: usize, force: bool) -> Bloc
     } else {
         &["message_set_wire_format"]
     };
+    let features = m.options().and_then(|o| o.features());
+    let has_features = features.is_some();
+    out.extend(features_block(ctx, features, depth + 1, false));
     let blocks = element_options(
         ctx,
+        msg,
         Options::Message,
         m.options().map(|o| o.0),
         depth + 1,
         msf,
     );
-    if !blocks.is_empty() {
-        blocks.into_iter().for_each(|b| out.extend(b));
+    let any = !blocks.is_empty();
+    blocks.into_iter().for_each(|b| out.extend(b));
+    if any || (has_features && ctx.editions_target()) {
         out.div_maybe(depth);
     }
 
@@ -646,7 +672,17 @@ pub fn message(ctx: &Ctx<'_, '_>, msg: usize, depth: usize, force: bool) -> Bloc
             &[],
         ) {
             Ok(blocks) => {
+                let features = features_block(
+                    ctx,
+                    oneofs[o].options().and_then(|x| x.features()),
+                    depth + 2,
+                    false,
+                );
                 let mut at = 1;
+                for line in features.lines {
+                    block.insert(at, line);
+                    at += 1;
+                }
                 for b in blocks {
                     for line in b.lines {
                         block.insert(at, line);
@@ -812,11 +848,24 @@ pub fn enumeration(ctx: &Ctx<'_, '_>, en: usize, depth: usize) -> Block {
     let Some(Def::Enum(e)) = ctx.shared.def(en) else {
         return out;
     };
-    let blocks = element_options(ctx, Options::Enum, e.options().map(|o| o.0), depth + 1, &[]);
+    out.extend(features_block(
+        ctx,
+        e.options().and_then(|o| o.features()),
+        depth + 1,
+        false,
+    ));
+    let blocks = element_options(
+        ctx,
+        en,
+        Options::Enum,
+        e.options().map(|o| o.0),
+        depth + 1,
+        &[],
+    );
     blocks.into_iter().for_each(|b| out.extend(b));
     out.div_maybe(depth);
     for v in e.value() {
-        out.extend(enum_value(ctx, &v, depth + 1));
+        out.extend(enum_value(ctx, en, &v, depth + 1));
     }
     let ranges = e.reserved_range();
     let names = e.reserved_name();
@@ -853,11 +902,12 @@ pub fn enumeration(ctx: &Ctx<'_, '_>, en: usize, depth: usize) -> Block {
 /// be rendered.
 fn enum_value(
     ctx: &Ctx<'_, '_>,
+    en: usize,
     v: &prototext_upb::descriptor_access::EnumValueDescriptorProto<'_>,
     depth: usize,
 ) -> Block {
     let prolog = Line::code(format!("{} = {}", text(v.name()), v.number()), depth);
-    if ctx.refused {
+    if ctx.refused || !ctx.in_pool(en) {
         ctx.failed.set(true);
     }
     let options = match own_options(
@@ -869,7 +919,8 @@ fn enum_value(
         &[],
     ) {
         Ok(blocks) => {
-            let mut b = Block::new();
+            let mut b =
+                features_block(ctx, v.options().and_then(|o| o.features()), depth + 1, true);
             blocks.into_iter().for_each(|x| b.extend(x));
             b
         }
@@ -892,6 +943,7 @@ pub fn service(ctx: &Ctx<'_, '_>, svc: usize, depth: usize) -> Block {
     };
     let blocks = element_options(
         ctx,
+        svc,
         Options::Service,
         s.options().map(|o| o.0),
         depth + 1,
@@ -924,7 +976,7 @@ pub fn service(ctx: &Ctx<'_, '_>, svc: usize, depth: usize) -> Block {
         let Some(Def::Method(m)) = shared.def(meth) else {
             continue;
         };
-        let mut lines = method(ctx, &m, depth + 1);
+        let mut lines = method(ctx, meth, &m, depth + 1);
         lines.div_maybe(depth);
         out.extend(lines);
     }
@@ -943,6 +995,7 @@ pub fn service(ctx: &Ctx<'_, '_>, svc: usize, depth: usize) -> Block {
 /// two past column 79.
 fn method(
     ctx: &Ctx<'_, '_>,
+    meth: usize,
     m: &prototext_upb::descriptor_access::MethodDescriptorProto<'_>,
     depth: usize,
 ) -> Block {
@@ -954,6 +1007,7 @@ fn method(
     let s1 = format!("rpc {}({cs}{input}) ", text(m.name()));
     let blocks = element_options(
         ctx,
+        meth,
         Options::Method,
         m.options().map(|o| o.0),
         depth + 1,

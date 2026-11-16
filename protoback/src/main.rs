@@ -267,6 +267,8 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    let loads = render::pool_loads(&run.db, &render::summoned_files(&run.graph));
+    let options = render::OptionsPool::new(&run.db, &run.variant, &loads);
     let shared = render::Shared {
         graph: &run.graph,
         db: &run.db,
@@ -275,10 +277,12 @@ fn main() -> ExitCode {
         edition_defaults: &run.edition_defaults,
         options_fqns: render::options_fqns(&run.db, &run.variant),
         keep_variant_descriptor: cli.keep_descriptor_path,
+        force_proto2_output: cli.force_proto2_output,
+        force_proto2_for_editions: cli.force_proto2_for_editions || cli.prost_workaround,
         redact_comments: cli.redact_comments,
         redact_orphans: cli.redact_orphans,
-        options: render::OptionsPool::new(&run.db, &run.variant),
-        refused: render::refused_files(&run.db, &render::summoned_files(&run.graph)),
+        loads,
+        options,
     };
     let output = render::Output {
         out_repo,

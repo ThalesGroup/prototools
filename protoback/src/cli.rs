@@ -173,12 +173,6 @@ impl Cli {
         };
         note(self.emit_binary, "--emit-binary", 5);
         note(self.no_source_info, "--no-source-info", 5);
-        note(self.force_proto2_output, "--force-proto2-output", 5);
-        note(
-            self.force_proto2_for_editions || self.prost_workaround,
-            "--force-proto2-for-editions",
-            5,
-        );
         note(
             self.build_schema_db.is_some() || self.build_schema_db_deprecated.is_some(),
             "--schema-db-out",

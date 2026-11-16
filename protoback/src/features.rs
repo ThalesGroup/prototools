@@ -13,6 +13,8 @@ use crate::phase2::{EditionDefault, EditionDefaults};
 
 /// `FieldPresence.IMPLICIT`.
 pub const FIELD_PRESENCE_IMPLICIT: i32 = 2;
+/// `FieldPresence.LEGACY_REQUIRED`.
+pub const FIELD_PRESENCE_LEGACY_REQUIRED: i32 = 3;
 /// `MessageEncoding.DELIMITED`.
 pub const MESSAGE_ENCODING_DELIMITED: i32 = 2;
 /// `RepeatedFieldEncoding.PACKED`.

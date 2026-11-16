@@ -47,54 +47,28 @@ impl Options {
     }
 }
 
-/// reproto's options pool (`create_option_message_classes`): the variant's
-/// descriptor.proto, whose options messages parse every element's options.
-pub struct OptionsPool {
-    pool: Pool,
-    /// The package of the variant's descriptor.proto (`ctx.options_package`).
-    pub package: String,
-}
-
-impl OptionsPool {
-    pub fn new(db: &Database, variant: &Variant) -> Option<OptionsPool> {
-        let fdp = db.file_by_name(&variant.descriptor_proto)?;
-        let bytes = fdp.encode().ok()?;
-        let pool = Pool::new();
-        pool.add_file(&bytes).ok()?;
-        let f = prototext_upb::descriptor_access::FileDescriptorProto(fdp.as_ref());
-        let package = String::from_utf8_lossy(f.package()).into_owned();
-        Some(OptionsPool { pool, package })
-    }
-
-    /// An element's serialized options, parsed (`parse_options`); `None`
-    /// where reproto has no class for them (`ExtensionRangeOptions` in a
-    /// descriptor.proto older than it).
-    /// An element's options, from its descriptor's options message.
-    pub fn parse_ref(&self, kind: Options, options: &MessageRef<'_>) -> Option<DynamicMessage> {
-        self.parse(kind, &options.encode().ok()?)
-    }
-
-    pub fn parse(&self, kind: Options, bytes: &[u8]) -> Option<DynamicMessage> {
-        let name = if self.package.is_empty() {
-            kind.type_name().to_string()
-        } else {
-            format!("{}.{}", self.package, kind.type_name())
-        };
-        let def = self.pool.get_message_by_name(&name)?;
-        DynamicMessage::decode(&def, bytes).ok()
-    }
-}
-
-/// Which files reproto's `ctx.pool` refuses to build (spec 0429 S4,
+/// What reproto's `ctx.pool` holds, as rendering fills it (spec 0429 S4,
 /// S16): files are loaded as rendering asks for them, each after its
-/// imports, in the order of the summoned files; a file whose build
-/// fails, or one of whose imports does, is refused. Computed once, before
+/// imports, in the order of the summoned files. Computed once, before
 /// rendering, in that order: rendering itself only reads it.
-pub fn refused_files(db: &Database, order: &[String]) -> BTreeSet<String> {
+pub struct PoolLoads {
+    /// The files whose build fails, or one of whose imports does.
+    pub refused: BTreeSet<String>,
+    /// Each file loaded: the index, among the summoned files, of the first
+    /// one whose render loaded it. While the k-th renders, the pool holds
+    /// the files of rank k or less.
+    pub rank: HashMap<String, usize>,
+    /// The files loaded, in the order they were.
+    pub order: Vec<String>,
+}
+
+pub fn pool_loads(db: &Database, summoned: &[String]) -> PoolLoads {
     struct Loader<'a> {
         db: &'a Database,
         pool: Pool,
         done: HashMap<String, bool>,
+        loads: PoolLoads,
+        k: usize,
     }
     impl Loader<'_> {
         fn load(&mut self, name: &str) -> bool {
@@ -120,6 +94,10 @@ pub fn refused_files(db: &Database, order: &[String]) -> BTreeSet<String> {
                 .ok()
                 .is_some_and(|bytes| self.pool.add_file(&bytes).is_ok());
             self.done.insert(name.to_string(), ok);
+            if ok {
+                self.loads.rank.insert(name.to_string(), self.k);
+                self.loads.order.push(name.to_string());
+            }
             ok
         }
     }
@@ -127,19 +105,150 @@ pub fn refused_files(db: &Database, order: &[String]) -> BTreeSet<String> {
         db,
         pool: Pool::new(),
         done: HashMap::new(),
+        loads: PoolLoads {
+            refused: BTreeSet::new(),
+            rank: HashMap::new(),
+            order: Vec::new(),
+        },
+        k: 0,
     };
-    let mut refused = BTreeSet::new();
-    for name in order {
+    for (k, name) in summoned.iter().enumerate() {
+        loader.k = k;
         if !loader.load(name) {
-            refused.insert(name.clone());
+            loader.loads.refused.insert(name.clone());
         }
     }
-    refused
+    loader.loads
+}
+
+/// A file as reproto's options database serves it
+/// (`_MapsAsRepeatedDatabase`): every message's `map_entry` cleared, and
+/// its options with it when nothing else is set, so that a map in an
+/// option parses as the repeated entries it is on the wire, in order.
+fn without_map_entry(fdp: &DynamicMessage) -> Option<Vec<u8>> {
+    use prototext_upb::descriptor_access::{DescriptorProtoMut, FileDescriptorProtoMut};
+    fn clear(mut m: DescriptorProtoMut<'_>) {
+        if m.as_ref().options().is_some_and(|o| o.has_map_entry()) {
+            if let Ok(mut o) = m.options_mut() {
+                o.clear_map_entry();
+            }
+            if m.as_ref()
+                .options()
+                .is_some_and(|o| o.0.set_fields().is_empty())
+            {
+                m.clear_options();
+            }
+        }
+        for j in 0..m.as_ref().nested_type().len() {
+            if let Ok(n) = m.nested_type_mut(j) {
+                clear(n);
+            }
+        }
+    }
+    let mut copy = DynamicMessage::decode(fdp.descriptor(), &fdp.encode().ok()?).ok()?;
+    {
+        let mut f = FileDescriptorProtoMut(copy.as_mut());
+        for i in 0..f.as_ref().message_type().len() {
+            if let Ok(m) = f.message_type_mut(i) {
+                clear(m);
+            }
+        }
+    }
+    copy.encode().ok()
+}
+
+/// reproto's options pool (`create_option_message_classes`,
+/// `option_extensions`): the variant's descriptor.proto, whose options
+/// messages parse every element's options, then the files `ctx.pool`
+/// loads, in that order, whose extensions parse as the custom options
+/// they are once their file is loaded (`PoolLoads::rank`).
+pub struct OptionsPool {
+    pool: Pool,
+    /// The package of the variant's descriptor.proto (`ctx.options_package`).
+    pub package: String,
+}
+
+impl OptionsPool {
+    pub fn new(db: &Database, variant: &Variant, loads: &PoolLoads) -> Option<OptionsPool> {
+        let fdp = db.file_by_name(&variant.descriptor_proto)?;
+        let pool = Pool::new();
+        pool.add_file(&without_map_entry(fdp)?).ok()?;
+        for name in &loads.order {
+            if *name == variant.descriptor_proto {
+                continue;
+            }
+            let Some(bytes) = db.file_by_name(name).and_then(without_map_entry) else {
+                continue;
+            };
+            // reproto's options pool builds what its ctx.pool built, the
+            // same file with only map_entry cleared, which a map field
+            // survives as the repeated field it is: a failure here would be
+            // a file ctx.pool built, which then parses no more options.
+            if pool.add_file(&bytes).is_err() {
+                continue;
+            }
+        }
+        let f = prototext_upb::descriptor_access::FileDescriptorProto(fdp.as_ref());
+        let package = String::from_utf8_lossy(f.package()).into_owned();
+        Some(OptionsPool { pool, package })
+    }
+
+    /// An element's options, from its descriptor's options message
+    /// (`parse_options`); `None` where reproto has no class for them
+    /// (`ExtensionRangeOptions` in a descriptor.proto older than it).
+    pub fn parse_ref(&self, kind: Options, options: &MessageRef<'_>) -> Option<DynamicMessage> {
+        self.parse(kind, &options.encode().ok()?)
+    }
+
+    pub fn parse(&self, kind: Options, bytes: &[u8]) -> Option<DynamicMessage> {
+        let name = if self.package.is_empty() {
+            kind.type_name().to_string()
+        } else {
+            format!("{}.{}", self.package, kind.type_name())
+        };
+        let def = self.pool.get_message_by_name(&name)?;
+        DynamicMessage::decode(&def, bytes).ok()
+    }
 }
 
 /// What rendering an option can fail on, as reproto's `except` clauses
 /// catch it: an enum value with no name (`values_by_number.get(v).name`).
 pub struct Unrenderable;
+
+/// What an option's rendering reads beyond the option: the variant (its
+/// orphans), the graph (whether a custom option's extension is summoned),
+/// and which extensions reproto's options pool knows while the file
+/// renders (spec 0429 S4).
+pub struct Scope<'a> {
+    pub variant: &'a Variant,
+    pub graph: &'a crate::graph::Graph,
+    pub rank: &'a HashMap<String, usize>,
+    /// The rendering file's index among the summoned files.
+    pub k: usize,
+}
+
+impl Scope<'_> {
+    /// An extension reproto's options pool knows while the k-th file
+    /// renders: one declared in the variant's descriptor.proto, or in a
+    /// file the renders of files 0 to k loaded. Any other is, to reproto,
+    /// an unknown field, which it does not render.
+    fn visible(&self, ext: &Field) -> bool {
+        let file = ext.parent_file();
+        let name = file.name();
+        name == self.variant.descriptor_proto || self.rank.get(name).is_some_and(|&r| r <= self.k)
+    }
+
+    /// `canonize_opt_name` for a custom option: `(.full.name)`, an orphan
+    /// unless its extension's node is summoned.
+    fn custom_name(&self, ext: &Field) -> (String, bool) {
+        let full = format!(".{}", ext.full_name());
+        let orphan = !self
+            .graph
+            .find(&format!("fdsc:{full}"))
+            .is_some_and(|n| self.graph.nodes[n].is_summoned);
+        (format!("({full})"), orphan)
+    }
+}
 
 /// `canonize_opt_name` for a built-in option: its short name, `None` for
 /// `features` and `feature_support` (rendered elsewhere, or not at all);
@@ -183,8 +292,16 @@ fn scalar(field: &Field, value: &Value<'_>) -> Result<String, Unrenderable> {
 
 /// `ReMessage.render`: an aggregate's fields, one per line, `name: value`,
 /// scalars as Python's `repr` writes them.
-fn aggregate(msg: &MessageRef<'_>, depth: usize, out: &mut Block) -> Result<(), Unrenderable> {
+fn aggregate(
+    scope: &Scope<'_>,
+    msg: &MessageRef<'_>,
+    depth: usize,
+    out: &mut Block,
+) -> Result<(), Unrenderable> {
     for (field, value) in msg.set_fields() {
+        if field.is_extension() && !scope.visible(&field) {
+            continue;
+        }
         let name = if field.is_extension() {
             format!("[{}]", field.full_name())
         } else if field.is_group() {
@@ -198,16 +315,17 @@ fn aggregate(msg: &MessageRef<'_>, depth: usize, out: &mut Block) -> Result<(), 
         match value {
             Value::List(list) => {
                 for item in list.iter() {
-                    aggregate_value(&field, &item, &name, depth, out)?;
+                    aggregate_value(scope, &field, &item, &name, depth, out)?;
                 }
             }
-            v => aggregate_value(&field, &v, &name, depth, out)?,
+            v => aggregate_value(scope, &field, &v, &name, depth, out)?,
         }
     }
     Ok(())
 }
 
 fn aggregate_value(
+    scope: &Scope<'_>,
     field: &Field,
     value: &Value<'_>,
     name: &str,
@@ -218,7 +336,7 @@ fn aggregate_value(
         (Value::Message(m), _) => {
             out.push(Line::code(format!("{name}: {{"), depth));
             if let Some(m) = m {
-                aggregate(m, depth + 1, out)?;
+                aggregate(scope, m, depth + 1, out)?;
             }
             out.push(Line::code("}", depth));
             return Ok(());
@@ -247,6 +365,7 @@ fn aggregate_value(
 
 /// `ReFieldDescriptor.dump_option`: one value of option `name`.
 fn dump_option(
+    scope: &Scope<'_>,
     field: &Field,
     value: &Value<'_>,
     name: &str,
@@ -261,7 +380,7 @@ fn dump_option(
             } else {
                 block.push(Line::code(format!("{name} = {{"), depth));
                 if let Some(m) = m {
-                    aggregate(m, depth + 1, &mut block)?;
+                    aggregate(scope, m, depth + 1, &mut block)?;
                 }
                 block.push(Line::code("}", depth));
             }
@@ -271,33 +390,49 @@ fn dump_option(
     Ok(block)
 }
 
-/// `render_options_from_message`'s first loop (and `ReOptions.render`):
-/// the built-in options set on `msg`, in field number order, each value a
+/// `render_options_from_message` (and `ReOptions`, `ReExtensions`): the
+/// built-in options set on `msg`, in field number order, then its custom
+/// options reproto's options pool knows, by number (S4). Each value a
 /// block: `option x = v;` standalone, `x = v,` in a composite; an orphan
-/// when the variant lists it. `Err` when one cannot be rendered, which
-/// drops them all, as reproto's callers do.
-pub fn builtin(
-    variant: &Variant,
+/// when the variant lists it (built-in) or its extension is not summoned
+/// (custom). `Err` when one cannot be rendered, which drops them all, as
+/// reproto's callers do.
+pub fn options(
+    scope: &Scope<'_>,
     kind: Options,
     msg: &DynamicMessage,
     composite: bool,
     depth: usize,
     exclude: &[&str],
 ) -> Result<Vec<Block>, Unrenderable> {
-    let mut blocks = Vec::new();
-    for (field, value) in msg.as_ref().set_fields() {
+    let fields = msg.as_ref().set_fields();
+    let mut entries: Vec<(String, bool, &Field, &Value<'_>)> = Vec::new();
+    for (field, value) in &fields {
         if field.is_extension() || exclude.contains(&field.name()) {
             continue;
         }
-        let Some((name, orphan)) = builtin_name(variant, kind, &field) else {
-            continue;
-        };
+        if let Some((name, orphan)) = builtin_name(scope.variant, kind, field) {
+            entries.push((name, orphan, field, value));
+        }
+    }
+    let mut custom: Vec<&(Field, Value<'_>)> = fields
+        .iter()
+        .filter(|(f, _)| f.is_extension() && scope.visible(f))
+        .collect();
+    custom.sort_by_key(|(f, _)| f.number());
+    for (field, value) in custom {
+        let (name, orphan) = scope.custom_name(field);
+        entries.push((name, orphan, field, value));
+    }
+
+    let mut blocks = Vec::new();
+    for (name, orphan, field, value) in entries {
         let values: Vec<Value<'_>> = match (field.cardinality(), value) {
             (Cardinality::Repeated, Value::List(list)) => list.iter().collect(),
-            (_, v) => vec![v],
+            (_, v) => vec![v.clone()],
         };
         for v in values {
-            let mut block = dump_option(&field, &v, &name, depth)?;
+            let mut block = dump_option(scope, field, &v, &name, depth)?;
             if composite {
                 block.postpend(",");
             } else {
