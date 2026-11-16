@@ -277,6 +277,8 @@ fn main() -> ExitCode {
         edition_defaults: &run.edition_defaults,
         options_fqns: render::options_fqns(&run.db, &run.variant),
         keep_variant_descriptor: cli.keep_descriptor_path,
+        emit_binary: cli.emit_binary,
+        source_info: !cli.no_source_info,
         force_proto2_output: cli.force_proto2_output,
         force_proto2_for_editions: cli.force_proto2_for_editions || cli.prost_workaround,
         redact_comments: cli.redact_comments,

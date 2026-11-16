@@ -171,8 +171,6 @@ impl Cli {
                 later.push((name, step));
             }
         };
-        note(self.emit_binary, "--emit-binary", 5);
-        note(self.no_source_info, "--no-source-info", 5);
         note(
             self.build_schema_db.is_some() || self.build_schema_db_deprecated.is_some(),
             "--schema-db-out",

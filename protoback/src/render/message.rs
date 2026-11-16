@@ -162,6 +162,27 @@ fn packed_option(
 /// `globals.FIELD_NUM_MAX`.
 const FIELD_NUM_MAX: i32 = 536_870_911;
 
+/// A child's SourceCodeInfo path: its parent's, then `field`, `index`;
+/// none without a parent path or a synthesis.
+fn child_path(
+    ctx: &Ctx<'_, '_>,
+    parent: Option<&[i32]>,
+    field: i32,
+    index: usize,
+) -> Option<Vec<i32>> {
+    ctx.sci.as_ref()?;
+    let mut p = parent?.to_vec();
+    p.extend([field, index as i32]);
+    Some(p)
+}
+
+/// A block marked with its path, when it has one.
+fn mark(ctx: &Ctx<'_, '_>, block: &mut Block, path: Option<Vec<i32>>) {
+    if let (Some(sci), Some(path)) = (&ctx.sci, path) {
+        sci.mark(block, path);
+    }
+}
+
 /// A message whose body is empty collapses to `message X {}`: its first
 /// line after the header is the body's `}`.
 pub fn collapse_empty(lines: &mut Block) {
@@ -282,43 +303,31 @@ pub fn field(ctx: &Ctx<'_, '_>, fd: usize, depth: usize, is_oneof: bool) -> Bloc
 
     // A map field: its entry's key and value types.
     let mut map_string = None;
-    if f.r#type() == TYPE_MESSAGE && f.label() == LABEL_REPEATED {
-        if let Some(TypeRef::Node(entry)) = node.type_descriptor {
-            let e = &shared.graph.nodes[entry];
-            if let (true, Some(m)) = (e.present, shared.message_def(entry)) {
-                if m.options().is_some_and(|o| o.map_entry()) {
-                    let fields = m.field();
-                    let key = fields.iter().find(|x| x.number() == 1);
-                    let value = fields.iter().find(|x| x.number() == 2);
-                    match (key, value) {
-                        (Some(k), Some(v)) => {
-                            map_string = Some(format!(
-                                "map<{}, {}> {name} = {}",
-                                map_type(ctx, k, parent),
-                                map_type(ctx, v, parent),
-                                f.number()
-                            ));
-                        }
-                        _ => {
-                            out.push(anomaly(
-                                "WARNING",
-                                "render",
-                                &format!(
-                                    "non-canonical map entry '{}'; rendered as repeated message \u{2014} wire semantics differ from original",
-                                    text(m.name())
-                                ),
-                                depth,
-                            ));
-                            let r = type_ref(ctx, node.type_descriptor, &f, parent);
-                            out.push(Line::code(
-                                format!("repeated {r} {name} = {};", f.number()),
-                                depth,
-                            ));
-                            return out;
-                        }
-                    }
-                }
-            }
+    match map_kind(ctx, fd, &f) {
+        MapKind::NotMap => {}
+        MapKind::Map(k, v) => {
+            map_string = Some(format!(
+                "map<{}, {}> {name} = {}",
+                map_type(ctx, &k, parent),
+                map_type(ctx, &v, parent),
+                f.number()
+            ));
+        }
+        MapKind::Malformed(entry) => {
+            out.push(anomaly(
+                "WARNING",
+                "render",
+                &format!(
+                    "non-canonical map entry '{entry}'; rendered as repeated message \u{2014} wire semantics differ from original"
+                ),
+                depth,
+            ));
+            let r = type_ref(ctx, node.type_descriptor, &f, parent);
+            out.push(Line::code(
+                format!("repeated {r} {name} = {};", f.number()),
+                depth,
+            ));
+            return out;
         }
     }
 
@@ -395,7 +404,7 @@ pub fn field(ctx: &Ctx<'_, '_>, fd: usize, depth: usize, is_oneof: bool) -> Bloc
         let group =
             editions_group.or_else(|| shared.graph.find(&format!("desc:{}", text(f.type_name()))));
         if let Some(group) = group {
-            out.extend(message(ctx, group, depth, true));
+            out.extend(message(ctx, group, depth, true, None));
         }
     }
 
@@ -407,6 +416,152 @@ pub fn field(ctx: &Ctx<'_, '_>, fd: usize, depth: usize, is_oneof: bool) -> Bloc
         out.abandon();
     }
     out
+}
+
+/// What a field's entry type makes it (`_map_field_string`): not a map;
+/// a map, its key and value fields; or a map entry without both, whose
+/// render stops at C1.
+enum MapKind<'a> {
+    NotMap,
+    Map(FieldDescriptorProto<'a>, FieldDescriptorProto<'a>),
+    Malformed(String),
+}
+
+fn map_kind<'a>(ctx: &Ctx<'_, 'a>, fd: usize, f: &FieldDescriptorProto<'_>) -> MapKind<'a> {
+    let shared = ctx.shared;
+    if f.r#type() != TYPE_MESSAGE || f.label() != LABEL_REPEATED {
+        return MapKind::NotMap;
+    }
+    let Some(TypeRef::Node(entry)) = shared.graph.nodes[fd].type_descriptor else {
+        return MapKind::NotMap;
+    };
+    if !shared.graph.nodes[entry].present {
+        return MapKind::NotMap;
+    }
+    let Some(m) = shared.message_def(entry) else {
+        return MapKind::NotMap;
+    };
+    if !m.options().is_some_and(|o| o.map_entry()) {
+        return MapKind::NotMap;
+    }
+    let fields = m.field();
+    let key = fields.iter().find(|x| x.number() == 1).cloned();
+    let value = fields.iter().find(|x| x.number() == 2).cloned();
+    match (key, value) {
+        (Some(k), Some(v)) => MapKind::Map(k, v),
+        _ => MapKind::Malformed(text(m.name())),
+    }
+}
+
+/// A field's packing, as its render computes it: packable (repeated, of a
+/// packable type), packed explicitly, and packed in effect (explicitly,
+/// by proto3's default, or by an editions file's resolved encoding).
+struct Packing {
+    packable: bool,
+    has: bool,
+    effective: bool,
+}
+
+fn packing(
+    ctx: &Ctx<'_, '_>,
+    f: &FieldDescriptorProto<'_>,
+    msg: Option<usize>,
+    presence: Option<i32>,
+) -> Packing {
+    let options = f.options();
+    let has = options.as_ref().is_some_and(|o| o.has_packed());
+    let packable = f.label() == LABEL_REPEATED && packable(f.r#type());
+    let mut effective = if has {
+        options.as_ref().is_some_and(|o| o.packed())
+    } else {
+        ctx.syntax == "proto3"
+    };
+    if presence.is_some() && !has && packable {
+        effective = field_feature(ctx, msg, f, Feature::RepeatedFieldEncoding)
+            == Some(REPEATED_FIELD_ENCODING_PACKED);
+    }
+    Packing {
+        packable,
+        has,
+        effective,
+    }
+}
+
+/// What a field's descriptor takes from its render (spec 0429 S10).
+pub struct FieldBinary {
+    pub is_map: bool,
+    /// `field_label_enum`, with `is_oneof` false: reproto's second pass
+    /// renders every field without it.
+    pub label: i32,
+    /// `options.packed`, when reproto sets it: a packable field packed
+    /// explicitly, or packed otherwise than its syntax's default.
+    pub packed: Option<bool>,
+    /// `should_render_default`.
+    pub keep_default: bool,
+}
+
+/// The decisions a field's descriptor needs, made as its render makes
+/// them; `None` for a malformed map, whose render returns before them.
+/// Packing comes after the default in reproto's `try`: a default that
+/// fails to render leaves it unset.
+pub fn field_binary(ctx: &Ctx<'_, '_>, fd: usize) -> Option<FieldBinary> {
+    let shared = ctx.shared;
+    let Some(Def::Field(f)) = shared.def(fd) else {
+        return None;
+    };
+    let kind = map_kind(ctx, fd, &f);
+    if matches!(kind, MapKind::Malformed(_)) {
+        return None;
+    }
+    let parent = shared.graph.nodes[fd].parent.unwrap_or(ctx.file);
+    let msg = (shared.graph.nodes[parent].kind == Kind::Message).then_some(parent);
+    let presence = field_feature(ctx, msg, &f, Feature::FieldPresence);
+    let keep_default = f.has_default_value()
+        && match presence {
+            Some(p) => p != FIELD_PRESENCE_IMPLICIT,
+            None => !ctx.proto3(),
+        };
+    let default_ok = !keep_default || default_value(&f, 0).is_ok();
+    let packed = if default_ok {
+        let p = packing(ctx, &f, msg, presence);
+        (p.packable && (p.has || p.effective != (ctx.syntax == "proto3"))).then_some(p.effective)
+    } else {
+        None
+    };
+    Some(FieldBinary {
+        is_map: matches!(kind, MapKind::Map(..)),
+        label: field_label_enum(ctx, &f, presence),
+        packed,
+        keep_default,
+    })
+}
+
+/// `field_label_enum` with `is_oneof` false: repeated; optional in an
+/// editions target; from resolved presence for an editions file written
+/// as proto2; optional in proto3; required or optional in proto2.
+fn field_label_enum(ctx: &Ctx<'_, '_>, f: &FieldDescriptorProto<'_>, presence: Option<i32>) -> i32 {
+    const LABEL_OPTIONAL: i32 = 1;
+    if f.label() == LABEL_REPEATED {
+        return LABEL_REPEATED;
+    }
+    if ctx.editions_target() {
+        return LABEL_OPTIONAL;
+    }
+    if let Some(p) = presence {
+        return if p == FIELD_PRESENCE_LEGACY_REQUIRED {
+            LABEL_REQUIRED
+        } else {
+            LABEL_OPTIONAL
+        };
+    }
+    if ctx.proto3() {
+        return LABEL_OPTIONAL;
+    }
+    if f.label() == LABEL_REQUIRED {
+        LABEL_REQUIRED
+    } else {
+        LABEL_OPTIONAL
+    }
 }
 
 /// A field's options block (`ReFieldDescriptorProto.render`'s `try`).
@@ -441,20 +596,9 @@ fn field_options(
         ));
     }
     let options = f.options();
-    let has_packed = options.as_ref().is_some_and(|o| o.has_packed());
-    let is_packable = f.label() == LABEL_REPEATED && packable(f.r#type());
-    let mut effective = if has_packed {
-        options.as_ref().is_some_and(|o| o.packed())
-    } else {
-        ctx.syntax == "proto3"
-    };
-    let editions = presence.is_some();
-    if editions && !has_packed && is_packable {
-        effective = field_feature(ctx, msg, f, Feature::RepeatedFieldEncoding)
-            == Some(REPEATED_FIELD_ENCODING_PACKED);
-    }
-    if is_packable || has_packed {
-        if let Some(v) = packed_option(ctx, has_packed, effective, editions) {
+    let p = packing(ctx, f, msg, presence);
+    if p.packable || p.has {
+        if let Some(v) = packed_option(ctx, p.has, p.effective, presence.is_some()) {
             opt_block.push(Line::code(format!("packed = {v},"), depth + 1));
         }
     }
@@ -529,7 +673,13 @@ pub fn format_composite(mut options: Block, mut prolog: Line, depth: usize) -> B
 /// `ReDescriptorProto.render`, stage 1: the body of message node `msg`,
 /// its lines at `depth + 1`, its closing `}` at `depth` (the caller adds
 /// the header). `force`: a group's body, its fields never orphaned.
-pub fn message(ctx: &Ctx<'_, '_>, msg: usize, depth: usize, force: bool) -> Block {
+pub fn message(
+    ctx: &Ctx<'_, '_>,
+    msg: usize,
+    depth: usize,
+    force: bool,
+    sci_path: Option<&[i32]>,
+) -> Block {
     let shared = ctx.shared;
     let mut out = Block::new();
     let Some(m) = shared.message_def(msg) else {
@@ -544,7 +694,7 @@ pub fn message(ctx: &Ctx<'_, '_>, msg: usize, depth: usize, force: bool) -> Bloc
         out.div_maybe(depth);
     }
 
-    let ext = extend_blocks(ctx, msg, &m.extension(), depth + 1, false);
+    let ext = extend_blocks(ctx, msg, &m.extension(), depth + 1, false, sci_path);
     if !ext.is_empty() {
         out.extend(ext);
         out.div_maybe(depth);
@@ -619,7 +769,7 @@ pub fn message(ctx: &Ctx<'_, '_>, msg: usize, depth: usize, force: bool) -> Bloc
     }
 
     let mut done = vec![false; oneofs.len()];
-    for f in &fields {
+    for (f_idx, f) in fields.iter().enumerate() {
         let Some(fd) = shared.child(Kind::Field, msg, f.name()) else {
             continue;
         };
@@ -627,6 +777,9 @@ pub fn message(ctx: &Ctx<'_, '_>, msg: usize, depth: usize, force: bool) -> Bloc
         let real_oneof = oneof.filter(|&o| !synthetic.get(o).copied().unwrap_or(false));
         let Some(o) = real_oneof else {
             let mut lines = field(ctx, fd, depth + 1, false);
+            if shared.graph.nodes[fd].is_summoned {
+                mark(ctx, &mut lines, child_path(ctx, sci_path, 2, f_idx));
+            }
             if !force && !shared.graph.nodes[fd].is_summoned {
                 lines.abandon();
             }
@@ -639,7 +792,7 @@ pub fn message(ctx: &Ctx<'_, '_>, msg: usize, depth: usize, force: bool) -> Bloc
         done[o] = true;
         let mut block = Block::new();
         let mut is_orphan = true;
-        for f2 in &fields {
+        for (f2_idx, f2) in fields.iter().enumerate() {
             if !(f2.has_oneof_index() && f2.oneof_index() as usize == o) {
                 continue;
             }
@@ -647,6 +800,9 @@ pub fn message(ctx: &Ctx<'_, '_>, msg: usize, depth: usize, force: bool) -> Bloc
                 continue;
             };
             let mut lines = field(ctx, fd2, depth + 2, true);
+            if shared.graph.nodes[fd2].is_summoned {
+                mark(ctx, &mut lines, child_path(ctx, sci_path, 2, f2_idx));
+            }
             if shared.graph.nodes[fd2].is_summoned {
                 is_orphan = false;
             } else {
@@ -661,11 +817,11 @@ pub fn message(ctx: &Ctx<'_, '_>, msg: usize, depth: usize, force: bool) -> Bloc
         };
         block.insert(
             0,
-            Line {
-                text: format!("oneof {} {{", text(oneofs[o].name())),
-                level: depth + 1,
+            Line::new(
+                format!("oneof {} {{", text(oneofs[o].name())),
+                depth + 1,
                 kind,
-            },
+            ),
         );
         // The oneof's options, from its descriptor (no `try`: a failure
         // fails the file).
@@ -698,16 +854,12 @@ pub fn message(ctx: &Ctx<'_, '_>, msg: usize, depth: usize, force: bool) -> Bloc
             }
             Err(_) => ctx.failed.set(true),
         }
-        block.push(Line {
-            text: "}".into(),
-            level: depth + 1,
-            kind,
-        });
+        block.push(Line::new("}", depth + 1, kind));
         out.extend(block);
     }
     out.div_maybe(depth);
 
-    for n in m.nested_type() {
+    for (n_idx, n) in m.nested_type().iter().enumerate() {
         let Some(nested) = shared.child(Kind::Message, msg, n.name()) else {
             continue;
         };
@@ -719,12 +871,18 @@ pub fn message(ctx: &Ctx<'_, '_>, msg: usize, depth: usize, force: bool) -> Bloc
         if nn.is_group || is_map_entry {
             continue;
         }
-        let mut lines = message(ctx, nested, depth + 1, false);
+        let path = if nn.is_summoned {
+            child_path(ctx, sci_path, 3, n_idx)
+        } else {
+            None
+        };
+        let mut lines = message(ctx, nested, depth + 1, false, path.as_deref());
         lines.insert(
             0,
             Line::code(format!("message {} {{", text(n.name())), depth + 1),
         );
         collapse_empty(&mut lines);
+        mark(ctx, &mut lines, path);
         if !nn.is_summoned {
             lines.abandon();
         }
@@ -732,9 +890,12 @@ pub fn message(ctx: &Ctx<'_, '_>, msg: usize, depth: usize, force: bool) -> Bloc
     }
     out.div_maybe(depth);
 
-    for e in m.enum_type() {
+    for (e_idx, e) in m.enum_type().iter().enumerate() {
         if let Some(en) = shared.child(Kind::Enum, msg, e.name()) {
-            out.extend(enumeration(ctx, en, depth + 1));
+            let path = child_path(ctx, sci_path, 4, e_idx);
+            let mut lines = enumeration(ctx, en, depth + 1, path.as_deref());
+            mark(ctx, &mut lines, path);
+            out.extend(lines);
         }
     }
     out.div_maybe(depth);
@@ -849,7 +1010,7 @@ fn reserved(ctx: &Ctx<'_, '_>, m: &DescriptorProto<'_>, depth: usize) -> Block {
 }
 
 /// `ReEnumDescriptorProto.render`, stage 1.
-pub fn enumeration(ctx: &Ctx<'_, '_>, en: usize, depth: usize) -> Block {
+pub fn enumeration(ctx: &Ctx<'_, '_>, en: usize, depth: usize, sci_path: Option<&[i32]>) -> Block {
     let mut out = Block::new();
     let Some(Def::Enum(e)) = ctx.shared.def(en) else {
         return out;
@@ -870,8 +1031,10 @@ pub fn enumeration(ctx: &Ctx<'_, '_>, en: usize, depth: usize) -> Block {
     );
     blocks.into_iter().for_each(|b| out.extend(b));
     out.div_maybe(depth);
-    for v in e.value() {
-        out.extend(enum_value(ctx, en, &v, depth + 1));
+    for (v_idx, v) in e.value().iter().enumerate() {
+        let mut lines = enum_value(ctx, en, v, depth + 1);
+        mark(ctx, &mut lines, child_path(ctx, sci_path, 2, v_idx));
+        out.extend(lines);
     }
     let ranges = e.reserved_range();
     let names = e.reserved_name();
@@ -941,7 +1104,7 @@ fn enum_value(
 }
 
 /// `ReServiceDescriptorProto.render`: its options, its reachable methods.
-pub fn service(ctx: &Ctx<'_, '_>, svc: usize, depth: usize) -> Block {
+pub fn service(ctx: &Ctx<'_, '_>, svc: usize, depth: usize, sci_path: Option<&[i32]>) -> Block {
     let shared = ctx.shared;
     let mut out = Block::new();
     let Some(Def::Service(s)) = shared.def(svc) else {
@@ -970,6 +1133,7 @@ pub fn service(ctx: &Ctx<'_, '_>, svc: usize, depth: usize) -> Block {
     if !node.stripped_methods.is_empty() {
         out.div_maybe(depth);
     }
+    let mut sci_method = 0;
     for m in s.method() {
         let Some(meth) = shared.child(Kind::Method, svc, m.name()) else {
             continue;
@@ -977,12 +1141,15 @@ pub fn service(ctx: &Ctx<'_, '_>, svc: usize, depth: usize) -> Block {
         if !shared.graph.nodes[meth].is_reachable {
             continue;
         }
+        let path = child_path(ctx, sci_path, 2, sci_method);
+        sci_method += 1;
         // The node's own definition, as for every node (the first one,
         // under --keep-duplicates).
         let Some(Def::Method(m)) = shared.def(meth) else {
             continue;
         };
         let mut lines = method(ctx, meth, &m, depth + 1);
+        mark(ctx, &mut lines, path);
         lines.div_maybe(depth);
         out.extend(lines);
     }

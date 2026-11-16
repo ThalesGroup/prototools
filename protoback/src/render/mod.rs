@@ -6,12 +6,14 @@
 //! `.proto` text. Stage 1, structure: no options, no comments from source
 //! info, no binary output yet (spec 0429 S1).
 
+mod binary;
 mod comments;
 mod file;
 mod message;
 mod names;
 mod options;
 mod pyfmt;
+mod sci;
 mod text;
 
 use std::path::PathBuf;
@@ -48,6 +50,11 @@ pub struct Shared<'a> {
     pub options_fqns: BTreeSet<String>,
     /// `--keep-descriptor-path`.
     pub keep_variant_descriptor: bool,
+    /// `--emit-binary`: each file's descriptor written beside its text.
+    pub emit_binary: bool,
+    /// Not `--no-source-info`: the descriptor's SourceCodeInfo synthesized
+    /// from the text.
+    pub source_info: bool,
     /// `--force-proto2-output`: every file written as proto2.
     pub force_proto2_output: bool,
     /// `--force-proto2-for-editions` (`--prost-workaround`): editions
@@ -206,9 +213,13 @@ pub fn run(shared: &Shared<'_>, output: &Output) -> std::io::Result<()> {
         }
         // A file reproto cannot render is not written (an edition Python
         // protobuf does not name).
-        let Some(block) = file::render(shared, i, k) else {
+        let Some((block, descriptor)) = file::render(shared, i, k) else {
             continue;
         };
+        // reproto writes the descriptor first (`with_suffix(".pb")`).
+        if let Some(bytes) = descriptor {
+            std::fs::write(path.with_extension("pb"), bytes)?;
+        }
         std::fs::write(
             &path,
             block.flush(shared.redact_comments, shared.redact_orphans),

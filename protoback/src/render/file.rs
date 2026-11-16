@@ -35,6 +35,9 @@ pub struct Ctx<'s, 'a> {
     /// A render step failed that reproto does not catch below the file:
     /// the file is not written.
     pub failed: std::cell::Cell<bool>,
+    /// The SourceCodeInfo markers, when a descriptor is written with its
+    /// source info (`ctx.out_sci`).
+    pub sci: Option<super::sci::Sci>,
 }
 
 impl Ctx<'_, '_> {
@@ -235,13 +238,38 @@ pub fn extend_blocks(
     extensions: &[FieldDescriptorProto<'_>],
     depth: usize,
     track_orphans: bool,
+    sci_path: Option<&[i32]>,
 ) -> Block {
     let shared = ctx.shared;
     let mut out = Block::new();
-    // Each extension's node, and its extendee's short name, when allowed.
-    let mut members: Vec<(usize, String)> = Vec::new();
+    // Each extension's SourceCodeInfo path (spec 0141): a file's, field 7,
+    // counting its summoned extensions only, as its descriptor keeps them;
+    // a message's, field 6 under the message's path, counting them all.
+    let is_file = shared.graph.nodes[owner].kind == Kind::File;
+    let mut paths: Vec<Option<Vec<i32>>> = vec![None; extensions.len()];
+    if ctx.sci.is_some() && (is_file || sci_path.is_some()) {
+        let prefix = sci_path.unwrap_or(&[]);
+        let mut counter = 0;
+        for (i, e) in extensions.iter().enumerate() {
+            if is_file {
+                let summoned = shared
+                    .child(Kind::Field, owner, e.name())
+                    .is_some_and(|fd| shared.graph.nodes[fd].is_summoned);
+                if !summoned {
+                    continue;
+                }
+            }
+            let mut p = prefix.to_vec();
+            p.extend([if is_file { 7 } else { 6 }, counter]);
+            paths[i] = Some(p);
+            counter += 1;
+        }
+    }
+    // Each extension's node, its extendee's short name, its path, when
+    // allowed.
+    let mut members: Vec<(usize, String, Option<Vec<i32>>)> = Vec::new();
     let mut refs: Vec<String> = Vec::new();
-    for e in extensions {
+    for (i, e) in extensions.iter().enumerate() {
         let extendee = text(e.extendee());
         if !allow_extend_block(ctx, &extendee) {
             out.push(anomaly(
@@ -263,18 +291,22 @@ pub fn extend_blocks(
         if !refs.contains(&r) {
             refs.push(r.clone());
         }
-        members.push((fd, r));
+        members.push((fd, r, paths[i].clone()));
     }
     for r in &refs {
         let mut block = Block::new();
         let mut is_orphan = true;
-        for (fd, fr) in &members {
+        for (fd, fr, path) in &members {
             if fr != r {
                 continue;
             }
             let mut blk = super::message::field(ctx, *fd, depth + 1, false);
+            let summoned = shared.graph.nodes[*fd].is_summoned;
+            if let (Some(sci), Some(path), true) = (&ctx.sci, path, !track_orphans || summoned) {
+                sci.mark(&mut blk, path.clone());
+            }
             if track_orphans {
-                if shared.graph.nodes[*fd].is_summoned {
+                if summoned {
                     is_orphan = false;
                 } else {
                     blk.abandon();
@@ -289,19 +321,8 @@ pub fn extend_blocks(
         } else {
             LineType::Code
         };
-        block.insert(
-            0,
-            Line {
-                text: format!("extend {r} {{"),
-                level: depth,
-                kind,
-            },
-        );
-        block.push(Line {
-            text: "}".into(),
-            level: depth,
-            kind,
-        });
+        block.insert(0, Line::new(format!("extend {r} {{"), depth, kind));
+        block.push(Line::new("}", depth, kind));
         out.extend(block);
     }
     out
@@ -309,7 +330,7 @@ pub fn extend_blocks(
 
 /// `ReFileDescriptorProto.render`, stage 1: the header, syntax, package,
 /// imports, then services, enums, messages and extensions.
-pub fn render(shared: &Shared<'_>, file: usize, k: usize) -> Option<Block> {
+pub fn render(shared: &Shared<'_>, file: usize, k: usize) -> Option<(Block, Option<Vec<u8>>)> {
     let f = shared.file_def(file)?;
     let syntax = {
         let s = text(f.syntax());
@@ -338,6 +359,7 @@ pub fn render(shared: &Shared<'_>, file: usize, k: usize) -> Option<Block> {
         target,
         refused: shared.loads.refused.contains(&text(f.name())),
         failed: std::cell::Cell::new(false),
+        sci: (shared.emit_binary && shared.source_info).then(super::sci::Sci::default),
     };
     let name = text(f.name());
     let depth = 0;
@@ -447,11 +469,7 @@ pub fn render(shared: &Shared<'_>, file: usize, k: usize) -> Option<Block> {
         } else {
             node.fqdn.clone()
         };
-        out.push(Line {
-            text: format!("{cmd} {dep_name};"),
-            level: depth,
-            kind,
-        });
+        out.push(Line::new(format!("{cmd} {dep_name};"), depth, kind));
     }
     let topo_file = shared.topo_file(&name);
     if let Some(tf) = topo_file {
@@ -467,6 +485,9 @@ pub fn render(shared: &Shared<'_>, file: usize, k: usize) -> Option<Block> {
     }
     out.div_maybe(depth);
 
+    // The SourceCodeInfo paths count what the descriptor keeps (spec
+    // 0141): visible services, reachable enums, summoned messages.
+    let mut sci_svc = 0;
     for s in f.service() {
         let Some(svc) = shared.child(Kind::Service, file, s.name()) else {
             continue;
@@ -474,10 +495,17 @@ pub fn render(shared: &Shared<'_>, file: usize, k: usize) -> Option<Block> {
         if !shared.graph.nodes[svc].is_reachable {
             continue;
         }
-        out.extend(super::message::service(&ctx, svc, depth));
+        let path = ctx.sci.as_ref().map(|_| vec![6, sci_svc]);
+        let mut lines = super::message::service(&ctx, svc, depth, path.as_deref());
+        if let (Some(sci), Some(path)) = (&ctx.sci, path) {
+            sci.mark(&mut lines, path);
+        }
+        sci_svc += 1;
+        out.extend(lines);
     }
     out.div_maybe(depth);
 
+    let mut sci_enum = 0;
     for e in f.enum_type() {
         let Some(en) = shared.child(Kind::Enum, file, e.name()) else {
             continue;
@@ -485,10 +513,17 @@ pub fn render(shared: &Shared<'_>, file: usize, k: usize) -> Option<Block> {
         if !shared.graph.nodes[en].is_reachable {
             continue;
         }
-        out.extend(super::message::enumeration(&ctx, en, depth));
+        let path = ctx.sci.as_ref().map(|_| vec![5, sci_enum]);
+        let mut lines = super::message::enumeration(&ctx, en, depth, path.as_deref());
+        if let (Some(sci), Some(path)) = (&ctx.sci, path) {
+            sci.mark(&mut lines, path);
+        }
+        sci_enum += 1;
+        out.extend(lines);
     }
     out.div_maybe(depth);
 
+    let mut sci_msg = 0;
     for m in f.message_type() {
         let Some(msg) = shared.child(Kind::Message, file, m.name()) else {
             continue;
@@ -497,12 +532,17 @@ pub fn render(shared: &Shared<'_>, file: usize, k: usize) -> Option<Block> {
         if node.is_group {
             continue;
         }
-        let mut lines = super::message::message(&ctx, msg, depth, false);
+        let path = (ctx.sci.is_some() && node.is_summoned).then(|| vec![4, sci_msg]);
+        let mut lines = super::message::message(&ctx, msg, depth, false, path.as_deref());
         lines.insert(
             0,
             Line::code(format!("message {} {{", text(m.name())), depth),
         );
         super::message::collapse_empty(&mut lines);
+        if let (Some(sci), Some(path)) = (&ctx.sci, path) {
+            sci.mark(&mut lines, path);
+            sci_msg += 1;
+        }
         lines.div_maybe(depth);
         if !node.is_summoned {
             lines.abandon();
@@ -512,14 +552,24 @@ pub fn render(shared: &Shared<'_>, file: usize, k: usize) -> Option<Block> {
     out.div_maybe(depth);
 
     let extensions = f.extension();
-    out.extend(extend_blocks(&ctx, file, &extensions, depth, true));
+    out.extend(extend_blocks(&ctx, file, &extensions, depth, true, None));
     out.div_maybe(depth);
 
     out.trim_end(0);
     if ctx.failed.get() {
         return None;
     }
-    Some(out)
+    // The descriptor, with the SourceCodeInfo the text's markers resolve
+    // to (spec 0429 S10).
+    let descriptor = if shared.emit_binary {
+        let locations = ctx.sci.as_ref().map_or_else(Vec::new, |sci| {
+            sci.resolve(&out, shared.redact_comments, shared.redact_orphans)
+        });
+        super::binary::file(&ctx, &locations)
+    } else {
+        None
+    };
+    Some((out, descriptor))
 }
 
 /// `render_file_options`: the file's options, standalone; A3 when the pool

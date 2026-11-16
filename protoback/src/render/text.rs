@@ -24,31 +24,32 @@ pub struct Line {
     pub text: String,
     pub level: usize,
     pub kind: LineType,
+    /// The SourceCodeInfo markers this line opens or closes (spec 0429
+    /// S10): reproto matches its markers to lines by identity, which
+    /// protoback's lines, values, carry as these ids.
+    pub marks: Vec<u32>,
 }
 
 impl Line {
-    pub fn code(text: impl Into<String>, level: usize) -> Line {
+    pub fn new(text: impl Into<String>, level: usize, kind: LineType) -> Line {
         Line {
             text: text.into(),
             level,
-            kind: LineType::Code,
+            kind,
+            marks: Vec::new(),
         }
+    }
+
+    pub fn code(text: impl Into<String>, level: usize) -> Line {
+        Line::new(text, level, LineType::Code)
     }
 
     pub fn comment(text: impl Into<String>, level: usize) -> Line {
-        Line {
-            text: text.into(),
-            level,
-            kind: LineType::Comment,
-        }
+        Line::new(text, level, LineType::Comment)
     }
 
     pub fn orphan(text: impl Into<String>, level: usize) -> Line {
-        Line {
-            text: text.into(),
-            level,
-            kind: LineType::Orphan,
-        }
+        Line::new(text, level, LineType::Orphan)
     }
 }
 

@@ -122,6 +122,49 @@ fn list_elements_change_in_place_and_go() {
 }
 
 #[test]
+fn a_merge_appends_repeated_fields_and_replaces_singular_ones() {
+    let pool = Pool::new();
+    pool.load_set(OPTIONS);
+    let mut set = decode(&pool, "google.protobuf.FileDescriptorSet", OPTIONS);
+    let before = FileDescriptorSet::new(set.as_ref()).unwrap();
+    let file = &before.file()[1];
+    let (name, messages) = (file.name().to_vec(), file.message_type().len());
+    let first_message = file.message_type()[0].name().to_vec();
+    let options = file.options().is_some();
+    // A FileDescriptorProto of its own, merged into the set's second file:
+    // `message_type` (4) appended to, `package` (2) replaced, `options`
+    // (8, a message) merged into, not replaced.
+    let extra = {
+        let file_def = pool
+            .get_message_by_name("google.protobuf.FileDescriptorProto")
+            .unwrap();
+        let mut f = DynamicMessage::new(&file_def);
+        {
+            let mut w = prototext_upb::descriptor_access::FileDescriptorProtoMut(f.as_mut());
+            w.set_package(b"merged").unwrap();
+            w.push_message_type()
+                .unwrap()
+                .set_name(b"Appended")
+                .unwrap();
+        }
+        f.encode().unwrap()
+    };
+    {
+        let mut w = FileDescriptorSetMut(set.as_mut());
+        w.file_mut(1).unwrap().0.merge_from(&extra).unwrap();
+    }
+    let after = FileDescriptorSet::new(set.as_ref()).unwrap();
+    let file = &after.file()[1];
+    assert_eq!(file.name(), &name[..]);
+    assert_eq!(file.package(), b"merged");
+    let names: Vec<&[u8]> = file.message_type().iter().map(|m| m.name()).collect();
+    assert_eq!(names.len(), messages + 1);
+    assert_eq!(names[0], &first_message[..]);
+    assert_eq!(names[messages], b"Appended");
+    assert_eq!(file.options().is_some(), options);
+}
+
+#[test]
 fn another_package_and_an_older_shape_read_and_keep_the_rest() {
     let pool = Pool::new();
     pool.load_set(VARIANT);

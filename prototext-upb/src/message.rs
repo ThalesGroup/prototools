@@ -100,6 +100,47 @@ pub enum Scalar<'b> {
     Bytes(&'b [u8]),
 }
 
+/// Decode `bytes` into `msg`, a message of type `def` in `arena`, merging
+/// into what it holds: extensions known to the pool decoded as
+/// extensions, the others kept as unknown fields.
+///
+/// # Safety
+/// `msg` is a live message of type `def`, allocated in `arena`.
+unsafe fn decode_into(
+    def: &Message,
+    msg: NonNull<ffi::RawMessage>,
+    arena: *mut ffi::Arena,
+    bytes: &[u8],
+) -> Result<(), MessageError> {
+    let status = {
+        // The extension registry grows as files are added.
+        let _state = def.pool.read();
+        // SAFETY: a valid pool, message, table and arena (the caller's);
+        // `bytes` is valid for its length and copied (option 0: no
+        // aliasing).
+        unsafe {
+            let extreg = ffi::upb_DefPool_ExtensionRegistry(def.pool.raw.as_ptr());
+            ffi::upb_Decode(
+                bytes.as_ptr().cast(),
+                bytes.len(),
+                msg.as_ptr(),
+                mini_table(def),
+                extreg,
+                0,
+                arena,
+            )
+        }
+    };
+    match status {
+        ffi::STATUS_OK => Ok(()),
+        1 => Err(MessageError("malformed message".into())),
+        2 => Err(MessageError("out of memory".into())),
+        3 => Err(MessageError("invalid UTF-8 in a string field".into())),
+        4 => Err(MessageError("nested too deep".into())),
+        other => Err(MessageError(format!("upb_Decode status {other}"))),
+    }
+}
+
 /// Read one value of type `kind` out of a upb value.
 ///
 /// # Safety
@@ -239,32 +280,9 @@ impl DynamicMessage {
     /// unknown fields are re-encoded as they came.
     pub fn decode(def: &Message, bytes: &[u8]) -> Result<DynamicMessage, MessageError> {
         let message = DynamicMessage::new(def);
-        let status = {
-            // The extension registry grows as files are added.
-            let _state = def.pool.read();
-            // SAFETY: a valid pool, message, table and arena; `bytes` is
-            // valid for its length and copied (option 0: no aliasing).
-            unsafe {
-                let extreg = ffi::upb_DefPool_ExtensionRegistry(def.pool.raw.as_ptr());
-                ffi::upb_Decode(
-                    bytes.as_ptr().cast(),
-                    bytes.len(),
-                    message.msg.as_ptr(),
-                    mini_table(def),
-                    extreg,
-                    0,
-                    message.arena.raw(),
-                )
-            }
-        };
-        match status {
-            ffi::STATUS_OK => Ok(message),
-            1 => Err(MessageError("malformed message".into())),
-            2 => Err(MessageError("out of memory".into())),
-            3 => Err(MessageError("invalid UTF-8 in a string field".into())),
-            4 => Err(MessageError("nested too deep".into())),
-            other => Err(MessageError(format!("upb_Decode status {other}"))),
-        }
+        // SAFETY: the message is of type `def`, and lives in that arena.
+        unsafe { decode_into(def, message.msg, message.arena.raw(), bytes)? };
+        Ok(message)
     }
 
     /// The message's type.
@@ -603,6 +621,15 @@ impl fmt::Debug for MessageMut<'_> {
 impl MessageMut<'_> {
     pub fn descriptor(&self) -> &Message {
         &self.def
+    }
+
+    /// Decode `bytes` into this message (protobuf's `MergeFromString`): a
+    /// singular field set in `bytes` replaces this one, a repeated one is
+    /// appended to, a message merged into; unknown fields are kept after
+    /// this message's own.
+    pub fn merge_from(&mut self, bytes: &[u8]) -> Result<(), MessageError> {
+        // SAFETY: the message is of type `self.def`, and lives in `arena`.
+        unsafe { decode_into(&self.def, self.msg, self.arena, bytes) }
     }
 
     pub fn as_ref(&self) -> MessageRef<'_> {

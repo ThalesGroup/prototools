@@ -63,6 +63,9 @@ FLAG_SETS: dict[str, list[str]] = {
     "force-proto2-for-editions": ["--force-proto2-for-editions"],
     "schema-db": ["--emit-binary", "--emit-scoring-yaml",
                   "--emit-extension-ranges", "--schema-db-out=out/db.desc"],
+    # The descriptors beside the text (spec 0429 S10).
+    "emit-binary": ["--emit-binary"],
+    "emit-binary-force-proto2-output": ["--emit-binary", "--force-proto2-output"],
 }
 DEFAULT_VARIANT = ["--use-variant", "descriptor"]
 
@@ -276,7 +279,14 @@ def cases(corpus: Path) -> list[Case]:
                         ["-I", str(d), *proto_out, f"{d.name}.pb"]))
     for d in sorted((corpus / "sourceinfo").iterdir()):
         for name, flags in (("default", []),
-                            ("redact", ["--redact-comments", "--redact-orphans"])):
+                            ("redact", ["--redact-comments", "--redact-orphans"]),
+                            # The SourceCodeInfo synthesized from the text,
+                            # with comments, redacted, and left out.
+                            ("emit-binary", ["--emit-binary"]),
+                            ("emit-binary-redact", ["--emit-binary", "--redact-comments",
+                                                    "--redact-orphans"]),
+                            ("emit-binary-no-source-info", ["--emit-binary",
+                                                            "--no-source-info"])):
             out.append(Case(f"sourceinfo/{d.name}/{name}",
                             ["-I", str(d), *proto_out, *flags, f"{d.name}.pb"]))
     for d in sorted((corpus / "text").iterdir()):

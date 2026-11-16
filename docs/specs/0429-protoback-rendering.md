@@ -449,3 +449,26 @@ not deferred with it: stage 3 needs it on one thread already.
     and their source info, each also under `--redact-comments
     --redact-orphans`. `--compare out/proto`, every corpus: 690 cases,
     613 identical; the 77 others refused (stage 6, step 6).
+- **Stage 6, `--emit-binary`** (2026-11-16): `render/binary.rs`, each
+  file's descriptor as reproto's second pass builds it, built once (S11:
+  the output is reproto's, the repeated renders are not): the definition
+  copied, names canonized and renamed, syntax, edition and features made
+  the target's, the children the second pass keeps rebuilt in (at file
+  level the visible, reachable, summoned ones; within a message all, but
+  a malformed map), a field's label as the second pass computes it
+  (`is_oneof` false), its packing, its default, a synthetic group's
+  `..` type name (S12). The decisions it shares with the text, map
+  detection and packing, made once for both (`render/message.rs`). The
+  SourceCodeInfo synthesized from the text (`render/sci.rs`): each
+  element's lines marked with its path, by reproto's counters, then
+  resolved against the lines `flush` writes; reproto matches markers to
+  lines by identity, protoback's lines carry ids. `--no-source-info`.
+  `prototext-upb` gains `MessageMut::merge_from`, protobuf's
+  `MergeFromString`, which appends a child's descriptor as reproto does.
+  - The harness's `emit-binary` cases: every fixture with its imports,
+    also under `--force-proto2-output`; every `sourceinfo/` fixture,
+    also redacted and without source info. `--compare out/proto`, every
+    corpus: 1,055 cases, 978 identical, `.pb` files included; the 77
+    others are `--schema-db-out`'s (step 6 of spec 0424), refused.
+  - Rendering complete. Not yet: files rendered in parallel, `--jobs`
+    (S4, G3), and rendering timed (G4).
