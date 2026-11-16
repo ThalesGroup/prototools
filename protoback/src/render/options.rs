@@ -60,6 +60,9 @@ pub struct PoolLoads {
     pub rank: HashMap<String, usize>,
     /// The files loaded, in the order they were.
     pub order: Vec<String>,
+    /// The pool itself, every file loaded: what the scoring graphs read
+    /// (spec 0430 S1), seeing a file's extensions by its rank.
+    pub pool: Pool,
 }
 
 pub fn pool_loads(db: &Database, summoned: &[String]) -> PoolLoads {
@@ -109,6 +112,7 @@ pub fn pool_loads(db: &Database, summoned: &[String]) -> PoolLoads {
             refused: BTreeSet::new(),
             rank: HashMap::new(),
             order: Vec::new(),
+            pool: Pool::new(),
         },
         k: 0,
     };
@@ -118,6 +122,7 @@ pub fn pool_loads(db: &Database, summoned: &[String]) -> PoolLoads {
             loader.loads.refused.insert(name.clone());
         }
     }
+    loader.loads.pool = loader.pool;
     loader.loads
 }
 

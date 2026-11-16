@@ -21,6 +21,7 @@ mod phase5;
 mod phase6;
 mod render;
 mod run;
+mod scoring;
 mod select;
 mod topology;
 mod variant;
@@ -278,6 +279,8 @@ fn main() -> ExitCode {
         options_fqns: render::options_fqns(&run.db, &run.variant),
         keep_variant_descriptor: cli.keep_descriptor_path,
         emit_binary: cli.emit_binary,
+        emit_scoring_yaml: cli.emit_scoring_yaml || cli.emit_scoring_graphs,
+        emit_extension_ranges: cli.emit_extension_ranges,
         source_info: !cli.no_source_info,
         force_proto2_output: cli.force_proto2_output,
         force_proto2_for_editions: cli.force_proto2_for_editions || cli.prost_workaround,

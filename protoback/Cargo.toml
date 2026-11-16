@@ -28,3 +28,4 @@ regex          = "1"
 workspace-hack = { version = "0.1", path = "../workspace-hack" }
 rapidfuzz = "0.5"
 rayon = "1"
+prototext-graph = { workspace = true }

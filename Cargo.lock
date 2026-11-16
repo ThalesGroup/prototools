@@ -1763,6 +1763,7 @@ dependencies = [
  "clap",
  "fdp-scan",
  "prototext-core",
+ "prototext-graph",
  "prototext-upb",
  "rapidfuzz",
  "rayon",

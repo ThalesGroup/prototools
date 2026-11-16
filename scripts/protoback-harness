@@ -66,6 +66,12 @@ FLAG_SETS: dict[str, list[str]] = {
     # The descriptors beside the text (spec 0429 S10).
     "emit-binary": ["--emit-binary"],
     "emit-binary-force-proto2-output": ["--emit-binary", "--force-proto2-output"],
+    # The scoring graphs beside the text (spec 0430 S3), with extension
+    # ranges, and under --dry-run, where reproto's pool loads each file
+    # only as its graph is collected (S1).
+    "scoring-yaml": ["--emit-scoring-yaml"],
+    "scoring-yaml-extension-ranges": ["--emit-scoring-yaml", "--emit-extension-ranges"],
+    "scoring-yaml-dry-run": ["--emit-scoring-yaml", "--emit-extension-ranges", "--dry-run"],
 }
 DEFAULT_VARIANT = ["--use-variant", "descriptor"]
 

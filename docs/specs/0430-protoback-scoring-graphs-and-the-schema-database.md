@@ -199,4 +199,23 @@ is the binary's size.
 
 ## Measured outcome
 
-Filled in at implementation.
+- **Stage 1, the scoring YAML** (2026-11-16): `scoring.rs` collects each
+  file's graph from the upb pool `pool_loads` fills, which it now keeps:
+  kinds, labels, packing and closed enums are upb's, as Python's upb
+  resolves them, with no feature resolved by hand; an extension is seen
+  when its file's rank is at most the summoned files' (after rendering)
+  or the file's own (`--dry-run` without `--emit-binary`).
+  `scoring/pyyaml.rs` writes PyYAML's block style; checked against a
+  table PyYAML generated (`scoring/pyyaml/cases.rs`), which found that a
+  simple key is under 128 characters *with its tag*: PyYAML counts
+  `!!str` (5) even implicit, so a name of 123 characters or more is
+  written `? name` / `: value`.
+  - `prototext-graph`: `ScoringFile` and `build_from_files` (S6); the
+    YAML loader parses into `ScoringFile`, its messages in the document's
+    order (`serde_yaml::Mapping`), then `merge_files`, the merge both
+    take. Its 130 tests, the `.rkyv` byte-identity ones included, pass.
+  - The harness's `scoring-yaml` cases: every fixture, also with
+    extension ranges, and under `--dry-run`. `--compare out/proto`, every
+    corpus, on all cores and with `--jobs 1`: 1,274 cases, 1,197
+    identical; the 77 others are the schema database's (stage 2),
+    refused.

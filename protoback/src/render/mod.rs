@@ -16,7 +16,7 @@ mod pyfmt;
 mod sci;
 mod text;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use prototext_upb::descriptor_access::{
     DescriptorProto, EnumDescriptorProto, FieldDescriptorProto, FileDescriptorProto,
@@ -53,6 +53,10 @@ pub struct Shared<'a> {
     pub keep_variant_descriptor: bool,
     /// `--emit-binary`: each file's descriptor written beside its text.
     pub emit_binary: bool,
+    /// `--emit-scoring-yaml`: each file's scoring graph beside its text.
+    pub emit_scoring_yaml: bool,
+    /// `--emit-extension-ranges`: each message's in its scoring graph.
+    pub emit_extension_ranges: bool,
     /// Not `--no-source-info`: the descriptor's SourceCodeInfo synthesized
     /// from the text.
     pub source_info: bool,
@@ -205,9 +209,35 @@ pub fn run(shared: &Shared<'_>, output: &Output) -> std::io::Result<()> {
     let Some(out_repo) = &output.out_repo else {
         return Ok(());
     };
-    if output.dry_run {
-        return Ok(());
+    on_pool(output.jobs, || {
+        if !output.dry_run {
+            write_files(shared, output, out_repo)?;
+        }
+        if shared.emit_scoring_yaml {
+            // reproto's pool holds every summoned file once phase 7 has
+            // rendered; under --dry-run without --emit-binary it renders
+            // nothing, and each lookup below loads its file (spec 0430 S1).
+            let rendered = !output.dry_run || shared.emit_binary;
+            write_scoring_yaml(shared, out_repo, rendered)?;
+        }
+        Ok(())
+    })
+}
+
+/// `f` on a pool of `jobs` threads (spec 0429 S4); on this thread when no
+/// pool can be had.
+fn on_pool<T: Send>(jobs: usize, f: impl FnOnce() -> T + Send) -> T {
+    match rayon::ThreadPoolBuilder::new()
+        .num_threads(jobs.max(1))
+        .build()
+    {
+        Ok(pool) => pool.install(f),
+        Err(_) => f(),
     }
+}
+
+/// The `.proto` files (and `.pb` under `--emit-binary`), then `buf.yaml`.
+fn write_files(shared: &Shared<'_>, output: &Output, out_repo: &Path) -> std::io::Result<()> {
     let graph = shared.graph;
     // The files written, in reproto's order: (k, node, path).
     let mut plan: Vec<(usize, usize, PathBuf)> = Vec::new();
@@ -224,7 +254,7 @@ pub fn run(shared: &Shared<'_>, output: &Output) -> std::io::Result<()> {
             .canonize_dependency(name, shared.keep_variant_descriptor);
         plan.push((k, i, out_repo.join(&canonical)));
     }
-    let rendered = render_all(shared, &plan, output.jobs);
+    let rendered = render_all(shared, &plan);
     for ((_, _, path), r) in plan.iter().zip(rendered) {
         // reproto makes the directory first, a file it fails to render
         // (an edition Python protobuf does not name) included.
@@ -251,25 +281,65 @@ pub fn run(shared: &Shared<'_>, output: &Output) -> std::io::Result<()> {
 /// none for a file reproto does not write.
 type Rendered = Option<(String, Option<Vec<u8>>)>;
 
-/// The planned files rendered on a pool of `jobs` threads (spec 0429 S4),
-/// each with a context of its own, over the shared state rendering never
+/// The planned files rendered on the current pool (spec 0429 S4), each
+/// with a context of its own, over the shared state rendering never
 /// writes; collected in the plan's order, so the output is the same bytes
 /// whatever the threads.
-fn render_all(shared: &Shared<'_>, plan: &[(usize, usize, PathBuf)], jobs: usize) -> Vec<Rendered> {
+fn render_all(shared: &Shared<'_>, plan: &[(usize, usize, PathBuf)]) -> Vec<Rendered> {
     use rayon::prelude::*;
-    let render = |&(k, i, _): &(usize, usize, PathBuf)| -> Rendered {
-        let (block, descriptor) = file::render(shared, i, k)?;
-        Some((
-            block.flush(shared.redact_comments, shared.redact_orphans),
-            descriptor,
-        ))
-    };
-    match rayon::ThreadPoolBuilder::new()
-        .num_threads(jobs.max(1))
-        .build()
-    {
-        Ok(pool) => pool.install(|| plan.par_iter().map(render).collect()),
-        // No pool to be had: render on this thread.
-        Err(_) => plan.iter().map(render).collect(),
+    plan.par_iter()
+        .map(|&(k, i, _)| -> Rendered {
+            let (block, descriptor) = file::render(shared, i, k)?;
+            Some((
+                block.flush(shared.redact_comments, shared.redact_orphans),
+                descriptor,
+            ))
+        })
+        .collect()
+}
+
+/// `--emit-scoring-yaml` (`_phase_emit_scoring_graphs`, spec 0430 S3):
+/// each summoned file's scoring graph, `NAME.yaml` beside its `NAME.proto`
+/// (the variant's descriptor.proto included), FQDNs as the input has them.
+/// A file the pool refused gets none. Collected on the current pool,
+/// written in reproto's order.
+fn write_scoring_yaml(shared: &Shared<'_>, out_repo: &Path, rendered: bool) -> std::io::Result<()> {
+    use rayon::prelude::*;
+    let graph = shared.graph;
+    let files = summoned(graph);
+    let n = files.len();
+    let identity = |name: &str| name.to_string();
+    let docs: Vec<(PathBuf, Option<String>)> = files
+        .par_iter()
+        .enumerate()
+        .map(|(j, &i)| {
+            let name = graph.nodes[i]
+                .fqdn
+                .strip_prefix("file:")
+                .unwrap_or_default();
+            let c = crate::scoring::Collect {
+                graph,
+                loads: &shared.loads,
+                upto: if rendered { n - 1 } else { j },
+                extension_ranges: shared.emit_extension_ranges,
+                rename: &identity,
+            };
+            let canonical = shared
+                .variant
+                .canonize_dependency(name, shared.keep_variant_descriptor);
+            let path = out_repo.join(canonical).with_extension("yaml");
+            let doc = crate::scoring::file(&c, name).map(|f| crate::scoring::pyyaml::dump(&f));
+            (path, doc)
+        })
+        .collect();
+    for (path, doc) in docs {
+        let Some(doc) = doc else {
+            continue;
+        };
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, doc)?;
     }
+    Ok(())
 }

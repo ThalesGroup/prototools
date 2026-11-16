@@ -19,7 +19,8 @@ struct YamlFile {
     #[serde(default)]
     extension_ranges: bool,
     entries: Vec<String>,
-    messages: HashMap<String, YamlMessage>,
+    /// In the document's order.
+    messages: serde_yaml::Mapping,
 }
 
 #[derive(Debug, Deserialize)]
@@ -138,10 +139,187 @@ pub struct Merged {
     pub has_extension_ranges: bool,
 }
 
+// ── One file's scoring graph, as a structure (spec 0430 S6) ─────────────────
+
+/// One file's scoring graph: what a spec 0045 YAML document holds, as
+/// `reproto --emit-scoring-yaml` writes it and protoback builds it. The
+/// merge takes these, whichever produced them.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ScoringFile {
+    /// The run was asked for extension ranges (spec 0238 S2).
+    pub extension_ranges: bool,
+    /// The file's root FQDNs.
+    pub entries: Vec<String>,
+    /// Its messages, in the document's order.
+    pub messages: Vec<(String, ScoringMessage)>,
+}
+
+/// One message of a scoring graph.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScoringMessage {
+    pub kind: NodeKind,
+    pub fields: Vec<FieldSpec>,
+    /// Canonical extension ranges, inclusive (spec 0238 S3); empty when
+    /// the message declares none.
+    pub ext_ranges: Vec<(u32, u32)>,
+}
+
+/// One field of a scoring-graph message, as the document spells it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FieldSpec {
+    pub number: u32,
+    pub ty: FieldType,
+    pub child: Option<String>,
+    pub range: Option<(i32, i32)>,
+    pub label: FieldLabel,
+    pub packed: bool,
+}
+
+/// A field's `type` in a scoring-graph document. Several spellings reach
+/// one [`ScoringKind`]; the document keeps the one it was written with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldType {
+    Int32,
+    Uint32,
+    Sint32,
+    Int64,
+    Uint64,
+    Sint64,
+    Bool,
+    Enum,
+    String,
+    Bytes,
+    Message,
+    Group,
+    Float,
+    Double,
+}
+
+impl FieldType {
+    pub fn parse(s: &str) -> Option<FieldType> {
+        Some(match s {
+            "int32" => FieldType::Int32,
+            "uint32" => FieldType::Uint32,
+            "sint32" => FieldType::Sint32,
+            "int64" => FieldType::Int64,
+            "uint64" => FieldType::Uint64,
+            "sint64" => FieldType::Sint64,
+            "bool" => FieldType::Bool,
+            "enum" => FieldType::Enum,
+            "string" => FieldType::String,
+            "bytes" => FieldType::Bytes,
+            "message" => FieldType::Message,
+            "group" => FieldType::Group,
+            "float" => FieldType::Float,
+            "double" => FieldType::Double,
+            _ => return None,
+        })
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FieldType::Int32 => "int32",
+            FieldType::Uint32 => "uint32",
+            FieldType::Sint32 => "sint32",
+            FieldType::Int64 => "int64",
+            FieldType::Uint64 => "uint64",
+            FieldType::Sint64 => "sint64",
+            FieldType::Bool => "bool",
+            FieldType::Enum => "enum",
+            FieldType::String => "string",
+            FieldType::Bytes => "bytes",
+            FieldType::Message => "message",
+            FieldType::Group => "group",
+            FieldType::Float => "float",
+            FieldType::Double => "double",
+        }
+    }
+
+    pub fn kind(self) -> ScoringKind {
+        match self {
+            FieldType::Int32 => ScoringKind::Int32,
+            FieldType::Uint32 | FieldType::Sint32 => ScoringKind::Uint32,
+            FieldType::Int64 | FieldType::Uint64 | FieldType::Sint64 => ScoringKind::Uint64,
+            FieldType::Bool | FieldType::Enum => ScoringKind::Range,
+            FieldType::String => ScoringKind::LenString,
+            FieldType::Bytes => ScoringKind::LenBytes,
+            FieldType::Message | FieldType::Group => ScoringKind::Node,
+            FieldType::Float => ScoringKind::I32,
+            FieldType::Double => ScoringKind::I64,
+        }
+    }
+}
+
+impl ScoringFile {
+    /// One YAML document. A malformed one is serde's error; a field whose
+    /// type or label is unknown is named.
+    pub fn from_yaml(text: &str) -> Result<ScoringFile, Box<dyn std::error::Error>> {
+        Ok(Self::from_document(serde_yaml::from_str(text)?)?)
+    }
+
+    fn from_document(yaml: YamlFile) -> Result<ScoringFile, String> {
+        let mut messages = Vec::with_capacity(yaml.messages.len());
+        for (key, value) in yaml.messages {
+            let fqdn: String = serde_yaml::from_value(key).map_err(|e| e.to_string())?;
+            let msg: YamlMessage = serde_yaml::from_value(value).map_err(|e| e.to_string())?;
+            let mut fields = Vec::with_capacity(msg.fields.len());
+            for f in msg.fields {
+                let ty = FieldType::parse(&f.kind)
+                    .ok_or_else(|| format!("{fqdn}: unknown kind '{}'", f.kind))?;
+                let label = match f.label.as_str() {
+                    "required" => FieldLabel::Required,
+                    "repeated" => FieldLabel::Repeated,
+                    "" | "optional" => FieldLabel::Optional,
+                    other => {
+                        return Err(format!(
+                            "{fqdn} field {}: unknown label '{other}'",
+                            f.number
+                        ))
+                    }
+                };
+                fields.push(FieldSpec {
+                    number: f.number,
+                    ty,
+                    child: f.child,
+                    range: f.range,
+                    label,
+                    packed: f.packed,
+                });
+            }
+            messages.push((
+                fqdn,
+                ScoringMessage {
+                    kind: parse_node_kind(&msg.kind),
+                    fields,
+                    ext_ranges: msg.ext_ranges,
+                },
+            ));
+        }
+        Ok(ScoringFile {
+            extension_ranges: yaml.extension_ranges,
+            entries: yaml.entries,
+            messages,
+        })
+    }
+}
+
 // ── Loading ───────────────────────────────────────────────────────────────────
 
 /// Load and merge from in-memory YAML strings (no filesystem access).
 pub fn merge_from_strings(scoring_graphs: &[String]) -> Result<Merged, Box<dyn std::error::Error>> {
+    let mut files = Vec::with_capacity(scoring_graphs.len());
+    for (i, text) in scoring_graphs.iter().enumerate() {
+        let yaml: YamlFile =
+            serde_yaml::from_str(text).map_err(|e| format!("scoring_graph[{i}]: {e}"))?;
+        files.push(ScoringFile::from_document(yaml)?);
+    }
+    merge_files(&files)
+}
+
+/// Merge scoring graphs, given as structures (spec 0430 S6): the first
+/// definition of an FQDN is kept, a conflicting later one is warned
+/// about; the roots are every file's entries, in order, once.
+pub fn merge_files(files: &[ScoringFile]) -> Result<Merged, Box<dyn std::error::Error>> {
     let mut states: HashMap<String, Vec<ScoringField>> = HashMap::new();
     let mut node_kinds: HashMap<String, NodeKind> = HashMap::new();
     let mut roots: Vec<String> = Vec::new();
@@ -149,20 +327,17 @@ pub fn merge_from_strings(scoring_graphs: &[String]) -> Result<Merged, Box<dyn s
     let mut ext_ranges: HashMap<String, Vec<(u32, u32)>> = HashMap::new();
     let mut has_extension_ranges = true;
 
-    for (i, text) in scoring_graphs.iter().enumerate() {
-        let yaml: YamlFile =
-            serde_yaml::from_str(text).map_err(|e| format!("scoring_graph[{i}]: {e}"))?;
-        has_extension_ranges &= yaml.extension_ranges;
-        for fqdn in yaml.entries {
+    for (i, file) in files.iter().enumerate() {
+        has_extension_ranges &= file.extension_ranges;
+        for fqdn in &file.entries {
             if roots_seen.insert(fqdn.clone()) {
-                roots.push(fqdn);
+                roots.push(fqdn.clone());
             }
         }
-        for (fqdn, msg) in yaml.messages {
-            let nk = parse_node_kind(&msg.kind);
-            node_kinds.entry(fqdn.clone()).or_insert(nk);
-            let fields = parse_fields(&fqdn, msg.fields)?;
-            let msg_ext_ranges = check_ext_ranges(&fqdn, msg.ext_ranges)?;
+        for (fqdn, msg) in &file.messages {
+            node_kinds.entry(fqdn.clone()).or_insert(msg.kind);
+            let fields = scoring_fields(fqdn, &msg.fields)?;
+            let msg_ext_ranges = check_ext_ranges(fqdn, msg.ext_ranges.clone())?;
             match states.entry(fqdn.clone()) {
                 std::collections::hash_map::Entry::Vacant(e) => {
                     e.insert(fields);
@@ -173,7 +348,7 @@ pub fn merge_from_strings(scoring_graphs: &[String]) -> Result<Merged, Box<dyn s
                 std::collections::hash_map::Entry::Occupied(existing) => {
                     if definitions_conflict(
                         existing.get(),
-                        ext_ranges.get(&fqdn).map(Vec::as_slice).unwrap_or(&[]),
+                        ext_ranges.get(fqdn).map(Vec::as_slice).unwrap_or(&[]),
                         &fields,
                         &msg_ext_ranges,
                     ) {
@@ -193,7 +368,7 @@ pub fn merge_from_strings(scoring_graphs: &[String]) -> Result<Merged, Box<dyn s
         ext_ranges,
         // Vacuously true over zero files, which is the wrong reading: an empty
         // merge has recorded nothing.
-        has_extension_ranges: has_extension_ranges && !scoring_graphs.is_empty(),
+        has_extension_ranges: has_extension_ranges && !files.is_empty(),
     })
 }
 
@@ -257,18 +432,18 @@ fn check_ext_ranges(
 /// 2²⁹−1, the largest legal protobuf field number.
 const MAX_FIELD_NUMBER: u32 = 536_870_911;
 
-fn parse_fields(
+fn scoring_fields(
     fqdn: &str,
-    raw: Vec<YamlField>,
+    specs: &[FieldSpec],
 ) -> Result<Vec<ScoringField>, Box<dyn std::error::Error>> {
-    let mut fields = Vec::with_capacity(raw.len());
-    for f in raw {
-        let kind =
-            parse_kind(&f.kind).ok_or_else(|| format!("{fqdn}: unknown kind '{}'", f.kind))?;
+    let mut fields = Vec::with_capacity(specs.len());
+    for f in specs {
+        let kind = f.ty.kind();
         if kind.is_node() && f.child.is_none() {
             return Err(format!(
                 "{fqdn} field {}: kind {} requires a child FQDN",
-                f.number, f.kind
+                f.number,
+                f.ty.as_str()
             )
             .into());
         }
@@ -280,41 +455,18 @@ fn parse_fields(
         } else {
             None
         };
-        let label = match f.label.as_str() {
-            "required" => FieldLabel::Required,
-            "repeated" => FieldLabel::Repeated,
-            "" | "optional" => FieldLabel::Optional,
-            other => {
-                return Err(format!("{fqdn} field {}: unknown label '{other}'", f.number).into())
-            }
-        };
         fields.push(ScoringField {
             number: f.number,
             kind,
-            child: f.child,
+            child: f.child.clone(),
             range,
-            label,
+            label: f.label,
             packed: f.packed,
         });
     }
     // Ensure sorted by field number (spec says they already are, but be defensive).
     fields.sort_by_key(|f| f.number);
     Ok(fields)
-}
-
-fn parse_kind(s: &str) -> Option<ScoringKind> {
-    match s {
-        "int32" => Some(ScoringKind::Int32),
-        "uint32" | "sint32" => Some(ScoringKind::Uint32),
-        "int64" | "uint64" | "sint64" => Some(ScoringKind::Uint64),
-        "bool" | "enum" => Some(ScoringKind::Range),
-        "string" => Some(ScoringKind::LenString),
-        "bytes" => Some(ScoringKind::LenBytes),
-        "message" | "group" => Some(ScoringKind::Node),
-        "float" => Some(ScoringKind::I32),
-        "double" => Some(ScoringKind::I64),
-        _ => None,
-    }
 }
 
 fn parse_node_kind(s: &str) -> NodeKind {

@@ -181,12 +181,6 @@ impl Cli {
             6,
         );
         note(
-            self.emit_scoring_yaml || self.emit_scoring_graphs,
-            "--emit-scoring-yaml",
-            6,
-        );
-        note(self.emit_extension_ranges, "--emit-extension-ranges", 6);
-        note(
             self.emit_scoring_html.is_some()
                 || self.emit_scoring_html_deprecated.is_some()
                 || self.emit_pyvis.is_some(),
