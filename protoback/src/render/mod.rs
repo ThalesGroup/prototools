@@ -6,6 +6,7 @@
 //! `.proto` text. Stage 1, structure: no options, no comments from source
 //! info, no binary output yet (spec 0429 S1).
 
+mod comments;
 mod file;
 mod message;
 mod names;
@@ -119,6 +120,14 @@ impl<'a> Shared<'a> {
         let prefix = &self.graph.nodes[parent].prefix;
         self.graph
             .find(&format!("{}:{prefix}.{}", kind.prefix(), text(name)))
+    }
+
+    /// The file node a node is in (`get_file_node`).
+    pub fn file_of(&self, mut i: usize) -> usize {
+        while let Some(p) = self.graph.nodes[i].parent {
+            i = p;
+        }
+        i
     }
 
     /// The topology's file of that name: what phase 2 stripped from it.

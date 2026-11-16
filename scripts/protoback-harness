@@ -157,10 +157,13 @@ def prepare(work: Path, googleapis: Path | None, otel: Path | None) -> None:
         shutil.rmtree(corpus)
     fixtures = sorted(FIXTURES.glob("*.proto"))
 
-    # Each fixture alone (its imports missing) and with its imports, in a
-    # directory of its own: -I gives reproto that directory and no more.
+    # Each fixture alone (its imports missing), with its imports, and with
+    # its imports and their source info (the comments reproto renders,
+    # spec 0429 S9), in a directory of its own: -I gives reproto that
+    # directory and no more.
     for p in fixtures:
-        for kind, extra in (("alone", []), ("imports", ["--include_imports"])):
+        for kind, extra in (("alone", []), ("imports", ["--include_imports"]),
+                            ("sourceinfo", ["--include_imports", "--include_source_info"])):
             d = corpus / kind / p.stem
             d.mkdir(parents=True)
             if protoc(f"-I{FIXTURES}", *extra,
@@ -271,6 +274,11 @@ def cases(corpus: Path) -> list[Case]:
     for d in sorted((corpus / "alone").iterdir()):
         out.append(Case(f"alone/{d.name}/default",
                         ["-I", str(d), *proto_out, f"{d.name}.pb"]))
+    for d in sorted((corpus / "sourceinfo").iterdir()):
+        for name, flags in (("default", []),
+                            ("redact", ["--redact-comments", "--redact-orphans"])):
+            out.append(Case(f"sourceinfo/{d.name}/{name}",
+                            ["-I", str(d), *proto_out, *flags, f"{d.name}.pb"]))
     for d in sorted((corpus / "text").iterdir()):
         out.append(Case(f"text/{d.name}/default",
                         ["-I", str(d), *proto_out, f"{d.name}.textpb"]))

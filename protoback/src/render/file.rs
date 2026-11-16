@@ -347,6 +347,12 @@ pub fn render(shared: &Shared<'_>, file: usize, k: usize) -> Option<Block> {
     out.push(Line::code("", depth));
     out.div_maybe(depth);
 
+    let comments = super::comments::file(&ctx, depth);
+    if !comments.is_empty() {
+        out.extend(comments);
+        out.div_maybe(depth);
+    }
+
     if ctx.editions_target() {
         let e = edition_name(f.edition())?;
         out.push(Line::code(format!("edition = \"{e}\";"), depth));

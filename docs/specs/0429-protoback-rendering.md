@@ -438,6 +438,14 @@ not deferred with it: stage 3 needs it on one thread already.
     `--schema-db-out` (stage 6, step 6 of spec 0424). Every
     `--force-proto2-output` and `--force-proto2-for-editions` case
     identical.
-  - No case differs by source comments: the harness's corpora are
-    compiled without `--include_source_info`; stage 5 needs inputs of
-    its own (`comments`, the CLI tests).
+- **Stage 5, comments** (2026-11-16): `render/comments.rs`, the file's
+  comments (the locations of path `[]` and `[12]`, each comment followed
+  by a blank line) and each message's (its own path, `[4, i]` then
+  `[3, j]` steps found by name, its definition's: a synthetic group gets
+  its type's), as reproto renders them; no other element's. The output
+  SourceCodeInfo moves to stage 6: it exists only in the `.pb`, which
+  only `--emit-binary` writes, so only that stage can check it.
+  - The harness's `sourceinfo/` corpus: every fixture with its imports
+    and their source info, each also under `--redact-comments
+    --redact-orphans`. `--compare out/proto`, every corpus: 690 cases,
+    613 identical; the 77 others refused (stage 6, step 6).

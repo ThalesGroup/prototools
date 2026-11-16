@@ -538,6 +538,12 @@ pub fn message(ctx: &Ctx<'_, '_>, msg: usize, depth: usize, force: bool) -> Bloc
         return out;
     };
 
+    let comments = super::comments::message(ctx, msg, depth + 1);
+    if !comments.is_empty() {
+        out.extend(comments);
+        out.div_maybe(depth);
+    }
+
     let ext = extend_blocks(ctx, msg, &m.extension(), depth + 1, false);
     if !ext.is_empty() {
         out.extend(ext);
