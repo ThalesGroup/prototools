@@ -178,6 +178,7 @@ fn schema_db_extra_nodes(run: &Run) -> Vec<usize> {
 pub fn run(run: &mut Run) {
     summon_enclosing(&mut run.graph);
     bridge_imports(&mut run.graph);
+    crate::console::phase_done("Marking summoned nodes");
     if run.build_schema_db {
         run.schema_db_extra_nodes = schema_db_extra_nodes(run);
     }

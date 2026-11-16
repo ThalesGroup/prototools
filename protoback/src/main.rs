@@ -6,6 +6,7 @@
 //! loading, the pool, phases 1 to 6, and the graph dump.
 
 mod cli;
+mod console;
 mod db;
 mod dump;
 mod events;
@@ -143,7 +144,10 @@ fn fallback_protos(use_variant: &[UseVariant], variant: &Variant) -> Vec<String>
 }
 
 fn usage(message: &str) -> ExitCode {
-    eprintln!("Usage: protoback [OPTIONS] [DESCRIPTOR_FILES]...\n\nError: {message}");
+    eprintln!(
+        "Usage: protoback [OPTIONS] DESCRIPTOR_FILES\n\
+         Try 'protoback --help' for help.\n\nError: {message}"
+    );
     ExitCode::from(2)
 }
 
@@ -158,6 +162,7 @@ fn main() -> ExitCode {
         return instantiate::main(sub);
     }
     let cli = Cli::parse();
+    console::init(cli.quiet);
     let dump_path = cli.dump_graph.clone();
     // Under --dump-graph, what acts after phase 6 is ignored; otherwise
     // protoback refuses what it does not render yet (spec 0429 S1).
@@ -305,7 +310,7 @@ fn main() -> ExitCode {
         quiet: cli.quiet,
         debug: cli.debug,
         debug_fqdn: cli.debug_fqdn,
-        events: Events::default(),
+        events: Events::new(cli.detailed_warnings),
         blobs,
         db: db::Database::default(),
         graph: graph::Graph::default(),
@@ -315,8 +320,11 @@ fn main() -> ExitCode {
         plugin,
     };
     let mut topo = topology::Topology::default();
+    // reproto's collector is flushed in a `finally`: before the CLI prints
+    // an error the phases raised, after one they printed themselves.
     phase1::run(&mut run, &mut topo);
     if let Some(failure) = run.plugin.as_ref().and_then(plugin::Plugin::failure) {
+        run.events.flush();
         eprintln!("{failure}");
         return ExitCode::from(1);
     }
@@ -324,10 +332,12 @@ fn main() -> ExitCode {
         if let Some(detail) = fatal.detail() {
             eprintln!("{detail}");
         }
+        run.events.flush();
         eprintln!("Error: {}", fatal.message());
         return ExitCode::from(1);
     }
     if let Some(failure) = run.plugin.as_ref().and_then(plugin::Plugin::failure) {
+        run.events.flush();
         eprintln!("{failure}");
         return ExitCode::from(1);
     }
@@ -337,12 +347,15 @@ fn main() -> ExitCode {
         cli.force_proto2_output,
         &run.edition_defaults,
     );
+    console::phase_done("Building type graph");
     phase4::run(&mut run, &mut topo);
     phase5::run(&mut run, &topo);
     phase6::run(&mut run);
 
     if let Some(dump_path) = dump_path {
-        if let Err(e) = std::fs::write(&dump_path, dump::write(&run, &topo)) {
+        let written = std::fs::write(&dump_path, dump::write(&run, &topo));
+        run.events.flush();
+        if let Err(e) = written {
             eprintln!("Error: {}: {e}", dump_path.display());
             return ExitCode::from(1);
         }
@@ -405,18 +418,22 @@ fn main() -> ExitCode {
         with_leaf_nodes: cli.with_leaf_nodes,
         hide,
     };
-    match render::run(&shared, &output) {
+    let outcome = render::run(&shared, &output, &mut run.events);
+    match outcome {
         Ok(()) => {}
         Err(render::Failure::Io(e)) => {
             eprintln!("Error: {e}");
             eprintln!("Cannot continue due to I/O error.");
+            run.events.flush();
             return ExitCode::from(1);
         }
         Err(render::Failure::Fatal(message)) => {
             eprintln!("{message}");
+            run.events.flush();
             return ExitCode::from(1);
         }
     }
+    run.events.flush();
     ExitCode::SUCCESS
 }
 

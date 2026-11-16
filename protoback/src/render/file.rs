@@ -38,9 +38,48 @@ pub struct Ctx<'s, 'a> {
     /// The SourceCodeInfo markers, when a descriptor is written with its
     /// source info (`ctx.out_sci`).
     pub sci: Option<super::sci::Sci>,
+    /// What the render reports on stderr, in order (spec 0433 S3): replayed
+    /// in file order once the files are rendered.
+    pub events: std::cell::RefCell<Vec<RenderEvent>>,
+}
+
+/// A render's report: an immediate warning, a counted W6, or a file
+/// `--force-proto2-for-editions` patched.
+#[derive(Debug, Clone)]
+pub enum RenderEvent {
+    Warning(String),
+    W6 {
+        file: String,
+        field: String,
+        reason: String,
+    },
+    Prost(String),
 }
 
 impl Ctx<'_, '_> {
+    /// The file's name.
+    pub fn file_name(&self) -> String {
+        self.shared.graph.nodes[self.file]
+            .fqdn
+            .strip_prefix("file:")
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    /// An anomaly's stderr line (`anomalies.report`, `cli_warning`).
+    pub fn warn(&self, message: String) {
+        self.events.borrow_mut().push(RenderEvent::Warning(message));
+    }
+
+    /// A3 or C5: a W6, counted.
+    pub fn w6(&self, file: String, field: String, reason: &str) {
+        self.events.borrow_mut().push(RenderEvent::W6 {
+            file,
+            field,
+            reason: reason.to_string(),
+        });
+    }
+
     /// What an option's rendering reads, for this file.
     pub fn scope(&self) -> super::options::Scope<'_> {
         super::options::Scope {
@@ -272,6 +311,18 @@ pub fn extend_blocks(
     for (i, e) in extensions.iter().enumerate() {
         let extendee = text(e.extendee());
         if !allow_extend_block(ctx, &extendee) {
+            let owner_node = &shared.graph.nodes[owner];
+            if owner_node.kind == Kind::File {
+                ctx.warn(format!(
+                    "'{}': top-level extend block for '{extendee}' is not valid in proto3; omitting",
+                    ctx.file_name()
+                ));
+            } else {
+                let msg = owner_node.fqdn.rsplit('.').next().unwrap_or_default();
+                ctx.warn(format!(
+                    "message '{msg}': nested extend block for '{extendee}' is not valid in proto3; omitting"
+                ));
+            }
             out.push(anomaly(
                 "OMITTED",
                 "proto3",
@@ -330,8 +381,23 @@ pub fn extend_blocks(
 
 /// `ReFileDescriptorProto.render`, stage 1: the header, syntax, package,
 /// imports, then services, enums, messages and extensions.
-pub fn render(shared: &Shared<'_>, file: usize, k: usize) -> Option<(Block, Option<Vec<u8>>)> {
-    let f = shared.file_def(file)?;
+/// A file rendered (spec 0433 S3): its text and descriptor, `None` when
+/// it is not written; what it reports, in order; whether a render step
+/// failed (reproto's phase 7 then counts a W6).
+pub struct FileRender {
+    pub output: Option<(Block, Option<Vec<u8>>)>,
+    pub events: Vec<RenderEvent>,
+    pub failed: bool,
+}
+
+pub fn render(shared: &Shared<'_>, file: usize, k: usize) -> FileRender {
+    let Some(f) = shared.file_def(file) else {
+        return FileRender {
+            output: None,
+            events: Vec::new(),
+            failed: false,
+        };
+    };
     let syntax = {
         let s = text(f.syntax());
         if s.is_empty() {
@@ -360,7 +426,30 @@ pub fn render(shared: &Shared<'_>, file: usize, k: usize) -> Option<(Block, Opti
         refused: shared.loads.refused.contains(&text(f.name())),
         failed: std::cell::Cell::new(false),
         sci: (shared.wants_descriptor() && shared.source_info).then(super::sci::Sci::default),
+        events: std::cell::RefCell::new(Vec::new()),
     };
+    // `_set_target_syntax`: a file --force-proto2-for-editions patches.
+    if !shared.force_proto2_output && shared.force_proto2_for_editions && ctx.syntax == "editions" {
+        ctx.events
+            .borrow_mut()
+            .push(RenderEvent::Prost(text(f.name())));
+    }
+    let output = render_body(&ctx, &f);
+    FileRender {
+        failed: ctx.failed.get(),
+        events: ctx.events.take(),
+        output,
+    }
+}
+
+/// The file's text, and its descriptor when one is built; `None` when a
+/// render step failed.
+fn render_body(
+    ctx: &Ctx<'_, '_>,
+    f: &prototext_upb::descriptor_access::FileDescriptorProto<'_>,
+) -> Option<(Block, Option<Vec<u8>>)> {
+    let shared = ctx.shared;
+    let file = ctx.file;
     let name = text(f.name());
     let depth = 0;
     let mut out = Block::new();
@@ -369,7 +458,7 @@ pub fn render(shared: &Shared<'_>, file: usize, k: usize) -> Option<(Block, Opti
     out.push(Line::code("", depth));
     out.div_maybe(depth);
 
-    let comments = super::comments::file(&ctx, depth);
+    let comments = super::comments::file(ctx, depth);
     if !comments.is_empty() {
         out.extend(comments);
         out.div_maybe(depth);
@@ -380,7 +469,14 @@ pub fn render(shared: &Shared<'_>, file: usize, k: usize) -> Option<(Block, Opti
         out.push(Line::code(format!("edition = \"{e}\";"), depth));
     } else if ctx.syntax != ctx.target {
         // A1: an editions file; A2: any other syntax.
+        // A1's line is left to the prost count under
+        // --force-proto2-for-editions; A2's is never printed.
         let comment = if ctx.syntax == "editions" {
+            if !shared.force_proto2_for_editions {
+                ctx.warn(format!(
+                    "'{name}': editions file rendered as proto2 (--force-proto2-output)"
+                ));
+            }
             anomaly(
                 "WARNING",
                 "editions",
@@ -417,7 +513,7 @@ pub fn render(shared: &Shared<'_>, file: usize, k: usize) -> Option<(Block, Opti
     }
     out.div_maybe(depth);
 
-    let options = file_options(&ctx, &f, depth);
+    let options = file_options(ctx, f, depth);
     if !options.is_empty() {
         out.extend(options);
         out.div_maybe(depth);
@@ -446,6 +542,10 @@ pub fn render(shared: &Shared<'_>, file: usize, k: usize) -> Option<(Block, Opti
             if ctx.proto2_or_editions() {
                 "import weak"
             } else {
+                ctx.warn(format!(
+                    "'{}': 'import weak' is not valid in proto3; rendering as plain import: \"{d}\"",
+                    ctx.file_name()
+                ));
                 out.push(anomaly(
                     "WARNING",
                     "proto3",
@@ -496,7 +596,7 @@ pub fn render(shared: &Shared<'_>, file: usize, k: usize) -> Option<(Block, Opti
             continue;
         }
         let path = ctx.sci.as_ref().map(|_| vec![6, sci_svc]);
-        let mut lines = super::message::service(&ctx, svc, depth, path.as_deref());
+        let mut lines = super::message::service(ctx, svc, depth, path.as_deref());
         if let (Some(sci), Some(path)) = (&ctx.sci, path) {
             sci.mark(&mut lines, path);
         }
@@ -514,7 +614,7 @@ pub fn render(shared: &Shared<'_>, file: usize, k: usize) -> Option<(Block, Opti
             continue;
         }
         let path = ctx.sci.as_ref().map(|_| vec![5, sci_enum]);
-        let mut lines = super::message::enumeration(&ctx, en, depth, path.as_deref());
+        let mut lines = super::message::enumeration(ctx, en, depth, path.as_deref());
         if let (Some(sci), Some(path)) = (&ctx.sci, path) {
             sci.mark(&mut lines, path);
         }
@@ -533,7 +633,7 @@ pub fn render(shared: &Shared<'_>, file: usize, k: usize) -> Option<(Block, Opti
             continue;
         }
         let path = (ctx.sci.is_some() && node.is_summoned).then(|| vec![4, sci_msg]);
-        let mut lines = super::message::message(&ctx, msg, depth, false, path.as_deref());
+        let mut lines = super::message::message(ctx, msg, depth, false, path.as_deref());
         lines.insert(
             0,
             Line::code(format!("message {} {{", text(m.name())), depth),
@@ -552,7 +652,7 @@ pub fn render(shared: &Shared<'_>, file: usize, k: usize) -> Option<(Block, Opti
     out.div_maybe(depth);
 
     let extensions = f.extension();
-    out.extend(extend_blocks(&ctx, file, &extensions, depth, true, None));
+    out.extend(extend_blocks(ctx, file, &extensions, depth, true, None));
     out.div_maybe(depth);
 
     out.trim_end(0);
@@ -565,7 +665,7 @@ pub fn render(shared: &Shared<'_>, file: usize, k: usize) -> Option<(Block, Opti
         let locations = ctx.sci.as_ref().map_or_else(Vec::new, |sci| {
             sci.resolve(&out, shared.redact_comments, shared.redact_orphans)
         });
-        super::binary::file(&ctx, &locations)
+        super::binary::file(ctx, &locations)
     } else {
         None
     };
@@ -582,6 +682,7 @@ fn file_options(
     use super::options::{options, Options};
     const POOL_REFUSED: &str = "the descriptor pool refused this file or one of its imports";
     let a3 = |reason: &str| {
+        ctx.w6(ctx.file_name(), String::new(), reason);
         let mut b = Block::new();
         b.push(anomaly(
             "OMITTED",

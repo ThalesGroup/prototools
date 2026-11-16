@@ -18,6 +18,8 @@ use prototext_graph::fds_index::{canonical_map, to_bytes as index_bytes, FdsInde
 use prototext_upb::descriptor_access::{DescriptorProto, FileDescriptorProto};
 use prototext_upb::{DynamicMessage, Pool};
 
+use crate::console;
+use crate::events::Events;
 use crate::graph::Graph;
 use crate::render::{self, Failure, Output, Shared};
 
@@ -52,6 +54,7 @@ pub fn build(
     output: &Output,
     mut collected: Collected,
     db_path: &Path,
+    events: &mut Events,
 ) -> Result<(), Failure> {
     let extras = &output.extra_nodes;
     use rayon::prelude::*;
@@ -67,7 +70,9 @@ pub fn build(
             graph: &graph,
             ..shared.clone()
         };
-        if let Some(bytes) = render::descriptor(&promoted, x, n + e) {
+        let (bytes, reports) = render::descriptor(&promoted, x, n + e);
+        render::replay(events, reports);
+        if let Some(bytes) = bytes {
             collected.push((name(&graph, x), bytes));
         }
     }
@@ -92,7 +97,7 @@ pub fn build(
                 .to_string()
         }
     };
-    let graphs: Vec<ScoringFile> = scoring_files
+    let graphs: Vec<Option<ScoringFile>> = scoring_files
         .par_iter()
         .map(|origin| {
             let c = crate::scoring::Collect {
@@ -104,12 +109,23 @@ pub fn build(
             };
             crate::scoring::file(&c, origin)
         })
-        .collect::<Vec<_>>()
-        .into_iter()
-        .flatten()
         .collect();
+    let mut kept = Vec::with_capacity(graphs.len());
+    for (origin, g) in scoring_files.iter().zip(graphs) {
+        match g {
+            Some(g) => kept.push(g),
+            // A file the pool refused: W6, its fixed reason (spec 0429 S16).
+            None => events.w6(origin, "schema db", render::POOL_REFUSED),
+        }
+    }
+    let graphs = kept;
+    console::phase_done("Collecting scoring data");
     if graphs.is_empty() {
-        // reproto's W6: no scoring graphs, no database.
+        events.w6(
+            "--build-schema-db",
+            "schema db",
+            "no scoring graphs generated; skipping",
+        );
         return Ok(());
     }
 
@@ -205,13 +221,30 @@ pub fn build(
     std::fs::create_dir_all(&dir)?;
     std::fs::write(dir.join("hopcroft.rkyv"), rkyv)?;
     std::fs::write(dir.join("index.rkyv"), index)?;
+    console::note(&format!("  descriptor: {}", db_path.display()));
+    console::note(&format!(
+        "  graph:      {}",
+        dir.join("hopcroft.rkyv").display()
+    ));
+    console::note(&format!(
+        "  index:      {}",
+        dir.join("index.rkyv").display()
+    ));
 
     // 7. The pages (spec 0430 S8).
     if let (Some(path), Some(raw), Some(minimized)) =
         (&output.scoring_html, raw_yaml, minimized_yaml)
     {
-        crate::scoring::html::write(path, &raw, &minimized, output.with_leaf_nodes, &output.hide)
-            .map_err(|e| Failure::Fatal(format!("Error: --scoring-html-out: {e}")))?;
+        let (raw_page, minimized_page) = crate::scoring::html::write(
+            path,
+            &raw,
+            &minimized,
+            output.with_leaf_nodes,
+            &output.hide,
+        )
+        .map_err(|e| Failure::Fatal(format!("Error: --scoring-html-out: {e}")))?;
+        console::note(&format!("  pyvis raw:       {raw_page}"));
+        console::note(&format!("  pyvis hopcroft:  {minimized_page}"));
     }
     Ok(())
 }

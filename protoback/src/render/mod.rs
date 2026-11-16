@@ -27,6 +27,7 @@ use prototext_upb::MessageRef;
 use std::collections::BTreeSet;
 
 use crate::db::Database;
+use crate::events::Events;
 use crate::graph::{Graph, Kind};
 use crate::phase2::EditionDefaults;
 use crate::topology::{File, Topology};
@@ -239,27 +240,46 @@ impl From<std::io::Error> for Failure {
     }
 }
 
-pub fn run(shared: &Shared<'_>, output: &Output) -> Result<(), Failure> {
+pub fn run(shared: &Shared<'_>, output: &Output, events: &mut Events) -> Result<(), Failure> {
     if output.out_repo.is_none() && output.schema_db.is_none() {
         return Ok(());
     }
     on_pool(output.jobs, || {
         // Without -O, reproto renders for the database alone, as a dry run.
         let dry_run = output.dry_run || output.out_repo.is_none();
-        let collected = write_files(shared, output, dry_run)?;
+        let collected = write_files(shared, output, dry_run, events)?;
         if let (true, Some(out_repo)) = (shared.emit_scoring_yaml, &output.out_repo) {
             // reproto's pool holds every summoned file once phase 7 has
             // rendered; when it renders nothing, each lookup below loads
             // its file (spec 0430 S1).
             let rendered = !dry_run || shared.wants_descriptor();
-            write_scoring_yaml(shared, out_repo, rendered)?;
+            write_scoring_yaml(shared, out_repo, rendered, events)?;
         }
         if let Some(db) = &output.schema_db {
-            crate::schema_db::build(shared, output, collected, db)?;
+            crate::schema_db::build(shared, output, collected, db, events)?;
         }
         Ok(())
     })
 }
+
+/// A render's reports into the collector, in order (spec 0433 S3): its
+/// warnings printed, its W6 and patched files counted.
+pub fn replay(events: &mut Events, reports: Vec<file::RenderEvent>) {
+    for r in reports {
+        match r {
+            file::RenderEvent::Warning(m) => crate::console::warning(&m),
+            file::RenderEvent::W6 {
+                file,
+                field,
+                reason,
+            } => events.w6(&file, &field, &reason),
+            file::RenderEvent::Prost(name) => events.w_prost(&name),
+        }
+    }
+}
+
+/// The fixed reason of a file the pool refused (spec 0429 S16).
+pub const POOL_REFUSED: &str = "the descriptor pool refused this file or one of its imports";
 
 /// `f` on a pool of `jobs` threads (spec 0429 S4); on this thread when no
 /// pool can be had.
@@ -275,8 +295,13 @@ fn on_pool<T: Send>(jobs: usize, f: impl FnOnce() -> T + Send) -> T {
 
 /// File `i`'s descriptor, rendered as the `k`-th file (a WKT dependency
 /// of the schema database); `None` when its render fails.
-pub fn descriptor(shared: &Shared<'_>, i: usize, k: usize) -> Option<Vec<u8>> {
-    file::render(shared, i, k)?.1
+pub fn descriptor(
+    shared: &Shared<'_>,
+    i: usize,
+    k: usize,
+) -> (Option<Vec<u8>>, Vec<file::RenderEvent>) {
+    let r = file::render(shared, i, k);
+    (r.output.and_then(|o| o.1), r.events)
 }
 
 /// One summoned file, as phase 7 takes it.
@@ -296,9 +321,11 @@ fn write_files(
     shared: &Shared<'_>,
     output: &Output,
     dry_run: bool,
+    events: &mut Events,
 ) -> std::io::Result<crate::schema_db::Collected> {
     let mut collected = Vec::new();
     if dry_run && !shared.wants_descriptor() {
+        crate::console::phase_done("Rendering proto files");
         return Ok(collected);
     }
     let graph = shared.graph;
@@ -327,11 +354,16 @@ fn write_files(
         })
         .collect();
     let rendered = render_all(shared, &plan);
-    for (p, r) in plan.iter().zip(rendered) {
+    for (p, (r, reports, failed)) in plan.iter().zip(rendered) {
         // reproto makes the directory first, a file it fails to render
         // (an edition Python protobuf does not name) included.
         if let Some(parent) = p.path.as_ref().and_then(|p| p.parent()) {
             std::fs::create_dir_all(parent)?;
+        }
+        replay(events, reports);
+        if failed {
+            // reproto's phase 7 catches the failure: W6, internal error.
+            events.w6(&p.name, "", "internal error");
         }
         let Some((text, descriptor)) = r else {
             continue;
@@ -349,6 +381,7 @@ fn write_files(
             std::fs::write(path, text)?;
         }
     }
+    crate::console::phase_done("Rendering proto files");
     if let (false, Some(out_repo)) = (dry_run, &output.out_repo) {
         let buf = out_repo.join("buf.yaml");
         if !buf.exists() {
@@ -360,7 +393,11 @@ fn write_files(
 
 /// A file rendered: its text, and its descriptor under `--emit-binary`;
 /// none for a file reproto does not write.
-type Rendered = Option<(String, Option<Vec<u8>>)>;
+type Rendered = (
+    Option<(String, Option<Vec<u8>>)>,
+    Vec<file::RenderEvent>,
+    bool,
+);
 
 /// The planned files rendered on the current pool (spec 0429 S4), each
 /// with a context of its own, over the shared state rendering never
@@ -370,11 +407,14 @@ fn render_all(shared: &Shared<'_>, plan: &[Planned]) -> Vec<Rendered> {
     use rayon::prelude::*;
     plan.par_iter()
         .map(|&Planned { k, i, .. }| -> Rendered {
-            let (block, descriptor) = file::render(shared, i, k)?;
-            Some((
-                block.flush(shared.redact_comments, shared.redact_orphans),
-                descriptor,
-            ))
+            let r = file::render(shared, i, k);
+            let output = r.output.map(|(block, descriptor)| {
+                (
+                    block.flush(shared.redact_comments, shared.redact_orphans),
+                    descriptor,
+                )
+            });
+            (output, r.events, r.failed)
         })
         .collect()
 }
@@ -384,13 +424,18 @@ fn render_all(shared: &Shared<'_>, plan: &[Planned]) -> Vec<Rendered> {
 /// (the variant's descriptor.proto included), FQDNs as the input has them.
 /// A file the pool refused gets none. Collected on the current pool,
 /// written in reproto's order.
-fn write_scoring_yaml(shared: &Shared<'_>, out_repo: &Path, rendered: bool) -> std::io::Result<()> {
+fn write_scoring_yaml(
+    shared: &Shared<'_>,
+    out_repo: &Path,
+    rendered: bool,
+    events: &mut Events,
+) -> std::io::Result<()> {
     use rayon::prelude::*;
     let graph = shared.graph;
     let files = summoned(graph);
     let n = files.len();
     let identity = |name: &str| name.to_string();
-    let docs: Vec<(PathBuf, Option<String>)> = files
+    let docs: Vec<(String, PathBuf, Option<String>)> = files
         .par_iter()
         .enumerate()
         .map(|(j, &i)| {
@@ -410,11 +455,13 @@ fn write_scoring_yaml(shared: &Shared<'_>, out_repo: &Path, rendered: bool) -> s
                 .canonize_dependency(name, shared.keep_variant_descriptor);
             let path = out_repo.join(canonical).with_extension("yaml");
             let doc = crate::scoring::file(&c, name).map(|f| crate::scoring::pyyaml::dump(&f));
-            (path, doc)
+            (name.to_string(), path, doc)
         })
         .collect();
-    for (path, doc) in docs {
+    for (name, path, doc) in docs {
         let Some(doc) = doc else {
+            // A file the pool refused: W6, its fixed reason (spec 0429 S16).
+            events.w6(&name, "scoring graph", POOL_REFUSED);
             continue;
         };
         if let Some(parent) = path.parent() {

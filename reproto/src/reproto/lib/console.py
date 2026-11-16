@@ -21,7 +21,10 @@ from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, T
 # Single console instance for the whole process.
 # highlight=False: prevents Rich from auto-highlighting numbers/strings in
 # log messages, which would alter their appearance unexpectedly.
-console = Console(stderr=True, highlight=False)
+# soft_wrap=True: a message is one line, whatever its length; Rich would
+# otherwise word-wrap it at the console's width, 80 columns when stderr is
+# not a terminal, splitting log lines (spec 0433 S1).
+console = Console(stderr=True, highlight=False, soft_wrap=True)
 
 
 class Advance(Protocol):

@@ -185,7 +185,6 @@ impl Cli {
             "--dump-resolved-features",
             9,
         );
-        note(self.detailed_warnings, "--detailed-warnings", 9);
         later
     }
 }

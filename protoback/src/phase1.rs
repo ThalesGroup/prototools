@@ -16,7 +16,17 @@ use crate::load::{load_from_path, name_and_imports, LoadCtx, QualFile};
 use crate::run::Run;
 use crate::topology::Topology;
 
+/// Whether the plugin failed: reproto's `PluginError` ends the phase at
+/// once, so nothing after it is read or reported (spec 0431 S4).
+fn plugin_failed(p: Option<&crate::plugin::Plugin>) -> bool {
+    p.is_some_and(|p| p.failure().is_some())
+}
+
 pub fn run(r: &mut Run, topo: &mut Topology) {
+    // A fallback's file missing from -I is expected: no W1 for it.
+    for f in r.fallback_protos.clone() {
+        r.events.register_fallback_file(&f);
+    }
     let roots = r.roots.clone();
     let seeds = r.pb_files.clone();
     let mut ctx = LoadCtx {
@@ -30,6 +40,9 @@ pub fn run(r: &mut Run, topo: &mut Topology) {
     let mut qual_files = Vec::new();
     for path in &seeds {
         qual_files.extend(load_from_path(&mut ctx, &roots, path));
+        if plugin_failed(ctx.plugin) {
+            return;
+        }
     }
     for qf in qual_files {
         let i = topo.load(qf);
@@ -46,6 +59,9 @@ pub fn run(r: &mut Run, topo: &mut Topology) {
             }
             let name = topo.files[i].name.clone();
             let mut qfiles = load_from_path(&mut ctx, &roots, Path::new(&name));
+            if plugin_failed(ctx.plugin) {
+                return;
+            }
             if qfiles.len() == 1 {
                 topo.load(qfiles.remove(0));
                 if r.debug {
@@ -61,6 +77,9 @@ pub fn run(r: &mut Run, topo: &mut Topology) {
     for proto in r.fallback_protos.clone() {
         r.pruned_fqdns.remove(&format!("file:{proto}"));
         let qf = embedded_fallback(r, &proto);
+        if plugin_failed(r.plugin.as_ref()) {
+            return;
+        }
         if let Some(qf) = &qf {
             topo.load(qf.clone());
             if !r.quiet {

@@ -236,24 +236,22 @@ pub fn page(compiled_yaml: &str, with_leaf_nodes: bool, hide: &[String]) -> Resu
 
 /// Both pages (`_phase_build_schema_db`, step 7): `STEM.html` from the raw
 /// graph, `STEM-hopcroft.html` from the minimized one; `STEM` is the path
-/// given, less a trailing `.html`.
+/// given, less a trailing `.html`. Their paths, written.
 pub fn write(
     path: &Path,
     raw_yaml: &str,
     minimized_yaml: &str,
     with_leaf_nodes: bool,
     hide: &[String],
-) -> Result<(), String> {
+) -> Result<(String, String), String> {
     let p = path.to_string_lossy();
     let stem = p.strip_suffix(".html").unwrap_or(&p);
-    for (yaml, out) in [
-        (raw_yaml, format!("{stem}.html")),
-        (minimized_yaml, format!("{stem}-hopcroft.html")),
-    ] {
+    let (raw, minimized) = (format!("{stem}.html"), format!("{stem}-hopcroft.html"));
+    for (yaml, out) in [(raw_yaml, &raw), (minimized_yaml, &minimized)] {
         let html = page(yaml, with_leaf_nodes, hide)?;
-        std::fs::write(&out, html).map_err(|e| format!("{out}: {e}"))?;
+        std::fs::write(out, html).map_err(|e| format!("{out}: {e}"))?;
     }
-    Ok(())
+    Ok((raw, minimized))
 }
 
 #[cfg(test)]

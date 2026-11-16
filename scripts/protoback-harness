@@ -8,7 +8,7 @@ file they write, stdout, stderr and the exit status.
 Usage:
   scripts/protoback-harness prepare WORK [--googleapis PB] [--otel DIR]
   scripts/protoback-harness run WORK --reference CMD --candidate CMD
-                                [--jobs N] [--only REGEX] [--rename OLD=NEW]
+                                [--jobs N] [--only REGEX] [--rename OLD=NEW]...
                                 [--dump-graph | --compare PATH...]
 
 `prepare` builds the corpora under WORK/corpus with protoc; `run` runs
@@ -274,6 +274,15 @@ def prepare(work: Path, googleapis: Path | None, otel: Path | None) -> None:
 
 
 # ── cases ────────────────────────────────────────────────────────────────────
+
+# The reference's words the candidate says otherwise on purpose (spec 0424
+# S12): protoback's --phase2-plugin warning says what ctx is (spec 0431 S3).
+NORMALIZE: list[tuple[bytes, bytes]] = [
+    (b"warning: --phase2-plugin is deprecated; use --fdp-plugin\n",
+     b"warning: --phase2-plugin is deprecated; use --fdp-plugin "
+     b"(protoback calls phase2_plugin(ctx, fdp) with ctx None)\n"),
+]
+
 
 @dataclass
 class Case:
@@ -649,13 +658,13 @@ def last_line(stderr: bytes) -> str:
 
 
 def compare(ref_dir: Path, cand_dir: Path, ref: Run, cand: Run,
-            rename: tuple[bytes, bytes] | None, mode: Mode) -> list[str]:
+            rename: list[tuple[bytes, bytes]], mode: Mode) -> list[str]:
     """The differences between two runs, empty if none."""
     diffs: list[str] = []
     ref_out, ref_err = ref.stdout, ref.stderr
-    if rename is not None:
-        ref_out = ref_out.replace(*rename)
-        ref_err = ref_err.replace(*rename)
+    for old, new in [*rename, *NORMALIZE]:
+        ref_out = ref_out.replace(old, new)
+        ref_err = ref_err.replace(old, new)
     if ref.exit != cand.exit:
         diffs.append(f"exit status {ref.exit} != {cand.exit}")
         if not mode.streams:
@@ -682,7 +691,7 @@ def compare(ref_dir: Path, cand_dir: Path, ref: Run, cand: Run,
 
 
 def run(work: Path, reference: list[str], candidate: list[str], jobs: int,
-        only: str | None, rename: tuple[bytes, bytes] | None,
+        only: str | None, rename: list[tuple[bytes, bytes]],
         mode: Mode, reference_instantiate: list[str] | None = None,
         candidate_instantiate: list[str] | None = None) -> int:
     all_cases = cases(work / "corpus")
@@ -752,8 +761,9 @@ def main() -> int:
     r.add_argument("--candidate", required=True)
     r.add_argument("--jobs", type=int, default=os.cpu_count() or 1)
     r.add_argument("--only")
-    r.add_argument("--rename", help="OLD=NEW: the reference's program name, "
-                   "read as the candidate's")
+    r.add_argument("--rename", action="append", default=[],
+                   help="OLD=NEW: a phrase naming the reference's program, read as "
+                   "the candidate's; repeatable, applied in order")
     r.add_argument("--dump-graph", action="store_true",
                    help="compare the graph dumps of phases 1 to 6 (spec 0428 S10)")
     r.add_argument("--reference-instantiate", default="reproto-instantiate-schema",
@@ -768,10 +778,10 @@ def main() -> int:
     if args.command == "prepare":
         prepare(args.work.resolve(), args.googleapis, args.otel)
         return 0
-    rename = None
-    if args.rename:
-        old, _, new = args.rename.partition("=")
-        rename = (old.encode(), new.encode())
+    rename = []
+    for r in args.rename:
+        old, _, new = r.partition("=")
+        rename.append((old.encode(), new.encode()))
     return run(args.work.resolve(), shlex.split(args.reference),
                shlex.split(args.candidate), args.jobs, args.only, rename,
                Mode(args.dump_graph, tuple(args.compare)),

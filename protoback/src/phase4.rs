@@ -56,4 +56,15 @@ pub fn run(run: &mut Run, topo: &mut Topology) {
         }
         current = next;
     }
+    // Pruned files: no W5 for their importers.
+    for f in &topo.files {
+        if f.is_pruned {
+            run.events.register_pruned_file(&f.name);
+        }
+    }
+    crate::console::phase_done(if run.prunings.is_empty() {
+        "Applying pruning rules"
+    } else {
+        "Processing exclusions"
+    });
 }

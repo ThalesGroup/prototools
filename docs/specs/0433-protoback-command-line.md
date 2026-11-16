@@ -78,6 +78,13 @@ On a terminal it draws transient progress bars and colors.
   order relative to the others.
 - **S4. `--debug-fqdn`**, reproduced (the user's decision); `--debug`,
   protoback's own (N1).
+- **S4b. Each warning once.** Under `--emit-binary` and
+  `--schema-db-out`, reproto renders a node at depth d about 2^d times
+  (spec 0429 S11), repeating its warnings. protoback renders once, and
+  emits each warning once: it does not emulate the repetition (the
+  user's decision). Measured on the 73 import fixtures, reproto's stderr
+  is the same with and without `--emit-binary`: the repetition does not
+  show. Should a corpus show it, reproto is fixed to render once.
 - **S5. The terminal.** On a terminal, each counted phase shows an
   indicatif bar, removed when it ends, its label then printed as when
   piped; errors, warnings and notices in reproto's colors (bold red,
@@ -126,4 +133,28 @@ Its traces follow reproto's internals, which protoback's do not mirror
 
 ## Measured outcome
 
-Filled in at implementation.
+- **Stage 1, stderr when piped** (2026-11-16):
+  - reproto: `soft_wrap` on its console (`lib/console.py`);
+    `test_a_long_message_is_one_line` failed before.
+  - protoback: `console.rs` (warnings silenced by `--quiet`; information,
+    attention, labels); `events.rs` becomes reproto's collector (W1 to
+    W7, the prost count, the flush and its order, `--detailed-warnings`,
+    the fallback and pruned files' registrations), printing as it
+    records; the labels at reproto's places (phase 2's before its
+    circular-dependency warnings, phase 5's before `--debug-fqdn`'s
+    trace, phase 7's even in a dry run; `progress_lazy`'s never when
+    piped); each file's render returns what it reports (the anomalies'
+    lines, W6, the prost count), replayed in file order, a failed file a
+    W6; the database's W6, label and summary; the flush before an error
+    the phases raise, after one they print; phase 1 stops at a plugin's
+    failure, as reproto's exception does.
+  - reproto's own rules kept: A2's line is never printed (`suppress_stderr`
+    since reproto's commit 0ef3aa2, `--force-proto2-output` being an
+    opt-in), A1's is left to the prost count under
+    `--force-proto2-for-editions`.
+  - A W6 for a scoring graph the pool refused takes the fixed reason of
+    spec 0429 S16, where reproto prints upb's text; no corpus raises it.
+  - The harness: `--rename` repeatable (the usage lines' program
+    names), `NORMALIZE` for protoback's `--phase2-plugin` warning (spec
+    0431 S3). Every stream compared, every corpus, all cores: 1,587
+    cases, all identical. `ci`'s `protobackHarness` compares every stream.

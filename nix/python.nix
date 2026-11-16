@@ -639,9 +639,10 @@ print('\n'.join(lines[:$N_EXTRA]))
 
   # The differential harness of spec 0424 S11: a reference and a candidate
   # run the same cases, every output compared byte for byte.
-  # protobackHarness compares what reproto and protoback write under `out`
-  # (the .proto, .pb and scoring YAML files, the schema database; specs
-  # 0429, 0430); protobackDumpHarness, the graph dumps of phases 1 to 6
+  # protobackHarness compares everything reproto and protoback write: the
+  # files (the .proto, .pb and scoring YAML files, the schema database, the
+  # instances; specs 0429 to 0432), stdout, stderr and the exit status
+  # (spec 0433); protobackDumpHarness, the graph dumps of phases 1 to 6
   # (spec 0428 S10). The two are part of `ci`; their -full versions add
   # googleapis, and are part of `full-tests`.
   protobackHarnessSrc =
@@ -673,7 +674,17 @@ print('\n'.join(lines[:$N_EXTRA]))
 
   withGoogleapis = "--googleapis ${googleapisPbs}/googleapis.pb";
   dumpGraph = { candidate = "protoback"; runFlags = "--dump-graph"; };
-  outputs = { candidate = "protoback"; runFlags = "--compare out"; };
+  # Every stream compared (spec 0433 S8), the programs' own names in
+  # their usage lines read as protoback's (spec 0424 S12).
+  outputs = {
+    candidate = "protoback";
+    runFlags = pkgs.lib.escapeShellArgs [
+      "--rename" "Usage: reproto =Usage: protoback "
+      "--rename" "'reproto --help'='protoback --help'"
+      "--rename" "Usage: reproto-instantiate-schema =Usage: protoback instantiate "
+      "--rename" "'reproto-instantiate-schema --help'='protoback instantiate --help'"
+    ];
+  };
 
   protobackHarness = mkProtobackHarness (outputs // { name = "protoback-harness"; });
   protobackHarnessFull = mkProtobackHarness (outputs // {

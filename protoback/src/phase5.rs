@@ -71,6 +71,7 @@ pub fn run(run: &mut Run, topo: &Topology) {
         }
         current = next;
     }
+    crate::console::phase_done("Computing reachability");
 
     if run.debug_fqdn {
         // reproto tests `node.is_present`, a method, never false: P always.

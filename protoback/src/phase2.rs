@@ -111,6 +111,7 @@ pub fn run(r: &mut Run, topo: &mut Topology) -> Result<(), DescriptorProtoError>
             merge(r, topo, i);
         }
     }
+    crate::console::phase_done("Loading descriptors");
     for i in waiting {
         r.events.warning(&format!(
             "Circular dependency detected: {}",
