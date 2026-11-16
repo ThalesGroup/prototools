@@ -723,3 +723,9 @@ development VM pinned to vCPUs 0–7, on mains power, host idle.
   `prototext/wkt/prebuilt`. S16 met: googleapis with `googleapisDb`'s
   flags, 7.49 s and 1.25 GB, against reproto's 176 s and 1.30 GB (spec
   0430, measured outcome).
+- **Step 7** (2026-11-16), spec 0431: plugins out of process (S9),
+  `--fdp-plugin` through the embedded adapter, `--fdp-plugin-cmd`
+  through `sh -c`, at reproto's four places, each distinct descriptor
+  sent once (counted by a test). The harness's plugin cases identical;
+  the whole harness 1,573 cases, all identical. Test plan 5's cost on
+  googleapis not measured: deferred until the port is complete.
