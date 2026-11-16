@@ -118,7 +118,7 @@ pub enum TypeRef {
     Scalar(i32),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Node {
     pub kind: Kind,
     pub fqdn: String,
@@ -145,7 +145,7 @@ pub struct Node {
     pub stripped_methods: Vec<Stripped>,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Graph {
     pub nodes: Vec<Node>,
     by_fqdn: HashMap<String, usize>,

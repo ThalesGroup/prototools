@@ -21,6 +21,7 @@ mod phase5;
 mod phase6;
 mod render;
 mod run;
+mod schema_db;
 mod scoring;
 mod select;
 mod topology;
@@ -268,7 +269,24 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let loads = render::pool_loads(&run.db, &render::summoned_files(&run.graph));
+    let schema_db = cli
+        .build_schema_db
+        .clone()
+        .or(cli.build_schema_db_deprecated.clone());
+    // reproto's pool loads the summoned files as phase 7 renders them,
+    // then the database's WKT dependencies as it renders those (spec 0430
+    // S1, S4).
+    let mut loaded = render::summoned_files(&run.graph);
+    if schema_db.is_some() {
+        loaded.extend(run.schema_db_extra_nodes.iter().map(|&i| {
+            run.graph.nodes[i]
+                .fqdn
+                .strip_prefix("file:")
+                .unwrap_or_default()
+                .to_string()
+        }));
+    }
+    let loads = render::pool_loads(&run.db, &loaded);
     let options = render::OptionsPool::new(&run.db, &run.variant, &loads);
     let shared = render::Shared {
         graph: &run.graph,
@@ -286,8 +304,9 @@ fn main() -> ExitCode {
         force_proto2_for_editions: cli.force_proto2_for_editions || cli.prost_workaround,
         redact_comments: cli.redact_comments,
         redact_orphans: cli.redact_orphans,
-        loads,
-        options,
+        loads: &loads,
+        options: options.as_ref(),
+        schema_db: schema_db.is_some(),
     };
     let output = render::Output {
         out_repo,
@@ -296,11 +315,20 @@ fn main() -> ExitCode {
         jobs: cli.jobs.unwrap_or_else(|| {
             std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
         }),
+        schema_db,
+        extra_nodes: run.schema_db_extra_nodes.clone(),
     };
-    if let Err(e) = render::run(&shared, &output) {
-        eprintln!("Error: {e}");
-        eprintln!("Cannot continue due to I/O error.");
-        return ExitCode::from(1);
+    match render::run(&shared, &output) {
+        Ok(()) => {}
+        Err(render::Failure::Io(e)) => {
+            eprintln!("Error: {e}");
+            eprintln!("Cannot continue due to I/O error.");
+            return ExitCode::from(1);
+        }
+        Err(render::Failure::Fatal(message)) => {
+            eprintln!("{message}");
+            return ExitCode::from(1);
+        }
     }
     ExitCode::SUCCESS
 }

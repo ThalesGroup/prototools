@@ -41,6 +41,7 @@ fn text(b: &[u8]) -> String {
 
 /// What every file's render reads, never written while rendering: phases
 /// 1 to 6's graph and pool, and the run's options (spec 0429 S4).
+#[derive(Clone)]
 pub struct Shared<'a> {
     pub graph: &'a Graph,
     pub db: &'a Database,
@@ -68,9 +69,12 @@ pub struct Shared<'a> {
     pub redact_comments: bool,
     pub redact_orphans: bool,
     /// reproto's options pool: the variant's descriptor.proto.
-    pub options: Option<OptionsPool>,
+    pub options: Option<&'a OptionsPool>,
     /// What reproto's `ctx.pool` holds as rendering goes (`pool_loads`).
-    pub loads: PoolLoads,
+    pub loads: &'a PoolLoads,
+    /// `--schema-db-out`: each rendered file's descriptor is collected,
+    /// written or not (spec 0430 S4).
+    pub schema_db: bool,
 }
 
 /// A node's definition, read from the pool's file it is in.
@@ -84,6 +88,12 @@ pub enum Def<'a> {
 }
 
 impl<'a> Shared<'a> {
+    /// A rendered file's descriptor is built (`ctx.out_desc`): for
+    /// `--emit-binary` or the schema database.
+    pub fn wants_descriptor(&self) -> bool {
+        self.emit_binary || self.schema_db
+    }
+
     /// The definition of node `i` (`node.this`): its `DefRef`'s path walked
     /// from its file, each step straight to the one child it names (a
     /// reader's `message_type()` would build every sibling's, which made a
@@ -169,6 +179,11 @@ pub struct Output {
     pub write_variant_descriptor: bool,
     /// `--jobs`: the threads files render on (spec 0429 S4).
     pub jobs: usize,
+    /// `--schema-db-out`: the database's path.
+    pub schema_db: Option<PathBuf>,
+    /// Phase 6's `schema_db_extra_nodes`: the WKT dependencies the
+    /// database adds.
+    pub extra_nodes: Vec<usize>,
 }
 
 /// What `buf lsp serve` needs at the output's root (spec 0146).
@@ -205,20 +220,36 @@ pub fn summoned_files(graph: &Graph) -> Vec<String> {
 
 /// Phase 7: each summoned, present file, in node order, rendered and
 /// written under its canonical name; then `buf.yaml`.
-pub fn run(shared: &Shared<'_>, output: &Output) -> std::io::Result<()> {
-    let Some(out_repo) = &output.out_repo else {
+/// Why a run stops: an output it cannot write, or reproto's own fatal
+/// errors (a schema-database name collision), each exit status 1.
+pub enum Failure {
+    Io(std::io::Error),
+    Fatal(String),
+}
+
+impl From<std::io::Error> for Failure {
+    fn from(e: std::io::Error) -> Failure {
+        Failure::Io(e)
+    }
+}
+
+pub fn run(shared: &Shared<'_>, output: &Output) -> Result<(), Failure> {
+    if output.out_repo.is_none() && output.schema_db.is_none() {
         return Ok(());
-    };
+    }
     on_pool(output.jobs, || {
-        if !output.dry_run {
-            write_files(shared, output, out_repo)?;
-        }
-        if shared.emit_scoring_yaml {
+        // Without -O, reproto renders for the database alone, as a dry run.
+        let dry_run = output.dry_run || output.out_repo.is_none();
+        let collected = write_files(shared, output, dry_run)?;
+        if let (true, Some(out_repo)) = (shared.emit_scoring_yaml, &output.out_repo) {
             // reproto's pool holds every summoned file once phase 7 has
-            // rendered; under --dry-run without --emit-binary it renders
-            // nothing, and each lookup below loads its file (spec 0430 S1).
-            let rendered = !output.dry_run || shared.emit_binary;
+            // rendered; when it renders nothing, each lookup below loads
+            // its file (spec 0430 S1).
+            let rendered = !dry_run || shared.wants_descriptor();
             write_scoring_yaml(shared, out_repo, rendered)?;
+        }
+        if let Some(db) = &output.schema_db {
+            crate::schema_db::build(shared, &output.extra_nodes, collected, db)?;
         }
         Ok(())
     })
@@ -236,45 +267,89 @@ fn on_pool<T: Send>(jobs: usize, f: impl FnOnce() -> T + Send) -> T {
     }
 }
 
-/// The `.proto` files (and `.pb` under `--emit-binary`), then `buf.yaml`.
-fn write_files(shared: &Shared<'_>, output: &Output, out_repo: &Path) -> std::io::Result<()> {
-    let graph = shared.graph;
-    // The files written, in reproto's order: (k, node, path).
-    let mut plan: Vec<(usize, usize, PathBuf)> = Vec::new();
-    for (k, i) in summoned(graph).into_iter().enumerate() {
-        let name = graph.nodes[i]
-            .fqdn
-            .strip_prefix("file:")
-            .unwrap_or_default();
-        if name == shared.variant.descriptor_proto && !output.write_variant_descriptor {
-            continue;
-        }
-        let canonical = shared
-            .variant
-            .canonize_dependency(name, shared.keep_variant_descriptor);
-        plan.push((k, i, out_repo.join(&canonical)));
+/// File `i`'s descriptor, rendered as the `k`-th file (a WKT dependency
+/// of the schema database); `None` when its render fails.
+pub fn descriptor(shared: &Shared<'_>, i: usize, k: usize) -> Option<Vec<u8>> {
+    file::render(shared, i, k)?.1
+}
+
+/// One summoned file, as phase 7 takes it.
+struct Planned {
+    k: usize,
+    i: usize,
+    name: String,
+    /// Where it is written: none in a dry run, or for the variant's
+    /// descriptor.proto under `--no-emit-descriptor` (spec 0150).
+    path: Option<PathBuf>,
+}
+
+/// Phase 7: the `.proto` files (and `.pb` under `--emit-binary`), then
+/// `buf.yaml`; each descriptor collected for the schema database, written
+/// or not. Renders only when something needs it, as reproto does.
+fn write_files(
+    shared: &Shared<'_>,
+    output: &Output,
+    dry_run: bool,
+) -> std::io::Result<crate::schema_db::Collected> {
+    let mut collected = Vec::new();
+    if dry_run && !shared.wants_descriptor() {
+        return Ok(collected);
     }
+    let graph = shared.graph;
+    let plan: Vec<Planned> = summoned(graph)
+        .into_iter()
+        .enumerate()
+        .map(|(k, i)| {
+            let name = graph.nodes[i]
+                .fqdn
+                .strip_prefix("file:")
+                .unwrap_or_default()
+                .to_string();
+            let suppress =
+                name == shared.variant.descriptor_proto && !output.write_variant_descriptor;
+            let path = match (&output.out_repo, dry_run || suppress) {
+                (Some(out_repo), false) => Some(
+                    out_repo.join(
+                        shared
+                            .variant
+                            .canonize_dependency(&name, shared.keep_variant_descriptor),
+                    ),
+                ),
+                _ => None,
+            };
+            Planned { k, i, name, path }
+        })
+        .collect();
     let rendered = render_all(shared, &plan);
-    for ((_, _, path), r) in plan.iter().zip(rendered) {
+    for (p, r) in plan.iter().zip(rendered) {
         // reproto makes the directory first, a file it fails to render
         // (an edition Python protobuf does not name) included.
-        if let Some(parent) = path.parent() {
+        if let Some(parent) = p.path.as_ref().and_then(|p| p.parent()) {
             std::fs::create_dir_all(parent)?;
         }
         let Some((text, descriptor)) = r else {
             continue;
         };
-        // reproto writes the descriptor first (`with_suffix(".pb")`).
         if let Some(bytes) = descriptor {
-            std::fs::write(path.with_extension("pb"), bytes)?;
+            // reproto writes the descriptor first (`with_suffix(".pb")`).
+            if let (true, Some(path)) = (shared.emit_binary, &p.path) {
+                std::fs::write(path.with_extension("pb"), &bytes)?;
+            }
+            if shared.schema_db {
+                collected.push((p.name.clone(), bytes));
+            }
         }
-        std::fs::write(path, text)?;
+        if let Some(path) = &p.path {
+            std::fs::write(path, text)?;
+        }
     }
-    let buf = out_repo.join("buf.yaml");
-    if !buf.exists() {
-        std::fs::write(buf, BUF_YAML)?;
+    if let (false, Some(out_repo)) = (dry_run, &output.out_repo) {
+        let buf = out_repo.join("buf.yaml");
+        if !buf.exists() {
+            std::fs::write(buf, BUF_YAML)?;
+        }
     }
-    Ok(())
+    Ok(collected)
 }
 
 /// A file rendered: its text, and its descriptor under `--emit-binary`;
@@ -285,10 +360,10 @@ type Rendered = Option<(String, Option<Vec<u8>>)>;
 /// with a context of its own, over the shared state rendering never
 /// writes; collected in the plan's order, so the output is the same bytes
 /// whatever the threads.
-fn render_all(shared: &Shared<'_>, plan: &[(usize, usize, PathBuf)]) -> Vec<Rendered> {
+fn render_all(shared: &Shared<'_>, plan: &[Planned]) -> Vec<Rendered> {
     use rayon::prelude::*;
     plan.par_iter()
-        .map(|&(k, i, _)| -> Rendered {
+        .map(|&Planned { k, i, .. }| -> Rendered {
             let (block, descriptor) = file::render(shared, i, k)?;
             Some((
                 block.flush(shared.redact_comments, shared.redact_orphans),
@@ -319,7 +394,7 @@ fn write_scoring_yaml(shared: &Shared<'_>, out_repo: &Path, rendered: bool) -> s
                 .unwrap_or_default();
             let c = crate::scoring::Collect {
                 graph,
-                loads: &shared.loads,
+                loads: shared.loads,
                 upto: if rendered { n - 1 } else { j },
                 extension_ranges: shared.emit_extension_ranges,
                 rename: &identity,

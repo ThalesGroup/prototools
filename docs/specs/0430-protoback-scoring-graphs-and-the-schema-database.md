@@ -219,3 +219,21 @@ is the binary's size.
     corpus, on all cores and with `--jobs 1`: 1,274 cases, 1,197
     identical; the 77 others are the schema database's (stage 2),
     refused.
+- **Stage 2, the schema database** (2026-11-16): `schema_db.rs`. Phase 7
+  collects each rendered file's descriptor, written or not; the WKT
+  dependencies render after it, one by one, over a copy of the graph
+  their subtrees are promoted in, each seeing the promotions before it,
+  loaded into the emulated pool after the summoned files; then the
+  scoring graphs (`build_from_files`), the name collision check, Kahn's
+  rounds, `DB.desc`, `index.rkyv` (`prototext_graph::fds_index`, called
+  directly). `Shared` borrows the pool loads and the options pool, so a
+  copy of it renders over the promoted graph.
+  - WKT's database identical to reproto's, and its `hopcroft.rkyv` and
+    `index.rkyv` to `prototext/wkt/prebuilt` (G2). Test plan 2 holds by
+    the harness's `wkt-rkyv` case (protoback against reproto) and
+    `wkt-prebuilt-check` (reproto against the prebuilt), both in `ci`.
+  - The harness, `--compare out` (every output, the database's
+    included), every corpus, on all cores and with `--jobs 1`: 1,274
+    cases, all identical; googleapis' database among them.
+  - `ci`'s `protobackHarness` now runs protoback against reproto, every
+    output compared; it had kept reproto on both sides since step 4.

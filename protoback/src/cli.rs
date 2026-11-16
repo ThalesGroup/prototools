@@ -176,11 +176,6 @@ impl Cli {
             }
         };
         note(
-            self.build_schema_db.is_some() || self.build_schema_db_deprecated.is_some(),
-            "--schema-db-out",
-            6,
-        );
-        note(
             self.emit_scoring_html.is_some()
                 || self.emit_scoring_html_deprecated.is_some()
                 || self.emit_pyvis.is_some(),

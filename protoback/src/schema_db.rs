@@ -1,0 +1,302 @@
+// SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+//
+// SPDX-License-Identifier: MIT
+
+//! `--schema-db-out DB.desc` (spec 0430 S4–S7): reproto's
+//! `_phase_build_schema_db`.
+//!
+//! The descriptors phase 7 collected, then the WKT dependencies phase 6
+//! set aside, rendered with their subtrees promoted; their scoring graphs,
+//! merged and minimized by `prototext-graph` without YAML; `DB.desc`, the
+//! descriptors in dependency order; `DB/hopcroft.rkyv`; `DB/index.rkyv`.
+
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
+
+use prototext_graph::build_scoring_graph::{build_from_files, ScoringFile};
+use prototext_graph::fds_index::{canonical_map, to_bytes as index_bytes, FdsIndex};
+use prototext_upb::descriptor_access::{DescriptorProto, FileDescriptorProto};
+use prototext_upb::{DynamicMessage, Pool};
+
+use crate::graph::Graph;
+use crate::render::{self, Failure, Shared};
+
+/// A descriptor collected for the database: the input file it was
+/// rendered from, and its bytes.
+pub type Collected = Vec<(String, Vec<u8>)>;
+
+/// Node `i` and everything it contains, summoned and reachable
+/// (`_promote_subtree`).
+fn promote(graph: &mut Graph, i: usize) {
+    let mut stack = vec![i];
+    while let Some(n) = stack.pop() {
+        let node = &mut graph.nodes[n];
+        node.is_summoned = true;
+        node.is_reachable = true;
+        stack.extend(node.contains.iter().copied());
+    }
+}
+
+fn name(graph: &Graph, i: usize) -> String {
+    graph.nodes[i]
+        .fqdn
+        .strip_prefix("file:")
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// The database, from the descriptors phase 7 collected; `extras`,
+/// phase 6's `schema_db_extra_nodes`.
+pub fn build(
+    shared: &Shared<'_>,
+    extras: &[usize],
+    mut collected: Collected,
+    db_path: &Path,
+) -> Result<(), Failure> {
+    use rayon::prelude::*;
+
+    // 1. The WKT dependencies, rendered after phase 7, one by one: each
+    // sees the promotions before it (spec 0430 S4). A failed render is
+    // left out, silently.
+    let n = render::summoned(shared.graph).len();
+    let mut graph = shared.graph.clone();
+    for (e, &x) in extras.iter().enumerate() {
+        promote(&mut graph, x);
+        let promoted = Shared {
+            graph: &graph,
+            ..shared.clone()
+        };
+        if let Some(bytes) = render::descriptor(&promoted, x, n + e) {
+            collected.push((name(&graph, x), bytes));
+        }
+    }
+
+    // 2. Each file's scoring graph, once, in collection order, names
+    // renamed as `.desc` renames them (spec 0430 S6). A file the pool
+    // refused gets none (W6, step 9).
+    let mut seen = HashSet::new();
+    let scoring_files: Vec<&str> = collected
+        .iter()
+        .map(|(origin, _)| origin.as_str())
+        .filter(|o| seen.insert(*o))
+        .collect();
+    let rename = |full: &str| -> String {
+        if shared.keep_variant_descriptor {
+            full.to_string()
+        } else {
+            shared
+                .variant
+                .namespace(&format!(".{full}"))
+                .trim_start_matches('.')
+                .to_string()
+        }
+    };
+    let graphs: Vec<ScoringFile> = scoring_files
+        .par_iter()
+        .map(|origin| {
+            let c = crate::scoring::Collect {
+                graph: shared.graph,
+                loads: shared.loads,
+                upto: usize::MAX,
+                extension_ranges: shared.emit_extension_ranges,
+                rename: &rename,
+            };
+            crate::scoring::file(&c, origin)
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .flatten()
+        .collect();
+    if graphs.is_empty() {
+        // reproto's W6: no scoring graphs, no database.
+        return Ok(());
+    }
+
+    // 3. The merged, minimized graph.
+    let (rkyv, _, _) = build_from_files(&graphs, false, false, |_, _| {})
+        .map_err(|e| Failure::Fatal(format!("Error: building the scoring graph: {e}")))?;
+
+    // 4. The descriptors: a name given two contents stops the run; the
+    // rest in reproto's dependency order (Kahn's rounds), duplicates kept.
+    let fdp_type = Pool::vendored()
+        .get_message_by_name("google.protobuf.FileDescriptorProto")
+        .ok_or_else(|| Failure::Fatal("Error: no FileDescriptorProto type".into()))?;
+    let decoded: Vec<DynamicMessage> = collected
+        .iter()
+        .map(|(_, bytes)| {
+            DynamicMessage::decode(&fdp_type, bytes)
+                .map_err(|e| Failure::Fatal(format!("Error: a rendered descriptor: {e}")))
+        })
+        .collect::<Result<_, _>>()?;
+    let names: Vec<String> = decoded
+        .iter()
+        .map(|d| text(FileDescriptorProto(d.as_ref()).name()))
+        .collect();
+    let mut first: HashMap<&str, usize> = HashMap::new();
+    for (j, name) in names.iter().enumerate() {
+        match first.get(name.as_str()) {
+            Some(&p) if collected[p].1 != collected[j].1 => {
+                return Err(Failure::Fatal(format!(
+                    "error: schema-db name collision: '{}' and '{}' both canonize to '{name}' \
+                     with different content \u{2014} cannot build a valid FileDescriptorSet. \
+                     Use -p/--prune to remove one of the colliding sources.",
+                    collected[p].0, collected[j].0
+                )));
+            }
+            Some(_) => {}
+            None => {
+                first.insert(name, j);
+            }
+        }
+    }
+    let deps: Vec<Vec<String>> = decoded
+        .iter()
+        .map(|d| {
+            FileDescriptorProto(d.as_ref())
+                .dependency()
+                .iter()
+                .map(|x| text(x))
+                .collect()
+        })
+        .collect();
+    let mut placed: HashSet<&str> = HashSet::new();
+    let mut order = Vec::with_capacity(collected.len());
+    let mut remaining: Vec<usize> = (0..collected.len()).collect();
+    for _ in 0..=collected.len() {
+        if remaining.is_empty() {
+            break;
+        }
+        let mut next = Vec::new();
+        for &j in &remaining {
+            let ready = deps[j]
+                .iter()
+                .all(|d| !first.contains_key(d.as_str()) || placed.contains(d.as_str()));
+            if ready {
+                order.push(j);
+                placed.insert(names[j].as_str());
+            } else {
+                next.push(j);
+            }
+        }
+        remaining = next;
+    }
+    order.extend(remaining);
+
+    // 5. `DB.desc`: a FileDescriptorSet, each file a field 1 record.
+    let mut raw = Vec::new();
+    let mut spans = Vec::with_capacity(order.len());
+    for &j in &order {
+        let bytes = &collected[j].1;
+        raw.push(0x0a);
+        varint(&mut raw, bytes.len() as u64);
+        spans.push((raw.len() as u64, (raw.len() + bytes.len()) as u64));
+        raw.extend_from_slice(bytes);
+    }
+    let index = fds_index(&order, &decoded, &spans)
+        .map_err(|e| Failure::Fatal(format!("Error: building the index: {e}")))?;
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(db_path, &raw)?;
+    let dir = db_path.with_extension("");
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join("hopcroft.rkyv"), rkyv)?;
+    std::fs::write(dir.join("index.rkyv"), index)?;
+    Ok(())
+}
+
+fn text(b: &[u8]) -> String {
+    String::from_utf8_lossy(b).into_owned()
+}
+
+fn varint(out: &mut Vec<u8>, mut v: u64) {
+    while v >= 0x80 {
+        out.push((v as u8) | 0x80);
+        v >>= 7;
+    }
+    out.push(v as u8);
+}
+
+/// `index.rkyv` (`build_index.py`): each file's span in `DB.desc`, its
+/// types, imports and extensions; a later file of the same name replaces
+/// an earlier one, as Python's dicts do.
+fn fds_index(
+    order: &[usize],
+    decoded: &[DynamicMessage],
+    spans: &[(u64, u64)],
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let mut type_to_file = HashMap::new();
+    let mut file_to_span = HashMap::new();
+    let mut dep_graph = HashMap::new();
+    let mut ext_to_file = HashMap::new();
+    for (&j, &span) in order.iter().zip(spans) {
+        let f = FileDescriptorProto(decoded[j].as_ref());
+        let name = text(f.name());
+        file_to_span.insert(name.clone(), span);
+        dep_graph.insert(
+            name.clone(),
+            f.dependency().iter().map(|d| text(d)).collect(),
+        );
+        let package = text(f.package());
+        let prefix = if package.is_empty() {
+            String::new()
+        } else {
+            format!("{package}.")
+        };
+        for m in f.message_type() {
+            let fqdn = format!("{prefix}{}", text(m.name()));
+            type_to_file.insert(fqdn.clone(), name.clone());
+            nested_types(&format!("{fqdn}."), &m, &name, &mut type_to_file);
+        }
+        for e in f.enum_type() {
+            type_to_file.insert(format!("{prefix}{}", text(e.name())), name.clone());
+        }
+        for x in f.extension() {
+            let extendee = text(x.extendee());
+            ext_to_file.insert(
+                format!("{}/{}", extendee.trim_start_matches('.'), x.number()),
+                name.clone(),
+            );
+        }
+        for m in f.message_type() {
+            nested_extensions(&m, &name, &mut ext_to_file);
+        }
+    }
+    index_bytes(&FdsIndex {
+        type_to_file: canonical_map(type_to_file),
+        file_to_span: canonical_map(file_to_span),
+        dep_graph: canonical_map(dep_graph),
+        ext_to_file: canonical_map(ext_to_file),
+    })
+}
+
+/// `_collect_nested`.
+fn nested_types(
+    prefix: &str,
+    m: &DescriptorProto<'_>,
+    file: &str,
+    out: &mut HashMap<String, String>,
+) {
+    for n in m.nested_type() {
+        let fqdn = format!("{prefix}{}", text(n.name()));
+        out.insert(fqdn.clone(), file.to_string());
+        nested_types(&format!("{fqdn}."), &n, file, out);
+    }
+    for e in m.enum_type() {
+        out.insert(format!("{prefix}{}", text(e.name())), file.to_string());
+    }
+}
+
+/// `_collect_extensions`.
+fn nested_extensions(m: &DescriptorProto<'_>, file: &str, out: &mut HashMap<String, String>) {
+    for x in m.extension() {
+        let extendee = text(x.extendee());
+        out.insert(
+            format!("{}/{}", extendee.trim_start_matches('.'), x.number()),
+            file.to_string(),
+        );
+    }
+    for n in m.nested_type() {
+        nested_extensions(&n, file, out);
+    }
+}

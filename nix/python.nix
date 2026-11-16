@@ -638,10 +638,10 @@ print('\n'.join(lines[:$N_EXTRA]))
   '';
 
   # The differential harness of spec 0424 S11: a reference and a candidate
-  # run the same cases, every output compared byte for byte. Until protoback
-  # renders (step 5), reproto runs on both sides of protobackHarness, so a
-  # difference is nondeterminism in reproto itself; protobackDumpHarness
-  # compares the graph dumps of phases 1 to 6, reproto's and protoback's
+  # run the same cases, every output compared byte for byte.
+  # protobackHarness compares what reproto and protoback write under `out`
+  # (the .proto, .pb and scoring YAML files, the schema database; specs
+  # 0429, 0430); protobackDumpHarness, the graph dumps of phases 1 to 6
   # (spec 0428 S10). The two are part of `ci`; their -full versions add
   # googleapis, and are part of `full-tests`.
   protobackHarnessSrc =
@@ -673,12 +673,13 @@ print('\n'.join(lines[:$N_EXTRA]))
 
   withGoogleapis = "--googleapis ${googleapisPbs}/googleapis.pb";
   dumpGraph = { candidate = "protoback"; runFlags = "--dump-graph"; };
+  outputs = { candidate = "protoback"; runFlags = "--compare out"; };
 
-  protobackHarness = mkProtobackHarness { name = "protoback-harness"; };
-  protobackHarnessFull = mkProtobackHarness {
+  protobackHarness = mkProtobackHarness (outputs // { name = "protoback-harness"; });
+  protobackHarnessFull = mkProtobackHarness (outputs // {
     name = "protoback-harness-full";
     prepareFlags = withGoogleapis;
-  };
+  });
   protobackDumpHarness = mkProtobackHarness (dumpGraph // {
     name = "protoback-dump-harness";
   });

@@ -359,7 +359,7 @@ pub fn render(shared: &Shared<'_>, file: usize, k: usize) -> Option<(Block, Opti
         target,
         refused: shared.loads.refused.contains(&text(f.name())),
         failed: std::cell::Cell::new(false),
-        sci: (shared.emit_binary && shared.source_info).then(super::sci::Sci::default),
+        sci: (shared.wants_descriptor() && shared.source_info).then(super::sci::Sci::default),
     };
     let name = text(f.name());
     let depth = 0;
@@ -561,7 +561,7 @@ pub fn render(shared: &Shared<'_>, file: usize, k: usize) -> Option<(Block, Opti
     }
     // The descriptor, with the SourceCodeInfo the text's markers resolve
     // to (spec 0429 S10).
-    let descriptor = if shared.emit_binary {
+    let descriptor = if shared.wants_descriptor() {
         let locations = ctx.sci.as_ref().map_or_else(Vec::new, |sci| {
             sci.resolve(&out, shared.redact_comments, shared.redact_orphans)
         });
