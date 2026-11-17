@@ -31,6 +31,7 @@ prototext-core = { workspace = true }
 smallvec       = "1"
 walkdir        = "2"
 rustc-hash     = "2"
+rayon          = "1"
 foldhash       = { version = "0.2", optional = true }
 workspace-hack = { version = "0.1", path = "../workspace-hack" }
 

@@ -133,6 +133,17 @@ In this order, cheapest first; each item measured (M) before the next.
   database's bytes in that mode: reproto changed too, or the harness's
   expectation for it. Pairs with P7: then the merge is no longer hidden
   behind rendering.
+  - P11a, skipping the text, dropped (2026-11-17). The text render also
+    produces every warning (the anomalies A4, A5, B1, C1 to C3 and
+    others; W22; W6 where an option value cannot be rendered), and some
+    decide whether the file fails and so gets a descriptor: a text-free
+    path would repeat every check, a second copy of the renderer. For
+    ~0.1 s on eight threads: the text's own share of rendering (messages
+    ~20 %, options ~6 % of a database-only run's samples) is ~0.75 s of
+    CPU over eight threads. Nor does it help assess P7: since P6 the
+    merge is hidden behind rendering, database-only or not; P7 is
+    measured by its own stage timing. P11b (no SourceCodeInfo without
+    text) stands apart, a behavior change to decide on its merits.
 - **P7. prototext-graph.**
   - Its maps use a hasher alias, chosen as protoback's (implemented):
     FxHash unless `hash-fold` or `hash-sip`. All of them are internal:
@@ -145,6 +156,14 @@ In this order, cheapest first; each item measured (M) before the next.
     against FxHash, 3 alternating rounds on vCPUs 0–7: merge ~97 → ~79
     ms, build ~148 → ~104 ms, minimize ~130 → ~112 ms, compile ~38 →
     ~35 ms; ~0.42 → ~0.33 s, −21 %.
+  - The merge parallel (implemented): each file's messages converted and
+    checked per file on rayon (the caller's pool inside protoback), then
+    merged in file order as before, so that the first definition wins,
+    the conflict warnings and the first error come out unchanged; a name
+    already merged no longer cloned. Merge ~83 → ~68 ms (3 alternating
+    rounds): the sequential insertion is the rest. Sharding the maps by
+    hash would parallelize it too, the warnings and errors re-sorted
+    into file order after, for ~30–40 ms more: not done.
   - Scrutiny: where its ~0.4 s goes (build, merge, minimization), and
     what of it can run in parallel (the files' graphs before the merge;
     the minimization's refinement).

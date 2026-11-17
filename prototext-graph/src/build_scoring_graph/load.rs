@@ -328,6 +328,29 @@ pub fn merge_from_strings(scoring_graphs: &[String]) -> Result<Merged, Box<dyn s
 /// definition of an FQDN is kept, a conflicting later one is warned
 /// about; the roots are every file's entries, in order, once.
 pub fn merge_files(files: &[ScoringFile]) -> Result<Merged, Box<dyn std::error::Error>> {
+    use rayon::prelude::*;
+    // Each file's messages converted and checked on their own, in parallel
+    // (spec 0443 P7): the work that depends on one file alone. Their
+    // errors are kept, each where it was met.
+    type Converted = Result<(Vec<ScoringField>, Vec<(u32, u32)>), String>;
+    let converted: Vec<Vec<Converted>> = files
+        .par_iter()
+        .map(|file| {
+            file.messages
+                .iter()
+                .map(|(fqdn, msg)| {
+                    let fields = scoring_fields(fqdn, &msg.fields).map_err(|e| e.to_string())?;
+                    let ranges = check_ext_ranges(fqdn, msg.ext_ranges.clone())
+                        .map_err(|e| e.to_string())?;
+                    Ok((fields, ranges))
+                })
+                .collect()
+        })
+        .collect();
+
+    // Then merged in order, as before: the first definition kept, a
+    // conflicting later one warned about, the first error raised, the
+    // roots every file's entries once.
     let mut states: HashMap<String, Vec<ScoringField>> = HashMap::default();
     let mut node_kinds: HashMap<String, NodeKind> = HashMap::default();
     let mut roots: Vec<String> = Vec::new();
@@ -335,27 +358,29 @@ pub fn merge_files(files: &[ScoringFile]) -> Result<Merged, Box<dyn std::error::
     let mut ext_ranges: HashMap<String, Vec<(u32, u32)>> = HashMap::default();
     let mut has_extension_ranges = true;
 
-    for (i, file) in files.iter().enumerate() {
+    for (i, (file, converted)) in files.iter().zip(converted).enumerate() {
         has_extension_ranges &= file.extension_ranges;
         for fqdn in &file.entries {
-            if roots_seen.insert(fqdn.clone()) {
+            if !roots_seen.contains(fqdn) {
+                roots_seen.insert(fqdn.clone());
                 roots.push(fqdn.clone());
             }
         }
-        for (fqdn, msg) in &file.messages {
-            node_kinds.entry(fqdn.clone()).or_insert(msg.kind);
-            let fields = scoring_fields(fqdn, &msg.fields)?;
-            let msg_ext_ranges = check_ext_ranges(fqdn, msg.ext_ranges.clone())?;
-            match states.entry(fqdn.clone()) {
-                std::collections::hash_map::Entry::Vacant(e) => {
-                    e.insert(fields);
+        for ((fqdn, msg), result) in file.messages.iter().zip(converted) {
+            if !node_kinds.contains_key(fqdn) {
+                node_kinds.insert(fqdn.clone(), msg.kind);
+            }
+            let (fields, msg_ext_ranges) = result?;
+            match states.get(fqdn) {
+                None => {
+                    states.insert(fqdn.clone(), fields);
                     if !msg_ext_ranges.is_empty() {
                         ext_ranges.insert(fqdn.clone(), msg_ext_ranges);
                     }
                 }
-                std::collections::hash_map::Entry::Occupied(existing) => {
+                Some(existing) => {
                     if definitions_conflict(
-                        existing.get(),
+                        existing,
                         ext_ranges.get(fqdn).map(Vec::as_slice).unwrap_or(&[]),
                         &fields,
                         &msg_ext_ranges,
