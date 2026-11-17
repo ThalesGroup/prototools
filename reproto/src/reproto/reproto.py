@@ -167,6 +167,7 @@ from reproto import Context, Fqdn, Options
 from .load import QualFile
 from .phases import (
     DescriptorProtoHasTargetsError,
+    DescriptorProtoUnbuildableError,
     DescriptorProtoMissingError,
     DescriptorProtoUnresolvedError,
     # WellKnownTypeHasTargetsError removed by spec 0052
@@ -190,6 +191,7 @@ __all__ = [
     "DescriptorProtoMissingError",
     "DescriptorProtoUnresolvedError",
     "DescriptorProtoHasTargetsError",
+    "DescriptorProtoUnbuildableError",
     # "WellKnownTypeHasTargetsError",  # removed by spec 0052
 ]
 

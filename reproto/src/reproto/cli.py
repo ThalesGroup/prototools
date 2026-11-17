@@ -792,7 +792,14 @@ def main(
 
     from reproto import Fqdn
     from .context import PluginError
-    from .reproto import DescriptorProtoMissingError, DescriptorProtoUnresolvedError, DescriptorProtoHasTargetsError, Options, reproto
+    from .reproto import (
+        DescriptorProtoHasTargetsError,
+        DescriptorProtoMissingError,
+        DescriptorProtoUnbuildableError,
+        DescriptorProtoUnresolvedError,
+        Options,
+        reproto,
+    )
     from . import variant as variant_mod
     from .lib.warnings import configure_collector
     configure_collector(detailed=detailed_warnings)
@@ -1079,6 +1086,11 @@ def main(
     except DescriptorProtoHasTargetsError:
         raise click.ClickException(
             'descriptor.proto appears corrupted: it has dependencies of its own'
+        )
+    except DescriptorProtoUnbuildableError:
+        raise click.ClickException(
+            'descriptor.proto could not be built into a descriptor pool; '
+            'it is not a valid descriptor.proto'
         )
     except PluginError as e:
         # A fault in the caller's plugin, not in reproto: report it as an

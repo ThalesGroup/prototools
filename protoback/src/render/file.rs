@@ -179,10 +179,13 @@ pub fn features_block(
     // The custom features, the feature set's extensions (spec 0435): written
     // as custom options are, after `features.`, the feature set read again
     // where their extensions are known.
-    let custom = ctx.shared.options.and_then(|pool| {
-        let msg = pool.parse_ref(super::options::Options::FeatureSet, &fs.0)?;
-        super::options::extensions(&ctx.scope(), &msg, inline, depth, "features.").ok()
-    });
+    let custom = ctx
+        .shared
+        .options
+        .parse_ref(super::options::Options::FeatureSet, &fs.0)
+        .and_then(|msg| {
+            super::options::extensions(&ctx.scope(), &msg, inline, depth, "features.").ok()
+        });
     for block in custom.into_iter().flatten() {
         out.extend(block);
     }
@@ -719,10 +722,10 @@ fn file_options(
         return a3(POOL_REFUSED);
     }
     let mut out = Block::new();
-    let (Some(pool), Some(o)) = (&ctx.shared.options, f.options()) else {
+    let Some(o) = f.options() else {
         return out;
     };
-    let Some(msg) = pool.parse_ref(Options::File, &o.0) else {
+    let Some(msg) = ctx.shared.options.parse_ref(Options::File, &o.0) else {
         return out;
     };
     out.extend(features_block(ctx, o.features(), depth, false));

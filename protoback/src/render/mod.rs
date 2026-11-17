@@ -69,8 +69,9 @@ pub struct Shared<'a> {
     pub force_proto2_for_editions: bool,
     pub redact_comments: bool,
     pub redact_orphans: bool,
-    /// reproto's options pool: the variant's descriptor.proto.
-    pub options: Option<&'a OptionsPool>,
+    /// reproto's options pool: the variant's descriptor.proto (a run whose
+    /// descriptor.proto the pool refuses stops before rendering).
+    pub options: &'a OptionsPool,
     /// What reproto's `ctx.pool` holds as rendering goes (`pool_loads`).
     pub loads: &'a PoolLoads,
     /// `--schema-db-out`: each rendered file's descriptor is collected,

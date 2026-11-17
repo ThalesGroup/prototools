@@ -56,6 +56,11 @@ class DescriptorProtoHasTargetsError(Exception):
     """Raised when 'descriptor.proto' itself has dependencies (corrupted)."""
 
 
+class DescriptorProtoUnbuildableError(Exception):
+    """Raised when the descriptor pool refuses 'descriptor.proto' itself: no
+    option can be read against it."""
+
+
 # ---------------------------------------------------------------------------
 # Spec 0087 — stripped unresolvable field/method type records
 # ---------------------------------------------------------------------------

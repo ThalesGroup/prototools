@@ -156,6 +156,13 @@ def create_option_message_classes(ctx: Context) -> None:
         ctx.svo_desc = pool.FindMessageTypeByName(pkg + ".ServiceOptions")
         ctx.svo_cls = GetMessageClass(ctx.svo_desc)
 
+    except TypeError as e:
+        # The pool refused the variant's descriptor.proto: refused as a
+        # corrupted one is, its reason under --debug.
+        from .anomalies import debug_exception
+        from .phases import DescriptorProtoUnbuildableError
+        debug_exception(ctx.debug, f"'{ctx.variant_descriptor_proto}'", e)
+        raise DescriptorProtoUnbuildableError from e
     except KeyError as e:
         cli_error(f"Failed to initialize option message classes: {e}")
         cli_error(f"The descriptor pool is missing required types from '{pkg}' package.")

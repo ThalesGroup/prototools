@@ -405,7 +405,23 @@ fn main() -> ExitCode {
         }));
     }
     let loads = render::pool_loads(&run.db, &loaded);
-    let options = render::OptionsPool::new(&run.db, &run.variant, &loads);
+    let options = match render::OptionsPool::new(&run.db, &run.variant, &loads) {
+        Ok(options) => options,
+        Err(reason) => {
+            // The pool refused the variant's descriptor.proto: refused as a
+            // corrupted one is, its reason under --debug (reproto's
+            // `DescriptorProtoUnbuildableError`).
+            if cli.debug {
+                console::warning(&format!("'{}': {reason}", run.variant.descriptor_proto));
+            }
+            run.events.flush();
+            eprintln!(
+                "Error: descriptor.proto could not be built into a descriptor pool; \
+                 it is not a valid descriptor.proto"
+            );
+            return ExitCode::from(1);
+        }
+    };
     let names = render::names::SymbolTable::build(
         run.db
             .files
@@ -429,7 +445,7 @@ fn main() -> ExitCode {
         redact_comments: cli.redact_comments,
         redact_orphans: cli.redact_orphans,
         loads: &loads,
-        options: options.as_ref(),
+        options: &options,
         schema_db: schema_db.is_some(),
         debug: cli.debug,
         names: &names,

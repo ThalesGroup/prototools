@@ -70,10 +70,10 @@ fn own_options(
     depth: usize,
     exclude: &[&str],
 ) -> Result<Vec<Block>, super::options::Unrenderable> {
-    let (Some(pool), Some(o)) = (&ctx.shared.options, options) else {
+    let Some(o) = options else {
         return Ok(Vec::new());
     };
-    let Some(msg) = pool.parse_ref(kind, &o) else {
+    let Some(msg) = ctx.shared.options.parse_ref(kind, &o) else {
         return Ok(Vec::new());
     };
     super::options::options(&ctx.scope(), kind, &msg, composite, depth, exclude)

@@ -190,10 +190,15 @@ pub struct OptionsPool {
 }
 
 impl OptionsPool {
-    pub fn new(db: &Database, variant: &Variant, loads: &PoolLoads) -> Option<OptionsPool> {
-        let fdp = db.file_by_name(&variant.descriptor_proto)?;
+    /// The pool, or why the variant's descriptor.proto could not be built
+    /// into it: no option can then be read (`DescriptorProtoUnbuildableError`).
+    pub fn new(db: &Database, variant: &Variant, loads: &PoolLoads) -> Result<OptionsPool, String> {
+        let fdp = db
+            .file_by_name(&variant.descriptor_proto)
+            .ok_or_else(|| format!("{} is not loaded", variant.descriptor_proto))?;
+        let bytes = without_map_entry(fdp).ok_or("it cannot be encoded")?;
         let pool = Pool::new();
-        pool.add_file(&without_map_entry(fdp)?).ok()?;
+        pool.add_file(&bytes).map_err(|e| e.0)?;
         for name in &loads.order {
             if *name == variant.descriptor_proto {
                 continue;
@@ -211,7 +216,7 @@ impl OptionsPool {
         }
         let f = prototext_upb::descriptor_access::FileDescriptorProto(fdp.as_ref());
         let package = String::from_utf8_lossy(f.package()).into_owned();
-        Some(OptionsPool { pool, package })
+        Ok(OptionsPool { pool, package })
     }
 
     /// An element's options, from its descriptor's options message
