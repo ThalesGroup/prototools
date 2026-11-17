@@ -1065,6 +1065,16 @@ impl Field {
         unsafe { ffi::upb_FieldDef_IsExtension(self.raw()) }
     }
 
+    /// Whether the field is one of `message`'s (an extension: whether
+    /// `message` is its extendee), comparing the definitions themselves:
+    /// no handle made, so no reference to the pool taken, which threads
+    /// sharing it would contend on (spec 0442 S1).
+    pub fn belongs_to(&self, message: &Message) -> bool {
+        // SAFETY: a valid definition; every field has one.
+        let p = unsafe { ffi::upb_FieldDef_ContainingType(self.raw()) };
+        std::ptr::eq(p, message.raw())
+    }
+
     /// The message this field belongs to; for an extension, the message it
     /// extends.
     pub fn containing_message(&self) -> Message {

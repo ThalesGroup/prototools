@@ -164,7 +164,7 @@ and pipelines a command line is expected to take.
   - Not measured: what a plugin costs on googleapis, the adapter against
     a command plugin and reproto's in-process call. Deferred until the
     port is complete (the user's decision).
-- **The plugins' cost** (2026-11-17, at 21434a2): googleapis with
+- **The plugins' cost** (2026-11-17): googleapis with
   googleapisDb's flags, a release build, vCPUs 0-7, host idle, hyperfine,
   3 runs each: no plugin 8.96 s ± 0.26; `--fdp-plugin` with a no-op
   `fdp_plugin` (the Python adapter: one `python3`, each distinct

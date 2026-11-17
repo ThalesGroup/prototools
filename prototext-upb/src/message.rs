@@ -222,7 +222,7 @@ fn write_value(
 /// extension of it.
 fn check_field(def: &Message, field: &Field) {
     assert!(
-        field.containing_message() == *def,
+        field.belongs_to(def),
         "field {} does not belong to message {}",
         field.full_name(),
         def.full_name()
