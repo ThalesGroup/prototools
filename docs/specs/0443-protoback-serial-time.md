@@ -119,3 +119,14 @@ Each item as it lands, the protocol above (mean of 3, range):
 P1 saved more than the ~0.45 s the profile gave the check; the start's
 one-thread runs spread widely, and part of it may be noise. P2's gain is
 where expected: the time after rendering, the frees.
+
+P3, the allocators compared (P2's tree, the features of 00c5164):
+
+| | 1 thread | 8 threads | CPU, 1 / 8 | peak RSS, 8 |
+|---|---|---|---|---|
+| glibc (P2) | 8.21 s [8.12–8.34] | 5.47 s [5.41–5.52] | 8.1 / 8.4 s | 1.35–1.37 GB |
+| mimalloc | 8.86 s [8.76–8.91] | 5.66 s [5.47–5.89] | 8.9 / 8.7 s | 1.39–1.40 GB |
+| jemalloc | 7.64 s [7.58–7.70] | 5.23 s [5.10–5.31] | 7.3 / 7.9 s | 1.37 GB |
+
+jemalloc: −0.57 s on one thread, −0.24 s on eight, the ranges apart, the
+same peak memory (20 % more page faults). mimalloc: slower than glibc.
