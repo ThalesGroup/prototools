@@ -508,11 +508,18 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
             else:
                 field_out.label = field_label_enum(
                     ctx, self.this, is_oneof, features=field_features)
+            # A proto3 `optional` written as proto2 is proto2's optional: no
+            # proto3_optional (protoc refuses it there), out of its synthetic
+            # oneof, which the message drops (spec 0429 S13).
+            if self.this.proto3_optional and ctx.target_syntax != "proto3":
+                field_out.ClearField('proto3_optional')
+                field_out.ClearField('oneof_index')
             # type: for editions DELIMITED -> proto2 group substitution
             editions_grp_desc = getattr(self, '_editions_group_descriptor', None)
             if editions_grp_desc is not None and ctx.target_syntax != "editions":
                 field_out.type = _FDP.TYPE_GROUP
-                field_out.type_name = f'.{editions_grp_desc.prefix}'.rstrip('.')
+                # The prefix has its leading dot already (spec 0429 S12).
+                field_out.type_name = '.' + editions_grp_desc.prefix.strip('.')
             # packed
             if is_packable and (has_packed or effective_packed != (ctx.syntax == "proto3")):
                 field_out.options.packed = effective_packed

@@ -716,6 +716,35 @@ pub fn format_composite(mut options: Block, mut prolog: Line, depth: usize) -> B
 /// `ReDescriptorProto.render`, stage 1: the body of message node `msg`,
 /// its lines at `depth + 1`, its closing `}` at `depth` (the caller adds
 /// the header). `force`: a group's body, its fields never orphaned.
+/// `is_synthetic_oneof`, for each of message `msg`'s oneofs: protoc's rule
+/// (`OneofDescriptor::is_synthetic`), whatever the target syntax: one
+/// field, which has `proto3_optional` (spec 0429 S13); in an editions file,
+/// a `_`-named oneof whose one field is IMPLICIT.
+pub(super) fn synthetic_oneofs(
+    ctx: &Ctx<'_, '_>,
+    msg: usize,
+    m: &DescriptorProto<'_>,
+) -> Vec<bool> {
+    let fields = m.field();
+    m.oneof_decl()
+        .iter()
+        .enumerate()
+        .map(|(idx, o)| {
+            let members: Vec<&FieldDescriptorProto<'_>> = fields
+                .iter()
+                .filter(|f| f.has_oneof_index() && f.oneof_index() == idx as i32)
+                .collect();
+            if members.len() != 1 {
+                return false;
+            }
+            match field_feature(ctx, Some(msg), members[0], Feature::FieldPresence) {
+                Some(p) => text(o.name()).starts_with('_') && p == FIELD_PRESENCE_IMPLICIT,
+                None => members[0].proto3_optional(),
+            }
+        })
+        .collect()
+}
+
 pub fn message(
     ctx: &Ctx<'_, '_>,
     msg: usize,
@@ -806,23 +835,7 @@ pub fn message(
 
     let fields = m.field();
     let oneofs = m.oneof_decl();
-    let mut synthetic = vec![false; oneofs.len()];
-    for (idx, o) in oneofs.iter().enumerate() {
-        let members: Vec<&FieldDescriptorProto<'_>> = fields
-            .iter()
-            .filter(|f| f.has_oneof_index() && f.oneof_index() == idx as i32)
-            .collect();
-        let presence = members
-            .first()
-            .and_then(|f| field_feature(ctx, Some(msg), f, Feature::FieldPresence));
-        let name = text(o.name());
-        synthetic[idx] = name.starts_with('_')
-            && members.len() == 1
-            && match presence {
-                Some(p) => p == FIELD_PRESENCE_IMPLICIT,
-                None => ctx.proto3() && members[0].proto3_optional(),
-            };
-    }
+    let synthetic = synthetic_oneofs(ctx, msg, &m);
 
     let mut done = vec![false; oneofs.len()];
     for (f_idx, f) in fields.iter().enumerate() {

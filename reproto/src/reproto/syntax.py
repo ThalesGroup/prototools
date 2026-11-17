@@ -183,14 +183,10 @@ def is_synthetic_oneof(
 ) -> bool:
     """Return True iff the given oneof is a proto3 synthetic oneof.
 
-    Only meaningful when ctx.target_syntax == "proto3"; returns False
-    immediately for any other target syntax.
-
-    Detection rule (all conditions must hold):
-        1. ctx.target_syntax == "proto3"
-        2. oneof_name starts with '_'
-        3. exactly one field is in members
-        4. that field has proto3_optional == True
+    protoc's rule (`OneofDescriptor::is_synthetic`), whatever the target
+    syntax: exactly one field, which has proto3_optional. Written as proto2
+    (--force-proto2-output), the field is an `optional` one, the oneof gone
+    (spec 0429 S13).
     """
     if features is not None:
         # Editions: synthetic oneof ↔ single IMPLICIT member (proto3_optional not set).
@@ -199,10 +195,6 @@ def is_synthetic_oneof(
         if len(members) != 1:
             return False
         return features.field_presence == FIELD_PRESENCE_IMPLICIT
-    if ctx.target_syntax != "proto3":
-        return False
-    if not oneof_name.startswith('_'):
-        return False
     if len(members) != 1:
         return False
     return bool(members[0].proto3_optional)

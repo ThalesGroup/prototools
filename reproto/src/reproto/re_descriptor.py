@@ -724,6 +724,20 @@ class ReDescriptorProto(SourceCodeInfoMixin, NodeBase[DescriptorProto]):
                 if slot.out is not None:
                     assert isinstance(slot.out, _FieldDP)
                     msg_out.field.append(slot.out)
+            # Written as proto2, a proto3 message loses its synthetic oneofs
+            # (its fields left them above), the real ones renumbered (spec
+            # 0429 S13).
+            if ctx.target_syntax != "proto3":
+                kept = [i for i in range(len(self.oneof_decl))
+                        if i not in synthetic_oneof_indices]
+                if len(kept) != len(self.oneof_decl):
+                    renumber = {old: new for new, old in enumerate(kept)}
+                    oneofs = [msg_out.oneof_decl[i] for i in kept]
+                    msg_out.ClearField('oneof_decl')
+                    msg_out.oneof_decl.extend(oneofs)
+                    for out_field in msg_out.field:
+                        if out_field.HasField('oneof_index'):
+                            out_field.oneof_index = renumber[out_field.oneof_index]
             # nested types (including map entries)
             for n in self.nested_type:
                 nested_proto = cast(_DP, n)

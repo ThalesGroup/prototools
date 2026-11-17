@@ -10,8 +10,8 @@
 //! (S11): only the result has to be reproto's.
 
 use prototext_upb::descriptor_access::{
-    DescriptorProtoMut, EnumDescriptorProtoMut, FieldDescriptorProtoMut, FileDescriptorProtoMut,
-    ServiceDescriptorProtoMut,
+    DescriptorProto, DescriptorProtoMut, EnumDescriptorProtoMut, FieldDescriptorProtoMut,
+    FileDescriptorProtoMut, ServiceDescriptorProtoMut,
 };
 use prototext_upb::DynamicMessage;
 
@@ -201,6 +201,25 @@ fn message(ctx: &Ctx<'_, '_>, msg: usize) -> Option<Vec<u8>> {
         w.clear_enum_type();
         w.clear_extension();
     }
+    // Written as anything but proto3, a proto3 message loses its synthetic
+    // oneofs, its fields leaving them (spec 0429 S13).
+    if ctx.target != "proto3" {
+        let synthetic = super::message::synthetic_oneofs(ctx, msg, &m);
+        if synthetic.iter().any(|&s| s) {
+            let kept: Vec<Vec<u8>> = DescriptorProto(out.as_ref())
+                .oneof_decl()
+                .iter()
+                .zip(&synthetic)
+                .filter(|(_, &s)| !s)
+                .filter_map(|(o, _)| o.0.encode().ok())
+                .collect();
+            let mut w = DescriptorProtoMut(out.as_mut());
+            w.clear_oneof_decl();
+            for o in &kept {
+                append(w.push_oneof_decl().map(|o| o.0), o);
+            }
+        }
+    }
     let fields: Vec<Vec<u8>> = m
         .field()
         .iter()
@@ -269,14 +288,29 @@ fn field(ctx: &Ctx<'_, '_>, fd: usize) -> Option<Vec<u8>> {
             }
         }
         w.set_label(if is_map { 3 } else { label }).ok()?;
+        // A proto3 `optional` written as anything but proto3 is proto2's:
+        // no proto3_optional, out of its synthetic oneof, which its message
+        // drops, the real oneofs renumbered (spec 0429 S13).
+        if ctx.target != "proto3" && f.has_oneof_index() {
+            if f.proto3_optional() {
+                w.clear_proto3_optional();
+                w.clear_oneof_index();
+            } else if let Some(msg) = ctx.shared.graph.nodes[fd].parent {
+                if let Some(m) = ctx.shared.message_def(msg) {
+                    let synthetic = super::message::synthetic_oneofs(ctx, msg, &m);
+                    let at = f.oneof_index() as usize;
+                    let before = synthetic.iter().take(at).filter(|&&s| s).count();
+                    w.set_oneof_index((at - before) as i32).ok()?;
+                }
+            }
+        }
         let node = &ctx.shared.graph.nodes[fd];
         if let (Some(g), false) = (node.editions_group, ctx.editions_target()) {
-            // reproto's `f'.{prefix}'.rstrip('.')`, the prefix having its
-            // own leading dot (spec 0429 S12).
-            let name = format!(".{}", ctx.shared.graph.nodes[g].prefix);
+            // The group's full name, one leading dot (spec 0429 S12: the
+            // prefix has its own, which used to make `..pkg.M.G`).
+            let name = format!(".{}", ctx.shared.graph.nodes[g].prefix.trim_matches('.'));
             w.set_type(10).ok()?;
-            w.set_type_name(name.trim_end_matches('.').as_bytes())
-                .ok()?;
+            w.set_type_name(name.as_bytes()).ok()?;
         }
         if let Some(p) = packed {
             w.options_mut().ok()?.set_packed(p).ok()?;

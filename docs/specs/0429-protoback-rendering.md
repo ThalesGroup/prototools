@@ -192,6 +192,8 @@ reproto first.)
   f'.{prefix}'.rstrip('.')` (`re_field.py:518`), and the prefix already
   starts with a dot: `..reproto.test.rendering.AllFeatures.DelimitedField`,
   in the golden `editions_rendering.emit_binary.force_proto2_output.golden.pb`.
+  *Fixed in both tools 2026-11-17:* one leading dot; the golden corrected
+  is the regression test.
 - **S13. `proto3_optional` under `--force-proto2-output`**, confirmed
   2026-11-15: from `syntax = "proto3"; message M { optional int32 x = 1;
   int32 y = 2; }`, `--emit-binary` writes a proto2 descriptor whose `x`
@@ -199,6 +201,13 @@ reproto first.)
   [proto3_optional=true] option may only be set on proto3fields`); the
   `.proto` renders `x` in an explicit `oneof _x { int32 x = 1; }`, a
   real oneof once compiled, not the optional field it was.
+  *Fixed in both tools 2026-11-17:* a oneof is synthetic by protoc's rule
+  (`OneofDescriptor::is_synthetic`: one field, with `proto3_optional`)
+  whatever the target syntax. Written as anything but proto3, the field is
+  rendered `optional` outside any oneof, its descriptor loses
+  `proto3_optional` and `oneof_index`, its message the synthetic oneofs,
+  the real ones renumbered. Test `test_proto3_optional_as_proto2.py`: the
+  emitted message equals the one protoc compiles from the text.
 - **S14. The render order** (S4): a custom option whose extension the
   file does not import renders or not depending on the files rendered
   before it.
@@ -458,7 +467,7 @@ not deferred with it: stage 3 needs it on one thread already.
   level the visible, reachable, summoned ones; within a message all, but
   a malformed map), a field's label as the second pass computes it
   (`is_oneof` false), its packing, its default, a synthetic group's
-  `..` type name (S12). The decisions it shares with the text, map
+  type name (`..` until S12 was fixed). The decisions it shares with the text, map
   detection and packing, made once for both (`render/message.rs`). The
   SourceCodeInfo synthesized from the text (`render/sci.rs`): each
   element's lines marked with its path, by reproto's counters, then

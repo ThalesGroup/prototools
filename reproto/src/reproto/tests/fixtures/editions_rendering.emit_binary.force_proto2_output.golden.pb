@@ -54,7 +54,7 @@ message_type {  #@ repeated DescriptorProto = 4
   number: 5  #@ int32 = 3
   label: LABEL_OPTIONAL  #@ Label(1) = 4
   type: TYPE_GROUP  #@ Type(10) = 5
-  type_name: "..reproto.test.rendering.AllFeatures.DelimitedField"  #@ string = 6
+  type_name: ".reproto.test.rendering.AllFeatures.DelimitedField"  #@ string = 6
   options {  #@ FieldOptions = 8
   }
   json_name: "delimitedField"  #@ string = 10
