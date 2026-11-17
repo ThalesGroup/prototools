@@ -337,11 +337,12 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
         elif ctx.syntax != ctx.target_syntax:
             # A2: normal syntax downconversion (proto3 → proto2 via --force-proto2-output)
             # A1: editions → proto2 downconversion (--force-proto2-output or --force-proto2-for-editions)
-            # When --force-proto2-for-editions triggered the change, suppress the A1 stderr — the
-            # w_prost() call above already covers it and will be squashed into a count line.
+            # Neither is printed: both options are explicit opt-ins, and the
+            # rendered file carries the comment (commit 0ef3aa2's rule, for
+            # A2, applied to A1 too); under --force-proto2-for-editions, W2's
+            # count line says it besides.
             if ctx.syntax == "editions":
-                out.append(report("A1", depth, file=self.name,
-                                  suppress_stderr=ctx.force_proto2_for_editions))
+                out.append(report("A1", depth, file=self.name, suppress_stderr=True))
             else:
                 out.append(report("A2", depth, file=self.name, syntax=ctx.syntax,
                                   suppress_stderr=True))

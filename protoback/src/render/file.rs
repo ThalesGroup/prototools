@@ -507,16 +507,10 @@ fn render_body(
         let e = edition_name(f.edition())?;
         out.push(Line::code(format!("edition = \"{e}\";"), depth));
     } else if ctx.syntax != ctx.target {
-        // A1: an editions file; A2: any other syntax.
-        // A1's line is left to the prost count under
-        // --force-proto2-for-editions; A2's is never printed.
+        // A1: an editions file; A2: any other syntax. Neither is printed:
+        // both options are explicit opt-ins, and the comment says it
+        // (reproto's rule since 0ef3aa2, for A2, applied to A1 too).
         let comment = if ctx.syntax == "editions" {
-            if !shared.force_proto2_for_editions {
-                ctx.warn(
-                    "A1",
-                    format!("'{name}': editions file rendered as proto2 (--force-proto2-output)"),
-                );
-            }
             anomaly(
                 "WARNING",
                 "editions",

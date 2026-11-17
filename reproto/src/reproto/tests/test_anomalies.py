@@ -119,10 +119,13 @@ def test_A1_editions_force_proto2_warning(tmp_path: Path) -> None:
 
     result = _run_reproto([pb_path], out_dir, extra_args=["--force-proto2-output"])
     assert result.returncode == 0, f"reproto crashed:\n{result.stderr}"
-    # The A1 anomaly stderr message (from ANOMALIES["A1"].stderr format string)
-    assert "editions file rendered as proto2" in result.stderr, (
-        f"A1 warning must appear for editions→proto2. stderr:\n{result.stderr}"
+    # A1 is not printed, as A2 is not (commit 0ef3aa2): --force-proto2-output
+    # is an explicit opt-in; the rendered file carries the comment.
+    assert "editions file rendered as proto2" not in result.stderr, (
+        f"A1 warning must be suppressed from stderr. stderr:\n{result.stderr}"
     )
+    rendered = (out_dir / "editions_rendering.proto").read_text(encoding="utf-8")
+    assert "editions file rendered as proto2" in rendered
 
 
 # ---------------------------------------------------------------------------
