@@ -383,7 +383,7 @@ fn main() -> ExitCode {
     // topo.files: return None`), before descriptor.proto is looked for.
     if topo.files.is_empty() {
         run.events.flush();
-        return finish(&run.events, &cli.fail_on);
+        return ExitCode::from(finish(&run.events, &cli.fail_on));
     }
     if let Err(fatal) = phase2::run(&mut run, &mut topo) {
         if let Some(detail) = fatal.detail() {
@@ -422,7 +422,7 @@ fn main() -> ExitCode {
             run.events.warn("W14", &warning);
         }
         run.events.flush();
-        return finish(&run.events, &cli.fail_on);
+        return ExitCode::from(finish(&run.events, &cli.fail_on));
     }
     phase4::run(&mut run, &mut topo);
     phase5::run(&mut run, &topo);
@@ -435,7 +435,7 @@ fn main() -> ExitCode {
             eprintln!("Error: {}: {e}", dump_path.display());
             return ExitCode::from(1);
         }
-        return finish(&run.events, &cli.fail_on);
+        return ExitCode::from(finish(&run.events, &cli.fail_on));
     }
 
     // Spec 0437: two files rewritten onto one output path.
@@ -551,18 +551,35 @@ fn main() -> ExitCode {
         }
     }
     run.events.flush();
-    finish(&run.events, &cli.fail_on)
+    let code = finish(&run.events, &cli.fail_on);
+    // The plugin's process ended and reaped (its stdin closed), and the
+    // standard streams flushed; then the process exits without freeing
+    // what it built, which the system takes back at once: the symbol
+    // table, the graph and the run were ~0.9 s of frees on googleapis
+    // (spec 0443 P2). Every file was written and closed by then; no other
+    // destructor has an effect outside the process.
+    drop(run.plugin.take());
+    exit_without_freeing(code)
+}
+
+/// `code`, without running the destructors of what `main` holds: every
+/// output written, the streams flushed first.
+fn exit_without_freeing(code: u8) -> ! {
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+    std::process::exit(i32::from(code))
 }
 
 /// A run done, its output written: exit status 3 when a `--fail-on` code
 /// occurred, after saying which (spec 0438 S4), `-q` or not.
-fn finish(events: &Events, fail_on: &[String]) -> ExitCode {
+fn finish(events: &Events, fail_on: &[String]) -> u8 {
     match events.failed_on(fail_on) {
         Some(failed) => {
             eprintln!("Error: --fail-on: {failed}");
-            ExitCode::from(3)
+            3
         }
-        None => ExitCode::SUCCESS,
+        None => 0,
     }
 }
 
