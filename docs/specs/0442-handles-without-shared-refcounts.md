@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0442 — handles without a shared reference count
 
-Status: draft (S1 implemented; S2 to S4 decided)
+Status: implemented (S1 to S4); measured
+Implemented in: 2026-11-17
 App: prototext-upb, protoback
 Refs: docs/specs/0429-protoback-rendering.md (S4: files rendered on a
         rayon pool)
@@ -99,3 +100,30 @@ last line (presumably the frees before exit, to confirm).
   confirmed to be them.
 - **N2.** Parallelizing phases 1 to 6, the scoring data or the schema
   database.
+
+## Measured outcome
+
+2026-11-17, googleapis with googleapisDb's flags, release builds, vCPUs
+0-7, host idle, 3 runs each (spread about ±0.3 s), perf with software
+events:
+
+| | 1 thread | 8 threads | render, 1 → 8 | CPU, 1 / 8 |
+|---|---|---|---|---|
+| before | 11.13 s | 9.03 s | 6.62 → 5.38 s | 10.9 / 23.7 s |
+| S1 | 10.95 s | 8.33 s | 6.47 → 4.80 s | 10.4 / 19.9 s |
+| S2 | 10.66 s | 7.26 s | 6.24 → 3.67 s | 10.3 / 10.8 s |
+| S3 | 10.28 s | 7.58 s | 6.08 → 3.92 s | 10.5 / 10.4 s |
+| S4 | 10.24 s | 6.95 s | 5.73 → 3.46 s | 9.6 / 9.7 s |
+
+S2 removed the contention: the CPU used on eight threads equals one
+thread's. S3 gains on one thread and loses about 0.3 s on eight, all
+three runs: `find_defs` runs for every node before rendering, on one
+thread, its gain spread over the workers.
+
+What is left, on eight threads (S4; ~8.7 s of samples): the main thread
+44 % (the frees at exit ~0.9 s: the symbol table, the run, the graph;
+the options pool ~0.6 s; the pool loads ~0.5 s; the 0440 collision
+check ~0.47 s; the graph ~0.38 s; the symbol table ~0.37 s; phase 2
+~0.27 s), one thread building the schema database's scoring graph (~1.5
+s, SipHash inside prototext-graph), the seven render workers ~0.45 s
+each.
