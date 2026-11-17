@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+//
+// SPDX-License-Identifier: MIT
+
 //! A reference to a pool, counted as an `Arc` is, or not counted at all
 //! for a leaked pool (spec 0442 S2).
 //!
