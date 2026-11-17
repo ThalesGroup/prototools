@@ -54,9 +54,22 @@ In this order, cheapest first; each item measured (M) before the next.
   the memory back at once (~0.9 s). Every output is written and closed
   before; no other destructor acts outside the process. The error paths
   return as before.
-- **P3. The allocator, chosen at compile time**, as the hasher is
-  (spec 0442 S4): the system's, mimalloc or jemalloc; the default to
-  decide by measurement.
+- **P3. jemalloc, protoback's allocator** (implemented). Measured below
+  against glibc's and mimalloc: jemalloc is faster at the same peak
+  memory. It is what a build without features gets (the Nix builds pass
+  `--no-default-features`); the feature `alloc-system` selects glibc's.
+  Through `tikv-jemallocator`, a 287-line wrapper whose free passes the
+  size Rust knows (`sdallocx`), around jemalloc's C (~60,000 lines),
+  built by `tikv-jemalloc-sys`: the costs are the build and ~7 MB of
+  binary, none at run time. No mature pure-Rust allocator matches it;
+  porting jemalloc was dismissed (its size and its years of hardening,
+  for ~0.25–0.6 s a run).
+  - A global allocator is a binary's choice: the libraries set none, and
+    so are unchanged. The other command-line tools (prototext,
+    protolens, protoscan, fdp-scan) may opt in the same way, each on a
+    measurement of its own. Not the Python extensions: loaded into
+    Python's process, where jemalloc through `dlopen` is known to fail
+    on some systems (static TLS).
 - **P4. Each file written by the thread that rendered it.** The main
   thread writes the ~2,600 `.proto` and `.pb` files in sequence after
   rendering; only the warnings need reproto's order, which their replay

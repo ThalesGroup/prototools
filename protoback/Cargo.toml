@@ -30,8 +30,7 @@ rapidfuzz = "0.5"
 rayon = "1"
 rustc-hash = "2"
 foldhash = { version = "0.2", optional = true }
-mimalloc = { version = "0.1", optional = true }
-tikv-jemallocator = { version = "0.7", optional = true }
+tikv-jemallocator = "0.7"
 prototext-graph = { workspace = true }
 prototools-complete = { workspace = true }
 clap_complete = { version = "4.5", features = ["unstable-dynamic"] }
@@ -44,7 +43,6 @@ indicatif = "0.17"
 [features]
 hash-fold = ["dep:foldhash"]
 hash-sip = []
-# The global allocator (src/alloc.rs, spec 0443 P3): the system's unless
-# one of these is enabled.
-alloc-mimalloc = ["dep:mimalloc"]
-alloc-jemalloc = ["dep:tikv-jemallocator"]
+# The global allocator (src/alloc.rs, spec 0443 P3): jemalloc, unless
+# this selects the system's.
+alloc-system = []

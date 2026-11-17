@@ -2,16 +2,14 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! protoback's global allocator, chosen when it is compiled (spec 0443
-//! P3): the system's (glibc's malloc), unless the feature `alloc-mimalloc`
-//! or `alloc-jemalloc` is enabled; `alloc-jemalloc` wins over
-//! `alloc-mimalloc`. glibc's `malloc_consolidate` and `unlink_chunk` are
-//! near the top of the profile on every thread.
+//! protoback's global allocator (spec 0443 P3): jemalloc, unless the
+//! feature `alloc-system` selects the system's (glibc's malloc). Measured
+//! on googleapis: 0.57 s less on one thread and 0.24 s on eight than
+//! glibc's, at the same peak memory; mimalloc was slower than both.
+//! jemalloc is no feature of its own, so that a build without default
+//! features (the workspace's Nix builds) has it. A binary's choice: the
+//! libraries protoback uses set none.
 
-#[cfg(feature = "alloc-jemalloc")]
+#[cfg(not(feature = "alloc-system"))]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
-
-#[cfg(all(feature = "alloc-mimalloc", not(feature = "alloc-jemalloc")))]
-#[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
