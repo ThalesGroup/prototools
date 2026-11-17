@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # 0443 — protoback's serial time
 
-Status: draft (P1 and P2 implemented, not measured; the rest planned)
+Status: draft (P1 and P2 implemented and measured; the rest planned)
 App: protoback, prototext-graph
 Refs: docs/specs/0442-handles-without-shared-refcounts.md (the contention
         removed; its measured outcome is this spec's starting point),
@@ -105,3 +105,17 @@ numbers recorded here as it lands.
 - **N1.** Changing what is written.
 - **N2.** reproto's speed: P1 is mirrored there to keep both tools
   alike, nothing else.
+
+## Measured outcome
+
+Each item as it lands, the protocol above (mean of 3, range):
+
+| | 1 thread | 8 threads | after rendering, 8 | CPU, 1 / 8 |
+|---|---|---|---|---|
+| start (0442 S4) | 10.24 s [9.21–11.51] | 6.95 s [6.75–7.24] | 2.33 s | 9.6 / 9.7 s |
+| P1 | 8.73 s [8.64–8.82] | 6.21 s [6.13–6.36] | 2.35 s | 9.2 / 9.1 s |
+| P2 | 8.21 s [8.12–8.34] | 5.47 s [5.41–5.52] | 1.59 s | 8.1 / 8.4 s |
+
+P1 saved more than the ~0.45 s the profile gave the check; the start's
+one-thread runs spread widely, and part of it may be noise. P2's gain is
+where expected: the time after rendering, the frees.
