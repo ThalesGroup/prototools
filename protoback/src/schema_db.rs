@@ -51,11 +51,13 @@ fn name(graph: &Graph, i: usize) -> String {
 /// minimized and raw graphs' YAML; or the error's message.
 type Compiled = Result<(Vec<u8>, Option<String>, Option<String>), String>;
 
-/// Steps 2 and 3 of `build` run beside rendering (spec 0443 P6), for the
-/// files the database will hold if every render succeeds: the summoned
-/// files, then the WKT dependencies. Used when the files collected are
-/// those; else `build` runs the steps again. Prints nothing: the phases'
-/// labels and the warnings come from `build`, in their order.
+/// Steps 2 and 3 of `build`, run ahead (spec 0443 P6) for the files the
+/// database will hold if every render succeeds: the summoned files, then
+/// the WKT dependencies. Step 2 first, on every thread (`speculate`); then
+/// step 3, the merge on one thread, beside rendering (`compile`): the
+/// longest chain started first, rendering filling the other threads. Used
+/// when the files collected are those (`build`). Prints nothing: the
+/// phases' labels and the warnings come from `build`, in their order.
 pub struct Speculation {
     files: Vec<String>,
     graphs: Graphs,
@@ -111,12 +113,19 @@ pub fn speculate(shared: &Shared<'_>, output: &Output) -> Speculation {
         .collect();
     let refs: Vec<&str> = files.iter().map(String::as_str).collect();
     let graphs = collect_graphs(shared, &refs);
-    let html = output.scoring_html.is_some();
-    let compiled = (!graphs.kept.is_empty()).then(|| compile(&graphs.kept, html, |_, _| {}));
     Speculation {
         files,
         graphs,
-        compiled,
+        compiled: None,
+    }
+}
+
+impl Speculation {
+    /// Step 3 on the speculation's graphs.
+    pub fn compile(&mut self, html: bool) {
+        if !self.graphs.kept.is_empty() {
+            self.compiled = Some(compile(&self.graphs.kept, html, |_, _| {}));
+        }
     }
 }
 

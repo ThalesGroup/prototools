@@ -402,13 +402,16 @@ pub fn run(shared: &Shared<'_>, output: &Output, events: &mut Events) -> Result<
     on_pool(output.jobs, || {
         // Without -O, reproto renders for the database alone, as a dry run.
         let dry_run = output.dry_run || output.out_repo.is_none();
-        // With a database, its scoring graph built beside rendering (spec
-        // 0443 P6).
+        // With a database, its scoring graphs collected first, on every
+        // thread; then their merge, on this thread, beside rendering on the
+        // others (spec 0443 P6): the longest chain started first.
         let (collected, speculation) = match output.schema_db {
             Some(_) => {
-                let (collected, speculation) = rayon::join(
+                let mut speculation = crate::schema_db::speculate(shared, output);
+                let html = output.scoring_html.is_some();
+                let ((), collected) = rayon::join(
+                    || speculation.compile(html),
                     || write_files(shared, output, dry_run, events),
-                    || crate::schema_db::speculate(shared, output),
                 );
                 (collected?, Some(speculation))
             }

@@ -90,9 +90,14 @@ In this order, cheapest first; each item measured (M) before the next.
   merge and minimization, ~0.4 s mostly on one thread) read the input's
   definitions, not the rendered output: they need only the list of
   files, in collection order, which is known before rendering but for
-  the files whose render fails. They run speculatively beside rendering
-  (`schema_db::speculate`, `rayon::join`), for the summoned files then
-  the WKT dependencies; `build` uses the result when the files collected
+  the files whose render fails. They run ahead, for the summoned files
+  then the WKT dependencies, longest chain first: step 2 on every thread
+  before rendering (`schema_db::speculate`, ~2,600 tasks each lighter
+  than a render), then step 3, the merge on one thread, as the closure
+  `rayon::join` runs on its own thread while rendering fills the others
+  (`Speculation::compile`). Run among the render tasks instead (the
+  first version), step 2's tasks queued behind them and the merge
+  started only after rendering: no gain; `build` uses the result when the files collected
   are those. A miss is a render that failed (a file the pool refused
   holding an enum; an option value no renderer can name), and the files
   collected are then the expected ones less those: their step-2 graphs
