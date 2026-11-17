@@ -109,6 +109,30 @@ In this order, cheapest first; each item measured (M) before the next.
   nothing: the phases' labels and the warnings stay in their order.
   Its result carries the error's message, a `Box<dyn Error>` not being
   `Send`. Checked used on the wkt and custom cases.
+- **P10. Where the threads run** (next, before P7). The VM's vCPUs are
+  of three classes (docs/prototext/bench-process.md): 0–7 E-cores in
+  two clusters of four, each with its L2 (3.8 GHz), 8–11 the two
+  P-cores' threads (4.9 GHz, uneven between the two threads of a core).
+  Every timing above is pinned to 0–7; unpinned, protoback sees 12
+  vCPUs, makes 12 threads, and its critical path (phases 1 to 6, the
+  setup, the merge: over half the run) runs wherever the system puts
+  it. protolens measured 1.29x at startup between two E-cores (spec
+  0264) and seats its critical thread on the fast core (specs 0264,
+  0269; `protolens/src/affinity`). To explore: `--jobs` 4, 6, 8, 12
+  unpinned; the critical path seated on a P-core, the mechanism shared
+  with protolens rather than written again; `--jobs` clamped to the CPUs
+  the process may use (spec 0217 S4).
+- **P11. No text where none is written.** With `--no-proto-out` or
+  `--dry-run`, the database's descriptors still come from a full render,
+  text included: they are a by-product of it (spec 0429's side-channel),
+  and their SourceCodeInfo is synthesized from the text. Its spans then
+  point into files that are never written (protolens reads them to open
+  a declaration, which needs the file); its comments may keep a value.
+  Proposed: no SourceCodeInfo by default when no text is written, and
+  the descriptors built without rendering the text. Changes the
+  database's bytes in that mode: reproto changed too, or the harness's
+  expectation for it. Pairs with P7: then the merge is no longer hidden
+  behind rendering.
 - **P7. prototext-graph.**
   - Its internal maps use the hasher alias, chosen as protoback's (~0.1
     s). Its public fields (`node_ids`, `states`, `node_kinds`, …) keep
@@ -125,6 +149,17 @@ In this order, cheapest first; each item measured (M) before the next.
   - Scrutiny: where its ~0.4 s goes (build, merge, minimization), and
     what of it can run in parallel (the files' graphs before the merge;
     the minimization's refinement).
+  - Profiled 2026-11-17 (googleapis, eight threads, after P6): ~0.39 s
+    of CPU in all: building the graph ~0.14 s, Hopcroft's minimization
+    ~0.14 s, merging the files ~0.07 s, compiling and serializing the
+    rest. Since P6 it runs beside rendering (~1.9 s), off the critical
+    path: parallelizing it gains at most the core it holds (~0.2 s)
+    there. It is the whole job where rendering shrinks (P11) or is
+    absent (a graph built from descriptors alone): after P10 and P11,
+    measured on a database-only run. The merge (one table from many)
+    likely parallelizes; the minimization (partition refinement) is
+    sequential by nature: independent components minimized apart, or
+    the per-step bookkeeping in parallel, to study.
 - **P8. The input decoded in parallel.** Phase 1 decodes each of the
   input's descriptors (~3,000 for googleapis) one after another; they
   are independent. The whole phase is ~0.3 s: only if it still shows
