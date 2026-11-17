@@ -220,4 +220,20 @@ absolute figures are unusable; the comparison within the session:
 
 The reworked P6: −0.37 s on eight threads, the ranges apart; the merge
 gone from after rendering (1.03 to 0.54 s), the collection as short as
-P5's. Kept, provisionally: to confirm on an idle host.
+P5's. Kept provisionally; confirmed below, in a clean session.
+
+Re-timed in a clean session (the hypervisor's steal 0.02 % of the
+VM's CPU time over the run):
+
+| | 1 thread | 8 threads | render / merge-to-database, 8 | CPU, 1 / 8 |
+|---|---|---|---|---|
+| P5 | 7.59 s [7.45–7.77] | 4.49 s [4.32–4.58] | 1.93 / 0.73 s | 7.4 / 8.0 s |
+| P6, reworked | 7.70 s [7.38–7.95] | 4.34 s [4.19–4.48] | 2.14 / 0.37 s | 7.6 / 8.3 s |
+
+P6: −0.15 s on eight threads, the ranges overlapping, faster in both
+sessions: kept. The merge is gone from after rendering (0.73 to 0.37
+s), but holds one of the eight cores while rendering runs, which takes
+0.21 s longer. One thread: no change, as expected. The disturbed
+session's cause is outside the VM (its load ~0.2, nothing running):
+another workload on the host, or the CPU's frequency lowered. Each
+timing now records the steal counter (`/proc/stat`) before and after.
