@@ -86,11 +86,11 @@ In this order, cheapest first; each item measured (M) before the next.
     the minimization's refinement).
 - **P8. The input decoded in parallel.** Phase 1 decodes each of the
   input's descriptors (~3,000 for googleapis) one after another; they
-  are independent. The whole phase is ~0.3 s: last, and only if it
-  shows once the rest is gone.
-- **P9. The release profile, last.** `lto = "fat"`, `codegen-units = 1`: on
-  every thread count, the cost slower release builds. To measure. Last, so that every step before it builds as
-  fast as today.
+  are independent. The whole phase is ~0.3 s: only if it still shows
+  once the rest is done.
+- **P9. The release profile, last.** `lto = "fat"`, `codegen-units = 1`:
+  on every thread count, at the cost of slower release builds; last, so
+  that every step before it builds as fast as today. To measure.
 
 ## Measurement
 
