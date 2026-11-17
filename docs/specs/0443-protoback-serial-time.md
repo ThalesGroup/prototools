@@ -272,3 +272,21 @@ s), but holds one of the eight cores while rendering runs, which takes
 session's cause is outside the VM (its load ~0.2, nothing running):
 another workload on the host, or the CPU's frequency lowered. Each
 timing now records the steal counter (`/proc/stat`) before and after.
+
+P10 (spec 0444, aa4f2bc), unpinned on the VM's 12 vCPUs, one binary
+with and without a fabricated sysfs tree declaring vCPUs 9 and 11 fast
+(its feature `affinity-sysfs-override`; the VM's own kernel says
+nothing), 3 interleaved rounds, steal 19 of 46,943 ticks:
+
+| | total (3 runs) | phases 1–6 (3 runs) | render | after |
+|---|---|---|---|---|
+| `--jobs 8`, unseated | 3.15 s (3.53, 2.61, 3.33) | 1.20, 0.69, 0.84 s | 1.59 s | 0.65 s |
+| `--jobs 8`, seated | 2.68 s (2.67, 2.71, 2.65) | 0.67, 0.68, 0.68 s | 1.43 s | 0.57 s |
+| default (12), unseated | 3.38 s (2.43, 3.65, 4.06) | 0.70, 1.20, 1.23 s | 1.66 s | 0.68 s |
+| default (12), seated | 2.64 s (2.60, 2.62, 2.71) | 0.67, 0.69, 0.72 s | 1.39 s | 0.56 s |
+
+Seated, phases 1 to 6 always take the fast mode, and the runs no longer
+spread: −0.5 to −0.7 s on the mean, the render faster too (the merge on
+a fast core). The default thread count needs no change. Measurements
+of the steps after this one go back to vCPUs 0–7: uniform and
+reproducible, where only the cores' count matters.

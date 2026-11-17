@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0444 — prototools-affinity: one detection, two policies
 
-Status: draft
+Status: implemented
+Implemented in: 2026-11-17
 App: prototools-affinity (new crate), protolens, protoback
 Refs: docs/specs/0264-the-thread-the-user-watches-takes-the-fast-core.md
         (the detection, the inherited-mask rule, `widen`),
@@ -108,3 +109,11 @@ thread on 9 and 11 throughout, the render workers and P5's helpers on
 
 - **N1.** A fallback, a benchmark or a guess where the kernel says
   nothing (spec 0264's rule).
+
+## Measured outcome
+
+On the VM with the fabricated tree (spec 0443, P10): googleapis on its
+12 vCPUs, default thread count, 3.38 s unseated (2.43–4.06) against 2.64
+s seated (2.60–2.71); phases 1 to 6 always ~0.7 s seated, ~0.7 or ~1.2 s
+unseated. The host's kernel declares its P-cores: there the policy acts
+without the override.
