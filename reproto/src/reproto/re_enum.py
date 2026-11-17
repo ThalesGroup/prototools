@@ -18,7 +18,7 @@ from google.protobuf.internal.containers import (
 )
 
 from .base import NodeBase
-from .context import Context, Fqdn
+from .context import Context, Fqdn, descriptor_rerender_muted
 from .fake_types import Ref
 from .globals import ENUM
 from .source_info import closing_line
@@ -158,6 +158,7 @@ class ReEnumDescriptorProto(NodeBase[EnumDescriptorProto]):
 
     # --- Rendering -----------------------------------------------------------
 
+    @descriptor_rerender_muted
     def render(
         self,
         ctx: Context,
@@ -175,6 +176,9 @@ class ReEnumDescriptorProto(NodeBase[EnumDescriptorProto]):
         """
         from .re_enum_value import ReEnumValueDescriptorProto
 
+        # The children's text rendered with no slot, once; the descriptor
+        # built after it, from muted re-renders (spec 0429 S11).
+        outer_slot, ctx.out_desc = ctx.out_desc, None
         out = Block()
 
         # --- Enum options ----------------------------------------------------
@@ -235,13 +239,12 @@ class ReEnumDescriptorProto(NodeBase[EnumDescriptorProto]):
         out.insert(0, BlockLine(f'enum {self.name} {{', depth))
 
         # --- Binary output side-channel (spec 0076) --------------------------
-        if ctx.out_desc is not None:
+        if outer_slot is not None:
             from google.protobuf.descriptor_pb2 import (
                 EnumDescriptorProto as _EDP,
                 EnumValueDescriptorProto as _EVDP,
             )
             from .context import DescOut
-            outer_slot = ctx.out_desc
             enum_out = _EDP()
             enum_out.CopyFrom(self.this)
             if enum_out.HasField('options') and ctx.target_syntax != "editions":

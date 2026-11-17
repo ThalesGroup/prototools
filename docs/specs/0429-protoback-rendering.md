@@ -187,6 +187,14 @@ reproto first.)
   so they record no span, and the file's spans are resolved before
   they run. protoback renders each node once, and counts warnings as
   reproto does (step 9).
+  *Fixed in reproto 2026-11-17* (protoback already reported once): a
+  container renders its children's text with `ctx.out_desc` unset, so
+  each child renders and reports once there; the descriptor's re-renders
+  are muted (`descriptor_rerender_muted`, `lib.warnings.muted`), their
+  reports given by the text's. reproto still renders a node for the text,
+  then once more per enclosing element, the file included (about d + 2
+  times, no longer 2^(d+1)); only the time shows it. Measured before: a B1 two messages deep
+  printed 8 times under `-b`. Test `test_descriptor_rerender.py`.
 - **S12. `..` in a type name.** Under `--force-proto2-output`, a
   DELIMITED field's synthetic group gets `type_name =
   f'.{prefix}'.rstrip('.')` (`re_field.py:518`), and the prefix already

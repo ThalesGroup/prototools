@@ -11,7 +11,7 @@ from typing import Any
 from google.protobuf.descriptor_pb2 import MethodDescriptorProto
 
 from .base import NodeBase
-from .context import Context, Fqdn
+from .context import Context, Fqdn, descriptor_rerender_muted
 from .fake_types import Ref
 from .globals import METHOD
 from .text import MAX_LINE_LENGTH, TAB_SIZE, Block, BlockLine
@@ -60,6 +60,7 @@ class ReMethodDescriptorProto(NodeBase[MethodDescriptorProto]):
         # Methods have no child descriptors
         pass
     
+    @descriptor_rerender_muted
     def render(self, ctx: Context, depth: int = 0) -> tuple[Block, Block]:
         """Reconstruct a MethodDescriptorProto as .proto."""
         from .names import Mode

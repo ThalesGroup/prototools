@@ -316,6 +316,9 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
             ctx.out_sci = SourceCodeInfoOut()
         else:
             ctx.out_sci = None
+        # The children's text rendered with no slot, once; the descriptor
+        # built after it, from muted re-renders (spec 0429 S11).
+        outer_slot, ctx.out_desc = ctx.out_desc, None
 
         # --- File intro -------------------------------------------------------
         out.append(BlockLine(f' {self.name}', depth, COMMENT))
@@ -519,10 +522,9 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
         ctx.out_sci = None
 
         # --- Binary output side-channel (spec 0076) ---------------------------
-        if ctx.out_desc is not None:
+        if outer_slot is not None:
             from google.protobuf.descriptor_pb2 import FileDescriptorProto as _FDP
             from .context import DescOut
-            outer_slot = ctx.out_desc
             fdp_out = _FDP()
             fdp_out.CopyFrom(self.this)
             # file name and dependency paths: canonize via variant import rules (spec 0086)

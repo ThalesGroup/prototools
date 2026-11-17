@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 # Spec 0438 S1, in its order: what each code means. --fail-on takes these,
 # the anomalies' codes (anomalies.ANOMALIES) besides.
@@ -63,6 +65,8 @@ def cli_attention(message: str, *args, **kwargs) -> None:
 
 def _line(code: str, message: str) -> None:
     """Print one warning line, its code first (spec 0438 S2)."""
+    if get_collector().muted:
+        return
     logging.warning("%s", f"Warning [{code}]: {message}", stacklevel=3,
                     extra={"cli_warn": True})
 
@@ -106,9 +110,18 @@ class WarningCollector:
         # W1 (loading-phase miss) for these is suppressed because not finding
         # them on the -I path is expected and intentional.
         self._fallback_files: set[str] = set()
+        # Above 0 while a node is rendered again for its descriptor alone
+        # (`muted`): what it reports, its text pass reported already.
+        self._muted = 0
+
+    @property
+    def muted(self) -> bool:
+        return self._muted > 0
 
     def count(self, code: str) -> None:
         assert code in CODES or code[0] in "ABCD", code
+        if self.muted:
+            return
         self.counts[code] += 1
 
     def register_pruned_file(self, name: str) -> None:
@@ -130,6 +143,8 @@ class WarningCollector:
         """A warning of a squashed code: counted under `code`; printed now in
         detailed mode (as `detailed`, default `message`), else summarized by
         `message` under `summary_code` (default `code`)."""
+        if self.muted:
+            return
         self.count(code)
         if self._detailed:
             _line(code, detailed or message)
@@ -223,6 +238,18 @@ _collector: WarningCollector = WarningCollector(detailed=False)
 
 def get_collector() -> WarningCollector:
     return _collector
+
+
+@contextmanager
+def muted() -> Iterator[None]:
+    """Nothing counted or printed within: a node rendered again for its
+    descriptor alone, whose warnings its text pass gave (spec 0429 S11)."""
+    collector = get_collector()
+    collector._muted += 1
+    try:
+        yield
+    finally:
+        collector._muted -= 1
 
 
 def configure_collector(detailed: bool) -> None:

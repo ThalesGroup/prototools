@@ -15,7 +15,7 @@ from google.protobuf.descriptor_pb2 import (
 from google.protobuf.internal.containers import RepeatedCompositeFieldContainer
 
 from .base import NodeBase
-from .context import Context, Fqdn
+from .context import Context, Fqdn, descriptor_rerender_muted
 from .fake_types import Ref
 from .globals import SERVICE
 from .source_info import closing_line
@@ -66,6 +66,7 @@ class ReServiceDescriptorProto(NodeBase[ServiceDescriptorProto]):
             method = ReMethodDescriptorProto(ctx, method_proto, parent=self)
             self.targets.add(method)
     
+    @descriptor_rerender_muted
     def render(
         self,
         ctx: Context,
@@ -86,6 +87,9 @@ class ReServiceDescriptorProto(NodeBase[ServiceDescriptorProto]):
         from .re_method import ReMethodDescriptorProto
 
         assert isinstance(depth, int)
+        # The children's text rendered with no slot, once; the descriptor
+        # built after it, from muted re-renders (spec 0429 S11).
+        outer_slot, ctx.out_desc = ctx.out_desc, None
         out = Block()
         inputs = Block()
 
@@ -147,11 +151,10 @@ class ReServiceDescriptorProto(NodeBase[ServiceDescriptorProto]):
             out.insert(0, BlockLine(f'service {self.name} {{', depth))
 
         # --- Binary output side-channel (spec 0076) ---------------------------
-        if ctx.out_desc is not None:
+        if outer_slot is not None:
             from google.protobuf.descriptor_pb2 import ServiceDescriptorProto as _SDP
             from .context import DescOut
             from .re_method import ReMethodDescriptorProto
-            outer_slot = ctx.out_desc
             svc_out = _SDP()
             svc_out.CopyFrom(self.this)
             if svc_out.HasField('options') and ctx.target_syntax != "editions":

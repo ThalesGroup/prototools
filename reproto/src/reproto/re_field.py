@@ -12,7 +12,7 @@ from google.protobuf.descriptor_pb2 import DescriptorProto, FieldDescriptorProto
 from google.protobuf.message import Message
 
 from .base import NodeBase
-from .context import Context, Fqdn
+from .context import Context, Fqdn, descriptor_rerender_muted
 
 if TYPE_CHECKING:
     from .re_descriptor import ReDescriptorProto
@@ -268,6 +268,7 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
         out.append(BlockLine(f'default = {scalar},', depth))
         return out
 
+    @descriptor_rerender_muted
     def render(self, ctx: Context, depth: int = 0, is_oneof: bool = False) -> Block:
         """Reconstruct field as .proto."""
         from .syntax import allow_groups

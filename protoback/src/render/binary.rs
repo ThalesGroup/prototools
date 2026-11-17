@@ -3,11 +3,11 @@
 // SPDX-License-Identifier: MIT
 
 //! `--emit-binary` (spec 0429 S10): each file's output descriptor, as
-//! reproto's second pass builds it (the `if ctx.out_desc is not None:`
-//! block of each `render`): the definition copied, then names rewritten,
-//! syntax and features made the target's, and the children the text keeps
-//! rebuilt in. Built once, where reproto renders each node again for it
-//! (S11): only the result has to be reproto's.
+//! reproto's second pass builds it (the `if outer_slot is not None:` block
+//! of each `render`): the definition copied, then names rewritten, syntax
+//! and features made the target's, and the children the text keeps rebuilt
+//! in. Built once, reporting nothing: the text's render reported it all,
+//! as reproto's muted re-renders do (S11).
 
 use prototext_upb::descriptor_access::{
     DescriptorProto, DescriptorProtoMut, EnumDescriptorProtoMut, FieldDescriptorProtoMut,

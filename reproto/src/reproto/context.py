@@ -4,12 +4,13 @@
 
 from __future__ import annotations
 
+import functools
 import importlib.resources
 from dataclasses import dataclass, field
 from importlib.resources.abc import Traversable
 from pathlib import Path
 from types import CodeType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Concatenate, ParamSpec, TypeVar
 
 from google.protobuf.descriptor import Descriptor
 from google.protobuf.descriptor_database import DescriptorDatabase
@@ -17,6 +18,7 @@ from google.protobuf.descriptor_pool import DescriptorPool
 from google.protobuf.message import Message
 
 from .fake_types import Fqdn
+from .lib.warnings import muted
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -45,6 +47,29 @@ class DescOut:
     out is None if the node produced no binary descriptor.
     """
     out: Message | None = None
+
+
+_Self = TypeVar('_Self')
+_P = ParamSpec('_P')
+_R = TypeVar('_R')
+
+
+def descriptor_rerender_muted(
+    render: Callable[Concatenate[_Self, Context, _P], _R],
+) -> Callable[Concatenate[_Self, Context, _P], _R]:
+    """A node's render, muted when called for its descriptor (spec 0429 S11).
+
+    A container renders its children's text with ``ctx.out_desc`` unset,
+    then each child again with a slot, for the descriptor alone: that second
+    render reports nothing, the first having reported it all.
+    """
+    @functools.wraps(render)
+    def wrapper(self: _Self, ctx: Context, *args: _P.args, **kwargs: _P.kwargs) -> _R:
+        if ctx.out_desc is None:
+            return render(self, ctx, *args, **kwargs)
+        with muted():
+            return render(self, ctx, *args, **kwargs)
+    return wrapper
 
 
 @dataclass

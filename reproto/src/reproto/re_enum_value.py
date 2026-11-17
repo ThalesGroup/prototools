@@ -14,7 +14,7 @@ from google.protobuf.descriptor_pb2 import (
 )
 from google.protobuf.message import Message
 
-from .context import Context
+from .context import Context, descriptor_rerender_muted
 from .option_messages import parse_options
 from .fake_types import parse_fqdn
 from .globals import ENUM
@@ -54,6 +54,7 @@ class ReEnumValueDescriptorProto:
     def number(self) -> int:
         return self.this.number
 
+    @descriptor_rerender_muted
     def render(self, ctx: Context, depth: int = 0) -> Block:
         """Render enum value as .proto text."""
         assert isinstance(depth, int)

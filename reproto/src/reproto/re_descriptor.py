@@ -21,7 +21,7 @@ from google.protobuf.internal.containers import RepeatedCompositeFieldContainer
 
 
 from .base import NodeBase
-from .context import Context, Fqdn
+from .context import Context, Fqdn, descriptor_rerender_muted
 from .source_info import SourceCodeInfoMixin, closing_line
 from .fake_types import Ref
 from .globals import MESSAGE
@@ -407,6 +407,7 @@ class ReDescriptorProto(SourceCodeInfoMixin, NodeBase[DescriptorProto]):
             self.targets.add(fd)
             self.contains.add(fd)
     
+    @descriptor_rerender_muted
     def render(
         self,
         ctx: Context,
@@ -465,6 +466,9 @@ class ReDescriptorProto(SourceCodeInfoMixin, NodeBase[DescriptorProto]):
         from .utils import get_file_node
 
         assert isinstance(depth, int)
+        # The children's text rendered with no slot, once; the descriptor
+        # built after it, from muted re-renders (spec 0429 S11).
+        outer_slot, ctx.out_desc = ctx.out_desc, None
         out = Block()
         inputs = Block()
 
@@ -689,7 +693,7 @@ class ReDescriptorProto(SourceCodeInfoMixin, NodeBase[DescriptorProto]):
         out.append_div_maybe(depth)
 
         # --- Binary output side-channel (spec 0076) ---------------------------
-        if ctx.out_desc is not None:
+        if outer_slot is not None:
             from google.protobuf.descriptor_pb2 import (
                 DescriptorProto as _DP,
                 FieldDescriptorProto as _FieldDP,
@@ -697,7 +701,6 @@ class ReDescriptorProto(SourceCodeInfoMixin, NodeBase[DescriptorProto]):
             from .context import DescOut
             from .re_enum import ReEnumDescriptorProto as _ReEnum
             from .re_field import ReFieldDescriptorProto as _ReField
-            outer_slot = ctx.out_desc
             msg_out = _DP()
             msg_out.CopyFrom(self.this)
             # options.features: clear if not editions target
