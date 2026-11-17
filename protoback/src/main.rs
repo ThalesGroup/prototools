@@ -5,6 +5,7 @@
 //! protoback: reproto in Rust, on upb (spec 0424). Step 4 (spec 0428):
 //! loading, the pool, phases 1 to 6, and the graph dump.
 
+mod alloc;
 mod cli;
 mod complete;
 mod console;
