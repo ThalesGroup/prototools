@@ -338,3 +338,13 @@ spread: −0.5 to −0.7 s on the mean, the render faster too (the merge on
 a fast core). The default thread count needs no change. Measurements
 of the steps after this one go back to vCPUs 0–7: uniform and
 reproducible, where only the cores' count matters.
+
+P8 (02fd71cd) against the step before it (0f84675: P7 and spec
+commits), vCPUs 0–7, 3 runs each, steal 17 of 112,750 ticks:
+
+| | 1 thread | 8 threads | "Loading descriptors" done, 8 | phases 1–6, 8 |
+|---|---|---|---|---|
+| before | 7.21 s [7.00–7.32] | 4.05 s [3.98–4.10] | 0.53 s | 1.18 s |
+| P8 | 7.25 s [7.11–7.38] | 3.81 s [3.80–3.83] | 0.36 s | 0.99 s |
+
+−0.24 s on eight threads, the ranges apart; one thread unchanged.
