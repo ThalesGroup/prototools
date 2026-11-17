@@ -164,3 +164,11 @@ and pipelines a command line is expected to take.
   - Not measured: what a plugin costs on googleapis, the adapter against
     a command plugin and reproto's in-process call. Deferred until the
     port is complete (the user's decision).
+- **The plugins' cost** (2026-11-17, at 21434a2): googleapis with
+  googleapisDb's flags, a release build, vCPUs 0-7, host idle, hyperfine,
+  3 runs each: no plugin 8.96 s ± 0.26; `--fdp-plugin` with a no-op
+  `fdp_plugin` (the Python adapter: one `python3`, each distinct
+  descriptor parsed and serialized by Python protobuf) 9.15 s ± 0.14;
+  `--fdp-plugin-cmd` with a Python plugin echoing each frame unparsed
+  9.19 s ± 0.16. About 0.2 s, 2 %, within twice the noise: a plugin's
+  call costs little next to the run; what a plugin does is its own cost.
