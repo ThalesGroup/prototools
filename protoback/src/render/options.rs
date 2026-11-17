@@ -134,7 +134,9 @@ pub fn pool_loads(db: &Database, summoned: &[String]) -> PoolLoads {
             loader.loads.refused.insert(name.clone(), reason);
         }
     }
-    loader.loads.pool = loader.pool;
+    // Complete: leaked, so that the render threads share it without a
+    // count or a lock (spec 0442 S2); adding to it now panics.
+    loader.loads.pool = loader.pool.leak();
     loader.loads
 }
 
@@ -178,7 +180,8 @@ fn without_map_entry(fdp: &DynamicMessage) -> Option<Vec<u8>> {
 /// `option_extensions`): the variant's descriptor.proto, whose options
 /// messages parse every element's options, then the files `ctx.pool`
 /// loads, in that order, whose extensions parse as the custom options
-/// they are once their file is loaded (`PoolLoads::rank`).
+/// they are once their file is loaded, if the rendering file's closure
+/// declares them (spec 0429 S14).
 pub struct OptionsPool {
     pool: Pool,
     /// The package of the variant's descriptor.proto (`ctx.options_package`).
@@ -212,7 +215,11 @@ impl OptionsPool {
         }
         let f = prototext_upb::descriptor_access::FileDescriptorProto(fdp.as_ref());
         let package = String::from_utf8_lossy(f.package()).into_owned();
-        Ok(OptionsPool { pool, package })
+        // Complete: leaked, as the pool loads are (spec 0442 S2).
+        Ok(OptionsPool {
+            pool: pool.leak(),
+            package,
+        })
     }
 
     /// An element's options, from its descriptor's options message

@@ -26,6 +26,7 @@ mod ffi;
 pub mod input;
 mod mend;
 mod message;
+mod pool_ref;
 mod set;
 pub mod text_format;
 pub mod wire;
@@ -40,7 +41,9 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
+
+use pool_ref::PoolRef;
 
 // ── Strings ─────────────────────────────────────────────────────────────────
 
@@ -77,6 +80,7 @@ fn upb_str<T: ?Sized>(_owner: &T, p: *const c_char) -> &str {
 /// parser (spec 0415 S4). `Err` carries the reason it may not.
 pub type Gate = fn(&[u8]) -> Result<(), String>;
 
+#[derive(Clone)]
 struct PoolState {
     /// Files in the order they were added.
     files: Vec<NonNull<ffi::FileDef>>,
@@ -89,6 +93,9 @@ struct PoolInner {
     raw: NonNull<ffi::DefPool>,
     gate: Option<Gate>,
     state: RwLock<PoolState>,
+    /// The state once the pool is sealed (spec 0442 S2): read without the
+    /// lock, no file being added any more.
+    sealed: OnceLock<PoolState>,
     /// How many files have been added (spec 0416 S1). A lookup that missed
     /// at one generation may hit at a later one; one that hit stays a hit.
     generation: AtomicU64,
@@ -108,8 +115,34 @@ impl Drop for PoolInner {
     }
 }
 
+/// The pool's state, read under its lock, or as sealed, without it.
+enum StateRef<'a> {
+    Locked(RwLockReadGuard<'a, PoolState>),
+    Sealed(&'a PoolState),
+}
+
+impl std::ops::Deref for StateRef<'_> {
+    type Target = PoolState;
+
+    fn deref(&self) -> &PoolState {
+        match self {
+            StateRef::Locked(guard) => guard,
+            StateRef::Sealed(state) => state,
+        }
+    }
+}
+
 impl PoolInner {
-    fn read(&self) -> RwLockReadGuard<'_, PoolState> {
+    /// The state, for a lookup or a query: without the lock once sealed,
+    /// no writer being left to exclude.
+    fn read(&self) -> StateRef<'_> {
+        match self.sealed.get() {
+            Some(state) => StateRef::Sealed(state),
+            None => StateRef::Locked(self.lock_read()),
+        }
+    }
+
+    fn lock_read(&self) -> RwLockReadGuard<'_, PoolState> {
         // A panic while the lock is held leaves the state consistent: the
         // only writer pushes after upb has succeeded.
         self.state.read().unwrap_or_else(|e| e.into_inner())
@@ -127,7 +160,7 @@ pub const DESCRIPTOR_SET: &[u8] = include_bytes!("../vendor/descriptor.pb");
 /// A descriptor pool: the definitions of the files added to it.
 #[derive(Clone)]
 pub struct Pool {
-    inner: Arc<PoolInner>,
+    inner: PoolRef,
 }
 
 /// Why a file was not added.
@@ -178,15 +211,44 @@ impl Pool {
         let raw = NonNull::new(unsafe { ffi::upb_DefPool_New() })
             .expect("upb_DefPool_New: out of memory");
         Pool {
-            inner: Arc::new(PoolInner {
+            inner: PoolRef::new(PoolInner {
                 raw,
                 gate,
                 state: RwLock::new(PoolState {
                     files: Vec::new(),
                     bytes: HashMap::new(),
                 }),
+                sealed: OnceLock::new(),
                 generation: AtomicU64::new(0),
             }),
+        }
+    }
+
+    /// The pool is complete (spec 0442 S2): lookups, decoding and encoding
+    /// no longer take its lock, and adding a file panics. Idempotent.
+    pub fn seal(&self) {
+        // Published under the read lock, so that no add slips in between
+        // the copy and the publication; a copy, not a move, so that a
+        // reader holding the lock across the seal sees the whole state.
+        let state = self.inner.lock_read();
+        let _ = self.inner.sealed.set(state.clone());
+    }
+
+    /// Whether the pool is sealed.
+    pub fn is_sealed(&self) -> bool {
+        self.inner.sealed.get().is_some()
+    }
+
+    /// The pool sealed and kept for the rest of the process (spec 0442
+    /// S2): the returned value's handles, and every handle derived from
+    /// them, neither count nor are counted, cloned and dropped for free,
+    /// which threads sharing the pool would otherwise contend on. Its
+    /// memory is never given back: for a pool that lives as long as the
+    /// process. Handles made before keep counting, harmlessly.
+    pub fn leak(self) -> Pool {
+        self.seal();
+        Pool {
+            inner: self.inner.leak(),
         }
     }
 
@@ -201,10 +263,11 @@ impl Pool {
     }
 
     /// The one [`with_descriptor_proto`](Pool::with_descriptor_proto) pool
-    /// of the process, built when first asked for.
+    /// of the process, built when first asked for, and leaked: it is
+    /// never freed anyway (spec 0442 S2).
     pub fn vendored() -> &'static Pool {
         static POOL: std::sync::OnceLock<Pool> = std::sync::OnceLock::new();
-        POOL.get_or_init(Pool::with_descriptor_proto)
+        POOL.get_or_init(|| Pool::with_descriptor_proto().leak())
     }
 
     fn raw(&self) -> *mut ffi::DefPool {
@@ -225,6 +288,10 @@ impl Pool {
         }
         let (name, _) = set::name_and_imports(bytes).map_err(LoadError)?;
         let mut state = self.inner.write();
+        assert!(
+            self.inner.sealed.get().is_none(),
+            "'{name}' added to a sealed pool (spec 0442 S2)"
+        );
         let mut err = [0 as c_char; 512];
         // SAFETY: the pool is exclusively ours under the write lock; `bytes`
         // and `err` are valid for the given lengths; upb copies what it keeps.
@@ -505,7 +572,7 @@ macro_rules! handle {
         $(#[$doc])*
         #[derive(Clone)]
         pub struct $name {
-            pool: Arc<PoolInner>,
+            pool: PoolRef,
             ptr: NonNull<$raw>,
         }
 
@@ -573,7 +640,7 @@ macro_rules! handle {
 /// A handle under construction: the pool plus a pointer, converted into
 /// the right handle type by `From`.
 struct Handle<T> {
-    pool: Arc<PoolInner>,
+    pool: PoolRef,
     ptr: NonNull<T>,
 }
 

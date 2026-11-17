@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # 0442 — handles without a shared reference count
 
-Status: draft (S1 implemented; S2's design to decide)
+Status: draft (S1 implemented; S2 to S4 decided)
 App: prototext-upb, protoback
 Refs: docs/specs/0429-protoback-rendering.md (S4: files rendered on a
         rayon pool)
@@ -45,27 +45,49 @@ last line (presumably the frees before exit, to confirm).
   It asserted `field.containing_message() == *def`, building a `Message`
   handle on every field access to compare and drop it; now
   `Field::belongs_to(&Message)` compares upb's pointers, no handle made.
-- **S2. Handles derived from a handle borrow its pool.** Design to
-  decide among:
-  - **(a) Borrowed handles only:** `Message<'p>` holds `&'p PoolInner`.
-    No count anywhere; but a handle stored beside its pool (a
-    `DynamicMessage`, protoback's `Database`, a Python object of
-    `prototext-pyo3`, which must be `'static`) needs the pool kept by
-    something else, and the lifetime spreads into every type holding
-    one.
-  - **(b) Owned or borrowed:** `Message<'p>` holds either an
-    `Arc<PoolInner>` or a `&'p PoolInner`. A handle made from another
-    borrows (`'p` its source's), so the hot paths take no count; a
-    handle kept is made owned (`into_owned()`, `Message<'static>`), as
-    the Python bindings and stored descriptors need. One API, a lifetime
-    in its signatures; a borrowed handle is two words, as today.
-  - **(c) No API change:** the hot accessors (`get_by_number`, `kind`,
-    `is_map`, `value`, `push_by_number`, `List::get`) use upb's pointers
-    internally, and only the handles they return are counted. Least
-    churn; does not remove the count of a handle the caller asks for
-    (`Field::kind` returning `Kind::Message(Message)`), so may not reach
-    G2.
-- **S3. Measured** before and after S1, after S2: the googleapis case at
+- **S2. Sealed and leaked pools** (opt-in; the handle types unchanged).
+  - `Pool::seal(&self)`: the pool is complete. Its state is copied into
+    a write-once cell (`OnceLock`), which lookups, decoding and encoding
+    read without the lock: a read lock writes the lock's own counter,
+    contended as the reference count is. Adding a file to a sealed pool
+    panics, naming the file: a broken contract, not a runtime condition.
+    The copy, not a move, so that a reader holding the lock across the
+    seal still sees the whole state.
+  - `Pool::leak(self) -> Pool`: seals, keeps one reference to the pool
+    for ever, and returns a `Pool` whose handles do not count: cloning
+    one copies a pointer, dropping one does nothing. The mark is the
+    handle's own (the pool pointer's low bit), inherited by every handle
+    derived from it, so a handle increments and decrements, or does
+    neither: a pool-wide flag read at clone and at drop could see two
+    values and decrement without having incremented. Handles made before
+    the leak keep counting, balanced, and the kept reference stops the
+    count reaching zero.
+  - `Pool::vendored()`, a process-wide static never freed, is leaked when
+    built: every user's descriptors decoded with it count nothing.
+  - protoback leaks its pools once filled, before rendering (the pool
+    loads and the options pool): a long-running program does not have
+    to, and frees its pools as today.
+  - Dismissed: borrowed handles (`Message<'p>`) everywhere, the lifetime
+    reaching every type holding one, the Python bindings' included;
+    owned or borrowed handles, a lifetime in every signature of two
+    published crates; borrowed views beside owned handles (`MessageRef`
+    …), a second API to keep, and the lock still taken.
+- **S3. Each node's definition found once.** `Shared::def(i)` walked node
+  `i`'s path (file, then field number and index, for example message 3,
+  nested 1, field 2) down from the file's root on every call, a
+  `get_by_number` and a `List::get` a step, many times a node. The
+  definitions are found once, after phase 6, into a table `def(i)`
+  indexes.
+- **S4. Less hashing.** SipHash, Rust's default, about 3.9 % of the
+  samples, nearly all on the main thread: `SymbolTable::build` (built,
+  then every key renamed into a second map: the renaming now as each
+  symbol is added), the 0440 symbol check (a `String` key a node, the
+  map grown as it goes: sized up front), `graph::run`. protoback's maps
+  use one hasher alias chosen at compile time: the feature `hash-fx`
+  (`rustc-hash`, the default), `hash-fold` (`foldhash`) or `hash-sip`
+  (the standard library's). No output depends on a map's iteration
+  order (the standard hasher is already seeded at random per run).
+- **S5. Measured** before and after each of S1 to S4: the googleapis case at
   1, 2, 4 and 8 threads, phase by phase, task-clock, and the profile.
 
 ## Non-goals
