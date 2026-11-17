@@ -50,7 +50,9 @@ pub enum Read {
 fn settles_more(w: &Warning) -> bool {
     matches!(
         w,
-        Warning::Undeclared { .. } | Warning::UnknownExtension { .. }
+        Warning::Undeclared { .. }
+            | Warning::UnknownExtension { .. }
+            | Warning::UnknownField { .. }
     )
 }
 
@@ -138,7 +140,12 @@ pub fn read_input(inputs: &[Input<'_>], descriptor_file: &str) -> (Pool, Vec<Rea
             },
         };
         if let Some(bytes) = bytes {
-            add(&pool, &heads[i].as_ref().unwrap().0, &bytes, &mut report);
+            let name = &heads[i].as_ref().unwrap().0;
+            // The schema is not mended: a descriptor.proto that loads only
+            // without what upb refuses in it would be read as, and lose its
+            // fields in, every text (spec 0436). Refused, the texts are read
+            // with the vendored one, and the refusal is reported.
+            add(&pool, name, &bytes, name != descriptor_file, &mut report);
         }
         for &d in &dependents[i] {
             waiting[d] -= 1;
@@ -173,7 +180,7 @@ fn parse(pool: &Pool, descriptor_file: &str, text: &str) -> Result<text_format::
 }
 
 /// Add one file to `pool`, mended if upb refuses it as it is.
-fn add(pool: &Pool, name: &str, bytes: &[u8], report: &mut LoadReport) {
+fn add(pool: &Pool, name: &str, bytes: &[u8], may_mend: bool, report: &mut LoadReport) {
     let reason = match pool.add_file(bytes) {
         Ok(_) => {
             report.loaded.push(name.to_string());
@@ -181,7 +188,8 @@ fn add(pool: &Pool, name: &str, bytes: &[u8], report: &mut LoadReport) {
         }
         Err(e) => e.0,
     };
-    let mended = crate::mend::mend(pool, bytes).is_some_and(|m| pool.add_file(&m).is_ok());
+    let mended =
+        may_mend && crate::mend::mend(pool, bytes).is_some_and(|m| pool.add_file(&m).is_ok());
     if mended {
         report.loaded.push(name.to_string());
     } else {

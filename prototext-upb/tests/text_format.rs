@@ -682,3 +682,122 @@ fn a_sets_text_splits_into_its_files() {
     let names: Vec<String> = files.iter().map(|f| scan_imports(f).unwrap().0).collect();
     assert_eq!(names, ["google/protobuf/descriptor.proto", "options.proto"]);
 }
+
+// ── The schema read first, and an unknown name said (spec 0436) ────────────
+
+/// A `descriptor.proto` of another package, whose `FileOptions` has a field
+/// the vendored one lacks, `internal_flag`: the schema texts are read as.
+const SCHEMA_FILE: &str = "internal/proto2/descriptor.proto";
+
+fn schema() -> Vec<u8> {
+    let alone = descriptor_pool();
+    let fdp_type = alone
+        .get_message_by_name("google.protobuf.FileDescriptorProto")
+        .unwrap();
+    parse(
+        &fdp_type,
+        &format!(
+            r#"name: "{SCHEMA_FILE}" package: "proto2"
+               message_type {{ name: "FileDescriptorProto"
+                 field {{ name: "name" number: 1 label: LABEL_OPTIONAL type: TYPE_STRING }}
+                 field {{ name: "package" number: 2 label: LABEL_OPTIONAL type: TYPE_STRING }}
+                 field {{ name: "options" number: 8 label: LABEL_OPTIONAL type: TYPE_MESSAGE
+                          type_name: ".proto2.FileOptions" }} }}
+               message_type {{ name: "FileOptions"
+                 field {{ name: "java_package" number: 1 label: LABEL_OPTIONAL type: TYPE_STRING }}
+                 field {{ name: "internal_flag" number: 99 label: LABEL_OPTIONAL type: TYPE_INT32 }} }}"#
+        ),
+        LENIENT,
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_file_without_imports_is_read_with_the_schema_whatever_the_input_order() {
+    let user = r#"name: "a.proto" package: "a" options { java_package: "x" internal_flag: 5 }"#;
+    let schema = schema();
+    // The file first: it imports nothing, so import order alone could read
+    // it before the schema, as the vendored descriptor.proto's.
+    for inputs in [
+        [Input::Text(user), Input::Binary(&schema)],
+        [Input::Binary(&schema), Input::Text(user)],
+    ] {
+        let at = inputs
+            .iter()
+            .position(|i| matches!(i, Input::Text(_)))
+            .unwrap();
+        let (pool, reads, report) = read_input(&inputs, SCHEMA_FILE);
+        assert!(report.skipped.is_empty(), "{:?}", report.skipped);
+        let Read::Parsed {
+            bytes, warnings, ..
+        } = &reads[at]
+        else {
+            panic!("{:?}", reads[at])
+        };
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let def = descriptor_type(&pool, SCHEMA_FILE, "FileDescriptorProto").unwrap();
+        assert_eq!(*bytes, parse(&def, user, Options::default()).unwrap());
+    }
+}
+
+#[test]
+fn a_name_no_schema_declares_is_skipped_and_said() {
+    let user = r#"name: "a.proto" options { java_package: "x" no_such_option: 5 }"#;
+    let (_, reads, _) = read_input(&[Input::Text(user)], DESCRIPTOR_FILE);
+    let Read::Parsed { warnings, .. } = &reads[0] else {
+        panic!("{:?}", reads[0])
+    };
+    assert_eq!(
+        *warnings,
+        [Warning::UnknownField {
+            message_type: "google.protobuf.FileOptions".into(),
+            name: "no_such_option".into(),
+        }]
+    );
+    assert_eq!(
+        warnings[0].to_string(),
+        "field no_such_option of google.protobuf.FileOptions is declared nowhere in the \
+         input: skipped"
+    );
+}
+
+#[test]
+fn a_schema_the_pool_refuses_is_not_mended_into_one() {
+    // The schema with its `name` field broken: mended, it would lose that
+    // field, and every text read as it would lose its name.
+    let alone = descriptor_pool();
+    let fdp_type = alone
+        .get_message_by_name("google.protobuf.FileDescriptorProto")
+        .unwrap();
+    let broken = parse(
+        &fdp_type,
+        &format!(
+            r#"name: "{SCHEMA_FILE}" package: "proto2"
+               message_type {{ name: "FileDescriptorProto"
+                 field {{ name: "name" number: 1 label: LABEL_OPTIONAL type: TYPE_STRING
+                          type_name: "" }} }}"#
+        ),
+        LENIENT,
+    )
+    .unwrap();
+    let user = r#"name: "a.proto" package: "a""#;
+    let (_, reads, report) = read_input(&[Input::Text(user), Input::Binary(&broken)], SCHEMA_FILE);
+    // Refused as it is, said so; the text read with the vendored schema.
+    assert_eq!(
+        report
+            .skipped
+            .iter()
+            .map(|(f, _)| f.as_str())
+            .collect::<Vec<_>>(),
+        [SCHEMA_FILE]
+    );
+    let Read::Parsed {
+        bytes, warnings, ..
+    } = &reads[0]
+    else {
+        panic!("{:?}", reads[0])
+    };
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let vendored = descriptor_type(&alone, DESCRIPTOR_FILE, "FileDescriptorProto").unwrap();
+    assert_eq!(*bytes, parse(&vendored, user, Options::default()).unwrap());
+}

@@ -70,6 +70,9 @@ pub enum Warning {
     StringAsMessage { message_type: String, number: u32 },
     /// W3: an `[extension]` declared nowhere; skipped.
     UnknownExtension { message_type: String, name: String },
+    /// W4: a field name the message's type does not declare; skipped
+    /// (spec 0436: a name is never dropped unsaid).
+    UnknownField { message_type: String, name: String },
 }
 
 impl fmt::Display for Warning {
@@ -96,6 +99,10 @@ impl fmt::Display for Warning {
                 f,
                 "extension [{name}] of {message_type} is declared nowhere in the input: \
                  skipped"
+            ),
+            Warning::UnknownField { message_type, name } => write!(
+                f,
+                "field {name} of {message_type} is declared nowhere in the input: skipped"
             ),
         }
     }
@@ -821,7 +828,13 @@ impl Parser {
                 });
                 match field {
                     Some(f) => self.known_field(&f, frame, start),
-                    None if self.options.allow_unknown_field => self.skip_field_value(),
+                    None if self.options.allow_unknown_field => {
+                        self.warnings.push(Warning::UnknownField {
+                            message_type: def.full_name().to_string(),
+                            name,
+                        });
+                        self.skip_field_value()
+                    }
                     None => Err(self.error_at(
                         start,
                         format!(
