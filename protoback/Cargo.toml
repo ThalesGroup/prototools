@@ -31,6 +31,7 @@ rayon = "1"
 rustc-hash = "2"
 foldhash = { version = "0.2", optional = true }
 tikv-jemallocator = "0.7"
+prototools-affinity = { workspace = true }
 prototext-graph = { workspace = true }
 prototools-complete = { workspace = true }
 clap_complete = { version = "4.5", features = ["unstable-dynamic"] }
@@ -46,3 +47,6 @@ hash-sip = []
 # The global allocator (src/alloc.rs, spec 0443 P3): jemalloc, unless
 # this selects the system's.
 alloc-system = []
+# The sysfs tree read from $PROTOTOOLS_AFFINITY_SYSFS: measurements only
+# (spec 0444), never in a release build.
+affinity-sysfs-override = ["prototools-affinity/sysfs-override"]

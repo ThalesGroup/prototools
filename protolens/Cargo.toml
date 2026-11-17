@@ -25,6 +25,7 @@ prototext-schema      = { workspace = true }
 clap                  = { version = "4.5", features = ["derive", "env"] }
 clap_complete         = { version = "4.5", features = ["unstable-dynamic"] }
 prototools-complete   = { workspace = true }
+prototools-affinity   = { workspace = true }
 clap_mangen           = "0.2"
 memchr                = "2"
 # `unstable-rendered-line-info` is `Paragraph::line_count`, which is how

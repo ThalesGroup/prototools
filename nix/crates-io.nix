@@ -6,7 +6,8 @@
 #
 # Produces $out/ with one tarball per publishable workspace crate:
 #   tree-sitter-textproto, prototext-upb, prototext-core, prototext-graph, prototext-schema,
-#   prototools-complete, prototext, fdp-scan, protoscan, prototext-lens
+#   prototools-complete, prototools-affinity, prototext, fdp-scan, protoscan,
+#   prototext-lens
 # (that is also their dependency order: the list scripts/publishable-crates
 # gives the release scripts, which this one must match — spec 0412 S3).
 #
@@ -71,6 +72,7 @@ prototext-core   = { path = "$PWD/prototext-core" }
 prototext-graph  = { path = "$PWD/prototext-graph" }
 prototext-schema = { path = "$PWD/prototext-schema" }
 prototools-complete = { path = "$PWD/prototools-complete" }
+prototools-affinity = { path = "$PWD/prototools-affinity" }
 prototext        = { path = "$PWD/prototext" }
 fdp-scan         = { path = "$PWD/fdp-scan" }
 workspace-hack   = { path = "$PWD/workspace-hack" }
@@ -85,6 +87,7 @@ EOF
     cargo package -p prototext-graph  --no-verify
     cargo package -p prototext-schema --no-verify
     cargo package -p prototools-complete --no-verify
+    cargo package -p prototools-affinity --no-verify
     cargo package -p prototext        --no-verify
     cargo package -p fdp-scan         --no-verify
     cargo package -p protoscan        --no-verify
@@ -99,6 +102,7 @@ EOF
     cp target/package/prototext-graph-*.crate  $out/
     cp target/package/prototext-schema-*.crate $out/
     cp target/package/prototools-complete-*.crate $out/
+    cp target/package/prototools-affinity-*.crate $out/
     cp target/package/prototext-*.crate        $out/
     cp target/package/fdp-scan-*.crate         $out/
     cp target/package/protoscan-*.crate        $out/

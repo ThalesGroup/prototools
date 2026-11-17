@@ -12,6 +12,7 @@ crates=(
     prototext-graph
     prototext-schema
     prototools-complete
+    prototools-affinity
     prototext
     fdp-scan
     protoscan

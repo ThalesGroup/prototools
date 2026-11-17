@@ -290,8 +290,9 @@ with open('pyrightconfig.json', 'w') as f:
             | grep -c '"name":"prototext-lens"' >/dev/null; then
           local bin2="$PWD/target/release/protolens"
           local watch2=(protolens/src prototext-core/src prototext-graph/src prototext-upb/src
+                        prototools-affinity/src
                         protolens/Cargo.toml prototext-core/Cargo.toml prototext-graph/Cargo.toml
-                        prototext-upb/Cargo.toml Cargo.lock)
+                        prototext-upb/Cargo.toml prototools-affinity/Cargo.toml Cargo.lock)
           local stale2=0
           if [[ ! -f "$bin2" ]]; then
             stale2=1

@@ -410,7 +410,7 @@ pub fn run(shared: &Shared<'_>, output: &Output, events: &mut Events) -> Result<
                 let mut speculation = crate::schema_db::speculate(shared, output);
                 let html = output.scoring_html.is_some();
                 let ((), collected) = rayon::join(
-                    || speculation.compile(html),
+                    || crate::affinity::on_fast(|| speculation.compile(html)),
                     || write_files(shared, output, dry_run, events),
                 );
                 (collected?, Some(speculation))
@@ -453,10 +453,13 @@ pub fn replay(events: &mut Events, reports: Vec<file::RenderEvent>) {
 pub const POOL_REFUSED: &str = "the descriptor pool refused this file or one of its imports";
 
 /// `f` on a pool of `jobs` threads (spec 0429 S4); on this thread when no
-/// pool can be had.
+/// pool can be had. Each pool thread first takes every CPU the process
+/// inherited, the main thread's confinement to the fast ones being
+/// inherited too (spec 0444 S3).
 fn on_pool<T: Send>(jobs: usize, f: impl FnOnce() -> T + Send) -> T {
     match rayon::ThreadPoolBuilder::new()
         .num_threads(jobs.max(1))
+        .start_handler(|_| crate::affinity::widen())
         .build()
     {
         Ok(pool) => pool.install(f),

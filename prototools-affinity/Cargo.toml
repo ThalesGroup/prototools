@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+#
+# SPDX-License-Identifier: MIT
+
+[package]
+name        = "prototools-affinity"
+version.workspace    = true
+edition     = "2021"
+description = "Which CPUs the kernel calls fast, and threads confined to them; shared by the prototools CLIs"
+license     = "MIT"
+repository.workspace = true
+keywords    = ["affinity", "hybrid", "cpu", "scheduling"]
+categories  = ["os::linux-apis", "concurrency"]
+
+[features]
+# The sysfs tree read from $PROTOTOOLS_AFFINITY_SYSFS instead of /sys:
+# for measurements on a machine whose kernel does not say which CPUs are
+# fast (spec 0444 Measurement). Never in a release build.
+sysfs-override = []
+
+[target.'cfg(target_os = "linux")'.dependencies]
+nix = { version = "0.29", features = ["process", "sched"] }
+
+[dependencies]
+workspace-hack = { version = "0.1", path = "../workspace-hack" }

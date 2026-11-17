@@ -5,6 +5,7 @@
 //! protoback: reproto in Rust, on upb (spec 0424). Step 4 (spec 0428):
 //! loading, the pool, phases 1 to 6, and the graph dump.
 
+mod affinity;
 mod alloc;
 mod cli;
 mod complete;
@@ -340,6 +341,12 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
     };
+    // The CPUs this process may use, counted before the main thread is
+    // confined to the fast ones (`available_parallelism` follows the
+    // mask); then the confinement, the plugin's process already started
+    // on the whole mask (spec 0444 S3).
+    let cpus = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+    affinity::apply();
 
     let fallback = fallback_protos(&cli.use_variant, &variant);
     let mut run = Run {
@@ -470,9 +477,7 @@ fn main() -> ExitCode {
     // The setup rendering reads, built side by side when there is more
     // than one thread (spec 0443 P5): the pool loads then the options
     // pool, which reads them; the symbol table; each node's definition.
-    let jobs = cli.jobs.unwrap_or_else(|| {
-        std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
-    });
+    let jobs = cli.jobs.unwrap_or(cpus);
     let build_pools = || {
         let loads = render::pool_loads(&run.db, &loaded);
         let options = render::OptionsPool::new(&run.db, &run.variant, &loads);
@@ -493,8 +498,14 @@ fn main() -> ExitCode {
     let build_defs = || render::find_defs(&run.graph, &run.db);
     let ((loads, options), names, defs) = if jobs > 1 {
         std::thread::scope(|s| {
-            let names = s.spawn(build_names);
-            let defs = s.spawn(build_defs);
+            let names = s.spawn(|| {
+                affinity::widen();
+                build_names()
+            });
+            let defs = s.spawn(|| {
+                affinity::widen();
+                build_defs()
+            });
             let pools = build_pools();
             // A panic in either is the run's, as it would be on one thread.
             let names = names

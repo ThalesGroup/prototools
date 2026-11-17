@@ -1807,6 +1807,7 @@ dependencies = [
  "prototext-core",
  "prototext-graph",
  "prototext-upb",
+ "prototools-affinity",
  "prototools-complete",
  "rapidfuzz",
  "rayon",
@@ -1897,6 +1898,7 @@ dependencies = [
  "prototext-core",
  "prototext-graph",
  "prototext-schema",
+ "prototools-affinity",
  "prototools-complete",
  "ratatui",
  "regex",
@@ -1956,6 +1958,14 @@ dependencies = [
  "pyo3-build-config",
  "pyo3-stub-gen",
  "pyo3-stub-gen-derive",
+ "workspace-hack",
+]
+
+[[package]]
+name = "prototools-affinity"
+version = "0.3.6"
+dependencies = [
+ "nix 0.29.0",
  "workspace-hack",
 ]
 
