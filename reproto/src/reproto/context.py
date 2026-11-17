@@ -293,10 +293,17 @@ class Context(Options):
         self.fts_desc: Descriptor | None
         self.fts_cls: type[Message] | None
         # The pool the option classes above come from: pool_db with maps as
-        # the repeated messages they are on the wire (option_messages.py).
+        # the repeated messages they are on the wire (options_db), holding
+        # the rendering file's extensions (option_messages.py, spec 0429
+        # S14).
         self.options_pool: DescriptorPool
-        # Files loaded into options_pool for their extensions.
-        self.options_pool_files: set[str]
+        self.options_db: DescriptorDatabase
+        # Each options pool's attributes above, by the extension-declaring
+        # files it holds; each file's import closure; whether a file
+        # declares extensions.
+        self.options_pools: dict[frozenset[str], dict[str, object]]
+        self.import_closures: dict[str, frozenset[str]]
+        self.extension_files: dict[str, bool]
 
     @classmethod
     def from_options(

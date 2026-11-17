@@ -180,6 +180,21 @@ impl SymbolTable {
 
     /// S2: the file, its imports and their `import public` chains, and the
     /// packages these files are in, every parent included.
+    /// File `file`, its imports, theirs (those the input has): whose
+    /// extensions its options see (spec 0429 S14).
+    pub fn closure(&self, file: &str) -> HashSet<String> {
+        let mut files = HashSet::new();
+        let mut todo = vec![file.to_string()];
+        while let Some(f) = todo.pop() {
+            if let Some((deps, _)) = self.imports.get(&f) {
+                if files.insert(f) {
+                    todo.extend(deps.iter().cloned());
+                }
+            }
+        }
+        files
+    }
+
     pub fn visible(&self, file: &str) -> Visible {
         let mut files = BTreeSet::from([file.to_string()]);
         let mut todo: Vec<String> = self

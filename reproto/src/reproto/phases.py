@@ -2058,13 +2058,17 @@ def _phase_emit_scoring_graphs(ctx: 'Context', out_dir: Path) -> None:
     import yaml
 
     from .mappings import canonize_dependency
-    for re_file in ctx.nodes.values():
-        if not isinstance(re_file, ReFileDescriptorProto):
-            continue
-        if not re_file.is_present():
-            continue
-        if not re_file.is_summoned:
-            continue
+    summoned = [n for n in ctx.nodes.values()
+                if isinstance(n, ReFileDescriptorProto) and n.is_present() and n.is_summoned]
+    # Every summoned file loaded first: a graph lists the extensions of all
+    # of them, whatever the order (spec 0430 S1, 0429 S14). A file the pool
+    # refuses fails again below, with W21.
+    for re_file in summoned:
+        try:
+            ctx.pool.FindFileByName(re_file.name)
+        except (KeyError, TypeError):
+            pass
+    for re_file in summoned:
         proto_name = re_file.name
         canonical_name = canonize_dependency(ctx, proto_name)
 

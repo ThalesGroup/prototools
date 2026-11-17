@@ -21,8 +21,6 @@ pub struct Ctx<'s, 'a> {
     pub shared: &'s Shared<'a>,
     /// The file node.
     pub file: usize,
-    /// Its index among the summoned files, in render order.
-    pub k: usize,
     /// The file's own syntax (`fdp_syntax`: `proto2` when unset).
     pub syntax: String,
     /// The syntax it is written in.
@@ -44,6 +42,9 @@ pub struct Ctx<'s, 'a> {
     /// The symbols protoc sees from the file, for the type names written
     /// (spec 0434 S2).
     pub visible: Visible,
+    /// The file and its imports, transitively: whose extensions its
+    /// options see (spec 0429 S14).
+    pub closure: std::collections::HashSet<String>,
 }
 
 /// A render's report: an immediate warning, a counted W6, or a file
@@ -102,8 +103,7 @@ impl Ctx<'_, '_> {
         super::options::Scope {
             variant: self.shared.variant,
             graph: self.shared.graph,
-            rank: &self.shared.loads.rank,
-            k: self.k,
+            closure: &self.closure,
             events: &self.events,
             file: self.file_name(),
             option_scope: option_scope.to_string(),
@@ -428,7 +428,7 @@ pub struct FileRender {
     pub failed: bool,
 }
 
-pub fn render(shared: &Shared<'_>, file: usize, k: usize) -> FileRender {
+pub fn render(shared: &Shared<'_>, file: usize) -> FileRender {
     let Some(f) = shared.file_def(file) else {
         return FileRender {
             output: None,
@@ -457,7 +457,6 @@ pub fn render(shared: &Shared<'_>, file: usize, k: usize) -> FileRender {
     let ctx = Ctx {
         shared,
         file,
-        k,
         edition: f.has_edition().then(|| f.edition()),
         syntax,
         target,
@@ -466,6 +465,7 @@ pub fn render(shared: &Shared<'_>, file: usize, k: usize) -> FileRender {
         sci: (shared.wants_descriptor() && shared.source_info).then(super::sci::Sci::default),
         events: std::cell::RefCell::new(Vec::new()),
         visible: shared.names.visible(&text(f.name())),
+        closure: shared.names.closure(&text(f.name())),
     };
     // `_set_target_syntax`: a file --force-proto2-for-editions patches.
     if !shared.force_proto2_output && shared.force_proto2_for_editions && ctx.syntax == "editions" {

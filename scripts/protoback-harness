@@ -222,11 +222,10 @@ def prepare(work: Path, googleapis: Path | None, otel: Path | None) -> None:
         assert protoc(f"-I{dup / 'src'}", f"--descriptor_set_out={dup / name}.pb",
                       f"{name}.proto") is not None
 
-    # The order files render in decides a custom option whose extension
-    # the file does not import (spec 0429 S4): ord_use.proto sets
-    # ord.tag, declared in ord_ext.proto, its import dropped. Rendered
-    # after ord_ext (1_ext.pb before 2_use.pb), the option is written;
-    # before it, dropped.
+    # The order files render in decides nothing (spec 0429 S14):
+    # ord_use.proto sets ord.tag, declared in ord_ext.proto, its import
+    # dropped. Rendered after ord_ext (1_ext.pb before 2_use.pb) or before
+    # it, the option is an orphan, with W22: outside the file's closure.
     order = corpus / "order"
     (order / "src").mkdir(parents=True)
     (order / "src" / "ord_ext.proto").write_text(

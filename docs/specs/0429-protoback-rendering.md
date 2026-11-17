@@ -219,6 +219,19 @@ reproto first.)
 - **S14. The render order** (S4): a custom option whose extension the
   file does not import renders or not depending on the files rendered
   before it.
+  *Fixed in both tools 2026-11-17:* a file's options see the extensions
+  declared in its own import closure (itself, its imports, theirs), and
+  the variant's descriptor.proto; nothing else, whatever rendered
+  before. protoc's rule is narrower (a file must import, directly or
+  publicly, the file declaring an option it uses, spec 0436), and the two
+  agree on any input protoc compiled; the closure is what reproto's pool
+  loads for the file. Any other extension set is an unknown field: an
+  orphan with W22. reproto: one options pool per set of
+  extension-declaring files in the closure, its classes swapped in as a
+  file renders (`option_messages.use_options_pool`); protoback: `Scope`
+  checks the closure (`SymbolTable::closure`). The harness's `order/`
+  cases now give the orphan both ways. Rendering a file no longer
+  depends on the others', which S4's parallel renders needed.
 - **S15. To confirm, each by a test first:** `ctx.syntax` and
   `ctx.out_sci` carried from one file into the next when a render fails;
   a file's, message's, service's or method's options dropped without a

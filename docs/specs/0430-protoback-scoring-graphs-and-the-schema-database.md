@@ -77,6 +77,11 @@ them googleapis', the target of spec 0424 S16.
   that a file's visible extensions are reproto's at the same point. A
   file the pool refuses gets no graph (W6, N1). This is the render-order
   dependence of spec 0429 S4, kept (N2).
+  *Superseded 2026-11-17, with spec 0429 S14:* a message's graph lists
+  every extension of it declared in a file the run loads, all lookups
+  done (the summoned files and their imports, then the WKT and database
+  files), whatever the order of the lookups. reproto loads them all
+  before collecting a graph; protoback reads `PoolLoads` whole.
 - **S2. Each field's scoring entry, from the input's definitions.**
   reproto reads the input pool's descriptors, not the rendered ones:
   - the kind: from the type; an enum closed by its resolved

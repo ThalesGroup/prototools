@@ -7,7 +7,7 @@
 //! options, those of the variant's descriptor.proto, parsed as reproto's
 //! options pool parses them, rendered as its `dump_option` renders them.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use prototext_upb::{Cardinality, DynamicMessage, Field, Kind, Pool};
 use prototext_upb::{MessageRef, Value};
@@ -60,14 +60,13 @@ pub struct PoolLoads {
     /// with the pool's reason (what `--debug` shows, as reproto's
     /// `debug_exception`).
     pub refused: BTreeMap<String, String>,
-    /// Each file loaded: the index, among the summoned files, of the first
-    /// one whose render loaded it. While the k-th renders, the pool holds
-    /// the files of rank k or less.
-    pub rank: HashMap<String, usize>,
+    /// The files loaded: whose extensions a scoring graph lists (spec 0430
+    /// S1).
+    pub loaded: HashSet<String>,
     /// The files loaded, in the order they were.
     pub order: Vec<String>,
     /// The pool itself, every file loaded: what the scoring graphs read
-    /// (spec 0430 S1), seeing a file's extensions by its rank.
+    /// (spec 0430 S1).
     pub pool: Pool,
 }
 
@@ -79,7 +78,6 @@ pub fn pool_loads(db: &Database, summoned: &[String]) -> PoolLoads {
         /// Why each file failed, as the pool said.
         reasons: HashMap<String, String>,
         loads: PoolLoads,
-        k: usize,
     }
     impl Loader<'_> {
         fn load(&mut self, name: &str) -> bool {
@@ -112,7 +110,7 @@ pub fn pool_loads(db: &Database, summoned: &[String]) -> PoolLoads {
             let ok = added.is_ok();
             self.done.insert(name.to_string(), ok);
             if ok {
-                self.loads.rank.insert(name.to_string(), self.k);
+                self.loads.loaded.insert(name.to_string());
                 self.loads.order.push(name.to_string());
             }
             ok
@@ -125,14 +123,12 @@ pub fn pool_loads(db: &Database, summoned: &[String]) -> PoolLoads {
         reasons: HashMap::new(),
         loads: PoolLoads {
             refused: BTreeMap::new(),
-            rank: HashMap::new(),
+            loaded: HashSet::new(),
             order: Vec::new(),
             pool: Pool::new(),
         },
-        k: 0,
     };
-    for (k, name) in summoned.iter().enumerate() {
-        loader.k = k;
+    for name in summoned {
         if !loader.load(name) {
             let reason = loader.reasons.get(name).cloned().unwrap_or_default();
             loader.loads.refused.insert(name.clone(), reason);
@@ -248,9 +244,8 @@ pub struct Unrenderable;
 pub struct Scope<'a> {
     pub variant: &'a Variant,
     pub graph: &'a crate::graph::Graph,
-    pub rank: &'a HashMap<String, usize>,
-    /// The rendering file's index among the summoned files.
-    pub k: usize,
+    /// The rendering file's import closure (spec 0429 S14).
+    pub closure: &'a std::collections::HashSet<String>,
     /// Where its warnings go, and its name (W22, spec 0438 S6).
     pub events: &'a std::cell::RefCell<Vec<super::file::RenderEvent>>,
     pub file: String,
@@ -262,14 +257,13 @@ pub struct Scope<'a> {
 }
 
 impl Scope<'_> {
-    /// An extension reproto's options pool knows while the k-th file
-    /// renders: one declared in the variant's descriptor.proto, or in a
-    /// file the renders of files 0 to k loaded. Any other is, to reproto,
-    /// an unknown field, which it does not render.
+    /// An extension the rendering file's options see: declared in the
+    /// variant's descriptor.proto or in the file's import closure (spec
+    /// 0429 S14). Any other is an unknown field, an orphan.
     fn visible(&self, ext: &Field) -> bool {
         let file = ext.parent_file();
         let name = file.name();
-        name == self.variant.descriptor_proto || self.rank.get(name).is_some_and(|&r| r <= self.k)
+        name == self.variant.descriptor_proto || self.closure.contains(name)
     }
 
     /// `canonize_opt_name` for a custom option, an orphan unless its

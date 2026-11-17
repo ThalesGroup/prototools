@@ -8,8 +8,9 @@
 //! The definitions are read from the upb pool `pool_loads` filled in
 //! reproto's order, so the kinds, labels, packing and closed enums are
 //! upb's, as Python's upb resolves them. The pool holds every file reproto's
-//! ever does; what reproto's held at the moment it collected a file is the
-//! files of rank `upto` or less, and only their extensions are seen.
+//! ever does; a message's extensions are those of the files loaded (spec
+//! 0430 S1, 0429 S14): every summoned file and its imports, whatever their
+//! order.
 
 pub mod html;
 pub mod pyyaml;
@@ -28,8 +29,6 @@ use crate::render::PoolLoads;
 pub struct Collect<'a> {
     pub graph: &'a Graph,
     pub loads: &'a PoolLoads,
-    /// The extensions seen: those of files of rank `upto` or less.
-    pub upto: usize,
     /// `--emit-extension-ranges`.
     pub extension_ranges: bool,
     /// The names written (`rename`): the identity for the YAML, the
@@ -114,12 +113,11 @@ fn message(
     let message_set = m.is_message_set_wire_format();
     let mut known: Vec<Field> = m.fields().collect();
     if !message_set {
-        known.extend(m.all_extensions().into_iter().filter(|e| {
-            c.loads
-                .rank
-                .get(e.parent_file().name())
-                .is_some_and(|&r| r <= c.upto)
-        }));
+        known.extend(
+            m.all_extensions()
+                .into_iter()
+                .filter(|e| c.loads.loaded.contains(e.parent_file().name())),
+        );
     }
     known.sort_by_key(Field::number);
     let mut fields = Vec::new();

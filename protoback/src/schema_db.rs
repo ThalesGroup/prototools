@@ -67,15 +67,14 @@ pub fn build(
         console::Label::OnTerminal,
         extras.len() as u64,
     );
-    let n = render::summoned(shared.graph).len();
     let mut graph = shared.graph.clone();
-    for (e, &x) in extras.iter().enumerate() {
+    for &x in extras {
         promote(&mut graph, x);
         let promoted = Shared {
             graph: &graph,
             ..shared.clone()
         };
-        let (bytes, reports) = render::descriptor(&promoted, x, n + e);
+        let (bytes, reports) = render::descriptor(&promoted, x);
         render::replay(events, reports);
         wkt.advance(1);
         if let Some(bytes) = bytes {
@@ -119,7 +118,6 @@ pub fn build(
             let c = crate::scoring::Collect {
                 graph: shared.graph,
                 loads: shared.loads,
-                upto: usize::MAX,
                 extension_ranges: shared.emit_extension_ranges,
                 rename: &rename,
             };

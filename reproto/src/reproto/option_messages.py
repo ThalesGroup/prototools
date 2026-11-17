@@ -77,22 +77,10 @@ class _MapsAsRepeatedDatabase(DescriptorDatabase):
 def option_extensions(
     ctx: Context, options_desc: Descriptor,
 ) -> list[_ExtensionFieldDescriptor[Message, Any]]:
-    """The extensions of an options type, from that type's own pool.
-
-    `ctx.options_pool` loads files lazily, and Python's
-    `DescriptorDatabase` cannot find a file by extension number, so its
-    `FindAllExtensions` knows only the files loaded so far. The files that
-    declare the type's extensions are loaded first, as `ctx.pool`, where
-    rendering has loaded every file, lists them.
-    """
-    pool = options_desc.file.pool
-    if pool is ctx.options_pool:
-        for ext in ctx.pool.FindAllExtensions(
-                ctx.pool.FindMessageTypeByName(options_desc.full_name)):
-            if ext.file.name not in ctx.options_pool_files:
-                pool.FindFileByName(ext.file.name)
-                ctx.options_pool_files.add(ext.file.name)
-    return list(pool.FindAllExtensions(options_desc))
+    """The extensions of an options type its pool holds: in an options
+    pool, those of the rendering file's import closure (`use_options_pool`;
+    a pool never looks a file up by extension number)."""
+    return list(options_desc.file.pool.FindAllExtensions(options_desc))
 
 
 def parse_options(
@@ -101,17 +89,77 @@ def parse_options(
     cls: type[Message],
     data: bytes,
 ) -> Message:
-    """Parse serialized options of type `options_desc`, with its class.
-
-    The files declaring the type's extensions are loaded first
-    (`option_extensions`), so that the custom options parse as the
-    extensions they are, as they would in `ctx.pool`, rather than as
-    unknown fields.
-    """
-    option_extensions(ctx, options_desc)
+    """Parse serialized options of type `options_desc`, with its class: the
+    custom options of the rendering file's closure parse as the extensions
+    they are, any other as an unknown field (spec 0429 S14)."""
     msg = cls()
     msg.ParseFromString(data)
     return msg
+
+
+# The context's attributes an options pool sets (`_set_option_classes`).
+_OPTION_ATTRS = (
+    'options_pool',
+    'eno_desc', 'eno_cls', 'evo_desc', 'evo_cls', 'fdo_desc', 'fdo_cls',
+    'fio_desc', 'fio_cls', 'mso_desc', 'mso_cls', 'meo_desc', 'meo_cls',
+    'ooo_desc', 'ooo_cls', 'svo_desc', 'svo_cls', 'ero_desc', 'ero_cls',
+    'fts_desc', 'fts_cls',
+)
+
+
+def _closure(ctx: Context, name: str) -> frozenset[str]:
+    """File `name`, its imports, theirs: what the pool loads for it; a
+    file the input lacks left out."""
+    cached = ctx.import_closures.get(name)
+    if cached is not None:
+        return cached
+    seen: set[str] = set()
+    todo = [name]
+    while todo:
+        n = todo.pop()
+        if n in seen:
+            continue
+        try:
+            fdp = ctx.pool_db.FindFileByName(n)
+        except KeyError:
+            continue
+        seen.add(n)
+        todo.extend(fdp.dependency)
+    closure = frozenset(seen)
+    ctx.import_closures[name] = closure
+    return closure
+
+
+def _declares_extensions(ctx: Context, name: str) -> bool:
+    cached = ctx.extension_files.get(name)
+    if cached is None:
+        def nested(messages: Any) -> bool:
+            return any(m.extension or nested(m.nested_type) for m in messages)
+        fdp = ctx.pool_db.FindFileByName(name)
+        cached = bool(fdp.extension) or nested(fdp.message_type)
+        ctx.extension_files[name] = cached
+    return cached
+
+
+def use_options_pool(ctx: Context, file_name: str) -> None:
+    """The options classes file `file_name` renders with (spec 0429 S14):
+    from a pool holding the variant's descriptor.proto and the files of its
+    import closure that declare extensions, whatever rendered before; one
+    pool per such set of files."""
+    key = frozenset(f for f in _closure(ctx, file_name) if _declares_extensions(ctx, f))
+    attrs = ctx.options_pools.get(key)
+    if attrs is None:
+        pool = DescriptorPool(ctx.options_db)
+        _set_option_classes(ctx, pool)
+        for name in sorted(key):
+            try:
+                pool.FindFileByName(name)
+            except (KeyError, TypeError):
+                pass   # a file the pool refuses: its extensions unknown
+        attrs = {a: getattr(ctx, a) for a in _OPTION_ATTRS}
+        ctx.options_pools[key] = attrs
+    for a, v in attrs.items():
+        setattr(ctx, a, v)
 
 
 def create_option_message_classes(ctx: Context) -> None:
@@ -120,9 +168,17 @@ def create_option_message_classes(ctx: Context) -> None:
     # Phase 2 has refused a run whose input lacks it.
     pkg = ctx.pool_db.FindFileByName(ctx.variant_descriptor_proto).package
     ctx.options_package = pkg
-    ctx.options_pool = DescriptorPool(_MapsAsRepeatedDatabase(ctx.pool_db))
-    ctx.options_pool_files = set()
-    pool = ctx.options_pool
+    ctx.options_db = _MapsAsRepeatedDatabase(ctx.pool_db)
+    ctx.options_pools = {}
+    ctx.import_closures = {}
+    ctx.extension_files = {}
+    _set_option_classes(ctx, DescriptorPool(ctx.options_db))
+
+
+def _set_option_classes(ctx: Context, pool: DescriptorPool) -> None:
+    """The options types' descriptors and classes, from `pool`."""
+    pkg = ctx.options_package
+    ctx.options_pool = pool
     try:
         # EnumOptions message class
         ctx.eno_desc = pool.FindMessageTypeByName(pkg + ".EnumOptions")

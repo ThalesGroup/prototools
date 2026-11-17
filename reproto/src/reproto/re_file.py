@@ -306,6 +306,8 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
 
         ctx.current_file = self.name
         self._set_target_syntax(ctx)
+        from .option_messages import use_options_pool
+        use_options_pool(ctx, self.name)
 
         out = Block()
         inputs = Block()

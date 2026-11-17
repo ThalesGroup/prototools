@@ -324,11 +324,8 @@ pub fn run(shared: &Shared<'_>, output: &Output, events: &mut Events) -> Result<
         let dry_run = output.dry_run || output.out_repo.is_none();
         let collected = write_files(shared, output, dry_run, events)?;
         if let (true, Some(out_repo)) = (shared.emit_scoring_yaml, &output.out_repo) {
-            // reproto's pool holds every summoned file once phase 7 has
-            // rendered; when it renders nothing, each lookup below loads
-            // its file (spec 0430 S1).
-            let rendered = !dry_run || shared.wants_descriptor();
-            write_scoring_yaml(shared, out_repo, rendered, events)?;
+            // Every summoned file loaded, rendered or not (spec 0430 S1).
+            write_scoring_yaml(shared, out_repo, events)?;
         }
         if let Some(db) = &output.schema_db {
             crate::schema_db::build(shared, output, collected, db, events)?;
@@ -373,20 +370,15 @@ fn on_pool<T: Send>(jobs: usize, f: impl FnOnce() -> T + Send) -> T {
     }
 }
 
-/// File `i`'s descriptor, rendered as the `k`-th file (a WKT dependency
-/// of the schema database); `None` when its render fails.
-pub fn descriptor(
-    shared: &Shared<'_>,
-    i: usize,
-    k: usize,
-) -> (Option<Vec<u8>>, Vec<file::RenderEvent>) {
-    let r = file::render(shared, i, k);
+/// File `i`'s descriptor (a WKT dependency of the schema database);
+/// `None` when its render fails.
+pub fn descriptor(shared: &Shared<'_>, i: usize) -> (Option<Vec<u8>>, Vec<file::RenderEvent>) {
+    let r = file::render(shared, i);
     (r.output.and_then(|o| o.1), r.events)
 }
 
 /// One summoned file, as phase 7 takes it.
 struct Planned {
-    k: usize,
     i: usize,
     name: String,
     /// Where it is written: none in a dry run, or for the variant's
@@ -417,8 +409,7 @@ fn write_files(
     let graph = shared.graph;
     let plan: Vec<Planned> = summoned(graph)
         .into_iter()
-        .enumerate()
-        .map(|(k, i)| {
+        .map(|i| {
             let name = graph.nodes[i]
                 .fqdn
                 .strip_prefix("file:")
@@ -436,7 +427,7 @@ fn write_files(
                 ),
                 _ => None,
             };
-            Planned { k, i, name, path }
+            Planned { i, name, path }
         })
         .collect();
     let rendered = render_all(shared, &plan);
@@ -493,8 +484,8 @@ type Rendered = (
 fn render_all(shared: &Shared<'_>, plan: &[Planned]) -> Vec<Rendered> {
     use rayon::prelude::*;
     plan.par_iter()
-        .map(|&Planned { k, i, .. }| -> Rendered {
-            let r = file::render(shared, i, k);
+        .map(|&Planned { i, .. }| -> Rendered {
+            let r = file::render(shared, i);
             let output = r.output.map(|(block, descriptor)| {
                 (
                     block.flush(shared.redact_comments, shared.redact_orphans),
@@ -514,18 +505,15 @@ fn render_all(shared: &Shared<'_>, plan: &[Planned]) -> Vec<Rendered> {
 fn write_scoring_yaml(
     shared: &Shared<'_>,
     out_repo: &Path,
-    rendered: bool,
     events: &mut Events,
 ) -> std::io::Result<()> {
     use rayon::prelude::*;
     let graph = shared.graph;
     let files = summoned(graph);
-    let n = files.len();
     let identity = |name: &str| name.to_string();
     let docs: Vec<(String, PathBuf, Option<String>)> = files
         .par_iter()
-        .enumerate()
-        .map(|(j, &i)| {
+        .map(|&i| {
             let name = graph.nodes[i]
                 .fqdn
                 .strip_prefix("file:")
@@ -533,7 +521,6 @@ fn write_scoring_yaml(
             let c = crate::scoring::Collect {
                 graph,
                 loads: shared.loads,
-                upto: if rendered { n - 1 } else { j },
                 extension_ranges: shared.emit_extension_ranges,
                 rename: &identity,
             };
