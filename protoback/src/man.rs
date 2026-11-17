@@ -43,11 +43,33 @@ fn write(dir: &Path, cmd: clap::Command, name: &'static str, extra: &str) -> Res
         .manual("User Commands");
     let mut buf = Vec::new();
     man.render(&mut buf).map_err(|e| e.to_string())?;
+    if name == "protoback" {
+        buf.extend_from_slice(warnings_section().as_bytes());
+    }
     buf.extend_from_slice(extra.as_bytes());
     let dest = dir.join(format!("{name}.1"));
     std::fs::write(&dest, &buf).map_err(|e| format!("{}: {e}", dest.display()))?;
     eprintln!("wrote {}", dest.display());
     Ok(())
+}
+
+/// The warning codes, which `--fail-on` takes (spec 0438).
+fn warnings_section() -> String {
+    let mut out = String::from(
+        ".SH WARNINGS\nEach warning line reads \\fBWarning [\\fICODE\\fB]:\\fR \\fImessage\\fR; \
+         \\fB\\-\\-fail\\-on\\fR \\fICODE\\fR makes a code fail the run (exit status 3).\n",
+    );
+    for (code, meaning) in crate::events::CODES {
+        out.push_str(&format!(
+            ".TP\n\\fB{code}\\fR\n{}\n",
+            meaning.replace('-', "\\-")
+        ));
+    }
+    out.push_str(
+        ".TP\n\\fBA1\\fR to \\fBD2\\fR\nthe anomalies a reconstructed \\fI.proto\\fR \
+         records in its comments\n",
+    );
+    out
 }
 
 /// `protoback.1`'s sections clap cannot derive.

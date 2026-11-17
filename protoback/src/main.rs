@@ -174,6 +174,32 @@ fn main() -> ExitCode {
     }
     let cli = Cli::parse();
     console::init(cli.quiet);
+    // --fail-on's codes, each one of spec 0438's (S4: else a usage error).
+    if let Some(code) = cli.fail_on.iter().find(|c| !events::is_code(c)) {
+        return usage(&format!(
+            "Invalid value for '--fail-on': unknown warning code '{code}'"
+        ));
+    }
+    // First: every warning from here on is counted (spec 0438 S4); the
+    // deprecated options, in reproto's order.
+    let mut events = Events::new(cli.detailed_warnings);
+    let deprecated: [(bool, &str); 3] = [
+        (
+            cli.output_root_deprecated.is_some(),
+            "--output-root is deprecated; use --proto-out",
+        ),
+        (
+            cli.build_schema_db_deprecated.is_some(),
+            "--build-schema-db is deprecated; use --schema-db-out",
+        ),
+        (
+            cli.emit_scoring_html_deprecated.is_some(),
+            "--emit-scoring-html is deprecated; use --scoring-html-out",
+        ),
+    ];
+    for (_, message) in deprecated.iter().filter(|(set, _)| *set) {
+        events.warn("W18", message);
+    }
     let dump_path = cli.dump_graph.clone();
     let out_repo = match proto_out(&cli) {
         Ok(o) => o,
@@ -207,6 +233,15 @@ fn main() -> ExitCode {
         Ok(v) => v,
         Err(e) => return usage(&e),
     };
+    for key in &variant.unread_keys {
+        events.warn(
+            "W17",
+            &format!(
+                "variant '{}': key '{key}' is not read; it has no effect",
+                variant.name
+            ),
+        );
+    }
     // The plugin options: one at most (spec 0369 S3, spec 0431).
     if cli.fdp_plugin.is_some() && cli.phase2_plugin_deprecated.is_some() {
         return usage(
@@ -219,11 +254,21 @@ fn main() -> ExitCode {
     {
         return usage("--fdp-plugin-cmd and --fdp-plugin are mutually exclusive");
     }
-    if cli.phase2_plugin_deprecated.is_some() && !cli.quiet {
-        eprintln!(
-            "warning: --phase2-plugin is deprecated; use --fdp-plugin \
-             (protoback calls phase2_plugin(ctx, fdp) with ctx None)"
+    if cli.phase2_plugin_deprecated.is_some() {
+        events.warn(
+            "W18",
+            "--phase2-plugin is deprecated; use --fdp-plugin \
+             (protoback calls phase2_plugin(ctx, fdp) with ctx None)",
         );
+    }
+    if cli.emit_scoring_graphs {
+        events.warn(
+            "W18",
+            "--emit-scoring-graphs is deprecated; use --emit-scoring-yaml",
+        );
+    }
+    if cli.emit_pyvis.is_some() {
+        events.warn("W18", "--emit-pyvis is deprecated; use --scoring-html-out");
     }
     // reproto's `--hide` check: `desc:` patterns only, normalised as
     // seeds and prunes are. show.py then matches them against bare FQDNs
@@ -312,7 +357,7 @@ fn main() -> ExitCode {
         quiet: cli.quiet,
         debug: cli.debug,
         debug_fqdn: cli.debug_fqdn,
-        events: Events::new(cli.detailed_warnings),
+        events,
         blobs,
         db: db::Database::default(),
         graph: graph::Graph::default(),
@@ -321,6 +366,8 @@ fn main() -> ExitCode {
         schema_db_extra_nodes: Vec::new(),
         plugin,
     };
+    // The graph dump's record starts with the run, as reproto's recorder.
+    run.events.record();
     let mut topo = topology::Topology::default();
     // reproto's collector is flushed in a `finally`: before the CLI prints
     // an error the phases raised, after one they printed themselves.
@@ -334,7 +381,7 @@ fn main() -> ExitCode {
     // topo.files: return None`), before descriptor.proto is looked for.
     if topo.files.is_empty() {
         run.events.flush();
-        return ExitCode::SUCCESS;
+        return finish(&run.events, &cli.fail_on);
     }
     if let Err(fatal) = phase2::run(&mut run, &mut topo) {
         if let Some(detail) = fatal.detail() {
@@ -369,9 +416,11 @@ fn main() -> ExitCode {
     // --dump-resolved-features: the file's resolved features, then the run
     // stops (reproto's `_dump_resolved_features_yaml`, spec 0433 G4).
     if let Some(name) = &cli.dump_resolved_features {
-        features_dump::print(&run, name);
+        if let Err(warning) = features_dump::print(&run, name) {
+            run.events.warn("W14", &warning);
+        }
         run.events.flush();
-        return ExitCode::SUCCESS;
+        return finish(&run.events, &cli.fail_on);
     }
     phase4::run(&mut run, &mut topo);
     phase5::run(&mut run, &topo);
@@ -384,13 +433,13 @@ fn main() -> ExitCode {
             eprintln!("Error: {}: {e}", dump_path.display());
             return ExitCode::from(1);
         }
-        return ExitCode::SUCCESS;
+        return finish(&run.events, &cli.fail_on);
     }
 
     // Spec 0437: two files rewritten onto one output path.
     let keep = cli.keep_descriptor_path;
     match render::resolve_rewrite_collisions(&mut run.graph, &run.variant, keep) {
-        Ok(warnings) => warnings.iter().for_each(|w| console::warning(w)),
+        Ok(warnings) => warnings.iter().for_each(|w| run.events.warn("W13", w)),
         Err(errors) => {
             run.events.flush();
             eprintln!("Error: {}", errors.join("\n"));
@@ -495,7 +544,19 @@ fn main() -> ExitCode {
         }
     }
     run.events.flush();
-    ExitCode::SUCCESS
+    finish(&run.events, &cli.fail_on)
+}
+
+/// A run done, its output written: exit status 3 when a `--fail-on` code
+/// occurred, after saying which (spec 0438 S4), `-q` or not.
+fn finish(events: &Events, fail_on: &[String]) -> ExitCode {
+    match events.failed_on(fail_on) {
+        Some(failed) => {
+            eprintln!("Error: --fail-on: {failed}");
+            ExitCode::from(3)
+        }
+        None => ExitCode::SUCCESS,
+    }
 }
 
 /// reproto's output root: `-O` (or its deprecated spelling), or, with

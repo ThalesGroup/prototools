@@ -83,9 +83,13 @@ pub fn split_descriptor_set(text: &str) -> PyResult<Vec<String>> {
         .map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
-/// What became of one text: its bytes, its warnings, and why it does not
-/// parse.
-type TextRead<'py> = (Option<Bound<'py, PyBytes>>, Vec<String>, Option<String>);
+/// What became of one text: its bytes, its warnings (each with its code,
+/// spec 0438), and why it does not parse.
+type TextRead<'py> = (
+    Option<Bound<'py, PyBytes>>,
+    Vec<(String, String)>,
+    Option<String>,
+);
 
 /// Read an input's descriptors in import order (spec 0427).
 ///
@@ -108,9 +112,10 @@ type TextRead<'py> = (Option<Bound<'py, PyBytes>>, Vec<String>, Option<String>);
 ///
 /// Returns
 /// -------
-/// tuple[list[tuple[bytes | None, list[str], str | None]], list[tuple[str, str]]]
-///     For each text, in order: its bytes, its warnings (spec 0426 S4,
-///     spec 0427 S6), and ``None``; or ``None``, ``[]`` and why it does not
+/// tuple[list[tuple[bytes | None, list[tuple[str, str]], str | None]], list[tuple[str, str]]]
+///     For each text, in order: its bytes, its warnings as ``(code,
+///     message)`` (spec 0426 S4, spec 0427 S6, codes T1 to T4 by spec
+///     0438), and ``None``; or ``None``, ``[]`` and why it does not
 ///     parse (``"LINE:COLUMN: message"``). Then ``(file, reason)`` for each
 ///     file the pool could not hold, even mended.
 #[gen_stub_pyfunction]
@@ -131,7 +136,10 @@ pub fn read_descriptors<'py>(
                 bytes, warnings, ..
             } => (
                 Some(PyBytes::new(py, bytes)),
-                warnings.iter().map(|w| w.to_string()).collect(),
+                warnings
+                    .iter()
+                    .map(|w| (w.code().to_string(), w.to_string()))
+                    .collect(),
                 None,
             ),
             Read::Error(e) => (None, Vec::new(), Some(e.to_string())),

@@ -338,6 +338,13 @@ pub struct Cli {
     )]
     pub detailed_warnings: bool,
     #[arg(
+        long = "fail-on",
+        value_name = "CODE",
+        help = "Make the warnings of CODE (shown as \"Warning [CODE]:\") fail the run: it completes, then exits with status 3. Repeatable.",
+        help_heading = "Diagnostics"
+    )]
+    pub fail_on: Vec<String>,
+    #[arg(
         short = 'q',
         long = "quiet",
         help = "Suppress progress messages and warnings. Errors are always printed.",

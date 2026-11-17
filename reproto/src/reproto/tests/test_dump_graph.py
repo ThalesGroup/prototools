@@ -309,5 +309,5 @@ def test_path_seeds_are_tried_in_sorted_order(tmp_path: Path) -> None:
         text = dump.read_text(encoding="utf-8")
         warnings.append([line for line in text.split("[warnings]\n", 1)[1].splitlines()
                          if "Seed not found" in line])
-    expected = [f"warning | Seed not found: file:{n}.proto" for n in sorted(names)]
+    expected = [f"warning | Warning [W12]: Seed not found: file:{n}.proto" for n in sorted(names)]
     assert warnings == [expected] * 3

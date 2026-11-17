@@ -11,7 +11,6 @@ use prototext_upb::descriptor_access::{
     DescriptorProto, EnumDescriptorProto, FeatureSet, FieldDescriptorProto, FileDescriptorProto,
 };
 
-use crate::console;
 use crate::features::{resolve, value_name, Feature};
 use crate::run::Run;
 use crate::scoring::pyyaml::{dump_map, Y};
@@ -24,9 +23,9 @@ fn s(v: &str) -> Y {
     Y::Str(v.to_string())
 }
 
-/// Print the dump of file `name`, or reproto's warning when it is not one
-/// of the files loaded.
-pub fn print(run: &Run, name: &str) {
+/// Print the dump of file `name`; `Err`, reproto's warning (W14), when it
+/// is not one of the files loaded.
+pub fn print(run: &Run, name: &str) -> Result<(), String> {
     let graph = &run.graph;
     let file = graph
         .find(&format!("file:{name}"))
@@ -34,10 +33,9 @@ pub fn print(run: &Run, name: &str) {
         .and_then(|i| graph.nodes[i].def.as_ref())
         .and_then(|d| run.db.files.get(d.file));
     let Some(fdp) = file else {
-        console::warning(&format!(
+        return Err(format!(
             "--dump-resolved-features: file '{name}' not found in loaded set"
         ));
-        return;
     };
     let f = FileDescriptorProto(fdp.as_ref());
     let dump = Dump {
@@ -45,6 +43,7 @@ pub fn print(run: &Run, name: &str) {
         edition: f.edition(),
     };
     print!("{}", dump_map(&dump.file(&f)));
+    Ok(())
 }
 
 struct Dump<'r> {

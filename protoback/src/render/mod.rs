@@ -342,12 +342,17 @@ pub fn run(shared: &Shared<'_>, output: &Output, events: &mut Events) -> Result<
 pub fn replay(events: &mut Events, reports: Vec<file::RenderEvent>) {
     for r in reports {
         match r {
-            file::RenderEvent::Warning(m) => crate::console::warning(&m),
+            file::RenderEvent::Warning(code, m) => events.warn(code, &m),
+            file::RenderEvent::Squash(code, m) => events.squash(code, &m, None, None),
+            // A file the pool refuses is W19; anything else not rendered, W6.
             file::RenderEvent::W6 {
                 file,
                 field,
                 reason,
-            } => events.w6(&file, &field, &reason),
+            } => {
+                let code = if reason == POOL_REFUSED { "W19" } else { "W6" };
+                events.w6(code, &file, &field, &reason)
+            }
             file::RenderEvent::Prost(name) => events.w_prost(&name),
         }
     }
@@ -445,7 +450,7 @@ fn write_files(
         phase.advance(1);
         if failed {
             // reproto's phase 7 catches the failure: W6, internal error.
-            events.w6(&p.name, "", "internal error");
+            events.w6("W6", &p.name, "", "internal error");
         }
         let Some((text, descriptor)) = r else {
             continue;
@@ -543,7 +548,7 @@ fn write_scoring_yaml(
     for (name, path, doc) in docs {
         let Some(doc) = doc else {
             // A file the pool refused: W6, its fixed reason (spec 0429 S16).
-            events.w6(&name, "scoring graph", POOL_REFUSED);
+            events.w6("W21", &name, "scoring graph", POOL_REFUSED);
             continue;
         };
         if let Some(parent) = path.parent() {

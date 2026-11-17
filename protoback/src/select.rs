@@ -40,7 +40,9 @@ fn suggestion(graph: &Graph, pattern: &str) -> Option<String> {
 /// A pattern that names no node: `what not found`, and, unless it is a
 /// glob, the closest FQDN, if one is close.
 pub fn not_found(events: &mut Events, graph: &Graph, what: &str, pattern: &str) {
-    events.warning(&format!("{what} not found: {pattern}"));
+    // W12 for a seed, W11 for a prune pattern.
+    let code = if what == "Seed" { "W12" } else { "W11" };
+    events.warn(code, &format!("{what} not found: {pattern}"));
     if pattern.contains(['*', '?']) {
         return;
     }

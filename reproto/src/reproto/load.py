@@ -334,10 +334,8 @@ def parse_qfile(
     try:
         fragments = split_fdps(file.contents, file.rel_path.suffix)
     except ValueError:
-        logger.warning(
-            "Cannot parse '%s'", file.rel_path,
-            extra={"cli_warn": True},
-        )
+        from .lib.warnings import warn
+        warn("W15", f"Cannot parse '{file.rel_path}'")
         return []
 
     result: list[QualFile] = []
@@ -362,10 +360,8 @@ def parse_qfile(
                     fragment = _pt_codec.parse_descriptor_text(fragment)
                     fdp.ParseFromString(fragment)
             except ValueError as e:
-                logger.warning(
-                    "Cannot parse '%s' (file '%s'): %s", file.rel_path, name, e,
-                    extra={"cli_warn": True},
-                )
+                from .lib.warnings import warn
+                warn("W15", f"Cannot parse '{file.rel_path}' (file '{name}'): {e}")
                 continue
         else:
             fdp.ParseFromString(fragment)

@@ -119,10 +119,10 @@ pub fn run(r: &mut Run, topo: &mut Topology) -> Result<(), DescriptorProtoError>
     }
     phase.done();
     for i in waiting {
-        r.events.warning(&format!(
-            "Circular dependency detected: {}",
-            topo.files[i].name
-        ));
+        r.events.warn(
+            "W10",
+            &format!("Circular dependency detected: {}", topo.files[i].name),
+        );
         topo.files[i].is_pruned = true;
     }
     r.edition_defaults =
@@ -151,7 +151,7 @@ fn merge(r: &mut Run, topo: &mut Topology, i: usize) {
         .expect("the vendored descriptor.proto declares it");
     let Ok(mut fdp) = DynamicMessage::decode(&def, &qf.contents) else {
         r.events
-            .warning(&format!("Skipping unparseable file: {name}"));
+            .warn("W9", &format!("Skipping unparseable file: {name}"));
         topo.files[i].is_pruned = true;
         return;
     };
@@ -198,10 +198,13 @@ fn strip_self_dependency(r: &mut Run, fdp: &mut DynamicMessage) {
             break;
         };
         let _ = FileDescriptorProtoMut(fdp.as_mut()).remove_dependency(at);
-        r.events.warning(&format!(
-            "Stripped self-dependency from '{}' (malformed descriptor)",
-            text(&name)
-        ));
+        r.events.warn(
+            "W16",
+            &format!(
+                "Stripped self-dependency from '{}' (malformed descriptor)",
+                text(&name)
+            ),
+        );
     }
 }
 
@@ -222,9 +225,7 @@ fn prune_if_duplicate(r: &mut Run, topo: &mut Topology, i: usize, fdp: &DynamicM
         *by_file.entry(f.clone()).or_default() += 1;
     }
     let name = topo.files[i].name.clone();
-    let mut parts = vec![format!(
-        "Warning: file:{name} pruned — duplicate symbols with:"
-    )];
+    let mut parts = vec![format!("file:{name} pruned — duplicate symbols with:")];
     for (f, count) in by_file {
         let noun = if count == 1 { "symbol" } else { "symbols" };
         parts.push(format!("    file:{f} ({count} {noun})"));
@@ -300,11 +301,9 @@ fn strip_unresolvable_dependencies(
             file.stripped_dependencies.push(dep.clone());
         }
         if r.pruned_file_names.contains(&dep) {
-            if !r.quiet {
-                r.events.w3(&format!(
-                    "Warning: stripped pruned dependency \"{dep}\" from {file_name}"
-                ));
-            }
+            r.events.w3(&format!(
+                "stripped pruned dependency \"{dep}\" from {file_name}"
+            ));
         } else {
             r.events.w1(&dep);
         }

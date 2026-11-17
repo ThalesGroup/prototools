@@ -111,7 +111,7 @@ def parse_descriptor_text(text: builtins.str, is_set: builtins.bool = False) -> 
         ``"LINE:COLUMN: message"`` when ``text`` does not parse.
     """
 
-def read_descriptors(binary: typing.Sequence[bytes], text: typing.Sequence[builtins.str], descriptor_file: builtins.str) -> tuple[builtins.list[tuple[typing.Optional[bytes], builtins.list[builtins.str], typing.Optional[builtins.str]]], builtins.list[tuple[builtins.str, builtins.str]]]:
+def read_descriptors(binary: typing.Sequence[bytes], text: typing.Sequence[builtins.str], descriptor_file: builtins.str) -> tuple[builtins.list[tuple[typing.Optional[bytes], builtins.list[tuple[builtins.str, builtins.str]], typing.Optional[builtins.str]]], builtins.list[tuple[builtins.str, builtins.str]]]:
     r"""
     Read an input's descriptors in import order (spec 0427).
     
@@ -134,9 +134,10 @@ def read_descriptors(binary: typing.Sequence[bytes], text: typing.Sequence[built
     
     Returns
     -------
-    tuple[list[tuple[bytes | None, list[str], str | None]], list[tuple[str, str]]]
-        For each text, in order: its bytes, its warnings (spec 0426 S4,
-        spec 0427 S6), and ``None``; or ``None``, ``[]`` and why it does not
+    tuple[list[tuple[bytes | None, list[tuple[str, str]], str | None]], list[tuple[str, str]]]
+        For each text, in order: its bytes, its warnings as ``(code,
+        message)`` (spec 0426 S4, spec 0427 S6, codes T1 to T4 by spec
+        0438), and ``None``; or ``None``, ``[]`` and why it does not
         parse (``"LINE:COLUMN: message"``). Then ``(file, reason)`` for each
         file the pool could not hold, even mended.
     """

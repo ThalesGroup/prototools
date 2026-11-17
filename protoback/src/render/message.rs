@@ -324,7 +324,7 @@ pub fn field(ctx: &Ctx<'_, '_>, fd: usize, depth: usize, is_oneof: bool) -> Bloc
         }
         MapKind::Malformed(entry, found) => {
             let found: Vec<String> = found.iter().map(i32::to_string).collect();
-            ctx.warn(format!(
+            ctx.warn("C1", format!(
                 "field '{name}': non-canonical map entry '{entry}' (found fields: [{}]); rendered as repeated message \u{2014} wire semantics differ",
                 found.join(", ")
             ));
@@ -360,7 +360,7 @@ pub fn field(ctx: &Ctx<'_, '_>, fd: usize, depth: usize, is_oneof: bool) -> Bloc
         Some(s) => s.clone(),
         None => {
             if ctx.proto3() && !is_oneof && f.label() == LABEL_REQUIRED {
-                ctx.warn(format!(
+                ctx.warn("C3", format!(
                     "field '{name}': 'required' label is not valid in proto3; rendering as implicit singular"
                 ));
                 out.push(anomaly(
@@ -373,7 +373,7 @@ pub fn field(ctx: &Ctx<'_, '_>, fd: usize, depth: usize, is_oneof: bool) -> Bloc
             let mut s = field_label(ctx, &f, is_oneof, presence).to_string();
             if !is_group_field || !allow_groups {
                 if f.r#type() == TYPE_GROUP {
-                    ctx.warn(format!(
+                    ctx.warn("C2", format!(
                         "field '{name}': groups are not valid in proto3; rendering as plain message field"
                     ));
                     out.push(anomaly(
@@ -611,10 +611,13 @@ fn field_options(
     if render_default {
         opt_block.extend(default_value(f, depth + 1)?);
     } else if ctx.proto3() && f.has_default_value() {
-        ctx.warn(format!(
-            "field '{}': explicit default values are not valid in proto3; omitting",
-            text(f.name())
-        ));
+        ctx.warn(
+            "C4",
+            format!(
+                "field '{}': explicit default values are not valid in proto3; omitting",
+                text(f.name())
+            ),
+        );
         opt_block.push(anomaly(
             "WARNING",
             "proto3",
@@ -737,10 +740,13 @@ pub fn message(
         && m.options()
             .is_some_and(|o| o.has_message_set_wire_format() && o.message_set_wire_format())
     {
-        ctx.warn(format!(
-            "message '{}': 'message_set_wire_format' is not valid in proto3; omitting",
-            text(m.name())
-        ));
+        ctx.warn(
+            "B3",
+            format!(
+                "message '{}': 'message_set_wire_format' is not valid in proto3; omitting",
+                text(m.name())
+            ),
+        );
         out.push(anomaly(
             "WARNING",
             "proto3",
@@ -956,10 +962,13 @@ fn reserved(ctx: &Ctx<'_, '_>, m: &DescriptorProto<'_>, depth: usize) -> Block {
     for r in m.extension_range() {
         let (start, end) = (r.start(), r.end());
         if !ctx.proto2_or_editions() {
-            ctx.warn(format!(
+            ctx.warn(
+                "B2",
+                format!(
                 "message '{}': extension range [{start}, {end}) is not valid in proto3; omitting",
                 text(m.name())
-            ));
+            ),
+            );
             out.push(anomaly(
                 "OMITTED",
                 "proto3",

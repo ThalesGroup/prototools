@@ -91,7 +91,7 @@ def main(
     # Handle deprecated --descriptor alias.
     if descriptor_deprecated is not None:
         if not quiet:
-            _sys.stderr.write('warning: --descriptor is deprecated; use --descriptor-set\n')
+            _sys.stderr.write('Warning [W18]: --descriptor is deprecated; use --descriptor-set\n')
         if descriptor_path is None:
             descriptor_path = descriptor_deprecated
 
@@ -104,7 +104,7 @@ def main(
             if old_val is not None:
                 if not quiet:
                     _sys.stderr.write(
-                        'warning: PROTOTEXT_DEFAULT_DESCRIPTOR is deprecated; '
+                        'Warning [W18]: PROTOTEXT_DEFAULT_DESCRIPTOR is deprecated; '
                         'use PROTOTEXT_DESCRIPTOR_SET\n'
                     )
                 env_val = old_val

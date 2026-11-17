@@ -31,7 +31,7 @@ from google.protobuf.descriptor_pb2 import (
 from google.protobuf.message import DecodeError
 from rapidfuzz import fuzz
 
-from .lib.warnings import cli_attention, cli_error, cli_info, cli_warning
+from .lib.warnings import cli_attention, cli_error, cli_info, cli_warning, get_collector, warn
 from reproto import Context, Fqdn, Node, Options
 
 from .context import PluginError, apply_fdp_plugin
@@ -324,7 +324,7 @@ def _dump_resolved_features_yaml(ctx: Context, target_file: str) -> None:
     file_fqdn = Fqdn(f'{FILE}:{target_file}')
     re_fdp = ctx.find_file(file_fqdn)
     if re_fdp is None:
-        cli_warning(f"--dump-resolved-features: file '{target_file}' not found in loaded set")
+        warn("W14", f"--dump-resolved-features: file '{target_file}' not found in loaded set")
         return
 
     fdp = re_fdp.this
@@ -646,11 +646,13 @@ def _read_text_files(ctx: Context, topo: Topology) -> None:
         qf = f.qfile
         qf.text = None
         if parsed is None:
-            cli_warning("Cannot parse '%s': %s", qf.name, error)
+            warn("W15", f"Cannot parse '{qf.name}': {error}")
             f.forget()
             continue
-        for warning in warnings:
-            cli_warning("%s: %s", qf.name, warning)
+        # T1-T4 (spec 0438 S3): summarized by message, the files listed
+        # under --detailed-warnings.
+        for code, warning in warnings:
+            get_collector().squash(code, warning, detailed=f"{qf.name}: {warning}")
         qf.contents = parsed
         fdp = FileDescriptorProto()
         fdp.ParseFromString(parsed)
@@ -668,9 +670,7 @@ def _strip_self_dependency(fdp: FileDescriptorProto) -> None:
     self_deps = [d for d in fdp.dependency if d == fdp.name]
     for _ in self_deps:
         fdp.dependency.remove(fdp.name)
-        cli_warning(
-            "Stripped self-dependency from '%s' (malformed descriptor)", fdp.name
-        )
+        warn("W16", f"Stripped self-dependency from '{fdp.name}' (malformed descriptor)")
 
 
 def _strip_unresolvable_dependencies(
@@ -734,10 +734,7 @@ def _strip_unresolvable_dependencies(
         else:
             topo_file.stripped_dependencies.append(dep)
         if dep in ctx.pruned_file_names:
-            if not ctx.quiet:
-                collector.w3(
-                    f"Warning: stripped pruned dependency \"{dep}\" from {fdp.name}"
-                )
+            collector.w3(f"stripped pruned dependency \"{dep}\" from {fdp.name}")
         else:
             collector.w1(dep)
 
@@ -854,7 +851,7 @@ def _prune_if_duplicate(
     by_file: dict[str, int] = {}
     for fname in conflicts.values():
         by_file[fname] = by_file.get(fname, 0) + 1
-    parts = [f"Warning: file:{n.name} pruned — duplicate symbols with:"]
+    parts = [f"file:{n.name} pruned — duplicate symbols with:"]
     for fname, count in sorted(by_file.items()):
         noun = "symbol" if count == 1 else "symbols"
         parts.append(f"    file:{fname} ({count} {noun})")
@@ -1001,9 +998,9 @@ def _phase2_build_pool(
                         # NOTE: TypeError can occur when attempting to add a descriptor
                         # that conflicts with an existing one in the pool (e.g., duplicate
                         # symbol names or incompatible descriptor types).
-                        cli_warning("Could not add descriptor from '%s' to pool: %s", n.name, e)
+                        warn("W8", f"Could not add descriptor from '{n.name}' to pool: {e}")
                 except message.DecodeError:
-                    cli_warning(f"Skipping unparseable file: {n.name}")
+                    warn("W9", f"Skipping unparseable file: {n.name}")
                     n.is_pruned = True
                 advance()
             # Prepare for next loop iteration
@@ -1015,7 +1012,7 @@ def _phase2_build_pool(
         # The remaining files have a circular dependency; mark them pruned so
         # that phase 3 skips them (they were never added to the pool).
         for n in sorted(non_leaves, key=topo_order.__getitem__):
-            cli_warning(f"Circular dependency detected: {n.name}")
+            warn("W10", f"Circular dependency detected: {n.name}")
             n.is_pruned = True
 
     # --- Build edition-default table from the variant's descriptor.pb --------
@@ -1103,7 +1100,7 @@ def _phase4_pruning(ctx: Context, topo: Topology, prunings: list[Fqdn]) -> None:
                 else:
                     already_pruned = False
                 if not already_pruned:
-                    cli_warning(f"Pruning target not found: {pruning_pattern}")
+                    warn("W11", f"Pruning target not found: {pruning_pattern}")
                     if '*' not in pruning_pattern and '?' not in pruning_pattern:
                         suggestion = _fuzzy_suggest(pruning_pattern, ctx)
                         if suggestion is not None:
@@ -1169,7 +1166,7 @@ def _phase5_reachability(
                 matched_nodes = _find_matching_nodes(seed_pattern, ctx)
 
                 if not matched_nodes:
-                    cli_warning(f"Seed not found: {seed_pattern}")
+                    warn("W12", f"Seed not found: {seed_pattern}")
                     if '*' not in seed_pattern and '?' not in seed_pattern:
                         suggestion = _fuzzy_suggest(seed_pattern, ctx)
                         if suggestion is not None:
@@ -1457,9 +1454,10 @@ def _resolve_rewrite_collisions(ctx: Context) -> None:
             continue
         for f in files:
             if f.name != descriptor:
-                cli_warning(
+                warn(
+                    "W13",
                     f"'{f.name}' and '{descriptor}' are both written as '{path}': "
-                    f"'{descriptor}', the variant's descriptor.proto, is kept"
+                    f"'{descriptor}', the variant's descriptor.proto, is kept",
                 )
                 _unsummon(f)
     if errors:
@@ -1637,7 +1635,7 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
                 fd = ctx.pool.FindFileByName(proto_name)
             except (KeyError, TypeError) as e:
                 from .lib.warnings import get_collector
-                get_collector().w6(proto_name, "schema db", str(e))
+                get_collector().w6(proto_name, "schema db", str(e), code="W20")
                 advance()
                 continue
 
@@ -1659,7 +1657,8 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
 
     if not scoring_graphs:
         from .lib.warnings import get_collector
-        get_collector().w6('--build-schema-db', 'schema db', 'no scoring graphs generated; skipping')
+        get_collector().w6(
+            '--build-schema-db', 'schema db', 'no scoring graphs generated; skipping', code="W20")
         return
 
     # ── 3. Build the baked graph via the prototext_graph_lib PyO3 extension
@@ -2073,11 +2072,11 @@ def _phase_emit_scoring_graphs(ctx: 'Context', out_dir: Path) -> None:
             fd = ctx.pool.FindFileByName(proto_name)
         except KeyError:
             from .lib.warnings import get_collector
-            get_collector().w6(proto_name, "scoring graph", "not in descriptor pool")
+            get_collector().w6(proto_name, "scoring graph", "not in descriptor pool", code="W21")
             continue
         except TypeError as e:
             from .lib.warnings import get_collector
-            get_collector().w6(proto_name, "scoring graph", str(e))
+            get_collector().w6(proto_name, "scoring graph", str(e), code="W21")
             continue
 
         group_fqdns = _collect_group_fqdns(fd)

@@ -102,7 +102,7 @@ pub fn main(args: Vec<String>) -> ExitCode {
     let mut path = cli.descriptor_set.clone();
     if let Some(old) = &cli.descriptor_deprecated {
         if !cli.quiet {
-            eprintln!("warning: --descriptor is deprecated; use --descriptor-set");
+            eprintln!("Warning [W18]: --descriptor is deprecated; use --descriptor-set");
         }
         if path.is_none() {
             path = Some(old.clone());
@@ -135,7 +135,7 @@ pub fn main(args: Vec<String>) -> ExitCode {
                 if let Ok(old) = std::env::var("PROTOTEXT_DEFAULT_DESCRIPTOR") {
                     if !cli.quiet {
                         eprintln!(
-                            "warning: PROTOTEXT_DEFAULT_DESCRIPTOR is deprecated; \
+                            "Warning [W18]: PROTOTEXT_DEFAULT_DESCRIPTOR is deprecated; \
                              use PROTOTEXT_DESCRIPTOR_SET"
                         );
                     }

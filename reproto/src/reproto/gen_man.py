@@ -151,6 +151,18 @@ def _render(cmd: click.Command) -> str:
         r'resolve cross\-file imports.'
     )
 
+    # Spec 0438: the warning codes, which --fail-on takes.
+    from .lib.warnings import CODES
+    buf.append(r'.SH WARNINGS')
+    buf.append(r'Each warning line reads \fBWarning [\fICODE\fB]:\fR \fImessage\fR; '
+               r'\fB\-\-fail\-on\fR \fICODE\fR makes a code fail the run (exit status 3).')
+    for code, meaning in CODES.items():
+        buf.append(r'.TP')
+        buf.append(rf'\fB{code}\fR')
+        buf.append(meaning.replace('-', r'\-'))
+    buf.append(r'.TP')
+    buf.append(r'\fBA1\fR to \fBD2\fR')
+    buf.append(r'the anomalies a reconstructed \fI.proto\fR records in its comments')
     buf.append(r'.SH EXAMPLES')
     buf.append(r'.SS Reconstruct a descriptor set')
     buf.append(r'.PP')

@@ -131,13 +131,14 @@ pub fn build(
         match g {
             Some(g) => kept.push(g),
             // A file the pool refused: W6, its fixed reason (spec 0429 S16).
-            None => events.w6(origin, "schema db", render::POOL_REFUSED),
+            None => events.w6("W20", origin, "schema db", render::POOL_REFUSED),
         }
     }
     let graphs = kept;
     collecting.done();
     if graphs.is_empty() {
         events.w6(
+            "W20",
             "--build-schema-db",
             "schema db",
             "no scoring graphs generated; skipping",

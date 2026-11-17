@@ -50,7 +50,9 @@ pub struct Ctx<'s, 'a> {
 /// `--force-proto2-for-editions` patched.
 #[derive(Debug, Clone)]
 pub enum RenderEvent {
-    Warning(String),
+    Warning(&'static str, String),
+    /// A squashed warning: its code and message (W22).
+    Squash(&'static str, String),
     W6 {
         file: String,
         field: String,
@@ -69,9 +71,12 @@ impl Ctx<'_, '_> {
             .to_string()
     }
 
-    /// An anomaly's stderr line (`anomalies.report`, `cli_warning`).
-    pub fn warn(&self, message: String) {
-        self.events.borrow_mut().push(RenderEvent::Warning(message));
+    /// An anomaly's stderr line (`anomalies.report`, `warn`), under its
+    /// code (A1 to D2).
+    pub fn warn(&self, code: &'static str, message: String) {
+        self.events
+            .borrow_mut()
+            .push(RenderEvent::Warning(code, message));
     }
 
     /// A3 or C5: a W6, counted.
@@ -90,6 +95,8 @@ impl Ctx<'_, '_> {
             graph: self.shared.graph,
             rank: &self.shared.loads.rank,
             k: self.k,
+            events: &self.events,
+            file: self.file_name(),
         }
     }
 
@@ -329,13 +336,13 @@ pub fn extend_blocks(
         if !allow_extend_block(ctx, &extendee) {
             let owner_node = &shared.graph.nodes[owner];
             if owner_node.kind == Kind::File {
-                ctx.warn(format!(
+                ctx.warn("A5", format!(
                     "'{}': top-level extend block for '{extendee}' is not valid in proto3; omitting",
                     ctx.file_name()
                 ));
             } else {
                 let msg = owner_node.fqdn.rsplit('.').next().unwrap_or_default();
-                ctx.warn(format!(
+                ctx.warn("B1", format!(
                     "message '{msg}': nested extend block for '{extendee}' is not valid in proto3; omitting"
                 ));
             }
@@ -492,9 +499,10 @@ fn render_body(
         // --force-proto2-for-editions; A2's is never printed.
         let comment = if ctx.syntax == "editions" {
             if !shared.force_proto2_for_editions {
-                ctx.warn(format!(
-                    "'{name}': editions file rendered as proto2 (--force-proto2-output)"
-                ));
+                ctx.warn(
+                    "A1",
+                    format!("'{name}': editions file rendered as proto2 (--force-proto2-output)"),
+                );
             }
             anomaly(
                 "WARNING",
@@ -561,7 +569,7 @@ fn render_body(
             if ctx.proto2_or_editions() {
                 "import weak"
             } else {
-                ctx.warn(format!(
+                ctx.warn("A4", format!(
                     "'{}': 'import weak' is not valid in proto3; rendering as plain import: \"{d}\"",
                     ctx.file_name()
                 ));

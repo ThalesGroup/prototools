@@ -100,7 +100,22 @@ pub struct Variant {
     pub orphans: std::collections::BTreeMap<String, Vec<String>>,
     pub root: Root,
     pub stem: String,
+    /// The variant's name (its `name`, else the file's stem), and the keys
+    /// of its file no tool reads, in the file's order (spec 0438 S5).
+    pub name: String,
+    pub unread_keys: Vec<String>,
 }
+
+/// The keys a variant file may have, every one read (`variant._KEYS`).
+const KEYS: &[&str] = &[
+    "name",
+    "description",
+    "descriptor_proto",
+    "well_known",
+    "import_rewrites",
+    "namespace_rewrites",
+    "orphans",
+];
 
 /// A rewrite rule: names starting with `prefix` are rewritten (`to`, the
 /// prefix replaced) or kept (`to` none); the rules after it are tried too
@@ -238,6 +253,17 @@ impl Variant {
             import_rules: rules(&get("import_rewrites")),
             namespace_rules: rules(&get("namespace_rewrites")),
             orphans: orphans(&get("orphans")),
+            name: get("name")
+                .as_str()
+                .map_or_else(|| stem.clone(), str::to_string),
+            unread_keys: raw
+                .as_mapping()
+                .into_iter()
+                .flat_map(|m| m.keys())
+                .filter_map(|k| k.as_str())
+                .filter(|k| !KEYS.contains(k))
+                .map(str::to_string)
+                .collect(),
             root,
             stem,
         })

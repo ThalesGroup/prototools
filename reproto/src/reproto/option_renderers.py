@@ -35,7 +35,10 @@ class ReOptions:
         ctx: Context,
         composite: bool,
         lev: int,
+        exclude: set[str] | None = None,
     ) -> list[Block]:
+        """The built-in options set on the message, but those in `exclude`
+        (e.g. ``{"packed"}``)."""
         assert isinstance(lev, int)
         blocks: list[Block] = list()
 
@@ -49,6 +52,8 @@ class ReOptions:
         for fd_desc, val in self.this.ListFields():
             # Skip extension fields - they're handled separately via FindAllExtensions()
             if fd_desc.is_extension:
+                continue
+            if exclude and fd_desc.name in exclude:
                 continue
 
             opt = ReFieldDescriptor(fd_desc)
@@ -138,3 +143,60 @@ class ReExtensions:
                     block.set_type(ORPHAN if is_orp else CODE)
                     blocks.append(block)
         return blocks, is_orphan
+
+
+# === Fields the options type does not declare (spec 0438 S6) ============
+
+def _unknown_value(wire_type: int, data: object) -> str:
+    """An unknown field's value, by its wire type alone: a varint or a
+    fixed-width number in decimal, bytes quoted with octal escapes, a group
+    as its fields, `{ <N>: V ... }`, recursively."""
+    if wire_type == 2:
+        assert isinstance(data, bytes)
+        out = []
+        for b in data:
+            c = chr(b)
+            if c in '"\\':
+                out.append('\\' + c)
+            elif 0x20 <= b < 0x7f:
+                out.append(c)
+            else:
+                out.append(f'\\{b:03o}')
+        return '"' + ''.join(out) + '"'
+    if wire_type == 3:
+        from google.protobuf.unknown_fields import UnknownFieldSet
+        assert isinstance(data, UnknownFieldSet)
+        inner = [f'<{f.field_number}>: {_unknown_value(f.wire_type, f.data)}'
+                 for f in data if f.wire_type != 4]
+        return '{ ' + ' '.join(inner) + ' }' if inner else '{ }'
+    return str(data)
+
+
+def unknown_option_blocks(
+    ctx: Context,
+    options: Message,
+    composite: bool,
+    lev: int,
+) -> list[Block]:
+    """Each field of `options` its type does not declare, and no loaded
+    file declares as an extension of it, as an orphan: ``option <N> =
+    V;`` (``<N> = V,`` in a composite), with W22, which is said even when
+    --redact-orphans removes the line."""
+    from google.protobuf.unknown_fields import UnknownFieldSet
+    from .lib.warnings import get_collector
+    from .text import BlockLine
+    blocks: list[Block] = []
+    type_name = options.DESCRIPTOR.full_name
+    for field in UnknownFieldSet(options):
+        if field.wire_type == 4:   # an end-group marker
+            continue
+        text = f'<{field.field_number}> = {_unknown_value(field.wire_type, field.data)}'
+        text = text + ',' if composite else f'option {text};'
+        blocks.append(Block([BlockLine(text, lev, type=ORPHAN)]))
+        get_collector().squash(
+            "W22",
+            f"'{ctx.current_file}': option field {field.field_number} of {type_name} "
+            "is declared nowhere: written as an orphan",
+        )
+    return blocks
+

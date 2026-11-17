@@ -173,8 +173,12 @@ fn read_text_files(r: &mut Run, topo: &mut Topology) {
             Read::Parsed {
                 bytes, warnings, ..
             } => {
+                // T1-T4 (spec 0438 S3): summarized by message, the files
+                // listed under --detailed-warnings.
                 for w in warnings {
-                    r.events.warning(&format!("{name}: {w}"));
+                    let message = w.to_string();
+                    let detailed = format!("{name}: {message}");
+                    r.events.squash(w.code(), &message, None, Some(&detailed));
                 }
                 // The plugin sees the file read again; its imports are the
                 // answer's, its contents the unpatched read (spec 0431 S1).
@@ -187,7 +191,7 @@ fn read_text_files(r: &mut Run, topo: &mut Topology) {
                 qf.contents = bytes;
             }
             Read::Error(e) => {
-                r.events.warning(&format!("Cannot parse '{name}': {e}"));
+                r.events.warn("W15", &format!("Cannot parse '{name}': {e}"));
                 topo.files[i].qfile = None;
             }
             Read::Binary => unreachable!("a text input"),

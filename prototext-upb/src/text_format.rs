@@ -75,6 +75,18 @@ pub enum Warning {
     UnknownField { message_type: String, name: String },
 }
 
+impl Warning {
+    /// Its code (spec 0438): `T1` to `T4`.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Warning::Undeclared { .. } => "T1",
+            Warning::StringAsMessage { .. } => "T2",
+            Warning::UnknownExtension { .. } => "T3",
+            Warning::UnknownField { .. } => "T4",
+        }
+    }
+}
+
 impl fmt::Display for Warning {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

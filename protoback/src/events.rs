@@ -2,27 +2,105 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! reproto's warning collector (`lib/warnings.py`; spec 0433 S2), and the
-//! record the graph dump keeps of phases 1 to 6 (spec 0428 S6).
+//! reproto's warning collector (`lib/warnings.py`; spec 0433 S2, spec
+//! 0438), and the record the graph dump keeps of phases 1 to 6 (spec 0428
+//! S6).
 //!
-//! W3 and W7 print at once. W1 (and W5, the same cause), W4, W6 and the
-//! files `--force-proto2-for-editions` patches are counted, then flushed
-//! at the end as a sorted summary; with `--detailed-warnings`, each prints
-//! at once instead. The dump records each call as made, and each message.
+//! Every warning has a code (spec 0438 S1), is counted under it, for
+//! `--fail-on`, and prints as `Warning [CODE]: message`. W1 (summarized
+//! with W5, the same cause), W4, W6, W19 to W22 and the text reader's T1
+//! to T4 are counted by message, then flushed at the end as a sorted
+//! summary, as are the files `--force-proto2-for-editions` patches (W2);
+//! with `--detailed-warnings`, each prints at once instead. The dump
+//! records each call as made, and each message.
 
 use std::collections::{BTreeMap, HashSet};
 
 use crate::console;
 
+/// Spec 0438 S1, in its order: what each code means.
+pub const CODES: &[(&str, &str)] = &[
+    (
+        "W1",
+        "a file not found on the -I path; skipped (summarized with W5)",
+    ),
+    (
+        "W2",
+        "an editions file written as proto2 (--force-proto2-for-editions)",
+    ),
+    ("W3", "a duplicate symbol pruned"),
+    ("W4", "an unresolvable type"),
+    ("W5", "a missing dependency"),
+    ("W6", "an option value or a file that cannot be rendered"),
+    (
+        "W7",
+        "a file shadowed by one of the same name under another -I root",
+    ),
+    ("W8", "a descriptor the pool refuses while loading"),
+    ("W9", "an unparseable file skipped while loading"),
+    ("W10", "a circular dependency"),
+    ("W11", "a prune pattern matching nothing"),
+    ("W12", "a seed pattern matching nothing"),
+    (
+        "W13",
+        "two files rewritten onto one path, the variant's descriptor.proto kept",
+    ),
+    ("W14", "--dump-resolved-features: a file not loaded"),
+    ("W15", "an input that cannot be parsed"),
+    ("W16", "a self-dependency stripped"),
+    ("W17", "a variant key no tool reads"),
+    ("W18", "a deprecated option or variable"),
+    (
+        "W19",
+        "a file the descriptor pool refuses: its options not rendered",
+    ),
+    ("W20", "a schema-database entry that cannot be built"),
+    ("W21", "a scoring-graph entry that cannot be built"),
+    (
+        "W22",
+        "an option field the options type does not declare: an orphan",
+    ),
+    (
+        "T1",
+        "text: a field by number declared nowhere, read as length-delimited",
+    ),
+    ("T2", "text: a string protoc printed as a message, rebuilt"),
+    ("T3", "text: an [extension] declared nowhere, skipped"),
+    ("T4", "text: a field name declared nowhere, skipped"),
+];
+
+/// The `.proto` anomalies' codes (`anomalies.ANOMALIES`), which
+/// `--fail-on` takes too.
+pub const ANOMALIES: &[&str] = &[
+    "A1", "A2", "A3", "A4", "A5", "B1", "B2", "B3", "C1", "C2", "C3", "C4", "C5", "D1", "D2",
+];
+
+/// Whether `code` is one `--fail-on` takes.
+pub fn is_code(code: &str) -> bool {
+    CODES.iter().any(|(c, _)| *c == code) || ANOMALIES.contains(&code)
+}
+
+/// The squashed codes, in the order their summary lines are printed: the
+/// most actionable first (spec 0041), then by code.
+const SQUASHED_ORDER: &[&str] = &[
+    "W5", "W4", "W6", "W19", "W20", "W21", "W22", "T1", "T2", "T3", "T4",
+];
+
 #[derive(Debug, Default)]
 pub struct Events {
     /// The graph dump's record (spec 0428 S6).
     pub lines: Vec<String>,
+    /// Whether the record is kept: from the start of the run on, as
+    /// reproto's recorder, created there; the command line's own warnings
+    /// (deprecated options, the variant's keys) are printed and counted,
+    /// not recorded.
+    recording: bool,
     /// `--detailed-warnings`.
     detailed: bool,
-    w4: BTreeMap<String, usize>,
-    w5: BTreeMap<String, usize>,
-    w6: BTreeMap<String, usize>,
+    /// Every warning, by code.
+    counts: BTreeMap<String, usize>,
+    /// Squashed mode: summary code → message → occurrences.
+    squashed: BTreeMap<&'static str, BTreeMap<String, usize>>,
     prost: Vec<String>,
     /// Files reproto pruned itself: no W5 for them.
     pruned_files: HashSet<String>,
@@ -47,9 +125,20 @@ impl Events {
         }
     }
 
+    /// The record starts: the run begins (`dump_graph.Recorder()`).
+    pub fn record(&mut self) {
+        self.recording = true;
+    }
+
+    fn keep(&mut self, line: String) {
+        if self.recording {
+            self.lines.push(line);
+        }
+    }
+
     /// The call itself: its code and arguments.
     fn call(&mut self, parts: &[&str]) {
-        self.lines.push(parts.join(" | "));
+        self.keep(parts.join(" | "));
     }
 
     pub fn register_pruned_file(&mut self, name: &str) {
@@ -60,120 +149,177 @@ impl Events {
         self.fallback_files.insert(name.to_string());
     }
 
-    /// A file not found on the `-I` path: W5's counter, unless pruned or a
-    /// fallback's.
+    fn count(&mut self, code: &str) {
+        debug_assert!(is_code(code), "{code}");
+        *self.counts.entry(code.to_string()).or_default() += 1;
+    }
+
+    /// One warning line, recorded and printed (`_line`).
+    fn line(&mut self, code: &str, message: &str) {
+        let text = format!("Warning [{code}]: {message}");
+        self.keep(format!("warning | {text}"));
+        console::warning(&text);
+    }
+
+    /// A warning (`warn`): counted under `code`, printed now.
+    pub fn warn(&mut self, code: &str, message: &str) {
+        self.count(code);
+        self.line(code, message);
+    }
+
+    /// A warning of a squashed code (`squash`): counted under `code`;
+    /// printed now in detailed mode (as `detailed`, else `message`), else
+    /// summarized by `message` under `summary` (`code` when `None`).
+    pub fn squash(
+        &mut self,
+        code: &str,
+        message: &str,
+        summary: Option<&str>,
+        detailed: Option<&str>,
+    ) {
+        self.count(code);
+        if self.detailed {
+            self.line(code, detailed.unwrap_or(message));
+            return;
+        }
+        let summary = summary.unwrap_or(code);
+        let Some(&key) = SQUASHED_ORDER.iter().find(|c| **c == summary) else {
+            unreachable!("{summary} is not squashed")
+        };
+        *self
+            .squashed
+            .entry(key)
+            .or_default()
+            .entry(message.to_string())
+            .or_default() += 1;
+    }
+
+    /// A file not found on the `-I` path: summarized with W5, unless pruned
+    /// or a fallback's.
     pub fn w1(&mut self, missing_file: &str) {
         self.call(&["w1", missing_file]);
         if self.pruned_files.contains(missing_file) || self.fallback_files.contains(missing_file) {
             return;
         }
         if self.detailed {
-            self.warning(&format!(
-                "Warning: missing file '{missing_file}' (not found on -I path; skipped)"
-            ));
+            self.warn(
+                "W1",
+                &format!("missing file '{missing_file}' (not found on -I path; skipped)"),
+            );
         } else {
-            *self.w5.entry(missing_file.to_string()).or_default() += 1;
+            self.squash(
+                "W1",
+                &format!("missing dependency file:{missing_file}"),
+                Some("W5"),
+                None,
+            );
         }
     }
 
     /// A file pruned for its duplicate symbols, or a pruned import
-    /// stripped: the message, printed as given.
+    /// stripped (W3).
     pub fn w3(&mut self, message: &str) {
         self.call(&["w3", message]);
-        self.warning(message);
+        self.warn("W3", message);
     }
 
-    /// A type no file defines.
+    /// A type no file defines (W4).
     pub fn w4(&mut self, type_name: &str) {
         self.call(&["w4", type_name]);
-        if self.detailed {
-            self.warning(&format!("Warning: unresolvable type {type_name}"));
-        } else {
-            *self.w4.entry(type_name.to_string()).or_default() += 1;
-        }
+        self.squash("W4", &format!("unresolvable type {type_name}"), None, None);
     }
 
-    /// A render that failed (A3, C5): the file, the field, the reason.
-    pub fn w6(&mut self, proto_file: &str, field_ctx: &str, error: &str) {
-        let key = format!("'{proto_file}' {field_ctx}: {error}");
-        if self.detailed {
-            console::warning(&format!("Warning: {key}"));
-        } else {
-            *self.w6.entry(key).or_default() += 1;
-        }
+    /// Something not rendered or built: W6, W19, W20 or W21 (`w6`).
+    pub fn w6(&mut self, code: &str, proto_file: &str, field_ctx: &str, error: &str) {
+        self.squash(
+            code,
+            &format!("'{proto_file}' {field_ctx}: {error}"),
+            None,
+            None,
+        );
     }
 
-    /// Two files of one name, under two roots: the first kept.
+    /// Two files of one name, under two roots: the first kept (W7).
     pub fn w7(&mut self, fdp_name: &str, shadowed_path: &str, kept_path: &str) {
         self.call(&["w7", fdp_name, shadowed_path, kept_path]);
-        self.warning(&format!(
-            "Warning: {shadowed_path}: definition of file:{fdp_name} shadowed by {kept_path}"
-        ));
+        self.warn(
+            "W7",
+            &format!("{shadowed_path}: definition of file:{fdp_name} shadowed by {kept_path}"),
+        );
     }
 
-    /// An editions file patched to proto2 (`--force-proto2-for-editions`).
+    /// An editions file written as proto2 (`--force-proto2-for-editions`,
+    /// W2).
     pub fn w_prost(&mut self, file_name: &str) {
+        self.count("W2");
         if self.detailed {
-            console::warning(&format!(
-                "'{file_name}' is an editions file; patching to proto2 for prost-reflect \
-                 compatibility (--force-proto2-for-editions)."
-            ));
+            self.line(
+                "W2",
+                &format!(
+                    "'{file_name}' is an editions file; written as proto2 \
+                     (--force-proto2-for-editions)"
+                ),
+            );
         } else {
             self.prost.push(file_name.to_string());
         }
     }
 
-    pub fn warning(&mut self, message: &str) {
-        self.lines.push(format!("warning | {message}"));
-        console::warning(message);
-    }
-
     pub fn info(&mut self, message: &str) {
-        self.lines.push(format!("info | {message}"));
+        self.keep(format!("info | {message}"));
         console::info(message);
     }
 
     pub fn attention(&mut self, message: &str) {
-        self.lines.push(format!("attention | {message}"));
+        self.keep(format!("attention | {message}"));
         console::attention(message);
     }
 
-    /// The summary, at the end of the run, whatever ended it: W5 (W1's
-    /// misses merged), W4, W6, each sorted, then the patched files' count
-    /// and the hint to `--detailed-warnings`.
+    /// The summary, at the end of the run, whatever ended it: the squashed
+    /// codes, each sorted, then the patched files' count and the hint to
+    /// `--detailed-warnings`.
     pub fn flush(&mut self) {
         if self.detailed {
             return;
         }
         let mut repeated = false;
-        for (dep, &count) in &self.w5 {
-            console::warning(&format!(
-                "Warning: missing dependency file:{dep} {}",
-                occurrences(count)
-            ));
-            repeated |= count > 1;
-        }
-        for (type_name, &count) in &self.w4 {
-            console::warning(&format!(
-                "Warning: unresolvable type {type_name} {}",
-                occurrences(count)
-            ));
-            repeated |= count > 1;
-        }
-        for (key, &count) in &self.w6 {
-            console::warning(&format!("Warning: {key} {}", occurrences(count)));
-            repeated |= count > 1;
+        let squashed = std::mem::take(&mut self.squashed);
+        for code in SQUASHED_ORDER {
+            for (message, &count) in squashed.get(code).into_iter().flatten() {
+                self.line(code, &format!("{message} {}", occurrences(count)));
+                repeated |= count > 1;
+            }
         }
         if !self.prost.is_empty() {
             let n = self.prost.len();
             let noun = if n == 1 { "file" } else { "files" };
-            console::warning(&format!(
-                "{n} editions {noun} patched to proto2 for prost-reflect compatibility \
-                 (--force-proto2-for-editions); run with --detailed-warnings to list them."
-            ));
+            self.line(
+                "W2",
+                &format!(
+                    "{n} editions {noun} written as proto2 (--force-proto2-for-editions); \
+                     run with --detailed-warnings to list them."
+                ),
+            );
         }
         if repeated {
             console::info("Run with --detailed-warnings to see all warning occurrences.");
         }
+    }
+
+    /// The `--fail-on` codes that occurred, `T4 (3 occurrences), W5 (1
+    /// occurrence)` in the codes' order (spec 0438 S4), or `None`.
+    pub fn failed_on(&self, codes: &[String]) -> Option<String> {
+        let order = CODES
+            .iter()
+            .map(|(c, _)| *c)
+            .chain(ANOMALIES.iter().copied());
+        let hit: Vec<String> = order
+            .filter(|c| codes.iter().any(|x| x == c))
+            .filter_map(|c| {
+                let n = *self.counts.get(c)?;
+                Some(format!("{c} {}", occurrences(n)))
+            })
+            .collect();
+        (!hit.is_empty()).then(|| hit.join(", "))
     }
 }

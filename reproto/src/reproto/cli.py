@@ -32,6 +32,16 @@ logger.setLevel(logging.INFO)
 # Set to True once --quiet is parsed; gates CLIWarningHandler.emit().
 _quiet: bool = False
 
+
+def _check_codes(codes: tuple[str, ...]) -> tuple[str, ...]:
+    """--fail-on's codes: each one of spec 0438's (S4: else a usage error)."""
+    from .anomalies import ANOMALIES
+    from .lib.warnings import CODES
+    for code in codes:
+        if code not in CODES and code not in ANOMALIES:
+            raise click.BadParameter(f"unknown warning code '{code}'")
+    return codes
+
 class CLIErrorHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         if getattr(record, 'cli_err', False):
@@ -234,6 +244,7 @@ _SECTIONS: dict[str, str] = {
     '--fdp-plugin':          'Advanced',
     '--keep-duplicates':     'Advanced',
     '--detailed-warnings':   'Diagnostics',
+    '--fail-on':             'Diagnostics',
     '--quiet':               'Diagnostics',
     '--debug-fqdn':          'Diagnostics',
 }
@@ -677,6 +688,16 @@ class _SectionedCommand(click.Command):
         '(default: squash repeated warnings and show a count summary at the end).'
     ),
 )
+@click.option(
+    '--fail-on',
+    multiple=True,
+    metavar='CODE',
+    callback=lambda _ctx, _param, codes: _check_codes(codes),
+    help=(
+        'Make the warnings of CODE (shown as "Warning [CODE]:") fail the run: '
+        'it completes, then exits with status 3. Repeatable.'
+    ),
+)
 
 @click.option(
     '--quiet', '-q',
@@ -734,6 +755,7 @@ def main(
         go_root: str,
         keep_duplicates: bool,
         detailed_warnings: bool,
+        fail_on: tuple[str, ...],
         quiet: bool,
         emit_scoring_html: Path | None,
         emit_scoring_html_deprecated: Path | None,
@@ -754,24 +776,24 @@ def main(
     _quiet = quiet
 
     import sys as _sys
+    from .lib.warnings import configure_collector, get_collector, warn
+    # First: every warning from here on is counted (spec 0438 S4).
+    configure_collector(detailed=detailed_warnings)
 
     # Merge deprecated alias values into canonical params.
     pb_path = pb_path + pb_path_deprecated
 
     # Handle deprecated option aliases (emit warnings, merge into canonical params).
     if output_root_deprecated is not None:
-        if not quiet:
-            _sys.stderr.write('warning: --output-root is deprecated; use --proto-out\n')
+        warn('W18', '--output-root is deprecated; use --proto-out')
         if proto_out is None:
             proto_out = output_root_deprecated
     if build_schema_db_deprecated is not None:
-        if not quiet:
-            _sys.stderr.write('warning: --build-schema-db is deprecated; use --schema-db-out\n')
+        warn('W18', '--build-schema-db is deprecated; use --schema-db-out')
         if build_schema_db is None:
             build_schema_db = build_schema_db_deprecated
     if emit_scoring_html_deprecated is not None:
-        if not quiet:
-            _sys.stderr.write('warning: --emit-scoring-html is deprecated; use --scoring-html-out\n')
+        warn('W18', '--emit-scoring-html is deprecated; use --scoring-html-out')
         if emit_scoring_html is None:
             emit_scoring_html = emit_scoring_html_deprecated
 
@@ -786,8 +808,7 @@ def main(
         )
     fdp_plugin_legacy = phase2_plugin_deprecated is not None
     if fdp_plugin_legacy:
-        if not quiet:
-            _sys.stderr.write('warning: --phase2-plugin is deprecated; use --fdp-plugin\n')
+        warn('W18', '--phase2-plugin is deprecated; use --fdp-plugin')
         fdp_plugin = phase2_plugin_deprecated
 
     from reproto import Fqdn
@@ -802,14 +823,12 @@ def main(
         reproto,
     )
     from . import variant as variant_mod
-    from .lib.warnings import configure_collector
-    configure_collector(detailed=detailed_warnings)
 
     if emit_scoring_graphs:
-        _sys.stderr.write('warning: --emit-scoring-graphs is deprecated; use --emit-scoring-yaml\n')
+        warn('W18', '--emit-scoring-graphs is deprecated; use --emit-scoring-yaml')
         emit_scoring_yaml = True
     if emit_pyvis is not None:
-        _sys.stderr.write('warning: --emit-pyvis is deprecated; use --scoring-html-out\n')
+        warn('W18', '--emit-pyvis is deprecated; use --scoring-html-out')
         if emit_scoring_html is None:
             emit_scoring_html = emit_pyvis
 
@@ -1100,6 +1119,13 @@ def main(
         # ordinary CLI error rather than letting a traceback read as a
         # reproto crash (spec 0369 S4).
         raise click.ClickException(f'{fdp_plugin}: {e}')
+
+    # --fail-on (spec 0438 S4): the run done and its output written, the
+    # listed codes that occurred fail it, -q or not.
+    failed = get_collector().failed_on(list(fail_on))
+    if failed is not None:
+        _sys.stderr.write(f'Error: --fail-on: {failed}\n')
+        _sys.exit(3)
 
 if __name__ == '__main__':
     main()

@@ -278,8 +278,8 @@ def prepare(work: Path, googleapis: Path | None, otel: Path | None) -> None:
 # The reference's words the candidate says otherwise on purpose (spec 0424
 # S12): protoback's --phase2-plugin warning says what ctx is (spec 0431 S3).
 NORMALIZE: list[tuple[bytes, bytes]] = [
-    (b"warning: --phase2-plugin is deprecated; use --fdp-plugin\n",
-     b"warning: --phase2-plugin is deprecated; use --fdp-plugin "
+    (b"Warning [W18]: --phase2-plugin is deprecated; use --fdp-plugin\n",
+     b"Warning [W18]: --phase2-plugin is deprecated; use --fdp-plugin "
      b"(protoback calls phase2_plugin(ctx, fdp) with ctx None)\n"),
 ]
 

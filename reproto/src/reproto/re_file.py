@@ -131,6 +131,7 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
         Returns a Block containing option statements, or an empty Block if
         rendering fails or no options are set.
         """
+        from .option_renderers import unknown_option_blocks
         from .re_simple import ReExtensions, ReOptions
 
         out = Block()
@@ -164,6 +165,10 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
             # Render custom extension options
             blocks, is_orp = ReExtensions(fio_msg).render(ctx, fio_desc, False, depth)
             for block in blocks:
+                out.extend(block)
+
+            # Fields no declaration names (spec 0438 S6)
+            for block in unknown_option_blocks(ctx, fio_msg, False, depth):
                 out.extend(block)
         except (KeyError, ValueError, TypeError, AttributeError) as e:
             debug_exception(ctx.debug, f"'{self.name}': file options", e)

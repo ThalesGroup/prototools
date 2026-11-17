@@ -85,7 +85,7 @@ def test_same_name_across_roots_shadows_and_warns(tmp_path: Path) -> None:
     assert "foo.proto" in warnings[0]
     assert str(root_a / "foo.textpb") in warnings[0]
     assert str(root_b / "foo.textpb") in warnings[0]
-    assert warnings[0].startswith("Warning:")
+    assert warnings[0].startswith("Warning [W7]:")
 
 
 # ---------------------------------------------------------------------------

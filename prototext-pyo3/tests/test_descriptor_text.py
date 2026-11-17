@@ -146,7 +146,10 @@ def test_an_option_declared_nowhere_is_reported() -> None:
     parsed, warnings = _read()
     assert parsed == _use_proto(_len(50001, _tag(1, 0) + b"\x03"))
     assert len(warnings) == 1
-    assert warnings[0].startswith(
+    # Each warning with its code (spec 0438): T1.
+    code, message = warnings[0]
+    assert code == "T1"
+    assert message.startswith(
         "field 50001 of google.protobuf.MessageOptions is declared nowhere"
     )
 
@@ -154,10 +157,11 @@ def test_an_option_declared_nowhere_is_reported() -> None:
 def test_an_extension_by_name_declared_nowhere_is_reported() -> None:
     parsed, warnings = _read(text=_NAMED)
     assert parsed == _use_proto(b"")
-    assert warnings == [
+    assert warnings == [(
+        "T3",
         "extension [decl.opt] of google.protobuf.MessageOptions is declared"
-        " nowhere in the input: skipped"
-    ]
+        " nowhere in the input: skipped",
+    )]
 
 
 def test_text_that_does_not_parse() -> None:

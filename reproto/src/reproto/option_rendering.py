@@ -14,8 +14,7 @@ from google.protobuf.internal.extension_dict import _ExtensionDict
 from google.protobuf.message import Message
 
 from .context import Context
-from .option_messages import option_extensions, parse_options
-from .field_descriptor import fd_is_repeated
+from .option_messages import parse_options
 from .globals import ENUM, MESSAGE, METHOD, SERVICE
 from .fake_types import parse_fqdn
 from .text import CODE, ORPHAN, Block, BlockLine
@@ -103,72 +102,11 @@ def render_options_from_message(
     Returns:
         List of text Blocks containing rendered options
     """
-    from .re_simple import ReFieldDescriptor
+    from .option_renderers import ReExtensions, ReOptions, unknown_option_blocks
 
-    _exclude: set[str] = exclude if exclude is not None else set()
-    blocks: list[Block] = []
-
-    for fd_desc, val in opts_msg.ListFields():
-        if fd_desc.is_extension:
-            continue
-        if fd_desc.name in _exclude:
-            continue
-
-        opt = ReFieldDescriptor(fd_desc)
-
-        if fd_is_repeated(fd_desc):
-            for v in val:
-                block, is_orp = opt.dump_option(ctx, v, depth)
-                if not block:
-                    continue
-                if not composite:
-                    block.prepend('option ')
-                    block.postpend(';')
-                else:
-                    block.postpend(',')
-                block.set_type(ORPHAN if is_orp else CODE)
-                blocks.append(block)
-        else:
-            block, is_orp = opt.dump_option(ctx, val, depth)
-            if not block:
-                continue
-            if not composite:
-                block.prepend('option ')
-                block.postpend(';')
-            else:
-                block.postpend(',')
-            block.set_type(ORPHAN if is_orp else CODE)
-            blocks.append(block)
-
-    for ext_desc in sorted(
-        option_extensions(ctx, options_descriptor),
-        key=lambda d: d.number
-    ):
-        opt = ReFieldDescriptor(ext_desc)
-        val = opts_msg.Extensions[ext_desc]
-
-        if fd_is_repeated(ext_desc):
-            for v in val:
-                block, is_orp = opt.dump_option(ctx, v, depth, True)
-                if not composite:
-                    block.prepend('option ')
-                    block.postpend(';')
-                else:
-                    block.postpend(',')
-                block.set_type(ORPHAN if is_orp else CODE)
-                blocks.append(block)
-        else:
-            if opts_msg.HasExtension(ext_desc):
-                block, is_orp = opt.dump_option(ctx, val, depth, True)
-                if not composite:
-                    block.prepend('option ')
-                    block.postpend(';')
-                else:
-                    block.postpend(',')
-                block.set_type(ORPHAN if is_orp else CODE)
-                blocks.append(block)
-
-    return blocks
+    blocks = ReOptions(opts_msg).render(ctx, composite, depth, exclude=exclude)
+    custom, _ = ReExtensions(opts_msg).render(ctx, options_descriptor, composite, depth)
+    return blocks + custom + unknown_option_blocks(ctx, opts_msg, composite, depth)
 
 
 def format_composite_options(

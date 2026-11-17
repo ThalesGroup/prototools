@@ -54,6 +54,11 @@ def _merge_orphans(
     return result
 
 
+# The keys a variant file may have, every one read.
+_KEYS = ('name', 'description', 'descriptor_proto', 'well_known',
+         'import_rewrites', 'namespace_rewrites', 'orphans')
+
+
 def _parse(raw: dict, root: object, stem: str) -> dict:
     """Convert a raw YAML dict into a variant_* dict.
 
@@ -62,6 +67,13 @@ def _parse(raw: dict, root: object, stem: str) -> dict:
         root: Traversable pointing to the directory containing <stem>.yaml.
         stem: variant stem (filename without extension).
     """
+    # Spec 0438 S5: a key no tool reads (annotation_modules, retired by spec
+    # 0427) is said, so that a stale variant does not look meaningful.
+    from .lib.warnings import warn
+    for key in raw:
+        if key not in _KEYS:
+            warn("W17", f"variant '{raw.get('name', stem)}': key '{key}' is not read; "
+                        "it has no effect")
     orphans_raw: dict[str, list[str]] = {}
     for kind, names in (raw.get('orphans') or {}).items():
         orphans_raw[kind] = list(names)

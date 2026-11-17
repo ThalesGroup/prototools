@@ -27,7 +27,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from .lib.warnings import cli_warning, get_collector
+from .lib.warnings import cli_warning, get_collector, warn
 
 from .text import COMMENT, BlockLine
 
@@ -218,11 +218,14 @@ def report(code: str, depth: int, *, suppress_stderr: bool = False, **kwargs: An
         proto_file = kwargs.get('file', '')
         field_name = kwargs.get('name', '')
         field_ctx = f"field '{field_name}'" if field_name else ''
-        get_collector().w6(proto_file, field_ctx, kwargs['reason'])
+        reason = kwargs['reason']
+        # A file the pool refuses is W19; anything else not rendered, W6.
+        get_collector().w6(proto_file, field_ctx, reason,
+                           code="W19" if reason == POOL_REFUSED else "W6")
     else:
         ctx_map = _Ignore(kwargs)
         if anomaly.stderr and not suppress_stderr:
-            cli_warning(anomaly.stderr.format_map(ctx_map))
+            warn(code, anomaly.stderr.format_map(ctx_map))
 
     prefix = f'{anomaly.severity}[{anomaly.tag}]:'
     body = anomaly.comment.format_map(_Ignore(kwargs))

@@ -251,6 +251,9 @@ pub struct Scope<'a> {
     pub rank: &'a HashMap<String, usize>,
     /// The rendering file's index among the summoned files.
     pub k: usize,
+    /// Where its warnings go, and its name (W22, spec 0438 S6).
+    pub events: &'a std::cell::RefCell<Vec<super::file::RenderEvent>>,
+    pub file: String,
 }
 
 impl Scope<'_> {
@@ -442,7 +445,140 @@ pub fn options(
         }
     }
     entries.extend(custom_entries(scope, &fields, ""));
-    render_entries(scope, entries, composite, depth)
+    let mut blocks = render_entries(scope, entries, composite, depth)?;
+    blocks.extend(unknown_blocks(scope, msg, &fields, composite, depth));
+    Ok(blocks)
+}
+
+/// A field as the wire holds it, a group's fields included.
+enum Wire<'b> {
+    Number(u64),
+    Bytes(&'b [u8]),
+    Group(Vec<(u32, Wire<'b>)>),
+}
+
+/// The fields of `b` from `*pos`, up to the end-group marker of `group`
+/// when inside one; `None` when not well formed.
+fn wire_fields<'b>(
+    b: &'b [u8],
+    pos: &mut usize,
+    group: Option<u32>,
+) -> Option<Vec<(u32, Wire<'b>)>> {
+    use prototext_upb::wire::read_varint;
+    let mut out = Vec::new();
+    let fixed = |pos: &mut usize, n: usize| -> Option<u64> {
+        let end = pos.checked_add(n).filter(|&e| e <= b.len())?;
+        let v = b[*pos..end]
+            .iter()
+            .rev()
+            .fold(0u64, |v, &x| (v << 8) | u64::from(x));
+        *pos = end;
+        Some(v)
+    };
+    while *pos < b.len() {
+        let tag = read_varint(b, pos)?;
+        let number = u32::try_from(tag >> 3).ok()?;
+        let value = match tag & 7 {
+            0 => Wire::Number(read_varint(b, pos)?),
+            1 => Wire::Number(fixed(pos, 8)?),
+            5 => Wire::Number(fixed(pos, 4)?),
+            2 => {
+                let len = usize::try_from(read_varint(b, pos)?).ok()?;
+                let end = pos.checked_add(len).filter(|&e| e <= b.len())?;
+                let v = &b[*pos..end];
+                *pos = end;
+                Wire::Bytes(v)
+            }
+            3 => Wire::Group(wire_fields(b, pos, Some(number))?),
+            4 if group == Some(number) => return Some(out),
+            _ => return None,
+        };
+        out.push((number, value));
+    }
+    group.is_none().then_some(out)
+}
+
+/// `_unknown_value`: an unknown field's value, by its wire type alone: a
+/// varint or a fixed-width number in decimal, bytes quoted with octal
+/// escapes, a group as its fields, `{ <N>: V ... }`, recursively.
+fn unknown_value(w: &Wire<'_>) -> String {
+    match w {
+        Wire::Number(v) => v.to_string(),
+        Wire::Bytes(payload) => {
+            let mut out = String::from("\"");
+            for &b in *payload {
+                match b {
+                    b'"' | b'\\' => {
+                        out.push('\\');
+                        out.push(char::from(b));
+                    }
+                    0x20..=0x7e => out.push(char::from(b)),
+                    _ => out.push_str(&format!("\\{b:03o}")),
+                }
+            }
+            out.push('"');
+            out
+        }
+        Wire::Group(fields) if fields.is_empty() => "{ }".to_string(),
+        Wire::Group(fields) => {
+            let inner: Vec<String> = fields
+                .iter()
+                .map(|(n, v)| format!("<{n}>: {}", unknown_value(v)))
+                .collect();
+            format!("{{ {} }}", inner.join(" "))
+        }
+    }
+}
+
+/// `unknown_option_blocks`: each field of `msg` its type does not
+/// declare, and no extension reproto's pool knows declares, as an orphan,
+/// `option <N> = V;` (`<N> = V,` in a composite), with W22, which is said
+/// even when `--redact-orphans` removes the line. An extension the pool
+/// does not know yet (`Scope::visible`) is one, as it is to reproto.
+fn unknown_blocks(
+    scope: &Scope<'_>,
+    msg: &DynamicMessage,
+    fields: &[(Field, Value<'_>)],
+    composite: bool,
+    depth: usize,
+) -> Vec<Block> {
+    let known: Vec<u32> = fields
+        .iter()
+        .filter(|(f, _)| !f.is_extension() || scope.visible(f))
+        .map(|(f, _)| f.number())
+        .collect();
+    let Some(bytes) = msg.encode().ok() else {
+        return Vec::new();
+    };
+    // Not well formed, upb would not have parsed it: nothing is unknown.
+    let Some(records) = wire_fields(&bytes, &mut 0, None) else {
+        return Vec::new();
+    };
+    let type_name = msg.descriptor().full_name().to_string();
+    let mut blocks = Vec::new();
+    for (number, value) in records.iter().filter(|(n, _)| !known.contains(n)) {
+        let text = format!("<{number}> = {}", unknown_value(value));
+        let text = if composite {
+            format!("{text},")
+        } else {
+            format!("option {text};")
+        };
+        let mut block = Block::new();
+        block.push(Line::orphan(text, depth));
+        blocks.push(block);
+        scope
+            .events
+            .borrow_mut()
+            .push(super::file::RenderEvent::Squash(
+                "W22",
+                format!(
+                    "'{}': option field {number} of {type_name} is declared nowhere: \
+                 written as an orphan",
+                    scope.file
+                ),
+            ));
+    }
+    blocks
 }
 
 /// The extensions set on `msg`, the custom options of a message read as an

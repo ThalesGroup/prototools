@@ -192,7 +192,7 @@ def test_W9_w7_immediate_squashed() -> None:
     )
     assert len(immediate) == 1
     line = immediate[0]
-    assert line.startswith("Warning:")
+    assert line.startswith("Warning [W7]:")
     assert "path/b/foo.textpb" in line
     assert "file:foo.proto" in line
     assert "path/a/foo.textpb" in line

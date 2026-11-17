@@ -57,7 +57,10 @@ fn a_terminal_gets_colors_bars_and_labels() {
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "{text}");
     // reproto's styles: bold yellow, bold blue.
-    assert!(text.contains("\x1b[1;33mSeed not found: "), "{text:?}");
+    assert!(
+        text.contains("\x1b[1;33mWarning [W12]: Seed not found: "),
+        "{text:?}"
+    );
     assert!(
         text.contains("\x1b[1;34mUsing embedded fallback: google/protobuf/descriptor.proto\x1b[0m"),
         "{text:?}"

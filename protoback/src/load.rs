@@ -462,7 +462,7 @@ fn load_files(ctx: &mut LoadCtx, roots: &[PathBuf], rel_path: &Path) -> Vec<RawF
 fn parse_qfile(ctx: &mut LoadCtx, file: &RawFile) -> Vec<QualFile> {
     let rel = posix_str(&file.rel_path.to_string_lossy());
     let Some(fragments) = split_fdps(&file.contents) else {
-        ctx.events.warning(&format!("Cannot parse '{rel}'"));
+        ctx.events.warn("W15", &format!("Cannot parse '{rel}'"));
         return Vec::new();
     };
     let mut out = Vec::new();
@@ -483,10 +483,13 @@ fn parse_qfile(ctx: &mut LoadCtx, file: &RawFile) -> Vec<QualFile> {
                         (bytes, Some(t), imports)
                     }
                     Err(e) => {
-                        ctx.events.warning(&format!(
-                            "Cannot parse '{rel}' (file '{name}'): {}:{}: {}",
-                            e.line, e.column, e.message
-                        ));
+                        ctx.events.warn(
+                            "W15",
+                            &format!(
+                                "Cannot parse '{rel}' (file '{name}'): {}:{}: {}",
+                                e.line, e.column, e.message
+                            ),
+                        );
                         continue;
                     }
                 }
@@ -495,7 +498,7 @@ fn parse_qfile(ctx: &mut LoadCtx, file: &RawFile) -> Vec<QualFile> {
                 Ok((_, imports)) => (Vec::new(), Some(t), imports),
                 Err(e) => {
                     ctx.events
-                        .warning(&format!("Cannot parse '{rel}' (file '{name}'): {e}"));
+                        .warn("W15", &format!("Cannot parse '{rel}' (file '{name}'): {e}"));
                     continue;
                 }
             },
