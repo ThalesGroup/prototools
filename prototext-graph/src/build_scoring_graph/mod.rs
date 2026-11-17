@@ -90,3 +90,68 @@ fn build_merged(
     };
     Ok((rkyv_bytes, yaml, initial_yaml))
 }
+
+/// Each stage timed on a real corpus (spec 0443 P7): the per-file scoring
+/// YAML under `$PROTOTEXT_GRAPH_TIMING_DIR` (protoback's
+/// `--emit-scoring-yaml` output), merged and built as the schema database
+/// builds them. Ignored by default; run in release with `--ignored
+/// --nocapture`.
+#[cfg(test)]
+mod timing {
+    use std::time::Instant;
+
+    #[test]
+    #[ignore]
+    fn each_stage_timed() {
+        let Some(dir) = std::env::var_os("PROTOTEXT_GRAPH_TIMING_DIR") else {
+            eprintln!("PROTOTEXT_GRAPH_TIMING_DIR unset: nothing timed");
+            return;
+        };
+        let mut texts: Vec<(std::path::PathBuf, String)> = walkdir::WalkDir::new(dir)
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|e| e.path().extension().is_some_and(|x| x == "yaml"))
+            .filter(|e| e.file_name() != "buf.yaml")
+            .map(|e| {
+                (
+                    e.path().to_path_buf(),
+                    std::fs::read_to_string(e.path()).unwrap(),
+                )
+            })
+            .collect();
+        texts.sort();
+        // Parsed outside the clock: protoback hands over structures.
+        let files: Vec<super::ScoringFile> = texts
+            .iter()
+            .map(|(_, t)| super::load::parse_file(t).unwrap())
+            .collect();
+        let t = Instant::now();
+        let merged = super::load::merge_files(&files).unwrap();
+        let t_merge = t.elapsed();
+        let t = Instant::now();
+        let (raw, reg) = super::graph::build(&merged);
+        let t_build = t.elapsed();
+        let t = Instant::now();
+        let partition = super::hopcroft::minimize(&raw, &reg, &raw.node_wire_types, |_, _| {});
+        let t_min = t.elapsed();
+        let t = Instant::now();
+        let compiled = super::graph::compile(&raw, &reg, &partition, &merged.roots);
+        let t_compile = t.elapsed();
+        let t = Instant::now();
+        let bytes = super::serial::to_bytes(&compiled).unwrap();
+        let t_serial = t.elapsed();
+        eprintln!(
+            "files {}, states {}, nodes {}\n\
+             merge {:?}\nbuild {:?}\nminimize {:?}\ncompile {:?}\nserialize {:?} ({} bytes)",
+            files.len(),
+            merged.states.len(),
+            raw.node_wire_types.len(),
+            t_merge,
+            t_build,
+            t_min,
+            t_compile,
+            t_serial,
+            bytes.len()
+        );
+    }
+}

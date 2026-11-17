@@ -4,7 +4,7 @@
 
 //! Load and merge per-file scoring-graph YAMLs (spec 0045 format).
 
-use std::collections::HashMap;
+use crate::hash::HashMap;
 
 use serde::Deserialize;
 
@@ -305,6 +305,14 @@ impl ScoringFile {
 
 // ── Loading ───────────────────────────────────────────────────────────────────
 
+/// One scoring-graph YAML document as a [`ScoringFile`]: for the stage
+/// timing (`build_scoring_graph::timing`), which parses outside the clock
+/// what protoback hands over as structures.
+#[cfg(test)]
+pub(crate) fn parse_file(text: &str) -> Result<ScoringFile, Box<dyn std::error::Error>> {
+    Ok(ScoringFile::from_document(serde_yaml::from_str(text)?)?)
+}
+
 /// Load and merge from in-memory YAML strings (no filesystem access).
 pub fn merge_from_strings(scoring_graphs: &[String]) -> Result<Merged, Box<dyn std::error::Error>> {
     let mut files = Vec::with_capacity(scoring_graphs.len());
@@ -320,11 +328,11 @@ pub fn merge_from_strings(scoring_graphs: &[String]) -> Result<Merged, Box<dyn s
 /// definition of an FQDN is kept, a conflicting later one is warned
 /// about; the roots are every file's entries, in order, once.
 pub fn merge_files(files: &[ScoringFile]) -> Result<Merged, Box<dyn std::error::Error>> {
-    let mut states: HashMap<String, Vec<ScoringField>> = HashMap::new();
-    let mut node_kinds: HashMap<String, NodeKind> = HashMap::new();
+    let mut states: HashMap<String, Vec<ScoringField>> = HashMap::default();
+    let mut node_kinds: HashMap<String, NodeKind> = HashMap::default();
     let mut roots: Vec<String> = Vec::new();
-    let mut roots_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut ext_ranges: HashMap<String, Vec<(u32, u32)>> = HashMap::new();
+    let mut roots_seen: crate::hash::HashSet<String> = crate::hash::HashSet::default();
+    let mut ext_ranges: HashMap<String, Vec<(u32, u32)>> = HashMap::default();
     let mut has_extension_ranges = true;
 
     for (i, file) in files.iter().enumerate() {

@@ -1871,9 +1871,11 @@ name = "prototext-graph"
 version = "0.3.6"
 dependencies = [
  "criterion",
+ "foldhash 0.2.0",
  "memmap2",
  "prototext-core",
  "rkyv",
+ "rustc-hash 2.1.2",
  "serde",
  "serde_yaml",
  "smallvec",

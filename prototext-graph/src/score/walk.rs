@@ -23,7 +23,7 @@
 //! unknown per the field presence rule, with `non_canonical` incremented so
 //! callers can apply a quality penalty.
 
-use std::collections::HashMap;
+use crate::hash::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use prototext_core::helpers::{payload_end, MAX_WIRE_DEPTH};
@@ -381,7 +381,7 @@ impl<'a, 'g> WalkState<'a, 'g> {
     fn resolve_any_root(&mut self, fqdn: &str) -> Option<u32> {
         let graph = self.graph;
         let index = self.any_index.get_or_insert_with(|| {
-            let mut m = HashMap::with_capacity(graph.roots.len());
+            let mut m = HashMap::with_capacity_and_hasher(graph.roots.len(), Default::default());
             for r in graph.roots.iter() {
                 m.entry(r.fqdn.as_str()).or_insert(r.state_id.to_native());
             }
@@ -2414,7 +2414,7 @@ mod set_vetoed_tests {
         use crate::build_scoring_graph::load::{FieldLabel, Merged, ScoringField, ScoringKind};
         use crate::build_scoring_graph::{graph, hopcroft, serial};
 
-        let mut states = std::collections::HashMap::new();
+        let mut states = crate::hash::HashMap::default();
         states.insert(
             "pkg.Msg".to_string(),
             vec![ScoringField {
@@ -2428,7 +2428,7 @@ mod set_vetoed_tests {
         );
         let merged = Merged {
             states,
-            node_kinds: std::collections::HashMap::new(),
+            node_kinds: crate::hash::HashMap::default(),
             roots: vec!["pkg.Msg".to_string()],
             ..Default::default()
         };

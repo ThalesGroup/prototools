@@ -4,7 +4,7 @@
 
 //! Raw graph construction and compilation to CompiledGraph.
 
-use std::collections::HashMap;
+use crate::hash::HashMap;
 
 use super::hopcroft::Partition;
 use super::load::{FieldLabel, Merged, NodeKind, ScoringField, ScoringKind};
@@ -62,7 +62,7 @@ pub struct LeafRegistry {
 impl LeafRegistry {
     pub fn new() -> Self {
         Self {
-            range_map: HashMap::new(),
+            range_map: HashMap::default(),
             ranges: Vec::new(),
         }
     }
@@ -217,7 +217,7 @@ pub fn build(merged: &Merged) -> (RawGraph, LeafRegistry) {
     // Pre-allocate reserved IDs for the two sentinel node types (spec 0089 §9).
     // These are inserted unconditionally so block IDs 0/1 are always reserved
     // for Any and MessageSet in the Hopcroft output.
-    let mut node_ids: HashMap<String, u32> = HashMap::new();
+    let mut node_ids: HashMap<String, u32> = HashMap::default();
     node_ids.insert("google.protobuf.Any".to_owned(), ANY_NODE_ID);
     node_ids.insert("google.protobuf.MessageSet".to_owned(), MESSAGE_SET_NODE_ID);
 
@@ -255,7 +255,7 @@ pub fn build(merged: &Merged) -> (RawGraph, LeafRegistry) {
 
     // Pre-compute wire_type per node ID from node_kinds (spec 0058).
     // This must happen before Hopcroft so the initial partition is correct.
-    let mut node_wire_types: HashMap<u32, u8> = HashMap::new();
+    let mut node_wire_types: HashMap<u32, u8> = HashMap::default();
     for (fqdn, &node_id) in &node_ids {
         // Spec 0324 S2: a message state says so, rather than borrowing the
         // `2` a `bytes` leaf also carries. A group already said so with `3`.
@@ -304,7 +304,7 @@ pub fn build(merged: &Merged) -> (RawGraph, LeafRegistry) {
         ext_range_table.len()
     );
 
-    let mut node_ext_range_idx: HashMap<u32, u16> = HashMap::new();
+    let mut node_ext_range_idx: HashMap<u32, u16> = HashMap::default();
     for (fqdn, ranges) in &merged.ext_ranges {
         let Some(&node_id) = node_ids.get(fqdn) else {
             continue;
@@ -361,7 +361,7 @@ pub fn compile(
     // After the Hopcroft fix (label part of bisimulation key), each
     // (src_block, field_number) pair has at most one label — no merge needed.
     let msg_count = raw.node_ids.len() as u32;
-    let mut seen: HashMap<(u32, u32), (u32, u8, bool)> = HashMap::new();
+    let mut seen: HashMap<(u32, u32), (u32, u8, bool)> = HashMap::default();
     for edge in &raw.edges {
         let src_block = partition.block_of(edge.src);
         let dst_block = if edge.dst < msg_count {
@@ -398,7 +398,7 @@ pub fn compile(
     // Leaf nodes: attributes come directly from LeafAttrs.
 
     // Map block_id → NodeEntry attributes.
-    let mut node_attrs: HashMap<u32, (u8, bool, u16, u16)> = HashMap::new();
+    let mut node_attrs: HashMap<u32, (u8, bool, u16, u16)> = HashMap::default();
 
     // Non-leaf node blocks: use pre-computed wire_types.  Taking the first
     // node's `ext_range_idx` for the whole block is safe because it seeds the

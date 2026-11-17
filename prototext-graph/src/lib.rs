@@ -9,4 +9,5 @@
 
 pub mod build_scoring_graph;
 pub mod fds_index;
+mod hash;
 pub mod score;

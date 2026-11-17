@@ -29,7 +29,9 @@
 //! refinement makes the same splits, in the same order, with the same block
 //! IDs. The textbook version stays, for tests, as `minimize_textbook`.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::VecDeque;
+
+use crate::hash::{HashMap, HashSet};
 
 use super::graph::{
     leaf_attrs, LeafRegistry, RawGraph, ANY_NODE_ID, LEAF_I32, LEAF_I64, LEAF_INT32, LEAF_LEN,
@@ -173,8 +175,8 @@ impl Setup {
         // an attribute of the state, which no edge carries, so it cannot join Σ —
         // seeding the partition with it is what keeps an extensible message and a
         // structurally identical closed one in separate blocks forever.
-        let mut sig_to_block: HashMap<MessageBlockKey, usize> = HashMap::new();
-        let mut leaf_attr_to_block: HashMap<(u8, bool, u16), usize> = HashMap::new();
+        let mut sig_to_block: HashMap<MessageBlockKey, usize> = HashMap::default();
+        let mut leaf_attr_to_block: HashMap<(u8, bool, u16), usize> = HashMap::default();
         // Note: leaf partition key is (wire_type, is_string, range_idx).
         // wire_type 8 = UINT32, 9 = INT32 ensure they start in distinct classes.
         // Message states now key on 10 = MESSAGE (spec 0324 S2) where they used
@@ -235,7 +237,7 @@ impl Setup {
 
     /// Block membership: blocks[id] = set of node indices.
     fn blocks(&self) -> Vec<HashSet<usize>> {
-        let mut blocks: Vec<HashSet<usize>> = vec![HashSet::new(); self.num_blocks];
+        let mut blocks: Vec<HashSet<usize>> = vec![HashSet::default(); self.num_blocks];
         for i in 0..self.n {
             blocks[self.block_of[i]].insert(i);
         }
@@ -305,7 +307,7 @@ fn report_progress(
 /// (spec 0177 S3). Which nodes share a block is unaffected either way — the
 /// refinement's fixed point is the unique coarsest partition.
 fn group_by_block(x: &HashSet<usize>, block_of: &[usize]) -> Vec<(usize, Vec<usize>)> {
-    let mut x_in_block: HashMap<usize, Vec<usize>> = HashMap::new();
+    let mut x_in_block: HashMap<usize, Vec<usize>> = HashMap::default();
     for &node in x {
         x_in_block.entry(block_of[node]).or_default().push(node);
     }
@@ -323,7 +325,8 @@ fn split(
     y1_nodes: &[usize],
 ) -> usize {
     let y1_id = blocks.len();
-    let mut y1_block: HashSet<usize> = HashSet::with_capacity(y1_nodes.len());
+    let mut y1_block: HashSet<usize> =
+        HashSet::with_capacity_and_hasher(y1_nodes.len(), Default::default());
     for &node in y1_nodes {
         blocks[y_id].remove(&node);
         y1_block.insert(node);
@@ -342,7 +345,7 @@ fn refine_sparse(setup: &Setup, mut on_progress: impl FnMut(u64, u64)) -> Vec<us
     // Only the letters entering each block. in_worklist mirrors the deque
     // contents for O(1) membership queries.
     let mut worklist: VecDeque<(usize, u32, u8)> = VecDeque::new();
-    let mut in_worklist: HashSet<(usize, u32, u8)> = HashSet::new();
+    let mut in_worklist: HashSet<(usize, u32, u8)> = HashSet::default();
     for (b, block) in blocks.iter().enumerate() {
         for (f, l) in setup.letters_into(block) {
             worklist.push_back((b, f, l));
@@ -437,7 +440,7 @@ fn refine_textbook(setup: &Setup, mut on_progress: impl FnMut(u64, u64)) -> Vec<
     // ── Worklist W: (block_id, field, label) ─────────────────────────────────
     // in_worklist mirrors the deque contents for O(1) membership queries.
     let mut worklist: VecDeque<(usize, u32, u8)> = VecDeque::new();
-    let mut in_worklist: HashSet<(usize, u32, u8)> = HashSet::new();
+    let mut in_worklist: HashSet<(usize, u32, u8)> = HashSet::default();
 
     for b in 0..setup.num_blocks {
         for &(f, l) in alphabet {
@@ -526,7 +529,7 @@ fn renumber(block_of: &[usize], msg_count: usize, num_leaves: usize) -> Partitio
     let leaf_block_ids: Vec<usize> = (0..num_leaves).map(|li| block_of[msg_count + li]).collect();
     let leaf_block_set: HashSet<usize> = leaf_block_ids.iter().copied().collect();
 
-    let mut old_to_new: HashMap<usize, u32> = HashMap::new();
+    let mut old_to_new: HashMap<usize, u32> = HashMap::default();
     let mut next_msg_id: u32 = 0;
     for &b in block_of {
         if !leaf_block_set.contains(&b) && !old_to_new.contains_key(&b) {

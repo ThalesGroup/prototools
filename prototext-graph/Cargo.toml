@@ -30,7 +30,15 @@ memmap2        = "0.9"
 prototext-core = { workspace = true }
 smallvec       = "1"
 walkdir        = "2"
+rustc-hash     = "2"
+foldhash       = { version = "0.2", optional = true }
 workspace-hack = { version = "0.1", path = "../workspace-hack" }
+
+# The hasher of the internal maps (src/hash.rs, spec 0443 P7):
+# rustc-hash's unless one of these is enabled.
+[features]
+hash-fold = ["dep:foldhash"]
+hash-sip = []
 
 [dev-dependencies]
 tempfile    = "3"

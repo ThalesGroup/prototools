@@ -134,21 +134,27 @@ In this order, cheapest first; each item measured (M) before the next.
   expectation for it. Pairs with P7: then the merge is no longer hidden
   behind rendering.
 - **P7. prototext-graph.**
-  - Its internal maps use the hasher alias, chosen as protoback's (~0.1
-    s). Its public fields (`node_ids`, `states`, `node_kinds`, …) keep
-    the standard hasher: a feature changing their type would change it
-    for every dependent of the build at once (features are unified),
-    breaking whoever builds those structs. Decided 2026-11-17: they stay
-    on the standard hasher (std's `RandomState`, SipHash-1-3 keyed at
-    random per process). All hashing in that thread, internal and public
-    maps together, was ~0.1 s on googleapis, on a thread running beside
-    the main one: the public fields' share is not worth a breaking
-    change. Should it ever be, FxHash for good, no feature, so that their
-    type never depends on the build. `fds_index`'s FxHasher is the format of a file on
-    disk, and stays.
+  - Its maps use a hasher alias, chosen as protoback's (implemented):
+    FxHash unless `hash-fold` or `hash-sip`. All of them are internal:
+    `Merged` and `RawGraph` are `pub` in `pub(crate)` modules, so no
+    user of the crate can name them (an earlier reading took them for
+    public fields). `fds_index`'s map keeps rkyv's FxHasher64, part of a
+    file's format. Measured on googleapis' 7,771 per-file graphs (49,255
+    states), the stages timed by an ignored test (`build_scoring_graph::
+    timing`, from structures as protoback hands them over), SipHash
+    against FxHash, 3 alternating rounds on vCPUs 0–7: merge ~97 → ~79
+    ms, build ~148 → ~104 ms, minimize ~130 → ~112 ms, compile ~38 →
+    ~35 ms; ~0.42 → ~0.33 s, −21 %.
   - Scrutiny: where its ~0.4 s goes (build, merge, minimization), and
     what of it can run in parallel (the files' graphs before the merge;
     the minimization's refinement).
+  - Profiled within the stages (FxHash not yet): SipHash a quarter of
+    the work (merge 42 %, build 25 %, minimize 16 %, compile 17 %);
+    string comparisons another quarter of build and compile: build
+    sorts the 49,255 type names so that node numbers do not depend on a
+    map's order (spec 0177 S2), and every lookup compares its key. The
+    next lever: each name numbered once, in that sorted order, and
+    numbers used after; the node numbers, and the bytes, unchanged.
   - Profiled 2026-11-17 (googleapis, eight threads, after P6): ~0.39 s
     of CPU in all: building the graph ~0.14 s, Hopcroft's minimization
     ~0.14 s, merging the files ~0.07 s, compiling and serializing the

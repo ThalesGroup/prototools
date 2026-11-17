@@ -116,13 +116,13 @@ fn make_merged() -> Merged {
         },
     ];
 
-    let mut states = std::collections::HashMap::new();
+    let mut states = crate::hash::HashMap::default();
     states.insert("Inner".to_string(), inner_fields);
     states.insert("Outer".to_string(), outer_fields);
 
     Merged {
         states,
-        node_kinds: std::collections::HashMap::new(),
+        node_kinds: crate::hash::HashMap::default(),
         roots: vec!["Outer".to_string()],
         ..Default::default()
     }
@@ -497,7 +497,7 @@ fn tc16_fixed_fields_known() {
     // Build a schema with an I32 and I64 field.
     let merged = Merged {
         states: {
-            let mut m = std::collections::HashMap::new();
+            let mut m = crate::hash::HashMap::default();
             m.insert(
                 "M".to_string(),
                 vec![
@@ -521,7 +521,7 @@ fn tc16_fixed_fields_known() {
             );
             m
         },
-        node_kinds: std::collections::HashMap::new(),
+        node_kinds: crate::hash::HashMap::default(),
         roots: vec!["M".to_string()],
         ..Default::default()
     };
@@ -662,13 +662,13 @@ fn build_two_entry_graph() -> score_load::LoadedGraph {
         },
     ];
 
-    let mut states = std::collections::HashMap::new();
+    let mut states = crate::hash::HashMap::default();
     states.insert("Inner".to_string(), inner_fields);
     states.insert("Outer".to_string(), outer_fields);
 
     let merged = crate::build_scoring_graph::load::Merged {
         states,
-        node_kinds: std::collections::HashMap::new(),
+        node_kinds: crate::hash::HashMap::default(),
         roots: vec!["Outer".to_string(), "Inner".to_string()],
         ..Default::default()
     };
@@ -994,14 +994,14 @@ fn map_entry_states_are_distinct() {
         },
     ];
 
-    let mut states = std::collections::HashMap::new();
+    let mut states = crate::hash::HashMap::default();
     states.insert("AnnotatedMapEntry".to_string(), annotated_entry_fields);
     states.insert("MultiOptionMapEntry".to_string(), multi_option_entry_fields);
     states.insert("MapWithOptions".to_string(), map_with_options_fields);
 
     let merged = crate::build_scoring_graph::load::Merged {
         states,
-        node_kinds: std::collections::HashMap::new(),
+        node_kinds: crate::hash::HashMap::default(),
         roots: vec!["MapWithOptions".to_string()],
         ..Default::default()
     };
@@ -1029,7 +1029,7 @@ fn build_single_field_graph(
 ) -> score_load::LoadedGraph {
     let merged = Merged {
         states: {
-            let mut m = std::collections::HashMap::new();
+            let mut m = crate::hash::HashMap::default();
             m.insert(
                 "M".to_string(),
                 vec![ScoringField {
@@ -1043,7 +1043,7 @@ fn build_single_field_graph(
             );
             m
         },
-        node_kinds: std::collections::HashMap::new(),
+        node_kinds: crate::hash::HashMap::default(),
         roots: vec!["M".to_string()],
         ..Default::default()
     };
@@ -1207,7 +1207,7 @@ fn tc77_11_uint64_large_value() {
 fn tc77_12_bool_vs_int32_discrimination() {
     let merged = Merged {
         states: {
-            let mut m = std::collections::HashMap::new();
+            let mut m = crate::hash::HashMap::default();
             m.insert(
                 "Bool".to_string(),
                 vec![ScoringField {
@@ -1232,7 +1232,7 @@ fn tc77_12_bool_vs_int32_discrimination() {
             );
             m
         },
-        node_kinds: std::collections::HashMap::new(),
+        node_kinds: crate::hash::HashMap::default(),
         roots: vec!["Bool".to_string(), "Int32".to_string()],
         ..Default::default()
     };
@@ -1280,7 +1280,7 @@ fn tc77_12_bool_vs_int32_discrimination() {
 /// Any-expansion code path in `score_message_multi` never fires at all —
 /// silently making any regression test here a no-op.
 fn make_merged_any() -> Merged {
-    let mut states = std::collections::HashMap::new();
+    let mut states = crate::hash::HashMap::default();
     states.insert(
         "google.protobuf.Any".to_string(),
         vec![
@@ -1338,7 +1338,7 @@ fn make_merged_any() -> Merged {
 
     Merged {
         states,
-        node_kinds: std::collections::HashMap::new(),
+        node_kinds: crate::hash::HashMap::default(),
         roots: vec![
             "Wrapper".to_string(),
             "TargetVarint".to_string(),
@@ -1477,7 +1477,7 @@ fn tc_of1_a_corpus_past_the_old_u16_ceiling_loads_and_scores() {
         packed: false,
     }];
 
-    let mut states = std::collections::HashMap::new();
+    let mut states = crate::hash::HashMap::default();
     let mut roots = Vec::with_capacity(n);
     for i in 0..n {
         let name = format!("M{i}");
@@ -1487,7 +1487,7 @@ fn tc_of1_a_corpus_past_the_old_u16_ceiling_loads_and_scores() {
 
     let merged = Merged {
         states,
-        node_kinds: std::collections::HashMap::new(),
+        node_kinds: crate::hash::HashMap::default(),
         roots,
         ..Default::default()
     };
@@ -1557,7 +1557,7 @@ fn blind_group_walk_does_not_overflow_the_stack() {
 fn build_recursive_graph() -> score_load::LoadedGraph {
     let merged = Merged {
         states: {
-            let mut m = std::collections::HashMap::new();
+            let mut m = crate::hash::HashMap::default();
             m.insert(
                 "Node".to_string(),
                 vec![ScoringField {
@@ -1571,7 +1571,7 @@ fn build_recursive_graph() -> score_load::LoadedGraph {
             );
             m
         },
-        node_kinds: std::collections::HashMap::new(),
+        node_kinds: crate::hash::HashMap::default(),
         roots: vec!["Node".to_string()],
         ..Default::default()
     };
@@ -1826,14 +1826,14 @@ fn survivors_keep_their_own_verdict_after_a_mismatch_retain() {
         ]
     }
 
-    let mut states = std::collections::HashMap::new();
+    let mut states = crate::hash::HashMap::default();
     states.insert("R1".to_string(), root(1, 2));
     states.insert("R2".to_string(), root(2, 3));
     states.insert("R3".to_string(), root(3, 1));
 
     let merged = Merged {
         states,
-        node_kinds: std::collections::HashMap::new(),
+        node_kinds: crate::hash::HashMap::default(),
         roots: vec!["R1".to_string(), "R2".to_string(), "R3".to_string()],
         ..Default::default()
     };
@@ -1920,11 +1920,11 @@ fn build_packed_graph() -> score_load::LoadedGraph {
         f(6, ScoringKind::Range, Some((0, 2)), FieldLabel::Repeated),
     ];
 
-    let mut states = std::collections::HashMap::new();
+    let mut states = crate::hash::HashMap::default();
     states.insert("P".to_string(), fields);
     let merged = Merged {
         states,
-        node_kinds: std::collections::HashMap::new(),
+        node_kinds: crate::hash::HashMap::default(),
         roots: vec!["P".to_string()],
         ..Default::default()
     };
@@ -2152,7 +2152,7 @@ fn packed_scratch_is_cleared_between_runs() {
 /// the *same* field, so Hopcroft collapses them onto one state — which is
 /// what gives `partition_roots` groups larger than one to keep together.
 fn build_many_root_graph(n: u32) -> score_load::LoadedGraph {
-    let mut states = std::collections::HashMap::new();
+    let mut states = crate::hash::HashMap::default();
     for i in 0..n {
         states.insert(
             format!("R{i}"),
@@ -2168,7 +2168,7 @@ fn build_many_root_graph(n: u32) -> score_load::LoadedGraph {
     }
     let merged = Merged {
         states,
-        node_kinds: std::collections::HashMap::new(),
+        node_kinds: crate::hash::HashMap::default(),
         roots: (0..n).map(|i| format!("R{i}")).collect(),
         ..Default::default()
     };
@@ -2188,7 +2188,7 @@ fn build_many_root_graph(n: u32) -> score_load::LoadedGraph {
 /// 4645 roots while most held one, which is what made balancing on the root
 /// count fill three whole parts with almost no work (spec 0290).
 fn build_lopsided_root_graph(big: u32, singles: u32) -> score_load::LoadedGraph {
-    let mut states = std::collections::HashMap::new();
+    let mut states = crate::hash::HashMap::default();
     let field = |number: u32| {
         vec![ScoringField {
             number,
@@ -2212,7 +2212,7 @@ fn build_lopsided_root_graph(big: u32, singles: u32) -> score_load::LoadedGraph 
         .collect();
     let merged = Merged {
         states,
-        node_kinds: std::collections::HashMap::new(),
+        node_kinds: crate::hash::HashMap::default(),
         roots: roots.clone(),
         ..Default::default()
     };
@@ -2240,7 +2240,7 @@ fn build_lopsided_root_graph(big: u32, singles: u32) -> score_load::LoadedGraph 
 #[test]
 fn a_partition_is_balanced_by_group_count_not_root_count() {
     let g = build_lopsided_root_graph(40, 40);
-    let state_of: std::collections::HashMap<u32, u32> = g
+    let state_of: crate::hash::HashMap<u32, u32> = g
         .roots
         .iter()
         .enumerate()
@@ -2254,7 +2254,7 @@ fn a_partition_is_balanced_by_group_count_not_root_count() {
             .map(|p| {
                 p.iter()
                     .map(|r| state_of[r])
-                    .collect::<std::collections::HashSet<_>>()
+                    .collect::<crate::hash::HashSet<_>>()
                     .len()
             })
             .collect();
@@ -2331,7 +2331,7 @@ fn a_sharded_sweep_matches_the_whole_sweep() {
 #[test]
 fn a_partition_never_splits_a_state_group() {
     let g = build_many_root_graph(12);
-    let state_of: std::collections::HashMap<u32, u32> = g
+    let state_of: crate::hash::HashMap<u32, u32> = g
         .roots
         .iter()
         .enumerate()
@@ -2355,7 +2355,7 @@ fn a_partition_never_splits_a_state_group() {
         );
 
         // Each state must appear in exactly one part.
-        let mut home: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
+        let mut home: crate::hash::HashMap<u32, usize> = crate::hash::HashMap::default();
         for (pi, part) in parts.iter().enumerate() {
             for r in part {
                 let state = state_of[r];
@@ -2462,15 +2462,15 @@ fn string(number: u32, label: FieldLabel) -> ScoringField {
 
 /// A one-root schema, with `ext` as its extension ranges.
 fn scan_merged(fields: Vec<ScoringField>, ext: &[(u32, u32)]) -> Merged {
-    let mut states = std::collections::HashMap::new();
+    let mut states = crate::hash::HashMap::default();
     states.insert("Rec".to_string(), fields);
-    let mut ext_ranges = std::collections::HashMap::new();
+    let mut ext_ranges = crate::hash::HashMap::default();
     if !ext.is_empty() {
         ext_ranges.insert("Rec".to_string(), ext.to_vec());
     }
     Merged {
         states,
-        node_kinds: std::collections::HashMap::new(),
+        node_kinds: crate::hash::HashMap::default(),
         roots: vec!["Rec".to_string()],
         ext_ranges,
         has_extension_ranges: true,
@@ -2613,7 +2613,7 @@ fn test_scan_cardinality_applied_at_termination() {
 /// walk that halted at the first termination would truncate the other root.
 #[test]
 fn test_scan_roots_terminate_independently() {
-    let mut states = std::collections::HashMap::new();
+    let mut states = crate::hash::HashMap::default();
     states.insert(
         "RecA".to_string(),
         vec![
@@ -2630,9 +2630,9 @@ fn test_scan_roots_terminate_independently() {
     );
     let g = compile_and_load(&Merged {
         states,
-        node_kinds: std::collections::HashMap::new(),
+        node_kinds: crate::hash::HashMap::default(),
         roots: vec!["RecA".to_string(), "RecB".to_string()],
-        ext_ranges: std::collections::HashMap::new(),
+        ext_ranges: crate::hash::HashMap::default(),
         has_extension_ranges: true,
     });
 
@@ -2911,7 +2911,7 @@ fn a_scan_never_sets_truncated() {
 /// leaf, so the graph holds both of the states this spec exists to tell
 /// apart.
 fn zero_field_child_merged() -> Merged {
-    let mut states = std::collections::HashMap::new();
+    let mut states = crate::hash::HashMap::default();
     states.insert(
         "Rec".to_string(),
         vec![
@@ -2936,7 +2936,7 @@ fn zero_field_child_merged() -> Merged {
     states.insert("Nothing".to_string(), vec![]);
     Merged {
         states,
-        node_kinds: std::collections::HashMap::new(),
+        node_kinds: crate::hash::HashMap::default(),
         roots: vec!["Rec".to_string()],
         ..Default::default()
     }
@@ -3066,7 +3066,7 @@ fn compile_states(
             .into_iter()
             .map(|(k, v)| (k.to_string(), v))
             .collect(),
-        node_kinds: std::collections::HashMap::new(),
+        node_kinds: crate::hash::HashMap::default(),
         roots: roots.iter().map(|r| r.to_string()).collect(),
         ..Default::default()
     };
