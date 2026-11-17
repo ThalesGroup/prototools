@@ -191,3 +191,60 @@ def test_custom_features_under_a_root_of_another_package(tmp_path: Path) -> None
     assert "option features.(.pb.cpp) = {\n  string_type: CORD\n};" in text
     assert "features.(.pb.cpp) = {\n      string_type: VIEW\n    }" in text
     assert "features.field_presence = EXPLICIT" in text
+
+
+def test_a_custom_option_on_a_root_of_another_package_is_kept(tmp_path: Path) -> None:
+    # A custom option declared on proto2.FieldOptions (the root above,
+    # names kept), set on a field: written, and its bytes kept.
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "ext.proto").write_text(
+        'syntax = "proto2";\npackage ext;\nimport "google/protobuf/descriptor.proto";\n'
+        "extend google.protobuf.FieldOptions { optional int32 level = 50001; }\n",
+        encoding="utf-8",
+    )
+    (src / "u.proto").write_text(
+        'syntax = "proto2";\npackage u;\nimport "ext.proto";\n'
+        "message M { optional int32 x = 1 [(ext.level) = 7]; }\n",
+        encoding="utf-8",
+    )
+    compiled = tmp_path / "stock.pb"
+    result = subprocess.run(
+        ["protoc", f"-I{src}", "--include_imports", f"--descriptor_set_out={compiled}", "u.proto"],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    fds = descriptor_pb2.FileDescriptorSet()
+    fds.ParseFromString(compiled.read_bytes())
+    files = {f.name: f for f in fds.file}
+    root = files["google/protobuf/descriptor.proto"]
+    root.name, root.package = ROOT, "proto2"
+    _rename_package(root)
+    ext = files["ext.proto"]
+    ext.dependency[:] = [ROOT]
+    _rename_package(ext)
+    user = files["u.proto"]
+    original = user.message_type[0].field[0].options.SerializeToString()
+
+    inputs = tmp_path / "in"
+    for fdp in (root, ext, user):
+        path = inputs / fdp.name.replace(".proto", ".pb")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        one = descriptor_pb2.FileDescriptorSet()
+        one.file.append(fdp)
+        path.write_bytes(one.SerializeToString())
+    variant = tmp_path / "keep.yaml"
+    variant.write_text(KEEP_VARIANT, encoding="utf-8")
+
+    out = tmp_path / "out"
+    result = subprocess.run(
+        [*REPROTO_CMD, "-q", "-b", f"-I{inputs}", "-O", str(out),
+         "--proto-variant", str(variant), "u.pb", ROOT.replace(".proto", ".pb")],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "[(.ext.level) = 7]" in (out / "u.proto").read_text(encoding="utf-8")
+    # -b writes each file's FileDescriptorProto, alone.
+    written = descriptor_pb2.FileDescriptorProto()
+    written.ParseFromString((out / "u.pb").read_bytes())
+    assert written.message_type[0].field[0].options.SerializeToString() == original
