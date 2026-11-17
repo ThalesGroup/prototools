@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # 0443 — protoback's serial time
 
-Status: draft (P1 and P2 written, not measured; the rest planned)
+Status: draft (P1 and P2 implemented, not measured; the rest planned)
 App: protoback, prototext-graph
 Refs: docs/specs/0442-handles-without-shared-refcounts.md (the contention
         removed; its measured outcome is this spec's starting point),
@@ -44,33 +44,31 @@ units).
 
 In this order, cheapest first; each item measured (M) before the next.
 
-- **P1. The collision check only when a rule renames** (written). Spec
+- **P1. The collision check only when a rule renames** (implemented). Spec
   0440 S2's check runs only when a namespace rule rewrites and
   `--keep-descriptor-path` is off: without one, two different input
   names never become one output name (googleapis, ~0.45 s). Both tools.
-- **P2. Exit without freeing** (written). After a successful run, the
+- **P2. Exit without freeing** (implemented). After a successful run, the
   plugin's process ended and reaped, the standard streams flushed,
   protoback exits without dropping what `main` holds; the system takes
   the memory back at once (~0.9 s). Every output is written and closed
   before; no other destructor acts outside the process. The error paths
   return as before.
-- **P3. The release profile.** `lto = "fat"`, `codegen-units = 1`: on
-  every thread count, the cost slower release builds. To measure.
-- **P4. The allocator, chosen at compile time**, as the hasher is
+- **P3. The allocator, chosen at compile time**, as the hasher is
   (spec 0442 S4): the system's, mimalloc or jemalloc; the default to
   decide by measurement.
-- **P5. Each file written by the thread that rendered it.** The main
+- **P4. Each file written by the thread that rendered it.** The main
   thread writes the ~2,600 `.proto` and `.pb` files in sequence after
   rendering; only the warnings need reproto's order, which their replay
   keeps.
-- **P6. The setup overlapped.** The options pool, the pool loads, the
+- **P5. The setup overlapped.** The options pool, the pool loads, the
   symbol table and the definitions table (0442 S3) are independent:
   built together (`rayon::join`), ~1 s of serial time down to the
   longest of them. Also moves 0442 S3's table off the main thread, the
   ~0.3 s it cost on eight threads.
-- **P7. The schema database's scoring graph overlapped with rendering.**
+- **P6. The schema database's scoring graph overlapped with rendering.**
   It needs only the input's descriptors, complete before phase 7.
-- **P8. prototext-graph.**
+- **P7. prototext-graph.**
   - Its internal maps use the hasher alias, chosen as protoback's (~0.1
     s). Its public fields (`node_ids`, `states`, `node_kinds`, …) keep
     the standard hasher: a feature changing their type would change it
@@ -86,10 +84,13 @@ In this order, cheapest first; each item measured (M) before the next.
   - Scrutiny: where its ~0.4 s goes (build, merge, minimization), and
     what of it can run in parallel (the files' graphs before the merge;
     the minimization's refinement).
-- **P9. The input decoded in parallel.** Phase 1 decodes each of the
+- **P8. The input decoded in parallel.** Phase 1 decodes each of the
   input's descriptors (~3,000 for googleapis) one after another; they
   are independent. The whole phase is ~0.3 s: last, and only if it
   shows once the rest is gone.
+- **P9. The release profile, last.** `lto = "fat"`, `codegen-units = 1`: on
+  every thread count, the cost slower release builds. To measure. Last, so that every step before it builds as
+  fast as today.
 
 ## Measurement
 
