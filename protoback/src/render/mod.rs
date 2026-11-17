@@ -402,13 +402,24 @@ pub fn run(shared: &Shared<'_>, output: &Output, events: &mut Events) -> Result<
     on_pool(output.jobs, || {
         // Without -O, reproto renders for the database alone, as a dry run.
         let dry_run = output.dry_run || output.out_repo.is_none();
-        let collected = write_files(shared, output, dry_run, events)?;
+        // With a database, its scoring graph built beside rendering (spec
+        // 0443 P6).
+        let (collected, speculation) = match output.schema_db {
+            Some(_) => {
+                let (collected, speculation) = rayon::join(
+                    || write_files(shared, output, dry_run, events),
+                    || crate::schema_db::speculate(shared, output),
+                );
+                (collected?, Some(speculation))
+            }
+            None => (write_files(shared, output, dry_run, events)?, None),
+        };
         if let (true, Some(out_repo)) = (shared.emit_scoring_yaml, &output.out_repo) {
             // Every summoned file loaded, rendered or not (spec 0430 S1).
             write_scoring_yaml(shared, out_repo, events)?;
         }
         if let Some(db) = &output.schema_db {
-            crate::schema_db::build(shared, output, collected, db, events)?;
+            crate::schema_db::build(shared, output, collected, db, events, speculation)?;
         }
         Ok(())
     })

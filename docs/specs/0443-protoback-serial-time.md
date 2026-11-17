@@ -85,8 +85,25 @@ In this order, cheapest first; each item measured (M) before the next.
   `--jobs` is above 1, in the former order on one thread otherwise:
   `--jobs 1` stays one thread. Rayon's global pool would not honor
   `--jobs`. A panic on a helper thread is the run's, as on one thread.
-- **P6. The schema database's scoring graph overlapped with rendering.**
-  It needs only the input's descriptors, complete before phase 7.
+- **P6. The schema database's scoring graph built beside rendering**
+  (implemented). Its steps 2 and 3 (each file's scoring graph; the
+  merge and minimization, ~0.4 s mostly on one thread) read the input's
+  definitions, not the rendered output: they need only the list of
+  files, in collection order, which is known before rendering but for
+  the files whose render fails. They run speculatively beside rendering
+  (`schema_db::speculate`, `rayon::join`), for the summoned files then
+  the WKT dependencies; `build` uses the result when the files collected
+  are those. A miss is a render that failed (a file the pool refused
+  holding an enum; an option value no renderer can name), and the files
+  collected are then the expected ones less those: their step-2 graphs
+  are reused, only step 3 runs again (`Speculation::regraph`); a file
+  not expected would run both again. Pruning does not miss: the
+  expectation is made after it, from the files the renderer takes.
+  Measured: the harness's 299 database builds all hit; the miss path is
+  unit-tested only, nothing in the corpora triggering it. The speculation prints
+  nothing: the phases' labels and the warnings stay in their order.
+  Its result carries the error's message, a `Box<dyn Error>` not being
+  `Send`. Checked used on the wkt and custom cases.
 - **P7. prototext-graph.**
   - Its internal maps use the hasher alias, chosen as protoback's (~0.1
     s). Its public fields (`node_ids`, `states`, `node_kinds`, …) keep

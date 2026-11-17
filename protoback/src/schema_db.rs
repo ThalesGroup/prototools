@@ -47,17 +47,123 @@ fn name(graph: &Graph, i: usize) -> String {
         .to_string()
 }
 
+/// The merged, minimized graph: its rkyv bytes, and with `html` the
+/// minimized and raw graphs' YAML; or the error's message.
+type Compiled = Result<(Vec<u8>, Option<String>, Option<String>), String>;
+
+/// Steps 2 and 3 of `build` run beside rendering (spec 0443 P6), for the
+/// files the database will hold if every render succeeds: the summoned
+/// files, then the WKT dependencies. Used when the files collected are
+/// those; else `build` runs the steps again. Prints nothing: the phases'
+/// labels and the warnings come from `build`, in their order.
+pub struct Speculation {
+    files: Vec<String>,
+    graphs: Graphs,
+    compiled: Option<Compiled>,
+}
+
+/// Step 2's result: whether each file got its graph (none for a file the
+/// pool refused), and the graphs it got, in order.
+struct Graphs {
+    present: Vec<bool>,
+    kept: Vec<ScoringFile>,
+}
+
+impl Speculation {
+    /// Step 2's graphs for `files`, taken from the speculation's when it
+    /// holds every one (a render failed: the files collected are the ones
+    /// it expected, less those), so that only step 3 runs again; `None`
+    /// when a file is not among them.
+    fn regraph(self, files: &[&str]) -> Option<Graphs> {
+        let at: HashMap<&str, usize> = self
+            .files
+            .iter()
+            .enumerate()
+            .map(|(j, f)| (f.as_str(), j))
+            .collect();
+        let positions: Vec<usize> = files
+            .iter()
+            .map(|f| at.get(f).copied())
+            .collect::<Option<_>>()?;
+        // Each expected file's graph by position, none where it had none.
+        let mut kept = self.graphs.kept.into_iter();
+        let mut by_position: Vec<Option<ScoringFile>> = self
+            .graphs
+            .present
+            .iter()
+            .map(|&p| if p { kept.next() } else { None })
+            .collect();
+        let graphs: Vec<Option<ScoringFile>> =
+            positions.iter().map(|&j| by_position[j].take()).collect();
+        Some(Graphs {
+            present: graphs.iter().map(Option::is_some).collect(),
+            kept: graphs.into_iter().flatten().collect(),
+        })
+    }
+}
+
+pub fn speculate(shared: &Shared<'_>, output: &Output) -> Speculation {
+    let mut seen = HashSet::default();
+    let files: Vec<String> = render::summoned_files(shared.graph)
+        .into_iter()
+        .chain(output.extra_nodes.iter().map(|&x| name(shared.graph, x)))
+        .filter(|f| seen.insert(f.clone()))
+        .collect();
+    let refs: Vec<&str> = files.iter().map(String::as_str).collect();
+    let graphs = collect_graphs(shared, &refs);
+    let html = output.scoring_html.is_some();
+    let compiled = (!graphs.kept.is_empty()).then(|| compile(&graphs.kept, html, |_, _| {}));
+    Speculation {
+        files,
+        graphs,
+        compiled,
+    }
+}
+
+/// Step 2: each file's scoring graph, names renamed as `.desc` renames
+/// them (spec 0430 S6); none for a file the pool refused.
+fn collect_graphs(shared: &Shared<'_>, files: &[&str]) -> Graphs {
+    use rayon::prelude::*;
+    let rename = |full: &str| -> String {
+        shared
+            .variant
+            .output_symbol(full, shared.keep_variant_descriptor)
+    };
+    let graphs: Vec<Option<ScoringFile>> = files
+        .par_iter()
+        .map(|origin| {
+            let c = crate::scoring::Collect {
+                graph: shared.graph,
+                loads: shared.loads,
+                extension_ranges: shared.emit_extension_ranges,
+                rename: &rename,
+            };
+            crate::scoring::file(&c, origin)
+        })
+        .collect();
+    Graphs {
+        present: graphs.iter().map(Option::is_some).collect(),
+        kept: graphs.into_iter().flatten().collect(),
+    }
+}
+
+/// Step 3: the graphs merged and minimized.
+fn compile(graphs: &[ScoringFile], html: bool, progress: impl FnMut(u64, u64)) -> Compiled {
+    build_from_files(graphs, html, html, progress).map_err(|e| e.to_string())
+}
+
 /// The database, from the descriptors phase 7 collected; `extras`,
-/// phase 6's `schema_db_extra_nodes`.
+/// phase 6's `schema_db_extra_nodes`; `speculation`, steps 2 and 3 run
+/// beside rendering.
 pub fn build(
     shared: &Shared<'_>,
     output: &Output,
     mut collected: Collected,
     db_path: &Path,
     events: &mut Events,
+    speculation: Option<Speculation>,
 ) -> Result<(), Failure> {
     let extras = &output.extra_nodes;
-    use rayon::prelude::*;
 
     // 1. The WKT dependencies, rendered after phase 7, one by one: each
     // sees the promotions before it (spec 0430 S4). A failed render is
@@ -101,30 +207,28 @@ pub fn build(
             scoring_files.len() as u64
         },
     );
-    let rename = |full: &str| -> String {
-        shared
-            .variant
-            .output_symbol(full, shared.keep_variant_descriptor)
-    };
-    let graphs: Vec<Option<ScoringFile>> = scoring_files
-        .par_iter()
-        .map(|origin| {
-            let c = crate::scoring::Collect {
-                graph: shared.graph,
-                loads: shared.loads,
-                extension_ranges: shared.emit_extension_ranges,
-                rename: &rename,
-            };
-            crate::scoring::file(&c, origin)
-        })
-        .collect();
-    let mut kept = Vec::with_capacity(graphs.len());
-    for (origin, g) in scoring_files.iter().zip(graphs) {
-        match g {
-            Some(g) => kept.push(g),
-            // A file the pool refused: W6, its fixed reason (spec 0429 S16).
-            None => events.w6("W20", origin, "schema db", render::POOL_REFUSED),
+    // The speculation's, when it was for these files (spec 0443 P6).
+    // The speculation's (spec 0443 P6): all of it when it was for these
+    // files; else its graphs of these files, step 3 to run again; else
+    // step 2 too.
+    let (Graphs { present, kept }, compiled) = match speculation {
+        Some(s)
+            if s.files
+                .iter()
+                .map(String::as_str)
+                .eq(scoring_files.iter().copied()) =>
+        {
+            (s.graphs, s.compiled)
         }
+        Some(s) => match s.regraph(&scoring_files) {
+            Some(graphs) => (graphs, None),
+            None => (collect_graphs(shared, &scoring_files), None),
+        },
+        None => (collect_graphs(shared, &scoring_files), None),
+    };
+    for (origin, _) in scoring_files.iter().zip(&present).filter(|(_, &p)| !p) {
+        // A file the pool refused: W6, its fixed reason (spec 0429 S16).
+        events.w6("W20", origin, "schema db", render::POOL_REFUSED);
     }
     let graphs = kept;
     collecting.done();
@@ -142,9 +246,12 @@ pub fn build(
     // minimized graphs' YAML the pages are drawn from.
     let html = output.scoring_html.is_some();
     let compiling = console::phase("Compiling scoring graph", console::Label::OnTerminal, 0);
-    let built = build_from_files(&graphs, html, html, |current, total| {
-        compiling.set(current, total);
-    });
+    let built = match compiled {
+        Some(compiled) => compiled,
+        None => compile(&graphs, html, |current, total| {
+            compiling.set(current, total);
+        }),
+    };
     compiling.done();
     let (rkyv, minimized_yaml, raw_yaml) =
         built.map_err(|e| Failure::Fatal(format!("Error: building the scoring graph: {e}")))?;
@@ -363,5 +470,51 @@ fn nested_extensions(m: &DescriptorProto<'_>, file: &str, out: &mut HashMap<Stri
     }
     for n in m.nested_type() {
         nested_extensions(&n, file, out);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Graphs, Speculation};
+    use prototext_graph::build_scoring_graph::ScoringFile;
+
+    /// A graph told apart by its one entry.
+    fn graph(name: &str) -> ScoringFile {
+        ScoringFile {
+            entries: vec![name.to_string()],
+            ..ScoringFile::default()
+        }
+    }
+
+    fn speculation() -> Speculation {
+        // b.proto's graph is none: a file the pool refused.
+        Speculation {
+            files: ["a.proto", "b.proto", "c.proto", "d.proto"]
+                .map(String::from)
+                .to_vec(),
+            graphs: Graphs {
+                present: vec![true, false, true, true],
+                kept: vec![graph("a"), graph("c"), graph("d")],
+            },
+            compiled: None,
+        }
+    }
+
+    fn entries(g: &Graphs) -> Vec<&str> {
+        g.kept.iter().map(|f| f.entries[0].as_str()).collect()
+    }
+
+    #[test]
+    fn a_failed_file_dropped_the_others_graphs_are_reused_in_order() {
+        let g = speculation()
+            .regraph(&["a.proto", "b.proto", "d.proto"])
+            .unwrap();
+        assert_eq!(g.present, vec![true, false, true]);
+        assert_eq!(entries(&g), vec!["a", "d"]);
+    }
+
+    #[test]
+    fn a_file_the_speculation_did_not_expect_is_collected_again() {
+        assert!(speculation().regraph(&["a.proto", "e.proto"]).is_none());
     }
 }
