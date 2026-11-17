@@ -83,9 +83,12 @@ last line (presumably the frees before exit, to confirm).
   then every key renamed into a second map: the renaming now as each
   symbol is added), the 0440 symbol check (a `String` key a node, the
   map grown as it goes: sized up front), `graph::run`. protoback's maps
-  use one hasher alias chosen at compile time: the feature `hash-fx`
-  (`rustc-hash`, the default), `hash-fold` (`foldhash`) or `hash-sip`
-  (the standard library's). No output depends on a map's iteration
+  use one hasher alias chosen at compile time: `rustc-hash`'s FxHash,
+  unless the feature `hash-fold` (`foldhash`) or `hash-sip` (the
+  standard library's) is enabled, `hash-sip` winning. FxHash is no
+  feature of its own: the workspace's Nix builds pass
+  `--no-default-features`, which would leave a default-feature choice
+  with none. No output depends on a map's iteration
   order (the standard hasher is already seeded at random per run).
 - **S5. Measured** before and after each of S1 to S4: the googleapis case at
   1, 2, 4 and 8 threads, phase by phase, task-clock, and the profile.
