@@ -285,6 +285,12 @@ impl Variant {
             .to_string()
     }
 
+    /// Whether any namespace rule renames (spec 0440 S2): without one, two
+    /// different input names never become one output name.
+    pub fn renames_symbols(&self, keep_descriptor: bool) -> bool {
+        !keep_descriptor && self.namespace_rules.iter().any(|r| r.to.is_some())
+    }
+
     /// `output_symbol` (spec 0440 S1): a symbol's output full name, its
     /// leading dot kept as given; the input's under
     /// `--keep-descriptor-path`. With `output_package` and

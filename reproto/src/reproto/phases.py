@@ -1461,7 +1461,10 @@ def _resolve_rewrite_collisions(ctx: Context) -> None:
                     f"'{descriptor}', the variant's descriptor.proto, is kept",
                 )
                 _unsummon(f)
-    errors.extend(_symbol_collisions(ctx))
+    # No namespace rule renaming: no symbol can collide (spec 0443 P1).
+    if not ctx.keep_variant_descriptor and any(
+            rule['action'] == 'rewrite' for rule in ctx.variant_ns_rules):
+        errors.extend(_symbol_collisions(ctx))
     if errors:
         raise RewriteCollisionError(errors)
 

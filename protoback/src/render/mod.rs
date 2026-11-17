@@ -292,7 +292,10 @@ pub fn resolve_rewrite_collisions(
             }
         }
     }
-    errors.extend(symbol_collisions(graph, variant, keep_descriptor));
+    // No namespace rule renaming: no symbol can collide (spec 0443 P1).
+    if variant.renames_symbols(keep_descriptor) {
+        errors.extend(symbol_collisions(graph, variant, keep_descriptor));
+    }
     if errors.is_empty() {
         Ok(warnings)
     } else {
