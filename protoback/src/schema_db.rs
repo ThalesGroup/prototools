@@ -102,15 +102,9 @@ pub fn build(
         },
     );
     let rename = |full: &str| -> String {
-        if shared.keep_variant_descriptor {
-            full.to_string()
-        } else {
-            shared
-                .variant
-                .namespace(&format!(".{full}"))
-                .trim_start_matches('.')
-                .to_string()
-        }
+        shared
+            .variant
+            .output_symbol(full, shared.keep_variant_descriptor)
     };
     let graphs: Vec<Option<ScoringFile>> = scoring_files
         .par_iter()

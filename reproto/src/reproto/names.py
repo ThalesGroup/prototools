@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Iterable
+from typing import TYPE_CHECKING, Callable, Iterable
 
 from google.protobuf.descriptor_pb2 import (
     DescriptorProto,
@@ -57,6 +57,10 @@ class _Visible:
     packages: frozenset[str]
 
 
+def _same(name: str) -> str:
+    return name
+
+
 @dataclass
 class SymbolTable:
     """Every symbol of the loaded files, by full name (no leading dot):
@@ -66,21 +70,36 @@ class SymbolTable:
     imports: dict[str, tuple[list[str], list[str]]] = field(default_factory=dict)
     _visible: dict[str, _Visible] = field(default_factory=dict)
 
+    # The output names of symbols and packages (spec 0440 S3): the table
+    # holds the names written, files by their input names.
+    rename_symbol: Callable[[str], str] = field(default=_same)
+    rename_package: Callable[[str], str] = field(default=_same)
+
     @classmethod
-    def build(cls, fdps: Iterable[FileDescriptorProto]) -> SymbolTable:
+    def build(
+        cls,
+        fdps: Iterable[FileDescriptorProto],
+        rename_symbol: Callable[[str], str] | None = None,
+        rename_package: Callable[[str], str] | None = None,
+    ) -> SymbolTable:
         table = cls()
+        if rename_symbol is not None:
+            table.rename_symbol = rename_symbol
+        if rename_package is not None:
+            table.rename_package = rename_package
         for fdp in fdps:
             table._add_file(fdp)
         return table
 
     def _add(self, name: str, kind: Kind, file: str) -> None:
-        self.symbols.setdefault(name, {}).setdefault(file, kind)
+        """Symbol `name` (its input full name) of `file`, by its output one."""
+        self.symbols.setdefault(self.rename_symbol(name), {}).setdefault(file, kind)
 
     def _add_file(self, fdp: FileDescriptorProto) -> None:
         file = fdp.name
         if file in self.packages:
             return
-        self.packages[file] = fdp.package
+        self.packages[file] = self.rename_package(fdp.package)
         public = [fdp.dependency[i] for i in fdp.public_dependency
                   if i < len(fdp.dependency)]
         self.imports[file] = (list(fdp.dependency), public)
@@ -216,9 +235,13 @@ def option_name(ctx: Context, extension: str, scope: str) -> str:
     not) as written in parentheses, from `scope`, the first scope protoc's
     option lookup searches: in full without the dot when protoc resolves
     it, among every symbol, to the extension; else with it. An extension
-    no loaded file declares is written in full: nothing can check it."""
+    no loaded file declares is written in full: nothing can check it.
+    The extension and the scope are input names, looked up by their output
+    ones (spec 0440 S3)."""
+    from .mappings import output_package, output_symbol
     table = symbol_table(ctx)
-    full = extension.lstrip('.')
+    full = output_symbol(ctx, extension.lstrip('.'))
+    scope = output_package(ctx, scope)
     if full not in table.symbols:
         return full
     visible = table.visible(ctx.current_file)
@@ -242,6 +265,11 @@ def symbol_table(ctx: Context) -> SymbolTable:
             this = getattr(re_fdp, 'this', None)
             if this is not None:
                 fdps.append(this)
-        table = SymbolTable.build(fdps)
+        from .mappings import output_package, output_symbol
+        table = SymbolTable.build(
+            fdps,
+            rename_symbol=lambda name: output_symbol(ctx, name),
+            rename_package=lambda package: output_package(ctx, package),
+        )
         ctx.symbol_table = table
     return table

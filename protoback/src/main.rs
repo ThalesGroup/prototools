@@ -487,6 +487,10 @@ fn main() -> ExitCode {
             .files
             .iter()
             .map(|f| prototext_upb::descriptor_access::FileDescriptorProto(f.as_ref())),
+        &render::names::Renaming {
+            variant: &run.variant,
+            keep_descriptor: cli.keep_descriptor_path,
+        },
     );
     let shared = render::Shared {
         graph: &run.graph,

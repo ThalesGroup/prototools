@@ -318,7 +318,7 @@ reproto first.)
   `shorten_type_name`, `phases.py`, `syntax.py`); the input is never
   rewritten. Recorded, like S11–S15, to change once protoback is
   complete, in protoback first; until then protoback writes reproto's
-  names, byte for byte:
+  names, byte for byte. *Done 2026-11-17, in both tools, by spec 0440.*
   - each call site repeats the `keep_variant_descriptor` guard (one
     leaves it to its callers), so the text and the descriptor can drift;
   - a rewritten type is never shortened: `short_ref` returns the full

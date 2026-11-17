@@ -44,8 +44,8 @@ from typing import TYPE_CHECKING, Any
 
 
 from .context import Context
-from .fake_types import Ref, parse_fqdn
-from .mappings import apply_variant_namespace
+from .fake_types import parse_fqdn
+from .mappings import output_package, output_symbol
 
 if TYPE_CHECKING:
     from .base import NodeBase
@@ -95,14 +95,11 @@ def option_scope(node: 'NodeBase[Any]') -> str:
 
 
 def type_ref(ctx: Context, target: str, scope: str, mode: 'Mode') -> str:
-    """The name to write for the type `target` (its full name, leading dot
-    included) in the file being rendered, from `scope` (spec 0434): the
-    variant's namespace rewriting first, as before (its N2), then the name
-    protoc resolves back to `target`, in googleapis' convention (S4)."""
+    """The name to write for the type `target` (its input full name,
+    leading dot included) in the file being rendered, from `scope` (an
+    input name): the name protoc resolves back to it, in googleapis'
+    convention (spec 0434 S4), all in output names (spec 0440 S3)."""
     from .names import symbol_table
-    if not ctx.keep_variant_descriptor:
-        rewritten = str(apply_variant_namespace(ctx, Ref(target)))
-        if rewritten != target:
-            return rewritten
-    return symbol_table(ctx).type_name(target, ctx.current_file, scope, mode)
+    return symbol_table(ctx).type_name(
+        output_symbol(ctx, target), ctx.current_file, output_package(ctx, scope), mode)
     

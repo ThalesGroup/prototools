@@ -63,7 +63,8 @@ class DescriptorProtoUnbuildableError(Exception):
 
 class RewriteCollisionError(Exception):
     """Raised when import rewrites give two files one output path, neither
-    of them the variant's descriptor.proto (spec 0437 S3): one line each."""
+    of them the variant's descriptor.proto (spec 0437 S3), or namespace
+    rewrites two symbols one output name (spec 0440 S2): one line each."""
 
     def __init__(self, lines: list[str]) -> None:
         super().__init__('\n'.join(lines))
@@ -1460,8 +1461,45 @@ def _resolve_rewrite_collisions(ctx: Context) -> None:
                     f"'{descriptor}', the variant's descriptor.proto, is kept",
                 )
                 _unsummon(f)
+    errors.extend(_symbol_collisions(ctx))
     if errors:
         raise RewriteCollisionError(errors)
+
+
+# The kinds of node a symbol collision is looked for among (spec 0440 S2).
+_SYMBOL_KINDS = ('desc', 'enum', 'serv', 'meth', 'fdsc')
+
+
+def _symbol_collisions(ctx: Context) -> list[str]:
+    """Spec 0440 S2: two symbols of the summoned files, of two input names,
+    with one output name, one line per name, the outermost only (two
+    colliding messages, not each of their fields)."""
+    from .mappings import output_symbol
+    from .utils import get_file_node
+    by_name: dict[str, list[tuple[str, str]]] = {}   # out → (in, file)
+    for node in ctx.nodes.values():
+        kind, _, name = str(node.fqdn).partition(':')
+        if kind not in _SYMBOL_KINDS or not node.is_present() or not node.is_summoned:
+            continue
+        file_node = get_file_node(node)
+        if not file_node.is_summoned:
+            continue   # a copy 0437 dropped
+        name = name.lstrip('.')
+        defs = by_name.setdefault(output_symbol(ctx, name), [])
+        file = file_node.name
+        if not any(n == name for n, _ in defs):
+            defs.append((name, file))
+    colliding = [out for out, defs in by_name.items() if len(defs) > 1]
+    lines = []
+    for out in colliding:
+        parent = out.rpartition('.')[0]
+        while parent and parent not in by_name:
+            parent = parent.rpartition('.')[0]
+        if parent and len(by_name[parent]) > 1:
+            continue
+        files = [f for _, f in by_name[out]]
+        lines.append(f"{_quoted_list(files)} both define '{out}' once rewritten; prune one (-p)")
+    return lines
 
 
 def _phase7_output(ctx: Context, out_repo: Path) -> None:
@@ -1811,11 +1849,8 @@ def _canonical_scoring_name(ctx: 'Context', full_name: str) -> str:
     — keeps hopcroft.rkyv's names in lockstep with .desc's names (spec
     0166).
     """
-    if ctx.keep_variant_descriptor:
-        return full_name
-    from .mappings import apply_variant_namespace
-    from .fake_types import Ref as _Ref
-    return str(apply_variant_namespace(ctx, _Ref(f'.{full_name}'))).lstrip('.')
+    from .mappings import output_symbol
+    return output_symbol(ctx, full_name)
 
 
 def _collect_group_fqdns(fd: Any) -> 'set[str]':

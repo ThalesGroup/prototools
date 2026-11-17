@@ -285,6 +285,34 @@ impl Variant {
             .to_string()
     }
 
+    /// `output_symbol` (spec 0440 S1): a symbol's output full name, its
+    /// leading dot kept as given; the input's under
+    /// `--keep-descriptor-path`. With `output_package` and
+    /// `canonize_dependency`, the only appliers of the rules but for
+    /// predicates on what they give.
+    pub fn output_symbol(&self, name: &str, keep_descriptor: bool) -> String {
+        if keep_descriptor {
+            return name.to_string();
+        }
+        match name.strip_prefix('.') {
+            Some(_) => self.namespace(name),
+            None => {
+                let out = self.namespace(&format!(".{name}"));
+                out.get(1..).unwrap_or_default().to_string()
+            }
+        }
+    }
+
+    /// `output_package`: a package's output name, or a scope's (a package
+    /// or a message's full name, no leading dot).
+    pub fn output_package(&self, package: &str, keep_descriptor: bool) -> String {
+        if keep_descriptor {
+            package.to_string()
+        } else {
+            self.namespace_package(package)
+        }
+    }
+
     /// `canonize_dependency`: a file name, the variant's descriptor.proto
     /// kept as it is under `--keep-descriptor-path`.
     pub fn canonize_dependency(&self, name: &str, keep_descriptor: bool) -> String {

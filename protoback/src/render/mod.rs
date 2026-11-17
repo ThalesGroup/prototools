@@ -24,7 +24,7 @@ use prototext_upb::descriptor_access::{
 };
 use prototext_upb::MessageRef;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use crate::db::Database;
 use crate::events::Events;
@@ -279,11 +279,72 @@ pub fn resolve_rewrite_collisions(
             }
         }
     }
+    errors.extend(symbol_collisions(graph, variant, keep_descriptor));
     if errors.is_empty() {
         Ok(warnings)
     } else {
         Err(errors)
     }
+}
+
+/// `_symbol_collisions` (spec 0440 S2): two symbols of the summoned files,
+/// of two input names, with one output name, one line per name, the
+/// outermost only (two colliding messages, not each of their fields).
+fn symbol_collisions(
+    graph: &Graph,
+    variant: &crate::variant::Variant,
+    keep_descriptor: bool,
+) -> Vec<String> {
+    const KINDS: [&str; 5] = ["desc", "enum", "serv", "meth", "fdsc"];
+    // Output name -> (input name, file), in node order.
+    let mut by_name: Vec<(String, Vec<(String, String)>)> = Vec::new();
+    let mut index: HashMap<String, usize> = HashMap::new();
+    for node in &graph.nodes {
+        let Some((kind, name)) = node.fqdn.split_once(':') else {
+            continue;
+        };
+        if !KINDS.contains(&kind) || !node.present || !node.is_summoned {
+            continue;
+        }
+        let name = name.trim_start_matches('.').to_string();
+        let mut f = node;
+        while let Some(p) = f.parent {
+            f = &graph.nodes[p];
+        }
+        if !f.is_summoned {
+            continue; // a copy 0437 dropped
+        }
+        let file = f.fqdn.strip_prefix("file:").unwrap_or_default().to_string();
+        let out = variant.output_symbol(&name, keep_descriptor);
+        let at = *index.entry(out.clone()).or_insert_with(|| {
+            by_name.push((out, Vec::new()));
+            by_name.len() - 1
+        });
+        let defs = &mut by_name[at].1;
+        if !defs.iter().any(|(n, _)| *n == name) {
+            defs.push((name, file));
+        }
+    }
+    let colliding = |out: &str| index.get(out).is_some_and(|&i| by_name[i].1.len() > 1);
+    let mut lines = Vec::new();
+    for (out, defs) in &by_name {
+        if defs.len() < 2 {
+            continue;
+        }
+        let mut parent = out.rsplit_once('.').map_or("", |(p, _)| p);
+        while !parent.is_empty() && !index.contains_key(parent) {
+            parent = parent.rsplit_once('.').map_or("", |(p, _)| p);
+        }
+        if !parent.is_empty() && colliding(parent) {
+            continue;
+        }
+        let files: Vec<&str> = defs.iter().map(|(_, f)| f.as_str()).collect();
+        lines.push(format!(
+            "{} both define '{out}' once rewritten; prune one (-p)",
+            quoted_list(&files)
+        ));
+    }
+    lines
 }
 
 /// The same files, by name.

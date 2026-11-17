@@ -496,13 +496,11 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
             # (spec 0086), unless --keep-descriptor-path suppresses
             # namespace rewriting entirely (spec 0159, as utils.type_ref
             # does for the text-render path)
-            if not ctx.keep_variant_descriptor:
-                from .mappings import apply_variant_namespace
-                from .fake_types import Ref as _Ref
-                if field_out.type_name:
-                    field_out.type_name = str(apply_variant_namespace(ctx, _Ref(field_out.type_name)))
-                if field_out.extendee:
-                    field_out.extendee = str(apply_variant_namespace(ctx, _Ref(field_out.extendee)))
+            from .mappings import output_symbol
+            if field_out.type_name:
+                field_out.type_name = output_symbol(ctx, field_out.type_name)
+            if field_out.extendee:
+                field_out.extendee = output_symbol(ctx, field_out.extendee)
             # label: translation-aware (also handles map field → LABEL_REPEATED)
             if is_map_field:
                 field_out.label = _FDP.LABEL_REPEATED

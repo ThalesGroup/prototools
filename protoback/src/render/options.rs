@@ -243,6 +243,8 @@ pub struct Unrenderable;
 /// renders (spec 0429 S4).
 pub struct Scope<'a> {
     pub variant: &'a Variant,
+    /// `--keep-descriptor-path`: names written as the input's (spec 0440).
+    pub keep_descriptor: bool,
     pub graph: &'a crate::graph::Graph,
     /// The rendering file's import closure (spec 0429 S14).
     pub closure: &'a std::collections::HashSet<String>,
@@ -275,9 +277,13 @@ impl Scope<'_> {
             .graph
             .find(&format!("fdsc:{full}"))
             .is_some_and(|n| self.graph.nodes[n].is_summoned);
-        let name = self
-            .names
-            .option_name(&full, self.visible, &self.option_scope);
+        let name = self.names.option_name(
+            &self.variant.output_symbol(&full, self.keep_descriptor),
+            self.visible,
+            &self
+                .variant
+                .output_package(&self.option_scope, self.keep_descriptor),
+        );
         (format!("({name})"), orphan)
     }
 }

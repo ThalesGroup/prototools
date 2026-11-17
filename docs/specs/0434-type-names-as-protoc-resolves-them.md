@@ -106,6 +106,8 @@ in a scope that would capture the plain name.
 - **N2.** The variant's namespace rewriting: a rewritten name still comes
   out whole, before any of this. Its redesign is separate, after the
   port (spec 0429 S17).
+  *Done by spec 0440:* names are now resolved in the output namespace,
+  rewritten ones included.
 - **N3.** Custom editions features dropped from the output: a defect of
   the features renderer, with its own spec.
 

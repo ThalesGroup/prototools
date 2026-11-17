@@ -102,6 +102,7 @@ impl Ctx<'_, '_> {
     pub fn scope(&self, option_scope: &str) -> super::options::Scope<'_> {
         super::options::Scope {
             variant: self.shared.variant,
+            keep_descriptor: self.shared.keep_variant_descriptor,
             graph: self.shared.graph,
             closure: &self.closure,
             events: &self.events,
@@ -537,11 +538,9 @@ fn render_body(
 
     let package = text(f.package());
     if !package.is_empty() {
-        let out_package = if shared.keep_variant_descriptor {
-            package
-        } else {
-            shared.variant.namespace_package(&package)
-        };
+        let out_package = shared
+            .variant
+            .output_package(&package, shared.keep_variant_descriptor);
         out.push(Line::code(format!("package {out_package};"), depth));
         out.push(Line::code("", depth));
     }

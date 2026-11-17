@@ -105,12 +105,43 @@ fn join(prefix: &str, name: &[u8]) -> String {
     }
 }
 
+/// The output names the table holds (spec 0440 S3): symbols and packages
+/// renamed, files by their input names.
+pub struct Renaming<'v> {
+    pub variant: &'v crate::variant::Variant,
+    pub keep_descriptor: bool,
+}
+
 impl SymbolTable {
-    pub fn build<'f>(files: impl IntoIterator<Item = FileDescriptorProto<'f>>) -> SymbolTable {
+    pub fn build<'f>(
+        files: impl IntoIterator<Item = FileDescriptorProto<'f>>,
+        renaming: &Renaming<'_>,
+    ) -> SymbolTable {
         let mut table = SymbolTable::default();
+        let mut order: HashMap<String, usize> = HashMap::new();
         for f in files {
-            table.add_file(&f);
+            let n = order.len();
+            order.entry(text(f.name())).or_insert(n);
+            table.add_file(&f, renaming);
         }
+        // Each symbol by its output name, the definitions of input names
+        // the rules merge kept together, in file order (reproto's dict).
+        let mut symbols: HashMap<String, Vec<(String, SymbolKind)>> = HashMap::new();
+        for (name, defs) in std::mem::take(&mut table.symbols) {
+            let out = renaming
+                .variant
+                .output_symbol(&name, renaming.keep_descriptor);
+            let merged = symbols.entry(out).or_default();
+            for def in defs {
+                if !merged.iter().any(|(f, _)| *f == def.0) {
+                    merged.push(def);
+                }
+            }
+        }
+        for defs in symbols.values_mut() {
+            defs.sort_by_key(|(f, _)| order.get(f).copied().unwrap_or(usize::MAX));
+        }
+        table.symbols = symbols;
         table
     }
 
@@ -121,13 +152,18 @@ impl SymbolTable {
         }
     }
 
-    fn add_file(&mut self, f: &FileDescriptorProto<'_>) {
+    fn add_file(&mut self, f: &FileDescriptorProto<'_>, renaming: &Renaming<'_>) {
         let file = text(f.name());
         if self.packages.contains_key(&file) {
             return;
         }
         let package = text(f.package());
-        self.packages.insert(file.clone(), package.clone());
+        self.packages.insert(
+            file.clone(),
+            renaming
+                .variant
+                .output_package(&package, renaming.keep_descriptor),
+        );
         let deps: Vec<String> = f.dependency().iter().map(|d| text(d)).collect();
         let public = f
             .public_dependency()
@@ -351,19 +387,18 @@ pub fn scope_name(shared: &Shared<'_>, node: usize) -> String {
         .to_string()
 }
 
-/// `utils.type_ref`: the name to write for the type `target` (its full
-/// name, leading dot included) in the file `ctx` renders, from `scope`:
-/// the variant's namespace rewriting first, as before (spec 0434 N2), then
-/// the name protoc resolves back to `target` (S4).
+/// `utils.type_ref`: the name to write for the type `target` (its input
+/// full name, leading dot included) in the file `ctx` renders, from
+/// `scope` (an input name): the name protoc resolves back to it (spec 0434
+/// S4), all in output names (spec 0440 S3).
 pub fn type_ref(ctx: &super::file::Ctx<'_, '_>, target: &str, scope: &str, mode: Mode) -> String {
     let shared = ctx.shared;
-    if !shared.keep_variant_descriptor {
-        let rewritten = shared.variant.namespace(target);
-        if rewritten != target {
-            return rewritten;
-        }
-    }
-    shared
-        .names
-        .type_name(target, &ctx.file_name(), &ctx.visible, scope, mode)
+    let keep = shared.keep_variant_descriptor;
+    shared.names.type_name(
+        &shared.variant.output_symbol(target, keep),
+        &ctx.file_name(),
+        &ctx.visible,
+        &shared.variant.output_package(scope, keep),
+        mode,
+    )
 }

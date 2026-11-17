@@ -45,15 +45,12 @@ fn append(
     }
 }
 
-/// The variant's namespace rules on a type name, unless
-/// `--keep-descriptor-path`.
+/// A type name's output one (spec 0440 S4).
 fn rename(ctx: &Ctx<'_, '_>, name: &[u8]) -> String {
-    let name = text(name);
-    if ctx.shared.keep_variant_descriptor {
-        name
-    } else {
-        ctx.shared.variant.namespace(&name)
-    }
+    let shared = ctx.shared;
+    shared
+        .variant
+        .output_symbol(&text(name), shared.keep_variant_descriptor)
 }
 
 /// The file's descriptor: `locations`, the synthesized SourceCodeInfo.
@@ -81,12 +78,12 @@ pub fn file(ctx: &Ctx<'_, '_>, locations: &[Location]) -> Option<Vec<u8>> {
             w.push_dependency(d.as_bytes()).ok()?;
         }
         if !keep {
-            // reproto assigns it: an absent package comes out present and
-            // empty.
+            // reproto assigns it but under --keep-descriptor-path: an
+            // absent package comes out present and empty.
             w.set_package(
                 shared
                     .variant
-                    .namespace_package(&text(f.package()))
+                    .output_package(&text(f.package()), keep)
                     .as_bytes(),
             )
             .ok()?;
@@ -278,14 +275,12 @@ fn field(ctx: &Ctx<'_, '_>, fd: usize) -> Option<Vec<u8>> {
     let mut out = copy(ctx, fd)?;
     {
         let mut w = FieldDescriptorProtoMut(out.as_mut());
-        if !ctx.shared.keep_variant_descriptor {
-            if !f.type_name().is_empty() {
-                w.set_type_name(rename(ctx, f.type_name()).as_bytes())
-                    .ok()?;
-            }
-            if !f.extendee().is_empty() {
-                w.set_extendee(rename(ctx, f.extendee()).as_bytes()).ok()?;
-            }
+        if !f.type_name().is_empty() {
+            w.set_type_name(rename(ctx, f.type_name()).as_bytes())
+                .ok()?;
+        }
+        if !f.extendee().is_empty() {
+            w.set_extendee(rename(ctx, f.extendee()).as_bytes()).ok()?;
         }
         w.set_label(if is_map { 3 } else { label }).ok()?;
         // A proto3 `optional` written as anything but proto3 is proto2's:
@@ -369,15 +364,13 @@ fn service(ctx: &Ctx<'_, '_>, svc: usize) -> Option<Vec<u8>> {
         let mut mo = copy(ctx, meth)?;
         {
             let mut w = prototext_upb::descriptor_access::MethodDescriptorProtoMut(mo.as_mut());
-            if !shared.keep_variant_descriptor {
-                if !md.input_type().is_empty() {
-                    w.set_input_type(rename(ctx, md.input_type()).as_bytes())
-                        .ok()?;
-                }
-                if !md.output_type().is_empty() {
-                    w.set_output_type(rename(ctx, md.output_type()).as_bytes())
-                        .ok()?;
-                }
+            if !md.input_type().is_empty() {
+                w.set_input_type(rename(ctx, md.input_type()).as_bytes())
+                    .ok()?;
+            }
+            if !md.output_type().is_empty() {
+                w.set_output_type(rename(ctx, md.output_type()).as_bytes())
+                    .ok()?;
             }
             if md.has_options() && !editions {
                 w.options_mut().ok()?.clear_features();

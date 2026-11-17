@@ -59,8 +59,36 @@ from .context import Context
 from .fake_types import Fqdn, Ref
 from .globals import FIELD
 
+# --- The renaming (spec 0440) ---------------------------------------------
+# The variant's rules are applied here and nowhere else: each output name
+# is one of these functions of the input name. Symbols and packages keep
+# their input names under --keep-descriptor-path; files are rewritten but
+# the variant's descriptor.proto (canonize_dependency).
+
+def output_symbol(ctx: Context, name: str) -> str:
+    """A symbol's output full name, from its input one, leading dot kept
+    as given."""
+    if ctx.keep_variant_descriptor:
+        return name
+    dotted = name if name.startswith('.') else f'.{name}'
+    out = str(apply_variant_namespace(ctx, Ref(dotted)))
+    return out if name.startswith('.') else out[1:]
+
+
+def output_package(ctx: Context, package: str) -> str:
+    """A package's output name; also a scope's (a package or a message's
+    full name, no leading dot), matched as `.scope.`."""
+    if ctx.keep_variant_descriptor:
+        return package
+    return apply_variant_namespace_to_package(ctx, package)
+
+
 def apply_variant_namespace(ctx: Context, r: Ref) -> Ref:
-    """Map a type reference according to the active variant's namespace rules.
+    """The variant's namespace rules alone, whatever --keep-descriptor-path
+    says: callers use output_symbol, but for a predicate on what the rules
+    would give (syntax.descriptor_options_fqns).
+
+    Map a type reference according to the active variant's namespace rules.
 
     Iterates ctx.variant_ns_rules in order; the first matching rule wins
     (unless rule has continue: true).  Rules with action 'keep' leave the
