@@ -492,9 +492,10 @@ fn main() -> ExitCode {
             keep_descriptor: cli.keep_descriptor_path,
         },
     );
+    let defs = render::find_defs(&run.graph, &run.db);
     let shared = render::Shared {
+        defs: &defs,
         graph: &run.graph,
-        db: &run.db,
         topo: &topo,
         variant: &run.variant,
         edition_defaults: &run.edition_defaults,

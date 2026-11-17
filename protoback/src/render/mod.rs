@@ -45,7 +45,6 @@ fn text(b: &[u8]) -> String {
 #[derive(Clone)]
 pub struct Shared<'a> {
     pub graph: &'a Graph,
-    pub db: &'a Database,
     pub topo: &'a Topology,
     pub variant: &'a Variant,
     pub edition_defaults: &'a EditionDefaults,
@@ -81,9 +80,12 @@ pub struct Shared<'a> {
     pub debug: bool,
     /// Every loaded file's symbols, for the type names written (spec 0434).
     pub names: &'a names::SymbolTable,
+    /// Each node's definition, found once (`find_defs`, spec 0442 S3).
+    pub defs: &'a [Option<Def<'a>>],
 }
 
 /// A node's definition, read from the pool's file it is in.
+#[derive(Clone)]
 pub enum Def<'a> {
     File(FileDescriptorProto<'a>),
     Message(DescriptorProto<'a>),
@@ -93,29 +95,24 @@ pub enum Def<'a> {
     Method(MethodDescriptorProto<'a>),
 }
 
-impl<'a> Shared<'a> {
-    /// A rendered file's descriptor is built (`ctx.out_desc`): for
-    /// `--emit-binary` or the schema database.
-    pub fn wants_descriptor(&self) -> bool {
-        self.emit_binary || self.schema_db
-    }
-
-    /// The definition of node `i` (`node.this`): its `DefRef`'s path walked
-    /// from its file, each step straight to the one child it names (a
-    /// reader's `message_type()` would build every sibling's, which made a
-    /// lookup quadratic). `None` for a stub.
-    pub fn def(&self, i: usize) -> Option<Def<'a>> {
-        fn step<'m>(m: MessageRef<'m>, number: u32, index: usize) -> Option<MessageRef<'m>> {
-            match m.get_by_number(number)? {
-                prototext_upb::Value::List(list) if index < list.len() => match list.get(index) {
-                    prototext_upb::Value::Message(Some(r)) => Some(r),
-                    _ => None,
-                },
+/// Each node's definition (spec 0442 S3): its `DefRef`'s path walked down
+/// from its file's root once (file, then field number and index, as
+/// message 3, nested message 1, field 2), each step straight to the one
+/// child it names (a reader's `message_type()` would build every sibling's,
+/// which made a lookup quadratic); `Shared::def` walked it at every call.
+pub fn find_defs<'a>(graph: &Graph, db: &'a Database) -> Vec<Option<Def<'a>>> {
+    fn step<'m>(m: MessageRef<'m>, number: u32, index: usize) -> Option<MessageRef<'m>> {
+        match m.get_by_number(number)? {
+            prototext_upb::Value::List(list) if index < list.len() => match list.get(index) {
+                prototext_upb::Value::Message(Some(r)) => Some(r),
                 _ => None,
-            }
+            },
+            _ => None,
         }
-        let r = self.graph.nodes[i].def.as_ref()?;
-        let mut cur = Def::File(FileDescriptorProto(self.db.files.get(r.file)?.as_ref()));
+    }
+    let find = |i: usize| -> Option<Def<'a>> {
+        let r = graph.nodes[i].def.as_ref()?;
+        let mut cur = Def::File(FileDescriptorProto(db.files.get(r.file)?.as_ref()));
         for &(number, index) in &r.path {
             cur = match (cur, number) {
                 (Def::File(f), 4) => Def::Message(DescriptorProto(step(f.0, 4, index)?)),
@@ -131,6 +128,21 @@ impl<'a> Shared<'a> {
             };
         }
         Some(cur)
+    };
+    (0..graph.nodes.len()).map(find).collect()
+}
+
+impl<'a> Shared<'a> {
+    /// A rendered file's descriptor is built (`ctx.out_desc`): for
+    /// `--emit-binary` or the schema database.
+    pub fn wants_descriptor(&self) -> bool {
+        self.emit_binary || self.schema_db
+    }
+
+    /// The definition of node `i` (`node.this`), as `find_defs` found it
+    /// (spec 0442 S3). `None` for a stub.
+    pub fn def(&self, i: usize) -> Option<Def<'a>> {
+        self.defs.get(i)?.clone()
     }
 
     pub fn file_def(&self, i: usize) -> Option<FileDescriptorProto<'a>> {

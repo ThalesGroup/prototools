@@ -353,6 +353,13 @@ pub struct MessageRef<'a> {
     _life: PhantomData<&'a DynamicMessage>,
 }
 
+// SAFETY: a `MessageRef` is a shared, read-only view of a message its
+// lifetime keeps borrowed, as `&DynamicMessage` is: its methods only read,
+// upb's reads keep no state, and nothing mutates the message while the
+// view lives (spec 0442 S3, protoback's table of definitions).
+unsafe impl Send for MessageRef<'_> {}
+unsafe impl Sync for MessageRef<'_> {}
+
 impl fmt::Debug for MessageRef<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "MessageRef({})", self.def.full_name())
