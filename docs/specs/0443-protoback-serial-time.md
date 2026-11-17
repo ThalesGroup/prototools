@@ -148,3 +148,18 @@ P3, the allocators compared (P2's tree, the features of 00c5164):
 
 jemalloc: −0.57 s on one thread, −0.24 s on eight, the ranges apart, the
 same peak memory (20 % more page faults). mimalloc: slower than glibc.
+
+jemalloc made the default (9e1c9fe), then P4 (2024333), timed in one
+later session:
+
+| | 1 thread | 8 threads | render, 8 | CPU, 1 / 8 |
+|---|---|---|---|---|
+| jemalloc by default | 7.59 s [7.48–7.67] | 4.88 s [4.74–5.14] | 2.48 s | 7.2 / 7.7 s |
+| P4 | 7.53 s [7.45–7.65] | 4.80 s [4.77–4.83] | 2.33 s | 7.2 / 7.8 s |
+
+The default's code is the feature build's, yet eight threads came out
+0.35 s faster than in the session before: between sessions, a few
+tenths of a second on eight threads is variation, not effect; each
+comparison is to be made within one session. P4: the render phase down
+0.15 s, the total 0.08 s, within the ranges: the writes were a small
+cost; a gain of ~0.1 s is plausible, not established.
