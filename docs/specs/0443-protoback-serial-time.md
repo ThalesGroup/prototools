@@ -205,3 +205,19 @@ among the ~2,600 render tasks, so that its merge, on one thread, starts
 only once they are all done: the speculation ran after rendering, not
 beside it. To try: the speculation on a thread of its own, outside the
 render pool; else P6 reverted.
+
+P6 reworked (a4463e5) against P5 and the first P6, in one session that
+was disturbed: every binary ~30 % slower than in the session before (P5
+6.04 s on eight threads against 4.35 s, its CPU 12.2 s against 7.9 s),
+something else using the host or the hypervisor withholding CPU. The
+absolute figures are unusable; the comparison within the session:
+
+| | 1 thread | 8 threads | render / collection / merge-to-database, 8 |
+|---|---|---|---|
+| P5 | 9.78 s [9.72–9.84] | 6.04 s [5.95–6.15] | 2.69 / 0.55 / 1.03 s |
+| P6, first | 10.39 s [10.30–10.45] | 5.93 s [5.89–6.02] | 2.88 / 0.72 / 0.48 s |
+| P6, reworked | 9.48 s [9.27–9.65] | 5.67 s [5.54–5.89] | 2.82 / 0.52 / 0.54 s |
+
+The reworked P6: −0.37 s on eight threads, the ranges apart; the merge
+gone from after rendering (1.03 to 0.54 s), the collection as short as
+P5's. Kept, provisionally: to confirm on an idle host.
