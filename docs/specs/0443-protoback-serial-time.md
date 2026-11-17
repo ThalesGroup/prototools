@@ -181,3 +181,22 @@ tenths of a second on eight threads is variation, not effect; each
 comparison is to be made within one session. P4: the render phase down
 0.15 s, the total 0.08 s, within the ranges: the writes were a small
 cost; a gain of ~0.1 s is plausible, not established.
+
+P4, P5, P6 in one session:
+
+| | 1 thread | 8 threads | setup / render / after, 8 | CPU, 1 / 8 |
+|---|---|---|---|---|
+| P4 | 7.64 s [7.43–7.74] | 4.72 s [4.52–4.98] | 1.17 / 2.31 / 1.23 s | 7.4 / 7.6 s |
+| P5 | 7.44 s [7.20–7.75] | 4.35 s [4.32–4.38] | 1.20 / 1.92 / 1.24 s | 7.4 / 7.9 s |
+| P6 | 7.71 s [7.57–7.81] | 4.48 s [4.26–4.81] | 1.24 / 1.99 / 1.25 s | 7.2 / 8.1 s |
+
+(P5's setup is built after "Marking summoned nodes": it counts in the
+render column.) P5: −0.37 s on eight threads. P6: no gain. Its merge
+was skipped after rendering (0.41 s from collection to the database
+against P5's 0.69 s), but rendering ended later and collection took
+longer: `rayon::join` returns when both sides are done, and the
+speculation's own parallel loop queues its tasks in the render pool
+among the ~2,600 render tasks, so that its merge, on one thread, starts
+only once they are all done: the speculation ran after rendering, not
+beside it. To try: the speculation on a thread of its own, outside the
+render pool; else P6 reverted.
