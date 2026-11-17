@@ -23,8 +23,9 @@ pub fn matching(graph: &Graph, pattern: &str) -> Vec<usize> {
 fn suggestion(graph: &Graph, pattern: &str) -> Option<String> {
     let mut best: Option<&str> = None;
     let mut best_score = 85.0;
+    let ratio = fuzz::Ratio::new(pattern);
     for n in &graph.nodes {
-        let score = fuzz::ratio(pattern, &n.fqdn);
+        let score = ratio.of(&n.fqdn);
         if score > best_score {
             best_score = score;
             best = Some(&n.fqdn);

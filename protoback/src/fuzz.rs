@@ -8,13 +8,28 @@
 //! author of Python's; a table of Python's answers checks it gives the
 //! same floats, bit for bit.
 //!
-//! The crate's `fuzz::ratio`, not its `RatioBatchComparator`: in 0.5.0 the
-//! comparator is off for some pairs (95.24 for `file:prune_bse.proto` and
-//! `file:prune_base.proto`, where Python and `fuzz::ratio` give 97.56).
+//! One pattern is compared with every node: [`Ratio`] caches it, through
+//! the crate's `indel::BatchComparator`. Not its `fuzz::RatioBatchComparator`,
+//! which in 0.5.0 computes the LCS's normalized similarity instead of the
+//! Indel's (`self.scorer.scorer`, one `.scorer` too many): 95.24 for
+//! `file:prune_bse.proto` and `file:prune_base.proto`, 20/21, where Python
+//! gives 97.56, 40/41.
 
-/// `fuzz.ratio(a, b)`: Python's scales the crate's 0 to 1 by 100.
-pub fn ratio(a: &str, b: &str) -> f64 {
-    rapidfuzz::fuzz::ratio(a.chars(), b.chars()) * 100.0
+use rapidfuzz::distance::indel;
+
+/// `fuzz.ratio(pattern, b)` for one pattern and many `b`: Python's scales
+/// the crate's 0 to 1 by 100.
+pub struct Ratio(indel::BatchComparator<char>);
+
+impl Ratio {
+    pub fn new(pattern: &str) -> Ratio {
+        Ratio(indel::BatchComparator::new(pattern.chars()))
+    }
+
+    /// `fuzz.ratio(pattern, b)`.
+    pub fn of(&self, b: &str) -> f64 {
+        self.0.normalized_similarity(b.chars()) * 100.0
+    }
 }
 
 #[cfg(test)]
@@ -27,11 +42,18 @@ mod tests {
     #[test]
     fn ratios_are_rapidfuzz_s() {
         for &(a, b, expected) in cases::CASES {
-            let got = super::ratio(a, b);
+            // The crate's own fuzz::ratio, and the cached pattern.
+            let got = rapidfuzz::fuzz::ratio(a.chars(), b.chars()) * 100.0;
             assert_eq!(
                 got.to_bits(),
                 expected.to_bits(),
                 "ratio({a:?}, {b:?}) = {got}"
+            );
+            let cached = super::Ratio::new(a).of(b);
+            assert_eq!(
+                cached.to_bits(),
+                expected.to_bits(),
+                "Ratio::new({a:?}).of({b:?}) = {cached}"
             );
         }
     }
