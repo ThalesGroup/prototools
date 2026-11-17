@@ -801,3 +801,24 @@ fn a_schema_the_pool_refuses_is_not_mended_into_one() {
     let vendored = descriptor_type(&alone, DESCRIPTOR_FILE, "FileDescriptorProto").unwrap();
     assert_eq!(*bytes, parse(&vendored, user, Options::default()).unwrap());
 }
+
+#[test]
+fn a_file_without_imports_is_parsed_with_the_schema_not_the_vendored_one() {
+    // `java_generate_equals_and_hash` (FileOptions field 20): the vendored
+    // descriptor.proto declares it, this schema does not. Parsed with the
+    // vendored one, the value would come out as field 20, unwarned, and be
+    // lost where its options are read with the schema.
+    let user = r#"name: "a.proto" options { java_generate_equals_and_hash: true }"#;
+    let schema = schema();
+    let (_, reads, _) = read_input(&[Input::Text(user), Input::Binary(&schema)], SCHEMA_FILE);
+    let Read::Parsed { warnings, .. } = &reads[0] else {
+        panic!("{:?}", reads[0])
+    };
+    assert_eq!(
+        *warnings,
+        [Warning::UnknownField {
+            message_type: "proto2.FileOptions".into(),
+            name: "java_generate_equals_and_hash".into(),
+        }]
+    );
+}

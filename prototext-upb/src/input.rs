@@ -100,13 +100,25 @@ pub fn read_input(inputs: &[Input<'_>], descriptor_file: &str) -> (Pool, Vec<Rea
     }
     let mut waiting = vec![0usize; n];
     let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); n];
+    // Every text waits for the schema too, as if it imported it: no text
+    // imports it, and one parsed before it would be parsed with the
+    // vendored descriptor.proto, whose fields are not the schema's (spec
+    // 0436 S3).
+    let schema = index.get(descriptor_file).copied();
     for (i, head) in heads.iter().enumerate() {
-        for import in head.iter().flat_map(|(_, imports)| imports) {
-            if let Some(&j) = index.get(import.as_str()) {
-                if j != i {
-                    waiting[i] += 1;
-                    dependents[j].push(i);
-                }
+        let imports = head.iter().flat_map(|(_, imports)| imports);
+        let mut deps: Vec<usize> = imports
+            .filter_map(|m| index.get(m.as_str()).copied())
+            .collect();
+        if let (Some(s), Input::Text(_)) = (schema, &inputs[i]) {
+            deps.push(s);
+        }
+        deps.sort_unstable();
+        deps.dedup();
+        for j in deps {
+            if j != i {
+                waiting[i] += 1;
+                dependents[j].push(i);
             }
         }
     }

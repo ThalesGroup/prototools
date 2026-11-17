@@ -54,12 +54,8 @@ Two defects remained, the first in that gap.
 - **G1.** A field name skipped in a text is warned about, and settled by
   the second parse when the input declares it.
 - **G2.** The schema is used as the input has it, or not at all.
-
-## Non-goals
-
-- **N1.** Reading the schema before the other files. G1's second parse
-  already settles what an early read skipped; a second mechanism for the
-  same decision is what spec 0427 avoided.
+- **G3.** No text is parsed with the vendored descriptor.proto when the
+  input has its own.
 
 ## Specification
 
@@ -73,13 +69,28 @@ Two defects remained, the first in that gap.
   texts are read with the vendored schema (`descriptor_type`'s
   fallback). The run then stops where the binary path does, the options
   pool refusing the same file (`DescriptorProtoUnbuildableError`).
+- **S3. Every text waits for the schema**, as if it imported it: in
+  `read_input`'s import order, the schema is a dependency of each text
+  input (Kahn's order breaks a cycle this makes, as any other).
+
+## Alternatives considered
+
+- **W4's second parse alone, the schema read in import order** (this
+  spec's first version). The second parse runs only where the first
+  warned, and a text parsed before the schema is parsed with the vendored
+  descriptor.proto: a name the vendored one declares and the schema does
+  not (`java_generate_equals_and_hash`, field 20, in a schema that drops
+  it) parses without a warning, as field 20, and is lost where the
+  options are read with the schema.
 
 ## Test plan
 
 1. `prototext-upb/tests/text_format.rs`: a file without imports keeps a
    field of the schema's `FileOptions`, read before or after the schema;
    a name no schema declares gives W4; a refused schema is reported and
-   not mended, the text read with the vendored one.
+   not mended, the text read with the vendored one; a name only the
+   vendored descriptor.proto declares, in a text read before the schema
+   in import order, gives W4 (S3).
 2. reproto's suite, on binary and on text inputs (`via_text`), and
    against protoback: `test_descriptor_proto_refused.py` refuses on all
    three.
