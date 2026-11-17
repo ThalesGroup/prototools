@@ -164,6 +164,21 @@ In this order, cheapest first; each item measured (M) before the next.
     rounds): the sequential insertion is the rest. Sharding the maps by
     hash would parallelize it too, the warnings and errors re-sorted
     into file order after, for ~30–40 ms more: not done.
+  - **Deferred: type names numbered in first-seen order** (to group with
+    the next change of `hopcroft.rkyv`'s format). `graph::build` sorts
+    the 49,255 type names so that node numbers do not depend on a map's
+    order (spec 0177 S2); numbering each name as the merge first meets
+    it is as deterministic (files and messages come in a fixed order)
+    and needs no sort. Gain ~10–25 ms (the sort; the lookups' key
+    comparisons stay, unless names become numbers through build,
+    minimization and compile), off the critical path since P6. Sound:
+    no reader assumes name order (binary searches by state or field
+    number, roots found by name through a map, protolens' ties broken by
+    name). Its costs: the database's bytes change (node numbering), and
+    come to depend on the files' order as well as their contents;
+    `prototext/wkt/prebuilt/` regenerated (`wkt-prebuilt-check`);
+    validated by decoded graphs and the scoring suites, not bytes;
+    reproto's database checked for agreement.
   - Scrutiny: where its ~0.4 s goes (build, merge, minimization), and
     what of it can run in parallel (the files' graphs before the merge;
     the minimization's refinement).
