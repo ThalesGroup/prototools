@@ -467,8 +467,46 @@ fn main() -> ExitCode {
                 .to_string()
         }));
     }
-    let loads = render::pool_loads(&run.db, &loaded);
-    let options = match render::OptionsPool::new(&run.db, &run.variant, &loads) {
+    // The setup rendering reads, built side by side when there is more
+    // than one thread (spec 0443 P5): the pool loads then the options
+    // pool, which reads them; the symbol table; each node's definition.
+    let jobs = cli.jobs.unwrap_or_else(|| {
+        std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
+    });
+    let build_pools = || {
+        let loads = render::pool_loads(&run.db, &loaded);
+        let options = render::OptionsPool::new(&run.db, &run.variant, &loads);
+        (loads, options)
+    };
+    let build_names = || {
+        render::names::SymbolTable::build(
+            run.db
+                .files
+                .iter()
+                .map(|f| prototext_upb::descriptor_access::FileDescriptorProto(f.as_ref())),
+            &render::names::Renaming {
+                variant: &run.variant,
+                keep_descriptor: cli.keep_descriptor_path,
+            },
+        )
+    };
+    let build_defs = || render::find_defs(&run.graph, &run.db);
+    let ((loads, options), names, defs) = if jobs > 1 {
+        std::thread::scope(|s| {
+            let names = s.spawn(build_names);
+            let defs = s.spawn(build_defs);
+            let pools = build_pools();
+            // A panic in either is the run's, as it would be on one thread.
+            let names = names
+                .join()
+                .unwrap_or_else(|e| std::panic::resume_unwind(e));
+            let defs = defs.join().unwrap_or_else(|e| std::panic::resume_unwind(e));
+            (pools, names, defs)
+        })
+    } else {
+        (build_pools(), build_names(), build_defs())
+    };
+    let options = match options {
         Ok(options) => options,
         Err(reason) => {
             // The pool refused the variant's descriptor.proto: refused as a
@@ -485,17 +523,6 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    let names = render::names::SymbolTable::build(
-        run.db
-            .files
-            .iter()
-            .map(|f| prototext_upb::descriptor_access::FileDescriptorProto(f.as_ref())),
-        &render::names::Renaming {
-            variant: &run.variant,
-            keep_descriptor: cli.keep_descriptor_path,
-        },
-    );
-    let defs = render::find_defs(&run.graph, &run.db);
     let shared = render::Shared {
         defs: &defs,
         graph: &run.graph,
@@ -522,9 +549,7 @@ fn main() -> ExitCode {
         out_repo,
         dry_run: cli.dry_run,
         write_variant_descriptor: !cli.no_emit_descriptor,
-        jobs: cli.jobs.unwrap_or_else(|| {
-            std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
-        }),
+        jobs,
         schema_db,
         quiet: cli.quiet,
         extra_nodes: run.schema_db_extra_nodes.clone(),

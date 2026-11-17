@@ -79,11 +79,12 @@ In this order, cheapest first; each item measured (M) before the next.
   I/O error raised where the sequential writes raised it (a directory's
   before the file's warnings, a file's after). Spec 0437 leaves no two
   files one path.
-- **P5. The setup overlapped.** The options pool, the pool loads, the
-  symbol table and the definitions table (0442 S3) are independent:
-  built together (`rayon::join`), ~1 s of serial time down to the
-  longest of them. Also moves 0442 S3's table off the main thread, the
-  ~0.3 s it cost on eight threads.
+- **P5. The setup overlapped** (implemented). The pool loads then the
+  options pool (which reads them), the symbol table, and each node's
+  definition (0442 S3), built side by side on scoped threads when
+  `--jobs` is above 1, in the former order on one thread otherwise:
+  `--jobs 1` stays one thread. Rayon's global pool would not honor
+  `--jobs`. A panic on a helper thread is the run's, as on one thread.
 - **P6. The schema database's scoring graph overlapped with rendering.**
   It needs only the input's descriptors, complete before phase 7.
 - **P7. prototext-graph.**
