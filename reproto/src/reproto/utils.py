@@ -40,7 +40,7 @@ For comprehensive documentation and test cases, see:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 
 from .context import Context
@@ -72,6 +72,26 @@ def scope_name(node: 'ReDescriptorProto | ReServiceDescriptorProto | ReFileDescr
     if isinstance(node, ReFileDescriptorProto):
         return node.package
     return str(parse_fqdn(node.fqdn)[1]).lstrip('.')
+
+
+def _parent(node: 'NodeBase[Any]') -> 'NodeBase[Any]':
+    """`node`'s parent: an element always has one."""
+    parent = node.parent
+    assert parent is not None, f"{node.fqdn} has no parent"
+    return parent
+
+
+def option_scope(node: 'NodeBase[Any]') -> str:
+    """The first scope protoc searches for an option name on `node`'s
+    options (spec 0439 S1): `name_scope` is the element's full name, of
+    which `LookupSymbol` drops the last component first: its parent's
+    scope. (An enum value, named as its enum's sibling, takes its enum's.)"""
+    from .re_descriptor import ReDescriptorProto
+    from .re_file import ReFileDescriptorProto
+    from .re_service import ReServiceDescriptorProto
+    parent = _parent(node)
+    assert isinstance(parent, (ReDescriptorProto, ReServiceDescriptorProto, ReFileDescriptorProto))
+    return scope_name(parent)
 
 
 def type_ref(ctx: Context, target: str, scope: str, mode: 'Mode') -> str:

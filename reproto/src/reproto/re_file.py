@@ -154,7 +154,8 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
             from .syntax import render_features_block
             if self.this.HasField('options') and self.this.options.HasField('features'):
                 feat_block = render_features_block(
-                    ctx, self.this.options.features, depth, inline=False)
+                    ctx, self.this.options.features, depth, inline=False,
+                    scope=self.package)
                 out.extend(feat_block)
 
             # Render builtin options
@@ -163,7 +164,8 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
                 out.extend(block)
 
             # Render custom extension options
-            blocks, is_orp = ReExtensions(fio_msg).render(ctx, fio_desc, False, depth)
+            blocks, is_orp = ReExtensions(fio_msg).render(
+                ctx, fio_desc, False, depth, scope=self.package)
             for block in blocks:
                 out.extend(block)
 

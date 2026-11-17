@@ -105,9 +105,9 @@ def test_custom_features_are_written_as_features(
 ) -> None:
     _, _, out = rendered
     text = (out / "f/feat.proto").read_text(encoding="utf-8")
-    # Written as any message-valued custom option is: an aggregate.
-    assert "features.(.pb.cpp) = {" in text
-    assert "string_type: VIEW" in text and "string_type: CORD" in text
+    # Paths, as protobuf writes custom features (spec 0439 S2).
+    assert "option features.(pb.cpp).string_type = CORD;" in text
+    assert "features.(pb.cpp).string_type = VIEW" in text
 
 
 # A variant rooted on a descriptor.proto of another package, its names kept
@@ -188,8 +188,8 @@ def test_custom_features_under_a_root_of_another_package(tmp_path: Path) -> None
     assert result.returncode == 0, result.stderr
     text = (out / "f/feat.proto").read_text(encoding="utf-8")
     assert f'import "{CPP}";' in text
-    assert "option features.(.pb.cpp) = {\n  string_type: CORD\n};" in text
-    assert "features.(.pb.cpp) = {\n      string_type: VIEW\n    }" in text
+    assert "option features.(pb.cpp).string_type = CORD;" in text
+    assert "features.(pb.cpp).string_type = VIEW" in text
     assert "features.field_presence = EXPLICIT" in text
 
 
@@ -243,7 +243,7 @@ def test_a_custom_option_on_a_root_of_another_package_is_kept(tmp_path: Path) ->
         capture_output=True, text=True,
     )
     assert result.returncode == 0, result.stderr
-    assert "[(.ext.level) = 7]" in (out / "u.proto").read_text(encoding="utf-8")
+    assert "[(ext.level) = 7]" in (out / "u.proto").read_text(encoding="utf-8")
     # -b writes each file's FileDescriptorProto, alone.
     written = descriptor_pb2.FileDescriptorProto()
     written.ParseFromString((out / "u.pb").read_bytes())

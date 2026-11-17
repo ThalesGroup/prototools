@@ -383,6 +383,8 @@ def render_features_block(
     fs: FeatureSet,
     depth: int,
     inline: bool = False,
+    *,
+    scope: str,
 ) -> 'Block':
     """Emit features { } option lines for an element with explicit FeatureSet overrides.
 
@@ -424,16 +426,14 @@ def render_features_block(
         else:
             out.append(BlockLine(f'option features.{fname} = {value_name};', depth))
 
-    # The custom features, the feature set's extensions (spec 0435): written
-    # as custom options are, after `features.`. The FDP's feature set holds
-    # them as unknown fields: parsed again where their extensions are known.
+    # The custom features, the feature set's extensions (spec 0435), as
+    # paths (spec 0439 S2). The FDP's feature set holds them as unknown
+    # fields: parsed again where their extensions are known.
     if ctx.fts_desc is not None and ctx.fts_cls is not None:
         from .option_messages import parse_options
-        from .option_renderers import ReExtensions
+        from .option_renderers import feature_blocks
         msg = parse_options(ctx, ctx.fts_desc, ctx.fts_cls, fs.SerializeToString())
-        blocks, _ = ReExtensions(msg).render(
-            ctx, ctx.fts_desc, composite=inline, lev=depth, prefix='features.')
-        for block in blocks:
+        for block in feature_blocks(ctx, msg, ctx.fts_desc, inline, depth, scope=scope):
             out.extend(block)
 
     return out

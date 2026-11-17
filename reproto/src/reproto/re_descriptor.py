@@ -27,6 +27,7 @@ from .fake_types import Ref
 from .globals import MESSAGE
 from .re_field import _message_chain, _resolve_field_features
 from .text import CODE, ORPHAN, Block, BlockLine
+from .utils import option_scope, scope_name
 
 
 def _render_extend_blocks(
@@ -239,7 +240,8 @@ class ReDescriptorProto(SourceCodeInfoMixin, NodeBase[DescriptorProto]):
             for r in self.extension_range:
                 range_proto = cast(DescriptorProto.ExtensionRange, r)
                 range_obj = ReExtensionRange(range_proto)
-                out.extend(range_obj.render(ctx, depth))
+                # An extension range's options are named as its message's.
+                out.extend(range_obj.render(ctx, depth, scope=option_scope(self)))
 
         # Reserved ranges
         for r in self.reserved_range:
@@ -493,7 +495,8 @@ class ReDescriptorProto(SourceCodeInfoMixin, NodeBase[DescriptorProto]):
         # Emit features.X = Y overrides first (editions only; no-op otherwise).
         if self.this.HasField('options') and self.this.options.HasField('features'):
             feat_block = render_features_block(
-                ctx, self.this.options.features, depth + 1, inline=False)
+                ctx, self.this.options.features, depth + 1, inline=False,
+                scope=option_scope(self))
             for line in feat_block:
                 out.append(line)
         option_blocks = self.render_options(
@@ -600,8 +603,10 @@ class ReDescriptorProto(SourceCodeInfoMixin, NodeBase[DescriptorProto]):
             oneof_feat_block = Block()
             if oneof.HasField('options') and oneof.options.HasField('features'):
                 from .syntax import render_features_block
+                # A oneof's options are named from its message.
                 oneof_feat_block = render_features_block(
-                    ctx, oneof.options.features, depth + 2, inline=False)
+                    ctx, oneof.options.features, depth + 2, inline=False,
+                    scope=scope_name(self))
             if oneof.HasField('options'):
                 from .option_messages import parse_options
                 from .option_rendering import render_options_from_message
@@ -609,7 +614,8 @@ class ReDescriptorProto(SourceCodeInfoMixin, NodeBase[DescriptorProto]):
                     ctx, ctx.ooo_desc, ctx.ooo_cls,
                     oneof.options.SerializeToString())
                 for opt_block in render_options_from_message(
-                        ctx, oneof_opts, ctx.ooo_desc, depth=depth + 2):
+                        ctx, oneof_opts, ctx.ooo_desc, depth=depth + 2,
+                        scope=scope_name(self)):
                     oneof_feat_block.extend(opt_block)
             block.insert(0, BlockLine(f'oneof {oneof.name} {{', depth+1,
                          type=ORPHAN if is_orphan else CODE))

@@ -88,8 +88,11 @@ def render_options_from_message(
     composite: bool = False,
     depth: int = 0,
     exclude: set[str] | None = None,
+    *,
+    scope: str,
 ) -> list[Block]:
-    """Render options from an already-parsed options message.
+    """Render options from an already-parsed options message, custom
+    option names written from `scope` (spec 0439 S1, `utils.option_scope`).
 
     Args:
         ctx: Build context
@@ -105,7 +108,8 @@ def render_options_from_message(
     from .option_renderers import ReExtensions, ReOptions, unknown_option_blocks
 
     blocks = ReOptions(opts_msg).render(ctx, composite, depth, exclude=exclude)
-    custom, _ = ReExtensions(opts_msg).render(ctx, options_descriptor, composite, depth)
+    custom, _ = ReExtensions(opts_msg).render(
+        ctx, options_descriptor, composite, depth, scope=scope)
     return blocks + custom + unknown_option_blocks(ctx, opts_msg, composite, depth)
 
 
@@ -186,7 +190,9 @@ def render_options(
             ctx, options_descriptor, options_class,
             desc.GetOptions().SerializeToString())
 
+        from .utils import option_scope
         blocks = render_options_from_message(
+            scope=option_scope(node),
             ctx=ctx,
             opts_msg=opts_msg,
             options_descriptor=options_descriptor,

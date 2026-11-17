@@ -146,7 +146,7 @@ class ReExtensionRange:
         return self.this.start
 
 
-    def render(self, ctx: Context, depth: int = 0) -> Block:
+    def render(self, ctx: Context, depth: int = 0, *, scope: str) -> Block:
         assert isinstance(depth, int) and depth >= 0
         extension_range = self.this
         out = Block()
@@ -180,6 +180,7 @@ class ReExtensionRange:
             composite=True,
             depth=depth + 1,
             exclude={'declaration'},
+            scope=scope,
         )
         # Strip trailing comma from last non-orphan block
         for text in reversed(texts):

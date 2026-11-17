@@ -49,7 +49,7 @@ message Extendable {
 
 // AllFeatures exercises every per-field feature override.
 message AllFeatures {
-  option (.mockup.editions.dep.imported_msg_opt) = "hello";
+  option (mockup.editions.dep.imported_msg_opt) = "hello";
 
   // IMPLICIT field (no label in editions output).
   string implicit_field = 1 [features.field_presence = IMPLICIT];

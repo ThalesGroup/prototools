@@ -176,6 +176,7 @@ class ReFieldDescriptor:
             value: Any,
             lev: int,
             custom: bool = False,
+            scope: str = '',
     ) -> tuple[Block, bool]:
         """
         Fully faithful rendering of protobuf option value for proto2 syntax.
@@ -193,7 +194,9 @@ class ReFieldDescriptor:
         if name == '':
             return (Block(), is_orphan)
         if custom:
-            name = f'({name})'
+            # Spec 0439 S1: named as googleapis names it, from `scope`.
+            from .names import option_name
+            name = f'({option_name(ctx, self.full_name, scope)})'
 
         match value:
             # Scalars

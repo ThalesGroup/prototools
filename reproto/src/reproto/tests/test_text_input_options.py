@@ -173,7 +173,7 @@ def test_custom_options_survive_the_text_form(tmp_path: Path) -> None:
     from_binary, from_text, stderr = _from_binary_and_text(
         tmp_path, {"opts.proto": _OPTS, "main.proto": _MAIN}, "main.proto",
     )
-    assert "(.txt.info)" in from_binary["main.proto"]
+    assert "(txt.info)" in from_binary["main.proto"]
     assert from_text == from_binary
     assert "declared nowhere" not in stderr
     assert "printed as a message" not in stderr
@@ -225,7 +225,7 @@ def test_options_printed_by_name_survive_the_text_form(tmp_path: Path) -> None:
     assert "[txt.info]" in textpb.read_text(encoding="utf-8")
     from_binary, _ = _reproto(tmp_path / "binary", [pb])
     from_text, stderr = _reproto(tmp_path / "text", [textpb])
-    assert "(.txt.info)" in from_binary["main.proto"]
+    assert "(txt.info)" in from_binary["main.proto"]
     assert from_text == from_binary
     assert "declared nowhere" not in stderr
 

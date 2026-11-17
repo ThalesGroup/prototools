@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 
-from google.protobuf.descriptor import Descriptor
+from google.protobuf.descriptor import Descriptor, FieldDescriptor
 from google.protobuf.message import Message
 
 
@@ -101,11 +101,12 @@ class ReExtensions:
         options_desc: Descriptor,
         composite: bool,
         lev: int,
-        prefix: str = '',
+        *,
+        scope: str,
     ) -> tuple[list[Block], bool]:
-        """The extensions set on the message, by number: `option NAME = V;`,
-        or `NAME = V,` in a composite; NAME after `prefix` (`features.`
-        for a feature set's, the custom features, spec 0435)."""
+        """The extensions set on the message, by number: `option (NAME) =
+        V;`, or `(NAME) = V,` in a composite, NAME written from `scope`
+        (spec 0439 S1)."""
         assert isinstance(lev, int)
         blocks: list[Block] = list()
         is_orphan = True
@@ -119,9 +120,8 @@ class ReExtensions:
             if fd_is_repeated(ext_desc):
                 for v in val:
                     block, is_orp = opt.dump_option(
-                        ctx, v, lev, True)
+                        ctx, v, lev, True, scope)
                     is_orphan &= is_orp
-                    block.prepend(prefix)
                     if not composite:
                         block.prepend('option ')
                         block.postpend(';')
@@ -132,9 +132,8 @@ class ReExtensions:
             else:
                 if self.this.HasExtension(ext_desc):
                     block, is_orp = opt.dump_option(
-                        ctx, val, lev, True)
+                        ctx, val, lev, True, scope)
                     is_orphan &= is_orp
-                    block.prepend(prefix)
                     if not composite:
                         block.prepend('option ')
                         block.postpend(';')
@@ -198,5 +197,71 @@ def unknown_option_blocks(
             f"'{ctx.current_file}': option field {field.field_number} of {type_name} "
             "is declared nowhere: written as an orphan",
         )
+    return blocks
+
+
+# === Custom features, as paths (spec 0439 S2) ===========================
+
+def _is_flat_feature(ext: FieldDescriptor, value: Message) -> bool:
+    """What protoc admits in a feature (feature_resolver.cc): a singular
+    message whose fields are singular enums or bools, no extension, and
+    nothing unknown."""
+    from google.protobuf.unknown_fields import UnknownFieldSet
+    if fd_is_repeated(ext) or ext.message_type is None:
+        return False
+    for fd, _ in value.ListFields():
+        if fd.is_extension or fd_is_repeated(fd):
+            return False
+        if fd.type not in (FieldDescriptor.TYPE_ENUM, FieldDescriptor.TYPE_BOOL):
+            return False
+    return len(UnknownFieldSet(value)) == 0
+
+
+def feature_blocks(
+    ctx: Context,
+    features: Message,
+    descriptor: Descriptor,
+    composite: bool,
+    lev: int,
+    *,
+    scope: str,
+) -> list[Block]:
+    """The custom features set on `features` (a FeatureSet read with the
+    options pool, `descriptor` its type), by number, each field of each a path:
+    `option features.(E).f = V;`, `features.(E).f = V,` in a composite; an
+    empty one `features.(E) = {}`. A value protoc's rules exclude is written
+    as an aggregate, as any message-valued option."""
+    from .names import option_name
+    from .mappings import canonize_opt_name
+    from .text import BlockLine
+    blocks: list[Block] = []
+
+    def statement(text: str, orphan: bool) -> None:
+        text = f'{text},' if composite else f'option {text};'
+        blocks.append(Block([BlockLine(text, lev, type=ORPHAN if orphan else CODE)]))
+
+    for ext in sorted(option_extensions(ctx, descriptor), key=lambda d: d.number):
+        if not features.HasExtension(ext):
+            continue
+        value = features.Extensions[ext]
+        full_name = ReFieldDescriptor(ext).full_name   # with its leading dot
+        _, orphan = canonize_opt_name(ctx, full_name, custom=True)
+        name = f'features.({option_name(ctx, full_name, scope)})'
+        if not _is_flat_feature(ext, value):
+            block, orphan = ReFieldDescriptor(ext).dump_option(ctx, value, lev, True, scope)
+            block.prepend('features.')
+            if composite:
+                block.postpend(',')
+            else:
+                block.prepend('option ')
+                block.postpend(';')
+            block.set_type(ORPHAN if orphan else CODE)
+            blocks.append(block)
+            continue
+        fields = value.ListFields()
+        if not fields:
+            statement(f'{name} = {{}}', orphan)
+        for fd, v in fields:
+            statement(f'{name}.{fd.name} = {ReFieldDescriptor(fd).get_scalar(v)}', orphan)
     return blocks
 

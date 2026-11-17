@@ -19,6 +19,7 @@ from .option_messages import parse_options
 from .fake_types import parse_fqdn
 from .globals import ENUM
 from .text import Block, BlockLine
+from .utils import option_scope
 
 if TYPE_CHECKING:
     from .re_enum import ReEnumDescriptorProto
@@ -86,7 +87,10 @@ class ReEnumValueDescriptorProto:
         from .syntax import render_features_block
         if self.this.HasField('options') and self.this.options.HasField('features'):
             feat_block = render_features_block(
-                ctx, self.this.options.features, depth + 1, inline=True)
+                ctx, self.this.options.features, depth + 1, inline=True,
+                # Named as its enum's sibling (C++ scoping): its option
+                # names are looked up as its enum's (spec 0439 S1).
+                scope=option_scope(self.parent))
             out.extend(feat_block)
 
         # Render options using parent's helper method
@@ -97,6 +101,7 @@ class ReEnumValueDescriptorProto:
             options_descriptor=evo_desc,
             composite=True,
             depth=depth + 1,
+            scope=option_scope(self.parent),
         )
         for block in option_blocks:
             out.extend(block)

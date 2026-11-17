@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from .re_file import ReFileDescriptorProto
 
 from .scalar import Scalar
+from .utils import option_scope
 
 # === ReservedName helper =====================================================
 
@@ -181,7 +182,8 @@ class ReEnumDescriptorProto(NodeBase[EnumDescriptorProto]):
         from .syntax import render_features_block
         if self.this.HasField('options') and self.this.options.HasField('features'):
             feat_block = render_features_block(
-                ctx, self.this.options.features, depth + 1, inline=False)
+                ctx, self.this.options.features, depth + 1, inline=False,
+                scope=option_scope(self))
             for line in feat_block:
                 out.append(line)
         option_blocks = self.render_options(

@@ -308,6 +308,25 @@ impl SymbolTable {
     }
 }
 
+impl SymbolTable {
+    /// `names.option_name` (spec 0439 S1): an option's extension, written
+    /// in parentheses from `scope`, the first scope protoc's option lookup
+    /// searches: in full without the dot when protoc resolves it, among
+    /// every symbol, to the extension; else with it. An extension no loaded
+    /// file declares is written in full: nothing can check it.
+    pub fn option_name(&self, extension: &str, visible: &Visible, scope: &str) -> String {
+        let full = extension.trim_start_matches('.');
+        if !self.symbols.contains_key(full) {
+            return full.to_string();
+        }
+        if self.resolve(full, scope, Mode::All, visible).as_deref() == Some(full) {
+            full.to_string()
+        } else {
+            format!(".{full}")
+        }
+    }
+}
+
 /// The scope a node opens, by full name (no leading dot): a file's
 /// package, a message's or service's own name.
 pub fn scope_name(shared: &Shared<'_>, node: usize) -> String {

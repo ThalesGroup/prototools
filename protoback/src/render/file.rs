@@ -88,8 +88,17 @@ impl Ctx<'_, '_> {
         });
     }
 
-    /// What an option's rendering reads, for this file.
-    pub fn scope(&self) -> super::options::Scope<'_> {
+    /// The first scope protoc searches for the option names of node `i`
+    /// (spec 0439 S1): `name_scope` is the element's full name, of which
+    /// `LookupSymbol` drops the last component first: its parent's scope.
+    pub fn option_scope(&self, i: usize) -> String {
+        let parent = self.shared.graph.nodes[i].parent.unwrap_or(self.file);
+        super::names::scope_name(self.shared, parent)
+    }
+
+    /// What an option's rendering reads, for this file, for an element
+    /// whose option names are looked up from `option_scope`.
+    pub fn scope(&self, option_scope: &str) -> super::options::Scope<'_> {
         super::options::Scope {
             variant: self.shared.variant,
             graph: self.shared.graph,
@@ -97,6 +106,9 @@ impl Ctx<'_, '_> {
             k: self.k,
             events: &self.events,
             file: self.file_name(),
+            option_scope: option_scope.to_string(),
+            names: self.shared.names,
+            visible: &self.visible,
         }
     }
 
@@ -139,6 +151,7 @@ pub fn features_block(
     fs: Option<prototext_upb::descriptor_access::FeatureSet<'_>>,
     depth: usize,
     inline: bool,
+    scope: &str,
 ) -> Block {
     let mut out = Block::new();
     let Some(fs) = fs else {
@@ -191,7 +204,7 @@ pub fn features_block(
         .options
         .parse_ref(super::options::Options::FeatureSet, &fs.0)
         .and_then(|msg| {
-            super::options::extensions(&ctx.scope(), &msg, inline, depth, "features.").ok()
+            super::options::feature_blocks(&ctx.scope(scope), &msg, inline, depth).ok()
         });
     for block in custom.into_iter().flatten() {
         out.extend(block);
@@ -736,8 +749,10 @@ fn file_options(
     let Some(msg) = ctx.shared.options.parse_ref(Options::File, &o.0) else {
         return out;
     };
-    out.extend(features_block(ctx, o.features(), depth, false));
-    match options(&ctx.scope(), Options::File, &msg, false, depth, &[]) {
+    // A file's option names are looked up from its package (spec 0439 S1).
+    let package = super::names::scope_name(ctx.shared, ctx.file);
+    out.extend(features_block(ctx, o.features(), depth, false, &package));
+    match options(&ctx.scope(&package), Options::File, &msg, false, depth, &[]) {
         Ok(blocks) => blocks.into_iter().for_each(|b| out.extend(b)),
         Err(_) => return a3("internal error"),
     }

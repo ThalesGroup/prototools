@@ -211,6 +211,22 @@ class SymbolTable:
         return f'.{full}'
 
 
+def option_name(ctx: Context, extension: str, scope: str) -> str:
+    """Spec 0439 S1: an option's extension (its full name, leading dot or
+    not) as written in parentheses, from `scope`, the first scope protoc's
+    option lookup searches: in full without the dot when protoc resolves
+    it, among every symbol, to the extension; else with it. An extension
+    no loaded file declares is written in full: nothing can check it."""
+    table = symbol_table(ctx)
+    full = extension.lstrip('.')
+    if full not in table.symbols:
+        return full
+    visible = table.visible(ctx.current_file)
+    if table.resolve(full, scope, Mode.ALL, visible) == full:
+        return full
+    return f'.{full}'
+
+
 def _join(prefix: str, name: str) -> str:
     return f'{prefix}.{name}' if prefix else name
 

@@ -22,6 +22,7 @@ from .feature_resolution import ResolvedFeatures, resolve_features
 from .globals import FIELD, type_names
 from .option_messages import parse_options
 from .text import Block, BlockLine
+from .utils import scope_name
 
 
 def _get_file_and_msg(
@@ -270,7 +271,6 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
     def render(self, ctx: Context, depth: int = 0, is_oneof: bool = False) -> Block:
         """Reconstruct field as .proto."""
         from .syntax import allow_groups
-        from .utils import scope_name
 
         assert isinstance(depth, int)
         assert isinstance(is_oneof, bool)
@@ -426,7 +426,8 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
             from .syntax import render_features_block
             if self.this.HasField('options') and self.this.options.HasField('features'):
                 feat_block = render_features_block(
-                    ctx, self.this.options.features, depth + 1, inline=True)
+                    ctx, self.this.options.features, depth + 1, inline=True,
+                    scope=scope_name(self.parent))
                 opt_block.extend(feat_block)
 
             # Render field options using inherited method (packed and json_name excluded).
@@ -438,6 +439,7 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
                 composite=True,
                 depth=depth+1,
                 exclude={"packed", "json_name"},
+                scope=scope_name(self.parent),
             )
             for block in option_blocks:
                 opt_block.extend(block)

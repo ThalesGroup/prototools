@@ -253,9 +253,11 @@ class NodeBase(Generic[MessageT], ABC):
         composite: bool = False,
         depth: int = 0,
         exclude: set[str] | None = None,
+        *,
+        scope: str,
     ) -> list[Block]:
         return render_options_from_message(
-            ctx, opts_msg, options_descriptor, composite, depth, exclude
+            ctx, opts_msg, options_descriptor, composite, depth, exclude, scope=scope
         )
 
     def format_composite_options(

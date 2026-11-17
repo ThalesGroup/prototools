@@ -24,7 +24,7 @@ enum AllEnumFeatures {
   // Enum itself is deprecated
   option deprecated = true;
   // Custom extension option
-  option (.reproto.example_enum_option) = "custom";
+  option (reproto.example_enum_option) = "custom";
 
   // Explicit enum values
   VALUE_ZERO = 0;
@@ -48,7 +48,7 @@ enum AllEnumFeatures {
 
 // Another enum showing extensions usage
 enum ExtendedEnum {
-  option (.reproto.example_enum_option) = "extended";
+  option (reproto.example_enum_option) = "extended";
 
   FIRST = 0;
   SECOND = 1;

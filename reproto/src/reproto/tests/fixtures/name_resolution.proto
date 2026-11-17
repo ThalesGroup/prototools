@@ -71,7 +71,7 @@ message Outer {
   }
 
   message Test {
-    option (.name.resolution.test.Outer.outer_ext) = "qualified";
+    option (name.resolution.test.Outer.outer_ext) = "qualified";
 
     optional Inner inner = 1;
   }
@@ -107,12 +107,12 @@ message ExtensionScopeTest {
     optional string nested_ext = 50002;
   }
 
-  optional string field1 = 1 [(.name.resolution.test.package_ext) = "works"];
+  optional string field1 = 1 [(name.resolution.test.package_ext) = "works"];
 
   message NestedMessage {
     // QUIRK: Custom option resolution skips current message scope
     // So nested_ext is NOT visible here without qualification
-    optional string field2 = 1 [(.name.resolution.test.ExtensionScopeTest.nested_ext) = "works"];
+    optional string field2 = 1 [(name.resolution.test.ExtensionScopeTest.nested_ext) = "works"];
   }
 }
 
@@ -149,7 +149,7 @@ message MessageLiteralTest {
 }
 
 message TestContainer {
-  option (.name.resolution.test.embedded) = {};
+  option (name.resolution.test.embedded) = {};
 }
 
 extend google.protobuf.FieldOptions {

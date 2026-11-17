@@ -56,7 +56,8 @@ fn element_options(
     if ctx.refused || !ctx.in_pool(node) {
         return Vec::new();
     }
-    own_options(ctx, kind, options, false, depth, exclude).unwrap_or_default()
+    let scope = ctx.option_scope(node);
+    own_options(ctx, kind, options, false, depth, exclude, &scope).unwrap_or_default()
 }
 
 /// Options reproto reads from the descriptor itself (a field's, a oneof's,
@@ -69,6 +70,7 @@ fn own_options(
     composite: bool,
     depth: usize,
     exclude: &[&str],
+    scope: &str,
 ) -> Result<Vec<Block>, super::options::Unrenderable> {
     let Some(o) = options else {
         return Ok(Vec::new());
@@ -76,7 +78,7 @@ fn own_options(
     let Some(msg) = ctx.shared.options.parse_ref(kind, &o) else {
         return Ok(Vec::new());
     };
-    super::options::options(&ctx.scope(), kind, &msg, composite, depth, exclude)
+    super::options::options(&ctx.scope(scope), kind, &msg, composite, depth, exclude)
 }
 
 /// `_camel_case`: protoc's default JSON name.
@@ -639,11 +641,15 @@ fn field_options(
             opt_block.push(Line::code(format!("packed = {v},"), depth + 1));
         }
     }
+    // A field's option names are looked up from its message, or from its
+    // file's package for a top-level extension (spec 0439 S1).
+    let scope = super::names::scope_name(ctx.shared, msg.unwrap_or(ctx.file));
     opt_block.extend(features_block(
         ctx,
         options.as_ref().and_then(|o| o.features()),
         depth + 1,
         true,
+        &scope,
     ));
     let blocks = own_options(
         ctx,
@@ -652,6 +658,7 @@ fn field_options(
         true,
         depth + 1,
         &["packed", "json_name"],
+        &scope,
     )
     .map_err(|_| ())?;
     for b in blocks {
@@ -762,7 +769,13 @@ pub fn message(
     };
     let features = m.options().and_then(|o| o.features());
     let has_features = features.is_some();
-    out.extend(features_block(ctx, features, depth + 1, false));
+    out.extend(features_block(
+        ctx,
+        features,
+        depth + 1,
+        false,
+        &ctx.option_scope(msg),
+    ));
     let blocks = element_options(
         ctx,
         msg,
@@ -868,6 +881,8 @@ pub fn message(
         );
         // The oneof's options, from its descriptor (no `try`: a failure
         // fails the file).
+        // A oneof's option names are looked up from its message.
+        let oneof_scope = super::names::scope_name(shared, msg);
         match own_options(
             ctx,
             Options::Oneof,
@@ -875,6 +890,7 @@ pub fn message(
             false,
             depth + 2,
             &[],
+            &oneof_scope,
         ) {
             Ok(blocks) => {
                 let features = features_block(
@@ -882,6 +898,7 @@ pub fn message(
                     oneofs[o].options().and_then(|x| x.features()),
                     depth + 2,
                     false,
+                    &oneof_scope,
                 );
                 let mut at = 1;
                 for line in features.lines {
@@ -943,7 +960,7 @@ pub fn message(
     }
     out.div_maybe(depth);
 
-    let reserved = reserved(ctx, &m, depth + 1);
+    let reserved = reserved(ctx, &m, depth + 1, &ctx.option_scope(msg));
     if !reserved.is_empty() {
         out.extend(reserved);
         out.div_maybe(depth);
@@ -957,7 +974,9 @@ pub fn message(
 
 /// `render_reserved`: extension ranges (in proto3, the anomaly B2),
 /// reserved ranges, reserved names.
-fn reserved(ctx: &Ctx<'_, '_>, m: &DescriptorProto<'_>, depth: usize) -> Block {
+/// `scope`: the message's option scope, its extension ranges' (spec 0439
+/// S1).
+fn reserved(ctx: &Ctx<'_, '_>, m: &DescriptorProto<'_>, depth: usize, scope: &str) -> Block {
     let mut out = Block::new();
     for r in m.extension_range() {
         let (start, end) = (r.start(), r.end());
@@ -985,6 +1004,7 @@ fn reserved(ctx: &Ctx<'_, '_>, m: &DescriptorProto<'_>, depth: usize) -> Block {
         } else {
             format!("extensions {start} to {}", end - 1)
         };
+        // An extension range's option names are looked up as its message's.
         let mut texts = match own_options(
             ctx,
             Options::ExtensionRange,
@@ -992,6 +1012,7 @@ fn reserved(ctx: &Ctx<'_, '_>, m: &DescriptorProto<'_>, depth: usize) -> Block {
             true,
             depth + 1,
             &["declaration"],
+            scope,
         ) {
             Ok(t) => t,
             Err(_) => {
@@ -1070,6 +1091,7 @@ pub fn enumeration(ctx: &Ctx<'_, '_>, en: usize, depth: usize, sci_path: Option<
         e.options().and_then(|o| o.features()),
         depth + 1,
         false,
+        &ctx.option_scope(en),
     ));
     let blocks = element_options(
         ctx,
@@ -1129,6 +1151,9 @@ fn enum_value(
     if ctx.refused || !ctx.in_pool(en) {
         ctx.failed.set(true);
     }
+    // An enum value is named as its enum's sibling (protoc's C++ scoping):
+    // its option names are looked up as its enum's.
+    let value_scope = ctx.option_scope(en);
     let options = match own_options(
         ctx,
         Options::EnumValue,
@@ -1136,10 +1161,16 @@ fn enum_value(
         true,
         depth + 1,
         &[],
+        &value_scope,
     ) {
         Ok(blocks) => {
-            let mut b =
-                features_block(ctx, v.options().and_then(|o| o.features()), depth + 1, true);
+            let mut b = features_block(
+                ctx,
+                v.options().and_then(|o| o.features()),
+                depth + 1,
+                true,
+                &value_scope,
+            );
             blocks.into_iter().for_each(|x| b.extend(x));
             b
         }

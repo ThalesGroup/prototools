@@ -254,6 +254,11 @@ pub struct Scope<'a> {
     /// Where its warnings go, and its name (W22, spec 0438 S6).
     pub events: &'a std::cell::RefCell<Vec<super::file::RenderEvent>>,
     pub file: String,
+    /// The first scope protoc searches for this element's option names,
+    /// and what it sees (spec 0439 S1).
+    pub option_scope: String,
+    pub names: &'a super::names::SymbolTable,
+    pub visible: &'a super::names::Visible,
 }
 
 impl Scope<'_> {
@@ -267,15 +272,19 @@ impl Scope<'_> {
         name == self.variant.descriptor_proto || self.rank.get(name).is_some_and(|&r| r <= self.k)
     }
 
-    /// `canonize_opt_name` for a custom option: `(.full.name)`, an orphan
-    /// unless its extension's node is summoned.
+    /// `canonize_opt_name` for a custom option, an orphan unless its
+    /// extension's node is summoned; named as googleapis names it, from the
+    /// element's option scope (spec 0439 S1).
     fn custom_name(&self, ext: &Field) -> (String, bool) {
         let full = format!(".{}", ext.full_name());
         let orphan = !self
             .graph
             .find(&format!("fdsc:{full}"))
             .is_some_and(|n| self.graph.nodes[n].is_summoned);
-        (format!("({full})"), orphan)
+        let name = self
+            .names
+            .option_name(&full, self.visible, &self.option_scope);
+        (format!("({name})"), orphan)
     }
 }
 
@@ -444,7 +453,7 @@ pub fn options(
             entries.push((name, orphan, field, value));
         }
     }
-    entries.extend(custom_entries(scope, &fields, ""));
+    entries.extend(custom_entries(scope, &fields));
     let mut blocks = render_entries(scope, entries, composite, depth)?;
     blocks.extend(unknown_blocks(scope, msg, &fields, composite, depth));
     Ok(blocks)
@@ -581,27 +590,11 @@ fn unknown_blocks(
     blocks
 }
 
-/// The extensions set on `msg`, the custom options of a message read as an
-/// options message, by number (`ReExtensions`), each name after `prefix`:
-/// a feature set's, the custom features, after `features.` (spec 0435).
-pub fn extensions(
-    scope: &Scope<'_>,
-    msg: &DynamicMessage,
-    composite: bool,
-    depth: usize,
-    prefix: &str,
-) -> Result<Vec<Block>, Unrenderable> {
-    let fields = msg.as_ref().set_fields();
-    let entries = custom_entries(scope, &fields, prefix);
-    render_entries(scope, entries, composite, depth)
-}
-
 /// The extensions among `fields` reproto's options pool knows, by number,
-/// each with its name (after `prefix`) and whether it is an orphan.
+/// each with its name and whether it is an orphan.
 fn custom_entries<'f, 'v>(
     scope: &Scope<'_>,
     fields: &'f [(Field, Value<'v>)],
-    prefix: &str,
 ) -> Vec<(String, bool, &'f Field, &'f Value<'v>)> {
     let mut custom: Vec<&(Field, Value<'_>)> = fields
         .iter()
@@ -612,7 +605,7 @@ fn custom_entries<'f, 'v>(
         .into_iter()
         .map(|(field, value)| {
             let (name, orphan) = scope.custom_name(field);
-            (format!("{prefix}{name}"), orphan, field, value)
+            (name, orphan, field, value)
         })
         .collect()
 }
@@ -653,4 +646,94 @@ fn render_entries(
         }
     }
     Ok(blocks)
+}
+
+/// `feature_blocks` (spec 0439 S2): the custom features set on `msg` (a
+/// FeatureSet read with the options pool), by number, each field of each
+/// a path: `option features.(E).f = V;`, `features.(E).f = V,` in a
+/// composite; an empty one `features.(E) = {}`. A value protoc's rules
+/// exclude (`feature_resolver.cc`: singular enums or bools, no extension)
+/// is written as an aggregate, as any message-valued option.
+pub fn feature_blocks(
+    scope: &Scope<'_>,
+    msg: &DynamicMessage,
+    composite: bool,
+    depth: usize,
+) -> Result<Vec<Block>, Unrenderable> {
+    let fields = msg.as_ref().set_fields();
+    let mut blocks = Vec::new();
+    let statement = |text: String, orphan: bool| {
+        let text = if composite {
+            format!("{text},")
+        } else {
+            format!("option {text};")
+        };
+        let kind = if orphan {
+            LineType::Orphan
+        } else {
+            LineType::Code
+        };
+        let mut block = Block::new();
+        block.push(Line::new(text, depth, kind));
+        block
+    };
+    for (name, orphan, field, value) in custom_entries(scope, &fields) {
+        let name = format!("features.{name}");
+        let flat = match (field.cardinality(), value) {
+            (Cardinality::Repeated, _) => None,
+            (_, Value::Message(m)) => flat_feature(m.as_ref()),
+            _ => None,
+        };
+        let Some(leaves) = flat else {
+            let mut block = dump_option(scope, field, value, &name, depth)?;
+            if composite {
+                block.postpend(",");
+            } else {
+                if let Some(first) = block.lines.first_mut() {
+                    first.text.insert_str(0, "option ");
+                }
+                block.postpend(";");
+            }
+            let kind = if orphan {
+                LineType::Orphan
+            } else {
+                LineType::Code
+            };
+            for line in &mut block.lines {
+                line.kind = kind;
+            }
+            blocks.push(block);
+            continue;
+        };
+        if leaves.is_empty() {
+            blocks.push(statement(format!("{name} = {{}}"), orphan));
+        }
+        for (leaf, v) in &leaves {
+            blocks.push(statement(
+                format!("{name}.{} = {}", leaf.name(), scalar(leaf, v)?),
+                orphan,
+            ));
+        }
+    }
+    Ok(blocks)
+}
+
+/// `_is_flat_feature`: a feature's value's fields, when it holds only what
+/// protoc admits in one (singular enums or bools, no extension, nothing
+/// unknown); `None` otherwise.
+fn flat_feature<'m>(m: Option<&MessageRef<'m>>) -> Option<Vec<(Field, Value<'m>)>> {
+    let Some(m) = m else {
+        return Some(Vec::new());
+    };
+    let fields = m.set_fields();
+    let flat = fields.iter().all(|(f, _)| {
+        !f.is_extension()
+            && f.cardinality() != Cardinality::Repeated
+            && matches!(f.kind(), Kind::Enum(_) | Kind::Bool)
+    });
+    let known: Vec<u32> = fields.iter().map(|(f, _)| f.number()).collect();
+    let bytes = m.encode().ok()?;
+    let unknown =
+        wire_fields(&bytes, &mut 0, None).is_none_or(|r| r.iter().any(|(n, _)| !known.contains(n)));
+    (flat && !unknown).then_some(fields)
 }
