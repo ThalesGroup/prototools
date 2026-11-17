@@ -28,8 +28,17 @@ regex          = "1"
 workspace-hack = { version = "0.1", path = "../workspace-hack" }
 rapidfuzz = "0.5"
 rayon = "1"
+rustc-hash = { version = "2", optional = true }
+foldhash = { version = "0.2", optional = true }
 prototext-graph = { workspace = true }
 prototools-complete = { workspace = true }
 clap_complete = { version = "4.5", features = ["unstable-dynamic"] }
 clap_mangen = "0.2"
 indicatif = "0.17"
+
+# The hasher of protoback's maps (src/hash.rs, spec 0442 S4).
+[features]
+default = ["hash-fx"]
+hash-fx = ["dep:rustc-hash"]
+hash-fold = ["dep:foldhash"]
+hash-sip = []

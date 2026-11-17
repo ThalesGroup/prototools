@@ -44,7 +44,7 @@ pub struct Ctx<'s, 'a> {
     pub visible: Visible,
     /// The file and its imports, transitively: whose extensions its
     /// options see (spec 0429 S14).
-    pub closure: std::collections::HashSet<String>,
+    pub closure: crate::hash::HashSet<String>,
 }
 
 /// A render's report: an immediate warning, a counted W6, or a file

@@ -11,7 +11,8 @@
 //! initialized once: a definition met again (two files, under
 //! `--keep-duplicates`) keeps the first.
 
-use std::collections::{BTreeSet, HashMap};
+use crate::hash::HashMap;
+use std::collections::BTreeSet;
 
 use prototext_upb::descriptor_access::{
     DescriptorProto, FeatureSet, FieldDescriptorProto, FileDescriptorProto,

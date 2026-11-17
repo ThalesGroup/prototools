@@ -13,7 +13,7 @@
 //! (`prototools-complete`), zsh and fish (clap_complete's scripts) then
 //! add no space, so Tab descends into it.
 
-use std::collections::HashMap;
+use crate::hash::HashMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
@@ -81,7 +81,7 @@ pub fn descriptor_files(incomplete: &str, roots: &[PathBuf]) -> Vec<String> {
     };
     let (blobs, dirs): (Vec<PathBuf>, Vec<PathBuf>) = roots.into_iter().partition(|r| r.is_file());
     let mut out = paths_under(incomplete, &dirs, false, Some(&[".pb", ".textpb"]));
-    let mut cache = HashMap::new();
+    let mut cache = HashMap::default();
     for blob in &blobs {
         let mut members: Vec<PathBuf> = crate::load::blob_members(&mut cache, blob)
             .into_iter()

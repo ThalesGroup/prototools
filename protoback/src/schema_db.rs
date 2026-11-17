@@ -10,7 +10,7 @@
 //! merged and minimized by `prototext-graph` without YAML; `DB.desc`, the
 //! descriptors in dependency order; `DB/hopcroft.rkyv`; `DB/index.rkyv`.
 
-use std::collections::{HashMap, HashSet};
+use crate::hash::{HashMap, HashSet};
 use std::path::Path;
 
 use prototext_graph::build_scoring_graph::{build_from_files, ScoringFile};
@@ -86,7 +86,7 @@ pub fn build(
     // renamed as `.desc` renames them (spec 0430 S6). A file the pool
     // refused gets none (W6, step 9).
     wkt.done();
-    let mut seen = HashSet::new();
+    let mut seen = HashSet::default();
     let scoring_files: Vec<&str> = collected
         .iter()
         .map(|(origin, _)| origin.as_str())
@@ -165,7 +165,7 @@ pub fn build(
         .iter()
         .map(|d| text(FileDescriptorProto(d.as_ref()).name()))
         .collect();
-    let mut first: HashMap<&str, usize> = HashMap::new();
+    let mut first: HashMap<&str, usize> = HashMap::default();
     for (j, name) in names.iter().enumerate() {
         match first.get(name.as_str()) {
             Some(&p) if collected[p].1 != collected[j].1 => {
@@ -192,7 +192,7 @@ pub fn build(
                 .collect()
         })
         .collect();
-    let mut placed: HashSet<&str> = HashSet::new();
+    let mut placed: HashSet<&str> = HashSet::default();
     let mut order = Vec::with_capacity(collected.len());
     let mut remaining: Vec<usize> = (0..collected.len()).collect();
     for _ in 0..=collected.len() {
@@ -290,10 +290,10 @@ fn fds_index(
     decoded: &[DynamicMessage],
     spans: &[(u64, u64)],
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let mut type_to_file = HashMap::new();
-    let mut file_to_span = HashMap::new();
-    let mut dep_graph = HashMap::new();
-    let mut ext_to_file = HashMap::new();
+    let mut type_to_file = HashMap::default();
+    let mut file_to_span = HashMap::default();
+    let mut dep_graph = HashMap::default();
+    let mut ext_to_file = HashMap::default();
     for (&j, &span) in order.iter().zip(spans) {
         let f = FileDescriptorProto(decoded[j].as_ref());
         let name = text(f.name());

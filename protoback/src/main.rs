@@ -15,6 +15,7 @@ mod features;
 mod features_dump;
 mod fuzz;
 mod graph;
+mod hash;
 mod instantiate;
 mod load;
 mod man;
@@ -33,7 +34,8 @@ mod select;
 mod topology;
 mod variant;
 
-use std::collections::{BTreeSet, HashMap};
+use crate::hash::HashMap;
+use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 
@@ -301,7 +303,7 @@ fn main() -> ExitCode {
             (Err(e), _) | (_, Err(e)) => return usage(&e),
         };
 
-    let mut blobs = HashMap::new();
+    let mut blobs = HashMap::default();
     for root in &roots {
         if root.is_file() && load::blob_members(&mut blobs, root).is_empty() {
             eprintln!(

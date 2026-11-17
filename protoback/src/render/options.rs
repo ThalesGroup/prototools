@@ -7,7 +7,8 @@
 //! options, those of the variant's descriptor.proto, parsed as reproto's
 //! options pool parses them, rendered as its `dump_option` renders them.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use crate::hash::{HashMap, HashSet};
+use std::collections::BTreeMap;
 
 use prototext_upb::{Cardinality, DynamicMessage, Field, Kind, Pool};
 use prototext_upb::{MessageRef, Value};
@@ -119,11 +120,11 @@ pub fn pool_loads(db: &Database, summoned: &[String]) -> PoolLoads {
     let mut loader = Loader {
         db,
         pool: Pool::new(),
-        done: HashMap::new(),
-        reasons: HashMap::new(),
+        done: HashMap::default(),
+        reasons: HashMap::default(),
         loads: PoolLoads {
             refused: BTreeMap::new(),
-            loaded: HashSet::new(),
+            loaded: HashSet::default(),
             order: Vec::new(),
             pool: Pool::new(),
         },
@@ -254,7 +255,7 @@ pub struct Scope<'a> {
     pub keep_descriptor: bool,
     pub graph: &'a crate::graph::Graph,
     /// The rendering file's import closure (spec 0429 S14).
-    pub closure: &'a std::collections::HashSet<String>,
+    pub closure: &'a crate::hash::HashSet<String>,
     /// Where its warnings go, and its name (W22, spec 0438 S6).
     pub events: &'a std::cell::RefCell<Vec<super::file::RenderEvent>>,
     pub file: String,

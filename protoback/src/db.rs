@@ -8,7 +8,7 @@
 //! other contents, which phase 2 cannot do, its files' names being the
 //! topology's.
 
-use std::collections::HashMap;
+use crate::hash::HashMap;
 
 use prototext_upb::descriptor_access::{DescriptorProto, FileDescriptorProto};
 use prototext_upb::DynamicMessage;

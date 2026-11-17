@@ -378,7 +378,7 @@ impl Walk<'_> {
     fn message(&mut self, desc: &Message, depth: i64) -> DynamicMessage {
         let mut msg = DynamicMessage::new(desc);
         let p = self.p(depth);
-        let mut in_oneof = std::collections::HashSet::new();
+        let mut in_oneof = crate::hash::HashSet::default();
         {
             let mut w = msg.as_mut();
             for oneof in desc.oneofs() {

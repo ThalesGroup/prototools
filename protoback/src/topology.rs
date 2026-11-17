@@ -10,7 +10,8 @@
 //! files were merged: the same order, and the same files visible to a
 //! round.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use crate::hash::HashMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::load::QualFile;
 

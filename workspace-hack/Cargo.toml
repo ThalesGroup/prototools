@@ -19,6 +19,7 @@ aho-corasick = { version = "1" }
 clap = { version = "4", features = ["derive", "env", "unstable-ext"] }
 clap_builder = { version = "4", default-features = false, features = ["color", "env", "help", "std", "suggestions", "unstable-ext", "usage"] }
 either = { version = "1", features = ["use_std"] }
+foldhash = { version = "0.2" }
 hashbrown = { version = "0.17" }
 itertools = { version = "0.14" }
 memchr = { version = "2" }
@@ -36,6 +37,7 @@ zerocopy = { version = "0.8", default-features = false, features = ["derive", "s
 
 [build-dependencies]
 either = { version = "1", features = ["use_std"] }
+foldhash = { version = "0.2" }
 hashbrown = { version = "0.17" }
 memchr = { version = "2" }
 num-integer = { version = "0.1", features = ["i128"] }

@@ -12,7 +12,7 @@
 //! writes one frame unprompted: `0` alone when ready, `1` and a message
 //! when it cannot run.
 
-use std::collections::HashMap;
+use crate::hash::HashMap;
 use std::io::{BufReader, Read, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::Mutex;
@@ -131,7 +131,7 @@ impl Plugin {
                 child,
                 stdin,
                 stdout,
-                cache: HashMap::new(),
+                cache: HashMap::default(),
                 failed: None,
             }),
         })

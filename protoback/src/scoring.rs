@@ -15,7 +15,7 @@
 pub mod html;
 pub mod pyyaml;
 
-use std::collections::{HashMap, HashSet};
+use crate::hash::{HashMap, HashSet};
 
 use prototext_graph::build_scoring_graph::{
     FieldLabel, FieldSpec, FieldType, NodeKind, ScoringFile, ScoringMessage,
@@ -60,7 +60,7 @@ impl Messages {
 /// W6, step 9).
 pub fn file(c: &Collect<'_>, name: &str) -> Option<ScoringFile> {
     let fd = c.loads.pool.file(name)?;
-    let mut groups = HashSet::new();
+    let mut groups = HashSet::default();
     for m in fd.messages() {
         group_fqdns(&m, &mut groups);
     }

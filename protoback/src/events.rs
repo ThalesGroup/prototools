@@ -14,7 +14,8 @@
 //! with `--detailed-warnings`, each prints at once instead. The dump
 //! records each call as made, and each message.
 
-use std::collections::{BTreeMap, HashSet};
+use crate::hash::HashSet;
+use std::collections::BTreeMap;
 
 use crate::console;
 

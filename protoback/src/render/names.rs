@@ -13,7 +13,8 @@
 //! simulating protoc's lookup (`DescriptorBuilder::LookupSymbolNoPlaceholder`,
 //! protobuf's `descriptor.cc`) over the symbols visible from the file.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use crate::hash::{HashMap, HashSet};
+use std::collections::BTreeSet;
 
 use prototext_upb::descriptor_access::{DescriptorProto, EnumDescriptorProto, FileDescriptorProto};
 
@@ -118,35 +119,18 @@ impl SymbolTable {
         renaming: &Renaming<'_>,
     ) -> SymbolTable {
         let mut table = SymbolTable::default();
-        let mut order: HashMap<String, usize> = HashMap::new();
         for f in files {
-            let n = order.len();
-            order.entry(text(f.name())).or_insert(n);
             table.add_file(&f, renaming);
         }
-        // Each symbol by its output name, the definitions of input names
-        // the rules merge kept together, in file order (reproto's dict).
-        let mut symbols: HashMap<String, Vec<(String, SymbolKind)>> = HashMap::new();
-        for (name, defs) in std::mem::take(&mut table.symbols) {
-            let out = renaming
-                .variant
-                .output_symbol(&name, renaming.keep_descriptor);
-            let merged = symbols.entry(out).or_default();
-            for def in defs {
-                if !merged.iter().any(|(f, _)| *f == def.0) {
-                    merged.push(def);
-                }
-            }
-        }
-        for defs in symbols.values_mut() {
-            defs.sort_by_key(|(f, _)| order.get(f).copied().unwrap_or(usize::MAX));
-        }
-        table.symbols = symbols;
         table
     }
 
-    fn add(&mut self, name: String, kind: SymbolKind, file: &str) {
-        let defs = self.symbols.entry(name).or_default();
+    /// Symbol `name` (its input full name) of `file`, by its output name,
+    /// renamed as it is added (spec 0442 S4): the definitions of input
+    /// names the rules merge kept together, in file order.
+    fn add(&mut self, name: &str, kind: SymbolKind, file: &str, r: &Renaming<'_>) {
+        let out = r.variant.output_symbol(name, r.keep_descriptor);
+        let defs = self.symbols.entry(out).or_default();
         if !defs.iter().any(|(f, _)| f == file) {
             defs.push((file.to_string(), kind));
         }
@@ -172,45 +156,61 @@ impl SymbolTable {
             .collect();
         self.imports.insert(file.clone(), (deps, public));
         for m in f.message_type() {
-            self.add_message(&package, &m, &file);
+            self.add_message(&package, &m, &file, renaming);
         }
         for e in f.enum_type() {
-            self.add_enum(&package, &e, &file);
+            self.add_enum(&package, &e, &file, renaming);
         }
         for x in f.extension() {
-            self.add(join(&package, x.name()), SymbolKind::Other, &file);
+            self.add(
+                &join(&package, x.name()),
+                SymbolKind::Other,
+                &file,
+                renaming,
+            );
         }
         for s in f.service() {
             let name = join(&package, s.name());
-            self.add(name.clone(), SymbolKind::Service, &file);
+            self.add(&name, SymbolKind::Service, &file, renaming);
             for meth in s.method() {
-                self.add(join(&name, meth.name()), SymbolKind::Other, &file);
+                self.add(
+                    &join(&name, meth.name()),
+                    SymbolKind::Other,
+                    &file,
+                    renaming,
+                );
             }
         }
     }
 
-    fn add_message(&mut self, prefix: &str, m: &DescriptorProto<'_>, file: &str) {
+    fn add_message(&mut self, prefix: &str, m: &DescriptorProto<'_>, file: &str, r: &Renaming<'_>) {
         let name = join(prefix, m.name());
-        self.add(name.clone(), SymbolKind::Message, file);
+        self.add(&name, SymbolKind::Message, file, r);
         for f in m.field().iter().chain(m.extension().iter()) {
-            self.add(join(&name, f.name()), SymbolKind::Other, file);
+            self.add(&join(&name, f.name()), SymbolKind::Other, file, r);
         }
         for o in m.oneof_decl() {
-            self.add(join(&name, o.name()), SymbolKind::Other, file);
+            self.add(&join(&name, o.name()), SymbolKind::Other, file, r);
         }
         for n in m.nested_type() {
-            self.add_message(&name, &n, file);
+            self.add_message(&name, &n, file, r);
         }
         for e in m.enum_type() {
-            self.add_enum(&name, &e, file);
+            self.add_enum(&name, &e, file, r);
         }
     }
 
-    fn add_enum(&mut self, prefix: &str, e: &EnumDescriptorProto<'_>, file: &str) {
-        self.add(join(prefix, e.name()), SymbolKind::Enum, file);
+    fn add_enum(
+        &mut self,
+        prefix: &str,
+        e: &EnumDescriptorProto<'_>,
+        file: &str,
+        r: &Renaming<'_>,
+    ) {
+        self.add(&join(prefix, e.name()), SymbolKind::Enum, file, r);
         // An enum value is a symbol of the enum's own scope's parent.
         for v in e.value() {
-            self.add(join(prefix, v.name()), SymbolKind::Other, file);
+            self.add(&join(prefix, v.name()), SymbolKind::Other, file, r);
         }
     }
 
@@ -219,7 +219,7 @@ impl SymbolTable {
     /// File `file`, its imports, theirs (those the input has): whose
     /// extensions its options see (spec 0429 S14).
     pub fn closure(&self, file: &str) -> HashSet<String> {
-        let mut files = HashSet::new();
+        let mut files = HashSet::default();
         let mut todo = vec![file.to_string()];
         while let Some(f) = todo.pop() {
             if let Some((deps, _)) = self.imports.get(&f) {
@@ -245,7 +245,7 @@ impl SymbolTable {
                 }
             }
         }
-        let mut packages = HashSet::new();
+        let mut packages = HashSet::default();
         for f in &files {
             if let Some(package) = self.packages.get(f).filter(|p| !p.is_empty()) {
                 let mut prefix = String::new();

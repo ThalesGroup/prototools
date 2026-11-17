@@ -19,7 +19,7 @@
 //! its `tojson` filter replaced by the markers. Once the port is done, this
 //! byte identity is meant to be relaxed for a drawing of protoback's own.
 
-use std::collections::{HashMap, HashSet};
+use crate::hash::{HashMap, HashSet};
 use std::path::Path;
 
 use serde::Deserialize;
@@ -123,7 +123,7 @@ pub fn page(compiled_yaml: &str, with_leaf_nodes: bool, hide: &[String]) -> Resu
         .map(|s| s.id)
         .filter(|id| !with_outgoing.contains(id))
         .collect();
-    let mut fqdns: HashMap<i64, Vec<String>> = HashMap::new();
+    let mut fqdns: HashMap<i64, Vec<String>> = HashMap::default();
     for r in &roots {
         fqdns.entry(r.state).or_default().push(r.fqdn.clone());
     }
@@ -131,7 +131,7 @@ pub fn page(compiled_yaml: &str, with_leaf_nodes: bool, hide: &[String]) -> Resu
         v.sort();
     }
     let hidden: HashSet<i64> = if hide.is_empty() {
-        HashSet::new()
+        HashSet::default()
     } else {
         fqdns
             .iter()
@@ -148,7 +148,7 @@ pub fn page(compiled_yaml: &str, with_leaf_nodes: bool, hide: &[String]) -> Resu
     };
 
     let mut nodes = Vec::new();
-    let mut added: HashSet<i64> = HashSet::new();
+    let mut added: HashSet<i64> = HashSet::default();
     for s in &states {
         let leaf = leaves.contains(&s.id);
         if hidden.contains(&s.id) || (leaf && !with_leaf_nodes) {

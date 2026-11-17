@@ -7,8 +7,8 @@
 //! with its source path; once the text is complete, each marker becomes a
 //! location, its span in the lines `flush` writes (spec 0429 S10).
 
+use crate::hash::HashMap;
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 
 use super::text::{Block, LineType, TAB_SIZE};
 
@@ -71,7 +71,7 @@ impl Sci {
         redact_comments: bool,
         redact_orphans: bool,
     ) -> Vec<Location> {
-        let mut index: HashMap<u32, (usize, usize, usize)> = HashMap::new();
+        let mut index: HashMap<u32, (usize, usize, usize)> = HashMap::default();
         let mut counter = 0;
         for line in &out.lines {
             let survives = match line.kind {

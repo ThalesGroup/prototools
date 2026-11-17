@@ -8,7 +8,8 @@
 //! `--schema-db-out`, the files summoned files depend on, kept aside for
 //! the schema database.
 
-use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use crate::hash::{HashMap, HashSet};
+use std::collections::{BTreeSet, VecDeque};
 
 use prototext_upb::descriptor_access::FileDescriptorProto;
 
@@ -40,7 +41,7 @@ fn summon_enclosing(graph: &mut Graph) {
 /// imports taken in name order; the path to `end`, both included, or
 /// none.
 fn shortest_lex_path(start: usize, end: usize, imports: &HashMap<usize, Vec<usize>>) -> Vec<usize> {
-    let mut prev = HashMap::from([(start, start)]);
+    let mut prev = HashMap::from_iter([(start, start)]);
     let mut queue = VecDeque::from([start]);
     while let Some(node) = queue.pop_front() {
         for &next in imports.get(&node).into_iter().flatten() {
@@ -71,7 +72,7 @@ fn bridge_imports(graph: &mut Graph) {
     let live = |g: &Graph, i: usize| g.nodes[i].present && !g.nodes[i].is_pruned;
     // Each present file not pruned: its imports, present and not pruned,
     // by name.
-    let mut imports: HashMap<usize, Vec<usize>> = HashMap::new();
+    let mut imports: HashMap<usize, Vec<usize>> = HashMap::default();
     for i in 0..graph.nodes.len() {
         if !is_file(graph, i) || !live(graph, i) {
             continue;
@@ -95,7 +96,7 @@ fn bridge_imports(graph: &mut Graph) {
     let type_targets = |g: &Graph, file: usize| -> BTreeSet<usize> {
         let mut out = BTreeSet::new();
         let mut stack = vec![file];
-        let mut visited = HashSet::new();
+        let mut visited = HashSet::default();
         while let Some(n) = stack.pop() {
             if !visited.insert(n) {
                 continue;
@@ -110,7 +111,7 @@ fn bridge_imports(graph: &mut Graph) {
         }
         out
     };
-    let mut paths: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
+    let mut paths: HashMap<(usize, usize), Vec<usize>> = HashMap::default();
     let mut changed = true;
     while changed {
         changed = false;

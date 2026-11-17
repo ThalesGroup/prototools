@@ -13,7 +13,8 @@
 //! [`translate`] is that function, ported; `tests` holds Python's own
 //! answers on a table of cases.
 
-use std::collections::{BTreeSet, HashMap};
+use crate::hash::HashMap;
+use std::collections::BTreeSet;
 use std::sync::Mutex;
 
 use regex::Regex;
@@ -192,7 +193,7 @@ pub fn full_match(subject: &str, pattern: &str) -> bool {
     let pattern = posix_str(pattern);
     let subject = posix_str(subject);
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    let map = cache.get_or_insert_with(HashMap::new);
+    let map = cache.get_or_insert_with(HashMap::default);
     let re = map
         .entry(pattern.clone())
         .or_insert_with(|| Regex::new(&translate(&pattern)).expect("a translated glob is a regex"));

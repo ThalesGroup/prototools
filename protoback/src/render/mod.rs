@@ -24,7 +24,8 @@ use prototext_upb::descriptor_access::{
 };
 use prototext_upb::MessageRef;
 
-use std::collections::{BTreeSet, HashMap};
+use crate::hash::HashMap;
+use std::collections::BTreeSet;
 
 use crate::db::Database;
 use crate::events::Events;
@@ -309,8 +310,11 @@ fn symbol_collisions(
 ) -> Vec<String> {
     const KINDS: [&str; 5] = ["desc", "enum", "serv", "meth", "fdsc"];
     // Output name -> (input name, file), in node order.
-    let mut by_name: Vec<(String, Vec<(String, String)>)> = Vec::new();
-    let mut index: HashMap<String, usize> = HashMap::new();
+    // Sized up front: grown as it went, rehashing was most of its cost.
+    let n = graph.nodes.len();
+    let mut by_name: Vec<(String, Vec<(String, String)>)> = Vec::with_capacity(n);
+    let mut index: HashMap<String, usize> =
+        HashMap::with_capacity_and_hasher(n, Default::default());
     for node in &graph.nodes {
         let Some((kind, name)) = node.fqdn.split_once(':') else {
             continue;

@@ -5,7 +5,8 @@
 //! What the phases share: the run's settings, and what they decide that is
 //! not in the topology or the nodes (reproto's `Context`).
 
-use std::collections::{BTreeSet, HashMap};
+use crate::hash::HashMap;
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use crate::db::Database;

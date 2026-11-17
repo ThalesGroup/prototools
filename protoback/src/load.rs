@@ -6,7 +6,7 @@
 //! into one `QualFile` per `FileDescriptorProto` (reproto's `load.py` and
 //! `split_fdps.py`).
 
-use std::collections::HashMap;
+use crate::hash::HashMap;
 use std::path::{Path, PathBuf};
 
 use prototext_upb::descriptor_access::{FileDescriptorProto, FileDescriptorSet};
@@ -534,7 +534,7 @@ pub fn load_from_path(ctx: &mut LoadCtx, roots: &[PathBuf], rel_path: &Path) -> 
         }
         qual_files.extend(parsed);
     }
-    let mut seen: HashMap<String, (PathBuf, PathBuf)> = HashMap::new();
+    let mut seen: HashMap<String, (PathBuf, PathBuf)> = HashMap::default();
     let mut deduped = Vec::new();
     for qf in qual_files {
         match seen.get(&qf.name) {
