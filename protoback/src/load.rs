@@ -216,9 +216,11 @@ fn split_binary(data: &[u8]) -> Option<Vec<(String, Vec<u8>)>> {
     }
     let def = Pool::vendored().get_message_by_name("google.protobuf.FileDescriptorSet")?;
     let set = DynamicMessage::decode(&def, data).ok()?;
-    let files: Vec<(String, Vec<u8>)> = FileDescriptorSet(set.as_ref())
-        .file()
-        .into_iter()
+    // Each file encoded on its own, in parallel, in order (spec 0443 P8).
+    use rayon::prelude::*;
+    let entries = FileDescriptorSet(set.as_ref()).file();
+    let files: Vec<(String, Vec<u8>)> = entries
+        .par_iter()
         .filter_map(|f| {
             let name = String::from_utf8_lossy(f.name()).into_owned();
             (!name.is_empty()).then(|| Some((name, f.0.encode().ok()?)))?
@@ -465,11 +467,30 @@ fn parse_qfile(ctx: &mut LoadCtx, file: &RawFile) -> Vec<QualFile> {
         ctx.events.warn("W15", &format!("Cannot parse '{rel}'"));
         return Vec::new();
     };
+    // Without a plugin, each binary fragment's imports read on their own,
+    // in parallel (spec 0443 P8); a plugin's calls keep their order.
+    let read: Vec<Option<Vec<String>>> = if ctx.plugin.is_none() {
+        use rayon::prelude::*;
+        fragments
+            .par_iter()
+            .map(|(_, fragment)| match fragment {
+                Fragment::Binary(b) => {
+                    Some(name_and_imports(b).map(|(_, i)| i).unwrap_or_default())
+                }
+                Fragment::Text(_) => None,
+            })
+            .collect()
+    } else {
+        vec![None; fragments.len()]
+    };
     let mut out = Vec::new();
-    for (name, fragment) in fragments {
+    for ((name, fragment), read) in fragments.into_iter().zip(read) {
         // With a plugin, a text file is parsed now, with descriptor.proto
         // alone, and its imports are the plugin's answer's (spec 0431 S1).
         let patched_imports = |bytes: &[u8]| -> Vec<String> {
+            if let Some(imports) = &read {
+                return imports.clone();
+            }
             let answer = ctx.plugin.map(|p| p.apply(&name, bytes));
             name_and_imports(answer.as_deref().unwrap_or(bytes))
                 .map(|(_, i)| i)

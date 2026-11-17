@@ -200,10 +200,18 @@ In this order, cheapest first; each item measured (M) before the next.
     likely parallelizes; the minimization (partition refinement) is
     sequential by nature: independent components minimized apart, or
     the per-step bookkeeping in parallel, to study.
-- **P8. The input decoded in parallel.** Phase 1 decodes each of the
-  input's descriptors (~3,000 for googleapis) one after another; they
-  are independent. The whole phase is ~0.3 s: only if it still shows
-  once the rest is done.
+- **P8. The input read in parallel** (implemented). Phases 1 and 2
+  took ~0.42 s on the main thread on googleapis: phase 1 (0.17 s) decodes
+  the input set, encodes each file, then decodes each again for its name
+  and imports; phase 2 (0.25 s) decodes each file again, lists its
+  symbols, and merges it in order, checked against what earlier files
+  added. The per-file parts now run on rayon's global pool (`--jobs`
+  threads, widened as the render pool's, spec 0444): phase 1's encodings
+  (`split_binary`) and imports (`parse_qfile`); phase 2's decodings and
+  symbol lists, prepared before its loop, which takes them in its order.
+  With a plugin, both phases are as before, its calls in their order.
+  The decode-encode-decode chain stays: a raw split of the set's bytes
+  would change what a plugin receives.
 - **P9. The release profile, last.** `lto = "fat"`, `codegen-units = 1`:
   on every thread count, at the cost of slower release builds; last, so
   that every step before it builds as fast as today. To measure.

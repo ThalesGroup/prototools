@@ -347,6 +347,14 @@ fn main() -> ExitCode {
     // on the whole mask (spec 0444 S3).
     let cpus = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
     affinity::apply();
+    // Rayon's global pool, which phases 1 and 2 use for their per-file
+    // work (spec 0443 P8): --jobs threads, each first given every CPU, the
+    // main thread's confinement being inherited.
+    let jobs = cli.jobs.unwrap_or(cpus);
+    let _ = rayon::ThreadPoolBuilder::new()
+        .num_threads(jobs.max(1))
+        .start_handler(|_| affinity::widen())
+        .build_global();
 
     let fallback = fallback_protos(&cli.use_variant, &variant);
     let mut run = Run {
@@ -477,7 +485,6 @@ fn main() -> ExitCode {
     // The setup rendering reads, built side by side when there is more
     // than one thread (spec 0443 P5): the pool loads then the options
     // pool, which reads them; the symbol table; each node's definition.
-    let jobs = cli.jobs.unwrap_or(cpus);
     let build_pools = || {
         let loads = render::pool_loads(&run.db, &loaded);
         let options = render::OptionsPool::new(&run.db, &run.variant, &loads);

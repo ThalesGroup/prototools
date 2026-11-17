@@ -94,6 +94,28 @@ pub fn run(r: &mut Run, topo: &mut Topology) -> Result<(), DescriptorProtoError>
         crate::console::Label::Always,
         if r.quiet { 0 } else { topo.files.len() as u64 },
     );
+    // Without a plugin, each file decoded and its symbols listed on its
+    // own, in parallel, before the loop takes them in its order (spec 0443
+    // P8); a plugin's calls keep their order.
+    let mut prepared: Vec<Option<Prepared>> = if r.plugin.is_none() {
+        use rayon::prelude::*;
+        let def = Pool::vendored()
+            .get_message_by_name("google.protobuf.FileDescriptorProto")
+            .expect("the vendored descriptor.proto declares it");
+        topo.files
+            .par_iter()
+            .map(|f| {
+                let qf = f.qfile.as_ref()?;
+                let fdp = DynamicMessage::decode(&def, &qf.contents).ok();
+                let symbols = fdp
+                    .as_ref()
+                    .map(|m| file_symbols(&FileDescriptorProto(m.as_ref())));
+                Some(Prepared { fdp, symbols })
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     let mut waiting: BTreeSet<usize> = (0..topo.files.len()).collect();
     for rank in 1.. {
         let leaves: Vec<usize> = waiting
@@ -113,7 +135,8 @@ pub fn run(r: &mut Run, topo: &mut Topology) -> Result<(), DescriptorProtoError>
             if r.debug {
                 r.events.info(&format!("  Merging: {}", topo.files[i].name));
             }
-            merge(r, topo, i);
+            let ready = prepared.get_mut(i).and_then(Option::take);
+            merge(r, topo, i, ready);
             phase.advance(1);
         }
     }
@@ -132,8 +155,16 @@ pub fn run(r: &mut Run, topo: &mut Topology) -> Result<(), DescriptorProtoError>
     Ok(())
 }
 
-/// One file into the database, mended, unless pruned.
-fn merge(r: &mut Run, topo: &mut Topology, i: usize) {
+/// A file decoded ahead, and the symbols its duplicate check reads (none
+/// when it does not decode).
+struct Prepared {
+    fdp: Option<DynamicMessage>,
+    symbols: Option<Vec<String>>,
+}
+
+/// One file into the database, mended, unless pruned; `ready`, its decoding
+/// and symbols when prepared ahead.
+fn merge(r: &mut Run, topo: &mut Topology, i: usize, ready: Option<Prepared>) {
     let Some(qf) = topo.files[i].qfile.as_ref() else {
         return;
     };
@@ -149,7 +180,11 @@ fn merge(r: &mut Run, topo: &mut Topology, i: usize) {
     let def = Pool::vendored()
         .get_message_by_name("google.protobuf.FileDescriptorProto")
         .expect("the vendored descriptor.proto declares it");
-    let Ok(mut fdp) = DynamicMessage::decode(&def, &qf.contents) else {
+    let (decoded, symbols) = match ready {
+        Some(p) => (p.fdp, p.symbols),
+        None => (DynamicMessage::decode(&def, &qf.contents).ok(), None),
+    };
+    let Some(mut fdp) = decoded else {
         r.events
             .warn("W9", &format!("Skipping unparseable file: {name}"));
         topo.files[i].is_pruned = true;
@@ -165,7 +200,7 @@ fn merge(r: &mut Run, topo: &mut Topology, i: usize) {
     }
     patch_go_package(r, &mut fdp);
     strip_self_dependency(r, &mut fdp);
-    if !r.keep_duplicates && prune_if_duplicate(r, topo, i, &fdp) {
+    if !r.keep_duplicates && prune_if_duplicate(r, topo, i, &fdp, symbols) {
         return;
     }
     strip_unresolvable_dependencies(r, topo, i, &mut fdp);
@@ -210,9 +245,18 @@ fn strip_self_dependency(r: &mut Run, fdp: &mut DynamicMessage) {
 
 /// `_prune_if_duplicate`: a file declaring a symbol the database has is
 /// pruned, with a W3 naming the files it collides with.
-fn prune_if_duplicate(r: &mut Run, topo: &mut Topology, i: usize, fdp: &DynamicMessage) -> bool {
+fn prune_if_duplicate(
+    r: &mut Run,
+    topo: &mut Topology,
+    i: usize,
+    fdp: &DynamicMessage,
+    symbols: Option<Vec<String>>,
+) -> bool {
     let mut conflicts: BTreeMap<String, String> = BTreeMap::new();
-    for sym in file_symbols(&FileDescriptorProto(fdp.as_ref())) {
+    // Listed ahead when prepared: nothing before this check changes the
+    // file's types (`patch_go_package`, `strip_self_dependency`).
+    let symbols = symbols.unwrap_or_else(|| file_symbols(&FileDescriptorProto(fdp.as_ref())));
+    for sym in symbols {
         if let Some(f) = r.db.file_containing_symbol(&sym) {
             conflicts.insert(sym, r.db.name(f));
         }
