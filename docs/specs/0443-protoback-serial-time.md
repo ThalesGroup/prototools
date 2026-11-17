@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # 0443 — protoback's serial time
 
-Status: draft (P1 and P2 implemented and measured; the rest planned)
+Status: implemented (P1–P8, P10; P9 and P11a measured or weighed and dropped; P11b to decide)
 App: protoback, prototext-graph
 Refs: docs/specs/0442-handles-without-shared-refcounts.md (the contention
         removed; its measured outcome is this spec's starting point),
@@ -212,9 +212,12 @@ In this order, cheapest first; each item measured (M) before the next.
   With a plugin, both phases are as before, its calls in their order.
   The decode-encode-decode chain stays: a raw split of the set's bytes
   would change what a plugin receives.
-- **P9. The release profile, last.** `lto = "fat"`, `codegen-units = 1`:
-  on every thread count, at the cost of slower release builds; last, so
-  that every step before it builds as fast as today. To measure.
+- **P9. The release profile, last** (measured, dropped). Thin LTO, and
+  fat LTO with one codegen unit, through Cargo's environment overrides
+  on P8's code: no gain on eight threads, ~2 % on one (ranges
+  overlapping), for twice the rebuild time with fat LTO (protoback's
+  release rebuild 125 s against 63 s; thin 60 s), which every Nix and
+  nixpkgs release build would pay. `[profile.release]` stays empty.
 
 ## Measurement
 
@@ -348,3 +351,23 @@ commits), vCPUs 0–7, 3 runs each, steal 17 of 112,750 ticks:
 | P8 | 7.25 s [7.11–7.38] | 3.81 s [3.80–3.83] | 0.36 s | 0.99 s |
 
 −0.24 s on eight threads, the ranges apart; one thread unchanged.
+
+P9, three release profiles on P8's code, one session, vCPUs 0–7, steal
+29 of 170,225 ticks:
+
+| | 1 thread | 8 threads |
+|---|---|---|
+| none | 7.40 s [7.32–7.47] | 3.91 s [3.76–4.03] |
+| thin LTO | 7.26 s [7.15–7.38] | 3.91 s [3.85–3.99] |
+| fat LTO, 1 codegen unit | 7.28 s [7.19–7.43] | 3.93 s [3.84–3.98] |
+
+## Outcome
+
+googleapis with googleapisDb's flags, on eight threads: 9.03 s before
+spec 0442; 6.95 s after it; 3.81–3.91 s after this spec, pinned to the
+VM's eight E-cores (sessions apart, a few tenths of variation). Unpinned
+on its 12 vCPUs, its fast ones declared (P10): 2.64 s, steady. Of the
+gain here: P1 ~0.7 s, P2 ~0.7 s, P3 (jemalloc) ~0.3–0.6 s, P5 ~0.4 s, P6
+~0.15 s, P8 ~0.24 s, P4 and P7 small; P10 on top, unpinned.
+Not done: P11b (a behavior change to decide), first-seen numbering
+(with the next format change), sharding the merge's insertion.
