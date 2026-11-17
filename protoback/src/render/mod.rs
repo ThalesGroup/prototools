@@ -510,33 +510,26 @@ fn write_files(
             Planned { i, name, path }
         })
         .collect();
+    // Each file written by the thread that rendered it (spec 0443 P4);
+    // here, in file order, what needs it: the warnings replayed, the
+    // descriptors collected, the first I/O error raised where the
+    // sequential writes raised it.
     let rendered = render_all(shared, &plan);
-    for (p, (r, reports, failed)) in plan.iter().zip(rendered) {
-        // reproto makes the directory first, a file it fails to render
-        // (an edition Python protobuf does not name) included.
-        if let Some(parent) = p.path.as_ref().and_then(|p| p.parent()) {
-            std::fs::create_dir_all(parent)?;
+    for (p, r) in plan.iter().zip(rendered) {
+        if let Err(Written::Directory(e)) = r.written {
+            return Err(e);
         }
-        replay(events, reports);
+        replay(events, r.reports);
         phase.advance(1);
-        if failed {
+        if r.failed {
             // reproto's phase 7 catches the failure: W6, internal error.
             events.w6("W6", &p.name, "", "internal error");
         }
-        let Some((text, descriptor)) = r else {
-            continue;
-        };
-        if let Some(bytes) = descriptor {
-            // reproto writes the descriptor first (`with_suffix(".pb")`).
-            if let (true, Some(path)) = (shared.emit_binary, &p.path) {
-                std::fs::write(path.with_extension("pb"), &bytes)?;
-            }
-            if shared.schema_db {
-                collected.push((p.name.clone(), bytes));
-            }
+        if let Err(Written::File(e)) = r.written {
+            return Err(e);
         }
-        if let Some(path) = &p.path {
-            std::fs::write(path, text)?;
+        if let (true, Some(bytes)) = (shared.schema_db, r.descriptor) {
+            collected.push((p.name.clone(), bytes));
         }
     }
     phase.done();
@@ -549,13 +542,45 @@ fn write_files(
     Ok(collected)
 }
 
-/// A file rendered: its text, and its descriptor under `--emit-binary`;
-/// none for a file reproto does not write.
-type Rendered = (
-    Option<(String, Option<Vec<u8>>)>,
-    Vec<file::RenderEvent>,
-    bool,
-);
+/// A file rendered and written: its descriptor, for the schema database;
+/// what its render reports; whether the render failed; and whether its
+/// writes succeeded.
+struct Rendered {
+    descriptor: Option<Vec<u8>>,
+    reports: Vec<file::RenderEvent>,
+    failed: bool,
+    written: Result<(), Written>,
+}
+
+/// Where a file's writes failed: its directory, which reproto makes before
+/// anything else, or its files.
+enum Written {
+    Directory(std::io::Error),
+    File(std::io::Error),
+}
+
+/// File `p`'s outputs written, in reproto's order: its directory (made
+/// even for a file that fails to render: an edition Python protobuf does
+/// not name), its descriptor (`with_suffix(".pb")`), its text.
+fn write_rendered(
+    shared: &Shared<'_>,
+    p: &Planned,
+    output: Option<&(String, Option<Vec<u8>>)>,
+) -> Result<(), Written> {
+    let Some(path) = &p.path else {
+        return Ok(());
+    };
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(Written::Directory)?;
+    }
+    let Some((text, descriptor)) = output else {
+        return Ok(());
+    };
+    if let (true, Some(bytes)) = (shared.emit_binary, descriptor) {
+        std::fs::write(path.with_extension("pb"), bytes).map_err(Written::File)?;
+    }
+    std::fs::write(path, text).map_err(Written::File)
+}
 
 /// The planned files rendered on the current pool (spec 0429 S4), each
 /// with a context of its own, over the shared state rendering never
@@ -564,15 +589,21 @@ type Rendered = (
 fn render_all(shared: &Shared<'_>, plan: &[Planned]) -> Vec<Rendered> {
     use rayon::prelude::*;
     plan.par_iter()
-        .map(|&Planned { i, .. }| -> Rendered {
-            let r = file::render(shared, i);
+        .map(|p| -> Rendered {
+            let r = file::render(shared, p.i);
             let output = r.output.map(|(block, descriptor)| {
                 (
                     block.flush(shared.redact_comments, shared.redact_orphans),
                     descriptor,
                 )
             });
-            (output, r.events, r.failed)
+            let written = write_rendered(shared, p, output.as_ref());
+            Rendered {
+                descriptor: output.and_then(|(_, descriptor)| descriptor),
+                reports: r.events,
+                failed: r.failed,
+                written,
+            }
         })
         .collect()
 }

@@ -70,10 +70,15 @@ In this order, cheapest first; each item measured (M) before the next.
     measurement of its own. Not the Python extensions: loaded into
     Python's process, where jemalloc through `dlopen` is known to fail
     on some systems (static TLS).
-- **P4. Each file written by the thread that rendered it.** The main
-  thread writes the ~2,600 `.proto` and `.pb` files in sequence after
-  rendering; only the warnings need reproto's order, which their replay
-  keeps.
+- **P4. Each file written by the thread that rendered it**
+  (implemented). The main thread wrote the ~2,600 `.proto` and `.pb`
+  files in sequence after rendering; each render's thread now writes its
+  own (`write_rendered`: the directory, the descriptor, the text, in
+  reproto's order), and the main thread keeps, in file order, what needs
+  it: the warnings replayed, the descriptors collected, and the first
+  I/O error raised where the sequential writes raised it (a directory's
+  before the file's warnings, a file's after). Spec 0437 leaves no two
+  files one path.
 - **P5. The setup overlapped.** The options pool, the pool loads, the
   symbol table and the definitions table (0442 S3) are independent:
   built together (`rayon::join`), ~1 s of serial time down to the
