@@ -212,6 +212,80 @@ pub fn summoned(graph: &Graph) -> Vec<usize> {
         .collect()
 }
 
+/// `'a', 'b' and 'c'`.
+fn quoted_list(names: &[&str]) -> String {
+    let quoted: Vec<String> = names.iter().map(|n| format!("'{n}'")).collect();
+    match quoted.split_last() {
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+        None => String::new(),
+    }
+}
+
+/// Node `i` and everything it contains out of the output.
+fn unsummon(graph: &mut Graph, i: usize) {
+    graph.nodes[i].is_summoned = false;
+    let children: Vec<usize> = graph.nodes[i].contains.iter().copied().collect();
+    for c in children {
+        unsummon(graph, c);
+    }
+}
+
+/// `_resolve_rewrite_collisions` (spec 0437): the summoned files the import
+/// rewrites give one output path. A group holding the variant's
+/// descriptor.proto keeps it, the others taken out of the output, each
+/// with its warning (returned, in order); any other group is an error
+/// line, and the run stops before anything is rendered.
+pub fn resolve_rewrite_collisions(
+    graph: &mut Graph,
+    variant: &crate::variant::Variant,
+    keep_descriptor: bool,
+) -> Result<Vec<String>, Vec<String>> {
+    let mut by_path: Vec<(String, Vec<(usize, String)>)> = Vec::new();
+    for i in summoned(graph) {
+        let name = graph.nodes[i]
+            .fqdn
+            .strip_prefix("file:")
+            .unwrap_or_default()
+            .to_string();
+        let path = variant.canonize_dependency(&name, keep_descriptor);
+        match by_path.iter_mut().find(|(p, _)| *p == path) {
+            Some((_, files)) => files.push((i, name)),
+            None => by_path.push((path, vec![(i, name)])),
+        }
+    }
+    let descriptor = &variant.descriptor_proto;
+    let mut warnings = Vec::new();
+    let mut errors = Vec::new();
+    for (path, files) in by_path {
+        if files.len() < 2 {
+            continue;
+        }
+        if !files.iter().any(|(_, n)| n == descriptor) {
+            let names: Vec<&str> = files.iter().map(|(_, n)| n.as_str()).collect();
+            errors.push(format!(
+                "{} are both written as '{path}'; prune one (-p)",
+                quoted_list(&names)
+            ));
+            continue;
+        }
+        for (i, name) in files {
+            if name != *descriptor {
+                warnings.push(format!(
+                    "'{name}' and '{descriptor}' are both written as '{path}': \
+                     '{descriptor}', the variant's descriptor.proto, is kept"
+                ));
+                unsummon(graph, i);
+            }
+        }
+    }
+    if errors.is_empty() {
+        Ok(warnings)
+    } else {
+        Err(errors)
+    }
+}
+
 /// The same files, by name.
 pub fn summoned_files(graph: &Graph) -> Vec<String> {
     summoned(graph)

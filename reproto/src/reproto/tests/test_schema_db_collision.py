@@ -94,7 +94,9 @@ def _run(variant: Path, db_path: Path, out_dir: Path, *pb_paths: Path) -> subpro
 def test_G1_colliding_names_different_content_is_fatal(tmp_path: Path) -> None:
     """Two files canonizing to the same name with different content abort
     with a clear error naming both original sources and the shared
-    canonical name, instead of silently dropping one (spec 0158 G1/G3)."""
+    canonical name, instead of silently dropping one (spec 0158 G1/G3).
+    Since spec 0437 the run stops before rendering, with or without the
+    schema database, the error naming the output path."""
     src_dir = tmp_path / "src"
     _write_proto(src_dir / "a" / "dupe.proto", "collision.a", "DupeA")
     _write_proto(src_dir / "b" / "dupe.proto", "collision.b", "DupeB")
@@ -110,7 +112,7 @@ def test_G1_colliding_names_different_content_is_fatal(tmp_path: Path) -> None:
 
     result = _run(variant, db_path, out_dir, a_pb, b_pb, descriptor_pb)
     assert result.returncode != 0, f"expected failure, got success:\n{result.stdout}"
-    assert "schema-db name collision" in result.stderr
+    assert "are both written as 'shared/dupe.proto'; prune one (-p)" in result.stderr
     assert "a/dupe.proto" in result.stderr
     assert "b/dupe.proto" in result.stderr
     assert "shared/dupe.proto" in result.stderr

@@ -61,6 +61,15 @@ class DescriptorProtoUnbuildableError(Exception):
     option can be read against it."""
 
 
+class RewriteCollisionError(Exception):
+    """Raised when import rewrites give two files one output path, neither
+    of them the variant's descriptor.proto (spec 0437 S3): one line each."""
+
+    def __init__(self, lines: list[str]) -> None:
+        super().__init__('\n'.join(lines))
+        self.lines = lines
+
+
 # ---------------------------------------------------------------------------
 # Spec 0087 — stripped unresolvable field/method type records
 # ---------------------------------------------------------------------------
@@ -1412,6 +1421,49 @@ def _phase6_summoning(ctx: Context) -> None:
                         continue
                     ctx.schema_db_extra_nodes.append(dep_node)
                     work.append(dep_node)
+
+
+def _quoted_list(names: list[str]) -> str:
+    """'a', 'b' and 'c'."""
+    quoted = [f"'{n}'" for n in names]
+    return quoted[0] if len(quoted) == 1 else f"{', '.join(quoted[:-1])} and {quoted[-1]}"
+
+
+def _unsummon(node: Node) -> None:
+    """`node` and everything it contains out of the output."""
+    node.is_summoned = False
+    for child in node.contains:
+        _unsummon(child)
+
+
+def _resolve_rewrite_collisions(ctx: Context) -> None:
+    """Spec 0437: the summoned files the import rewrites give one output
+    path. A group holding the variant's descriptor.proto keeps it, the
+    others taken out of the output, each said; any other group stops the
+    run, before anything is rendered."""
+    from .mappings import canonize_dependency
+    by_path: dict[str, list[ReFileDescriptorProto]] = {}
+    for node in ctx.nodes.values():
+        if isinstance(node, ReFileDescriptorProto) and node.is_present() and node.is_summoned:
+            by_path.setdefault(canonize_dependency(ctx, node.name), []).append(node)
+    descriptor = ctx.variant_descriptor_proto
+    errors: list[str] = []
+    for path, files in by_path.items():
+        if len(files) < 2:
+            continue
+        names = [f.name for f in files]
+        if descriptor not in names:
+            errors.append(f"{_quoted_list(names)} are both written as '{path}'; prune one (-p)")
+            continue
+        for f in files:
+            if f.name != descriptor:
+                cli_warning(
+                    f"'{f.name}' and '{descriptor}' are both written as '{path}': "
+                    f"'{descriptor}', the variant's descriptor.proto, is kept"
+                )
+                _unsummon(f)
+    if errors:
+        raise RewriteCollisionError(errors)
 
 
 def _phase7_output(ctx: Context, out_repo: Path) -> None:

@@ -168,6 +168,7 @@ from .load import QualFile
 from .phases import (
     DescriptorProtoHasTargetsError,
     DescriptorProtoUnbuildableError,
+    RewriteCollisionError,
     DescriptorProtoMissingError,
     DescriptorProtoUnresolvedError,
     # WellKnownTypeHasTargetsError removed by spec 0052
@@ -180,6 +181,7 @@ from .phases import (
     _phase5_reachability,
     _phase6_summoning,
     _phase7_output,
+    _resolve_rewrite_collisions,
     _phase_build_schema_db,
     _phase_emit_scoring_graphs,
 )
@@ -192,6 +194,7 @@ __all__ = [
     "DescriptorProtoUnresolvedError",
     "DescriptorProtoHasTargetsError",
     "DescriptorProtoUnbuildableError",
+    "RewriteCollisionError",
     # "WellKnownTypeHasTargetsError",  # removed by spec 0052
 ]
 
@@ -259,6 +262,8 @@ def reproto(
         if recorder is not None:
             dump_graph.write(ctx, topo, recorder, Path(ctx.dump_graph))
             return ctx
+
+        _resolve_rewrite_collisions(ctx)
 
         # Phase 7 runs whenever there is file output OR when --build-schema-db
         # is active (even without -O, it needs the fully-initialised render

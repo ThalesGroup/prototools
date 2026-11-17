@@ -387,6 +387,17 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    // Spec 0437: two files rewritten onto one output path.
+    let keep = cli.keep_descriptor_path;
+    match render::resolve_rewrite_collisions(&mut run.graph, &run.variant, keep) {
+        Ok(warnings) => warnings.iter().for_each(|w| console::warning(w)),
+        Err(errors) => {
+            run.events.flush();
+            eprintln!("Error: {}", errors.join("\n"));
+            return ExitCode::from(1);
+        }
+    }
+
     let schema_db = cli
         .build_schema_db
         .clone()

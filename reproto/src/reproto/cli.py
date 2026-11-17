@@ -798,6 +798,7 @@ def main(
         DescriptorProtoUnbuildableError,
         DescriptorProtoUnresolvedError,
         Options,
+        RewriteCollisionError,
         reproto,
     )
     from . import variant as variant_mod
@@ -1087,6 +1088,8 @@ def main(
         raise click.ClickException(
             'descriptor.proto appears corrupted: it has dependencies of its own'
         )
+    except RewriteCollisionError as e:
+        raise click.ClickException('\n'.join(e.lines))
     except DescriptorProtoUnbuildableError:
         raise click.ClickException(
             'descriptor.proto could not be built into a descriptor pool; '
