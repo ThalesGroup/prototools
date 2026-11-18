@@ -30,6 +30,7 @@ mod phase5;
 mod phase6;
 mod plugin;
 mod render;
+mod report;
 mod run;
 mod schema_db;
 mod scoring;
@@ -234,12 +235,21 @@ fn fallback_protos(use_variant: &[UseVariant], variant: &Variant) -> Vec<String>
     out
 }
 
-fn usage(message: &str) -> ExitCode {
+fn usage(message: &str) -> u8 {
+    report::error(message);
     eprintln!(
         "Usage: protoback [OPTIONS] DESCRIPTOR_FILES\n\
          Try 'protoback --help' for help.\n\nError: {message}"
     );
-    ExitCode::from(2)
+    2
+}
+
+/// A failure that ends the run, said on stderr as `print` does, and kept
+/// for the report (spec 0446 S1).
+fn failed(message: &str, print: impl FnOnce(&str)) -> u8 {
+    report::error(message);
+    print(message);
+    1
 }
 
 fn main() -> ExitCode {
@@ -261,7 +271,23 @@ fn main() -> ExitCode {
         return instantiate::main(sub);
     }
     let cli = Cli::parse();
+    let code = protoback(cli);
+    report::finish(code);
+    ExitCode::from(code)
+}
+
+/// The run: its exit status, or, at its end, the process ended without
+/// freeing what it built (`exit_without_freeing`), the report written
+/// first. Every exit goes through `report::finish` (spec 0446 S1).
+fn protoback(cli: Cli) -> u8 {
     console::init(cli.quiet);
+    // --report-out: a previous report removed now, so that none outlives
+    // this run, whatever ends it (spec 0446 S1).
+    if let Some(path) = &cli.report_out {
+        if let Err(e) = report::start(path) {
+            return usage(&e);
+        }
+    }
     // --fail-on's codes, each one of spec 0438's (S4: else a usage error).
     if let Some(code) = cli.fail_on.iter().find(|c| !events::is_code(c)) {
         return usage(&format!(
@@ -321,6 +347,7 @@ fn main() -> ExitCode {
         Ok(v) => v,
         Err(e) => return usage(&e),
     };
+    report::variant(&variant.name);
     for key in &variant.unread_keys {
         events.warn(
             "W17",
@@ -400,11 +427,13 @@ fn main() -> ExitCode {
     let mut blobs = HashMap::default();
     for root in &roots {
         if root.is_file() && load::blob_members(&mut blobs, root).is_empty() {
-            eprintln!(
-                "Error: -I {} holds no FileDescriptorProto; a file given to -I is read as a blob of descriptors.",
-                root.display()
+            return failed(
+                &format!(
+                    "Error: -I {} holds no FileDescriptorProto; a file given to -I is read as a blob of descriptors.",
+                    root.display()
+                ),
+                |m| eprintln!("{m}"),
             );
-            return ExitCode::from(1);
         }
     }
 
@@ -428,10 +457,7 @@ fn main() -> ExitCode {
     };
     let plugin = match source.map(plugin::Plugin::start).transpose() {
         Ok(p) => p,
-        Err(message) => {
-            eprintln!("{message}");
-            return ExitCode::from(1);
-        }
+        Err(message) => return failed(&message, |m| eprintln!("{m}")),
     };
     // The CPUs this process may use, counted before the main thread is
     // confined to the fast ones (`available_parallelism` follows the
@@ -452,14 +478,13 @@ fn main() -> ExitCode {
     // Spec 0445: the moves, each wrong one left out with W26; a variants:
     // section for no variant in use, W26 too.
     for name in &config.unmatched_variants {
-        events.warn(
-            "W26",
-            &format!(
-                "variants: '{name}' matches no variant (the variant in use is '{}'); \
-                 its section not applied",
-                variant.name
-            ),
+        let message = format!(
+            "variants: '{name}' matches no variant (the variant in use is '{}'); \
+             its section not applied",
+            variant.name
         );
+        report::idle("W26", &format!("variants: {name}"), &message);
+        events.warn("W26", &message);
     }
     let moves = moves::Moves::new(all_moves, &prune_fqdns, &mut events);
     let mut run = Run {
@@ -498,14 +523,13 @@ fn main() -> ExitCode {
     phase1::run(&mut run, &mut topo);
     if let Some(failure) = run.plugin.as_ref().and_then(plugin::Plugin::failure) {
         run.events.flush();
-        eprintln!("{failure}");
-        return ExitCode::from(1);
+        return failed(&failure.to_string(), |m| eprintln!("{m}"));
     }
     // No file loaded: reproto's run stops here, successfully (`if not
     // topo.files: return None`), before descriptor.proto is looked for.
     if topo.files.is_empty() {
         run.events.flush();
-        return ExitCode::from(finish(&run.events, &cli.fail_on));
+        return finish(&run.events, &cli.fail_on);
     }
     if let Err(fatal) = phase2::run(&mut run, &mut topo) {
         if let Some(detail) = fatal.detail() {
@@ -513,13 +537,11 @@ fn main() -> ExitCode {
             console::error(&detail);
         }
         run.events.flush();
-        eprintln!("Error: {}", fatal.message());
-        return ExitCode::from(1);
+        return failed(&format!("Error: {}", fatal.message()), |m| eprintln!("{m}"));
     }
     if let Some(failure) = run.plugin.as_ref().and_then(plugin::Plugin::failure) {
         run.events.flush();
-        eprintln!("{failure}");
-        return ExitCode::from(1);
+        return failed(&failure.to_string(), |m| eprintln!("{m}"));
     }
     let phase = console::phase(
         "Building type graph",
@@ -544,7 +566,7 @@ fn main() -> ExitCode {
             run.events.warn("W14", &warning);
         }
         run.events.flush();
-        return ExitCode::from(finish(&run.events, &cli.fail_on));
+        return finish(&run.events, &cli.fail_on);
     }
     phase4::run(&mut run, &mut topo);
     phase5::run(&mut run, &topo);
@@ -554,10 +576,11 @@ fn main() -> ExitCode {
         let written = std::fs::write(&dump_path, dump::write(&run, &topo));
         run.events.flush();
         if let Err(e) = written {
-            eprintln!("Error: {}: {e}", dump_path.display());
-            return ExitCode::from(1);
+            return failed(&format!("Error: {}: {e}", dump_path.display()), |m| {
+                eprintln!("{m}")
+            });
         }
-        return ExitCode::from(finish(&run.events, &cli.fail_on));
+        return finish(&run.events, &cli.fail_on);
     }
 
     // Spec 0437: two files rewritten onto one output path.
@@ -566,8 +589,9 @@ fn main() -> ExitCode {
         Ok(warnings) => warnings.iter().for_each(|w| run.events.warn("W13", w)),
         Err(errors) => {
             run.events.flush();
-            eprintln!("Error: {}", errors.join("\n"));
-            return ExitCode::from(1);
+            return failed(&format!("Error: {}", errors.join("\n")), |m| {
+                eprintln!("{m}")
+            });
         }
     }
 
@@ -640,11 +664,11 @@ fn main() -> ExitCode {
                 console::warning(&format!("'{}': {reason}", run.variant.descriptor_proto));
             }
             run.events.flush();
-            eprintln!(
+            return failed(
                 "Error: descriptor.proto could not be built into a descriptor pool; \
-                 it is not a valid descriptor.proto"
+                 it is not a valid descriptor.proto",
+                |m| eprintln!("{m}"),
             );
-            return ExitCode::from(1);
         }
     };
     let shared = render::Shared {
@@ -689,15 +713,17 @@ fn main() -> ExitCode {
     match outcome {
         Ok(()) => {}
         Err(render::Failure::Io(e)) => {
+            report::error(&format!("Error: {e}"));
             console::error(&format!("Error: {e}"));
             console::error("Cannot continue due to I/O error.");
             run.events.flush();
-            return ExitCode::from(1);
+            return 1;
         }
         Err(render::Failure::Fatal(message)) => {
+            report::error(&message);
             console::error(&message);
             run.events.flush();
-            return ExitCode::from(1);
+            return 1;
         }
     }
     run.events.flush();
@@ -709,6 +735,7 @@ fn main() -> ExitCode {
     // (spec 0443 P2). Every file was written and closed by then; no other
     // destructor has an effect outside the process.
     drop(run.plugin.take());
+    report::finish(code);
     exit_without_freeing(code)
 }
 

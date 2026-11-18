@@ -434,7 +434,9 @@ pub fn replay(events: &mut Events, reports: Vec<file::RenderEvent>) {
     for r in reports {
         match r {
             file::RenderEvent::Warning(code, m) => events.warn(code, &m),
-            file::RenderEvent::Squash(code, m) => events.squash(code, &m, None, None),
+            file::RenderEvent::Squash(code, m, fields) => {
+                events.with_fields(fields).squash(code, &m, None, None)
+            }
             // W19, a file the pool refuses; W6, anything else not rendered.
             file::RenderEvent::W6 {
                 code,

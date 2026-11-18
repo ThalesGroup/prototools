@@ -34,6 +34,16 @@ pub fn run(run: &mut Run, topo: &mut Topology) {
             }
             continue;
         }
+        // The definitions the pattern named, one entry for it (spec 0446
+        // S4); what they contain is pruned with them, not listed.
+        crate::report::pruned_definitions(
+            pattern,
+            matched
+                .iter()
+                .filter(|&&i| graph.nodes[i].present)
+                .map(|&i| graph.nodes[i].fqdn.clone())
+                .collect(),
+        );
         for i in matched {
             let n = &mut graph.nodes[i];
             if !n.present {

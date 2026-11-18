@@ -293,6 +293,9 @@ pub fn split_fdps(contents: &Contents) -> Option<Vec<(String, Fragment)>> {
 pub struct RawFile {
     pub root: PathBuf,
     pub rel_path: PathBuf,
+    /// The physical file read, under `root`: `rel_path` but for an import,
+    /// found under another extension (spec 0446's inputs).
+    pub found: PathBuf,
     pub contents: Contents,
 }
 
@@ -384,11 +387,12 @@ fn load_files(ctx: &mut LoadCtx, roots: &[PathBuf], rel_path: &Path) -> Vec<RawF
                 if !whole && member != wanted && !member.ancestors().skip(1).any(|a| a == wanted) {
                     continue;
                 }
-                if ctx.pruned_paths.matches(&member.to_string_lossy()) {
+                if path_pruned(ctx, &member, &member) {
                     continue;
                 }
                 loaded.push(RawFile {
                     root: root.clone(),
+                    found: member.clone(),
                     rel_path: member,
                     contents: Contents::Binary(fragment),
                 });
@@ -409,13 +413,14 @@ fn load_files(ctx: &mut LoadCtx, roots: &[PathBuf], rel_path: &Path) -> Vec<RawF
                 let Ok(f_rel) = f.strip_prefix(root) else {
                     continue;
                 };
-                if ctx.pruned_paths.matches(&f_rel.to_string_lossy()) {
+                if path_pruned(ctx, f_rel, f_rel) {
                     continue;
                 }
                 if let Some(contents) = read(&f) {
                     loaded.push(RawFile {
                         root: root.clone(),
                         rel_path: f_rel.to_path_buf(),
+                        found: f_rel.to_path_buf(),
                         contents,
                     });
                 }
@@ -424,13 +429,14 @@ fn load_files(ctx: &mut LoadCtx, roots: &[PathBuf], rel_path: &Path) -> Vec<RawF
         }
         let ext = suffix(rel_path);
         if TEXT_EXTENSIONS.contains(&ext.as_str()) || BINARY_EXTENSIONS.contains(&ext.as_str()) {
-            if !res_path.is_file() || ctx.pruned_paths.matches(&rel_path.to_string_lossy()) {
+            if !res_path.is_file() || path_pruned(ctx, rel_path, rel_path) {
                 continue;
             }
             if let Some(contents) = read(&res_path) {
                 loaded.push(RawFile {
                     root: root.clone(),
                     rel_path: rel_path.to_path_buf(),
+                    found: rel_path.to_path_buf(),
                     contents,
                 });
             }
@@ -442,15 +448,14 @@ fn load_files(ctx: &mut LoadCtx, roots: &[PathBuf], rel_path: &Path) -> Vec<RawF
                 if candidate.is_file() {
                     // The file found, as everywhere else a path pattern
                     // applies; the import's `.proto` name too, as before.
-                    if ctx.pruned_paths.matches(&found.to_string_lossy())
-                        || ctx.pruned_paths.matches(&rel_path.to_string_lossy())
-                    {
+                    if path_pruned(ctx, &found, &found) || path_pruned(ctx, rel_path, &found) {
                         continue;
                     }
                     if let Some(contents) = read(&candidate) {
                         loaded.push(RawFile {
                             root: root.clone(),
                             rel_path: rel_path.to_path_buf(),
+                            found: found.clone(),
                             contents,
                         });
                     }
@@ -463,6 +468,18 @@ fn load_files(ctx: &mut LoadCtx, roots: &[PathBuf], rel_path: &Path) -> Vec<RawF
         ctx.events.w1(&posix_str(&rel_path.to_string_lossy()));
     }
     loaded
+}
+
+/// Whether a path pattern matches `matched`, keeping physical file `file`
+/// from loading; recorded in the report when so (spec 0446 S4).
+fn path_pruned(ctx: &LoadCtx, matched: &Path, file: &Path) -> bool {
+    match ctx.pruned_paths.matching(&matched.to_string_lossy()) {
+        Some(pattern) => {
+            crate::report::pruned_path(file, pattern);
+            true
+        }
+        None => false,
+    }
 }
 
 /// `parse_qfile`: one `QualFile` per file of the raw file.
@@ -553,6 +570,11 @@ pub fn load_from_path(ctx: &mut LoadCtx, roots: &[PathBuf], rel_path: &Path) -> 
     let mut qual_files = Vec::new();
     for file in &raw {
         let parsed = parse_qfile(ctx, file);
+        crate::report::input(
+            &file.root,
+            &file.found,
+            parsed.iter().map(|qf| qf.name.clone()).collect(),
+        );
         if ctx.path_seeds.matches(&file.rel_path.to_string_lossy()) {
             for qf in &parsed {
                 ctx.path_seed_fqdns.insert(format!("file:{}", qf.name));

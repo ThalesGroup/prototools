@@ -196,6 +196,13 @@ pub struct Cli {
         value_name = "OLD=TARGET[,TARGET...]"
     )]
     pub moves: Vec<String>,
+    #[arg(
+        long = "report-out",
+        help = "Write a JSON report of the run to FILE (spec 0446): every warning, unsquashed and whatever -q shows, with its fields; every prune and move done; every directive that did not apply; the run itself. Written through a rename; a previous FILE is removed as the run starts, and a run that fails writes what it knows, \"complete\": false.",
+        help_heading = "Output",
+        value_name = "FILE"
+    )]
+    pub report_out: Option<PathBuf>,
 
     #[arg(
         long = "force-proto2-output",

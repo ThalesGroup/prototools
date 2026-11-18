@@ -126,6 +126,11 @@ pub struct Events {
     pruned_files: HashSet<String>,
     /// Files an embedded fallback provides: no W1 for them.
     fallback_files: HashSet<String>,
+    /// The report's fields for the next warning (spec 0446 S3).
+    pending: Option<crate::report::Fields>,
+    /// The code and message the report gives the next warning, when not
+    /// the ones printed (W1, shown as W5 unless detailed).
+    report_as: Option<(&'static str, String)>,
 }
 
 fn occurrences(count: usize) -> String {
@@ -174,6 +179,21 @@ impl Events {
         *self.counts.entry(code.to_string()).or_default() += 1;
     }
 
+    /// The fields the report gives the next warning (spec 0446 S3).
+    pub fn with_fields(&mut self, fields: serde_json::Value) -> &mut Self {
+        self.pending = Some(crate::report::fields(fields));
+        self
+    }
+
+    /// One occurrence, into the report: every one, whatever is printed.
+    fn occur(&mut self, code: &str, message: &str) {
+        let fields = self.pending.take().unwrap_or_default();
+        match self.report_as.take() {
+            Some((code, message)) => crate::report::warning(code, &message, fields),
+            None => crate::report::warning(code, message, fields),
+        }
+    }
+
     /// One warning line, recorded and printed (`_line`).
     fn line(&mut self, code: &str, message: &str) {
         let text = format!("Warning [{code}]: {message}");
@@ -184,6 +204,7 @@ impl Events {
     /// A warning (`warn`): counted under `code`, printed now.
     pub fn warn(&mut self, code: &str, message: &str) {
         self.count(code);
+        self.occur(code, message);
         self.line(code, message);
     }
 
@@ -198,6 +219,7 @@ impl Events {
         detailed: Option<&str>,
     ) {
         self.count(code);
+        self.occur(summary.unwrap_or(code), message);
         if self.detailed {
             self.line(code, detailed.unwrap_or(message));
             return;
@@ -219,7 +241,14 @@ impl Events {
     pub fn w1(&mut self, missing_file: &str) {
         self.call(&["w1", missing_file]);
         if self.pruned_files.contains(missing_file) || self.fallback_files.contains(missing_file) {
+            self.pending = None;
             return;
+        }
+        self.report_as = Some(("W5", format!("missing dependency file:{missing_file}")));
+        if self.pending.is_none() {
+            self.pending = Some(crate::report::fields(
+                serde_json::json!({ "import": missing_file }),
+            ));
         }
         if self.detailed {
             self.warn(
@@ -258,6 +287,28 @@ impl Events {
 
     /// Something not rendered or built: W6, W19, W20 or W21 (`w6`).
     pub fn w6(&mut self, code: &str, proto_file: &str, field_ctx: &str, error: &str) {
+        if crate::report::active() {
+            let mut f = serde_json::json!({ "file": proto_file });
+            if let Some(field) = field_ctx
+                .strip_prefix("field '")
+                .and_then(|x| x.strip_suffix('\''))
+            {
+                f["field"] = field.into();
+            }
+            // Spec 0438 S8's forms: a knock-on refusal names its import,
+            // a root one upb's reason; else, a W6, its reason as said.
+            if let Some(dep) = error
+                .strip_prefix("the descriptor pool refused its import '")
+                .and_then(|x| x.strip_suffix('\''))
+            {
+                f["import"] = dep.into();
+            } else if let Some(upb) = error.strip_prefix("the descriptor pool refused it: ") {
+                f["reason"] = upb.into();
+            } else if code == "W6" && error != "internal error" {
+                f["reason"] = error.into();
+            }
+            self.with_fields(f);
+        }
         self.squash(
             code,
             &format!("'{proto_file}' {field_ctx}: {error}"),
@@ -279,6 +330,14 @@ impl Events {
     /// W2).
     pub fn w_prost(&mut self, file_name: &str) {
         self.count("W2");
+        self.with_fields(serde_json::json!({ "file": file_name }));
+        self.occur(
+            "W2",
+            &format!(
+                "'{file_name}' is an editions file; written as proto2 \
+                 (--force-proto2-for-editions)"
+            ),
+        );
         if self.detailed {
             self.line(
                 "W2",

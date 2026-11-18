@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0446 — a report of the build: `--report-out FILE`
 
-Status: draft
+Status: implemented
+Implemented in: 2026-11-18
 App: protoback (not reproto: N3)
 Refs: docs/specs/0438-warning-codes-and-fail-on.md (the codes reported);
         docs/specs/0445-filter-fixups-move.md (the rewrites
@@ -80,22 +81,36 @@ report the facts, completely, in a form a program can rely on.
   | W24 | `importer`, `definition` (a type's full name, or `{options, number}`), `move` (its `OLD`) (spec 0445) |
 
   A code not listed has `fields: {}` (T3 and T4 next, when wanted).
+  A warning has the code and message stderr gives it unless detailed: W1
+  is W5, `missing dependency file:X`. A missing import is two
+  occurrences, as stderr counts it: one from import discovery, which
+  knows no importer (`import` only), one from phase 2 (`importer` too).
+  W4, which `-q` leaves unsaid, is in the report all the same.
   `report_version` is an integer, a major version: adding a field keeps
   it, so a reader ignores fields it does not know; changing or removing
   one bumps it. `argv` is verbatim, and `cwd` resolves its relative
   paths and `inputs`'.
-- **S4.** `rewrites`:
-  - `prunes`: each file pruned, with what caused it: a `file:` or `path:`
-    pattern (which one), W3 (the duplicate kept), a move (spec 0445 S5);
-    and each `desc:` pattern with the definitions it matched, one entry
-    per pattern. A file is what a downstream tool can act on; a `desc:`
-    prune is the user's own filter, listed so that nothing pruned goes
-    unreported, without one entry per definition.
-  - `moves`: each move applied (spec 0445), its targets, and every
-    importer it re-pointed, with its imports before and after.
+- **S4.** `rewrites`, each entry one of these shapes:
+  - `prunes`: each file pruned, with what caused it:
+    `{file, cause: {pattern}}` for a `file:` pattern,
+    `{file, cause: {duplicate_of: [W3's "with"]}}` for W3,
+    `{file, cause: {move: [targets]}}` for a move (spec 0445 S5),
+    `{path, cause: {pattern}}` for a physical file a `path:` pattern kept
+    from loading (once, though import discovery retries it); and
+    `{pattern, definitions}` for each FQDN pattern that matched, one entry
+    per pattern. Patterns and definitions are in the forms stderr shows
+    (`desc:p/M`, `desc:.p.M`). A file is what a downstream tool can act
+    on; a `desc:` prune is the user's own filter, listed so that nothing
+    pruned goes unreported, without one entry per definition.
+  - `moves`: `{importer, moves: [OLD…], imports_before, imports_after}`
+    for every importer a move re-pointed (spec 0445).
 - **S5.** `idle_directives`: each prune or seed pattern matching nothing
   (W11, W12), and each move that did not apply as written (spec 0445's
-  W25, idle, and W26, broken), with its exact reason.
+  W25, idle, and W26, broken), with its exact reason: `{code, directive,
+  reason}`, the reason the warning's message.
+- **S6.** `run.inputs`: each physical file read, `{root, path, files}`:
+  its `-I` root, its path under it (the file found, `a.pb`, for an import
+  of `a.proto`), and the FDPs it gave.
 
 ## Prerequisite
 
@@ -112,15 +127,22 @@ facts, split into fields.
 
 ## Test plan
 
-1. `report_lists_every_occurrence` — five W4 squashed on stderr, five in
-   the report; also under `-q`.
+1. `report_lists_every_occurrence_whatever_q_shows` — five W4 squashed
+   on stderr, five in the report; also under `-q`.
 2. `report_fields_per_code` — each code of S3's table, its fields.
 3. `report_written_on_fail_on` — exit 3, the report complete.
 4. `report_never_stale` — a previous report removed by a run that fails;
    that run's own written incomplete, `complete: false`, with its error;
    written through a rename, never seen half-written.
-5. `report_schema` — the file validates against S2's shape.
+5. `report_schema_and_rewrites` — S2's shape, and each kind of S4's
+   entries and S5's.
 
 ## Measured outcome
 
-(At implementation.)
+`protoback/src/report.rs`, one recorder for the process, inactive without
+`--report-out`: its facts come from the collector, the loader and phases
+1 to 4, and `main`'s exits, each of which writes it (`main` returns a
+status, `protoback` the run). Tests in `protoback/tests/report.rs` (6,
+the test plan, and the refusals' `import` and `reason`). No change
+without `--report-out`: harness against reproto, both modes identical;
+`--report-out` listed among protoback's own options (`HELP_OWN`).

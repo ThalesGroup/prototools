@@ -43,7 +43,9 @@ fn suggestion(graph: &Graph, pattern: &str) -> Option<String> {
 pub fn not_found(events: &mut Events, graph: &Graph, what: &str, pattern: &str) {
     // W12 for a seed, W11 for a prune pattern.
     let code = if what == "Seed" { "W12" } else { "W11" };
-    events.warn(code, &format!("{what} not found: {pattern}"));
+    let message = format!("{what} not found: {pattern}");
+    crate::report::idle(code, pattern, &message);
+    events.warn(code, &message);
     if pattern.contains(['*', '?']) {
         return;
     }

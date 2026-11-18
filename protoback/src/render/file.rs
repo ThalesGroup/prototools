@@ -53,7 +53,8 @@ pub struct Ctx<'s, 'a> {
 pub enum RenderEvent {
     Warning(&'static str, String),
     /// A squashed warning: its code and message (W22).
-    Squash(&'static str, String),
+    /// Its fields in the report (spec 0446 S3), after its message.
+    Squash(&'static str, String, serde_json::Value),
     W6 {
         /// W6, or W19 for a file the pool refused.
         code: &'static str,

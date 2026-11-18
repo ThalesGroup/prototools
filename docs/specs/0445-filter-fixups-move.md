@@ -187,7 +187,8 @@ whichever direction it is told.
    renumbered.
 4. `move_prunes_walked_old` — `old` loaded by the directory walk, nothing
    importing it: pruned, no W25.
-5. `lost_type_is_w24`, `lost_option_is_w24`, `type_through_public_import_is_not_w24`.
+5. `lost_type_is_w24`, `lost_option_is_w24`,
+   `type_through_a_public_import_is_not_w24`.
 6. `idle_move_is_w25`; `broken_move_is_w26` for each case of S7.
 7. `variant_section_applies`, `cli_move`.
 

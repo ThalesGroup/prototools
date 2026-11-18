@@ -19,6 +19,17 @@ use crate::db::{extension_keys, file_symbols, Database};
 use crate::events::Events;
 use crate::pathmatch::fqdn_match;
 
+/// A move that did not apply as written (W25, W26): warned, and listed in
+/// the report's `idle_directives` (spec 0446 S5).
+fn not_applied(events: &mut Events, code: &str, m: &Move, message: &str) {
+    crate::report::idle(
+        code,
+        &format!("move: {}: {}", m.old, m.targets.join(", ")),
+        message,
+    );
+    events.warn(code, message);
+}
+
 /// One directive, as given.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Move {
@@ -72,8 +83,10 @@ impl Moves {
             if olds.insert(&m.old) {
                 firsts.push(m);
             } else {
-                events.warn(
+                not_applied(
+                    events,
                     "W26",
+                    m,
                     &format!("move '{}': given twice; the second not applied", m.old),
                 );
             }
@@ -91,7 +104,12 @@ impl Moves {
                 }
             });
             if let Some(why) = broken {
-                events.warn("W26", &format!("move '{}': {why}; not applied", m.old));
+                not_applied(
+                    events,
+                    "W26",
+                    m,
+                    &format!("move '{}': {why}; not applied", m.old),
+                );
                 continue;
             }
             moves.by_old.insert(m.old.clone(), moves.applied.len());
@@ -103,6 +121,13 @@ impl Moves {
 
     pub fn is_empty(&self) -> bool {
         self.applied.is_empty()
+    }
+
+    /// The targets of moved file `name`, none when it is not one.
+    pub fn targets(&self, name: &str) -> &[String] {
+        self.by_old
+            .get(name)
+            .map_or(&[], |&k| self.applied[k].targets.as_slice())
     }
 
     /// Whether `name` is a moved file, pruned (spec 0445 S5).
@@ -211,6 +236,8 @@ impl Moves {
                 let _ = w.push_option_dependency(d.as_bytes());
             }
         }
+        let olds_list: Vec<String> = olds.iter().cloned().collect();
+        crate::report::moved(&name, &olds_list, &deps, &after);
         let entry = self.repointed.entry(name).or_default();
         entry.before = deps;
         entry.after = after;
@@ -224,8 +251,10 @@ impl Moves {
         for (k, m) in self.applied.iter().enumerate() {
             if !self.imported[k] {
                 if !held(&m.old) {
-                    events.warn(
+                    not_applied(
+                        events,
                         "W25",
+                        m,
                         &format!(
                             "move '{}': nothing imports it, and no input holds it; \
                              the directive is idle",
@@ -236,8 +265,10 @@ impl Moves {
                 continue;
             }
             for t in m.targets.iter().filter(|t| !held(t)) {
-                events.warn(
+                not_applied(
+                    events,
                     "W26",
+                    m,
                     &format!("move '{}': its target '{t}' is not in the input", m.old),
                 );
             }
@@ -275,6 +306,7 @@ impl Moves {
                 extensions.extend(extension_keys(&d));
             }
         }
+        let moved: Vec<&String> = r.olds.iter().collect();
         let olds: Vec<String> = r.olds.iter().map(|o| format!("'{o}'")).collect();
         let cause = if olds.len() == 1 {
             format!("lost to move {}", olds[0])
@@ -284,6 +316,9 @@ impl Moves {
         let mut said = BTreeSet::new();
         for t in type_references(&f) {
             if !symbols.contains(t.trim_start_matches('.')) && said.insert(t.clone()) {
+                events.with_fields(serde_json::json!({
+                    "importer": name, "definition": t, "move": moved,
+                }));
                 events.warn(
                     "W24",
                     &format!("'{name}': type '{t}' is defined by no file it sees; {cause}"),
@@ -310,6 +345,11 @@ impl Moves {
             }
             let extendee = format!("{package}.{options}");
             if said.insert(format!("{extendee}/{number}")) {
+                events.with_fields(serde_json::json!({
+                    "importer": name,
+                    "definition": { "options": extendee, "number": number },
+                    "move": moved,
+                }));
                 events.warn(
                     "W24",
                     &format!(

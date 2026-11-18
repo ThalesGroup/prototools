@@ -170,11 +170,16 @@ fn merge(r: &mut Run, topo: &mut Topology, i: usize, ready: Option<Prepared>) {
     };
     let name = topo.files[i].name.clone();
     // A moved file is pruned, however it was reached (spec 0445 S5).
-    if r.moves.is_old(&name)
-        || r.prunings
-            .iter()
-            .any(|p| fqdn_match(p, &format!("file:{name}")))
-    {
+    let pattern = r
+        .prunings
+        .iter()
+        .find(|p| fqdn_match(p, &format!("file:{name}")));
+    if r.moves.is_old(&name) || pattern.is_some() {
+        let cause = match pattern {
+            Some(p) => serde_json::json!({ "pattern": p }),
+            None => serde_json::json!({ "move": r.moves.targets(&name) }),
+        };
+        crate::report::pruned_file(&name, cause);
         topo.files[i].is_pruned = true;
         r.pruned_file_names.insert(name);
         return;
@@ -283,6 +288,11 @@ fn prune_if_duplicate(
     if conflicts.is_empty() && taken.is_empty() {
         return false;
     }
+    // The report's copy (spec 0446 S3), each extendee's numbers sorted.
+    let mut taken_report = taken.clone();
+    for nums in taken_report.values_mut().flat_map(BTreeMap::values_mut) {
+        nums.sort_unstable();
+    }
     let name = topo.files[i].name.clone();
     let mut parts = Vec::new();
     if !conflicts.is_empty() {
@@ -314,6 +324,30 @@ fn prune_if_duplicate(
                 .collect();
             parts.push(format!("    file:{f} ({})", numbers.join("; ")));
         }
+    }
+    if crate::report::active() {
+        let mut with: BTreeMap<String, serde_json::Value> = BTreeMap::new();
+        for f in conflicts.values() {
+            let e = with
+                .entry(f.clone())
+                .or_insert_with(|| serde_json::json!({ "file": f, "symbols": 0 }));
+            e["symbols"] = (e["symbols"].as_u64().unwrap_or(0) + 1).into();
+        }
+        for (f, by_extendee) in &taken_report {
+            let e = with
+                .entry(f.clone())
+                .or_insert_with(|| serde_json::json!({ "file": f, "symbols": 0 }));
+            e["extensions"] = by_extendee
+                .iter()
+                .map(|(extendee, numbers)| {
+                    serde_json::json!({ "extendee": extendee, "numbers": numbers })
+                })
+                .collect();
+        }
+        let with: Vec<serde_json::Value> = with.into_values().collect();
+        r.events
+            .with_fields(serde_json::json!({ "pruned": name, "with": with }));
+        crate::report::pruned_file(&name, serde_json::json!({ "duplicate_of": with }));
     }
     r.events.w3(&parts.join("\n"));
     topo.files[i].is_pruned = true;
@@ -385,6 +419,8 @@ fn strip_unresolvable_dependencies(
         } else {
             file.stripped_dependencies.push(dep.clone());
         }
+        r.events
+            .with_fields(serde_json::json!({ "importer": file_name, "import": dep }));
         if r.pruned_file_names.contains(&dep) {
             r.events.w23(&format!(
                 "stripped pruned dependency \"{dep}\" from {file_name}"
@@ -437,25 +473,37 @@ fn strip_unresolvable_field_types(
             }
         }
     }
+    let file_name = topo.files[i].name.clone();
+    // W4, with its file in the report (spec 0446 S3), which -q, silencing
+    // it here, does not shorten.
+    let w4 = |r: &mut Run, type_name: &str| {
+        let fields = serde_json::json!({ "file": file_name, "type": type_name });
+        if r.quiet {
+            crate::report::warning(
+                "W4",
+                &format!("unresolvable type {type_name}"),
+                crate::report::fields(fields),
+            );
+        } else {
+            r.events.with_fields(fields).w4(type_name);
+        }
+    };
     let file = &mut topo.files[i];
     for (owner, record, type_name) in fields {
         file.stripped_field_types
             .entry(owner)
             .or_default()
             .push(record);
-        if !r.quiet {
-            r.events.w4(&type_name);
-        }
+        w4(r, &type_name);
     }
+    let file = &mut topo.files[i];
     for (owner, record, types) in methods {
         file.stripped_method_types
             .entry(owner)
             .or_default()
             .push(record);
-        if !r.quiet {
-            for t in types {
-                r.events.w4(&t);
-            }
+        for t in types {
+            w4(r, &t);
         }
     }
 }

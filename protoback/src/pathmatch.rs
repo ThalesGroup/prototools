@@ -250,13 +250,20 @@ impl PathPatterns {
 
     /// `rel_path` as `Path.as_posix()` writes it.
     pub fn matches(&self, rel_path: &str) -> bool {
+        self.matching(rel_path).is_some()
+    }
+
+    /// The pattern `rel_path` matches, if any: a literal first, then the
+    /// first glob, as `matches` tries them.
+    pub fn matching(&self, rel_path: &str) -> Option<&str> {
         let s = posix_str(rel_path);
-        if self.literals.contains(&s) {
-            return true;
+        if let Some(l) = self.literals.get(&s) {
+            return Some(l);
         }
         self.globs
             .iter()
-            .any(|p| fqdn_match(&format!("path:{p}"), &format!("path:{s}")))
+            .find(|p| fqdn_match(&format!("path:{p}"), &format!("path:{s}")))
+            .map(String::as_str)
     }
 }
 

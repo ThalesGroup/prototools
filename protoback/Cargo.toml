@@ -23,6 +23,7 @@ fdp-scan       = { workspace = true }
 clap           = { version = "4.5", features = ["derive", "env"] }
 serde          = { version = "1", features = ["derive"] }
 serde_yaml     = "0.9"
+serde_json     = "1"
 sha2           = "0.10"
 regex          = "1"
 workspace-hack = { version = "0.1", path = "../workspace-hack" }

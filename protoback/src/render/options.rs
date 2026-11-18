@@ -601,6 +601,9 @@ fn unknown_blocks(
                  written as an orphan",
                     scope.file
                 ),
+                serde_json::json!({
+                    "file": scope.file, "options": type_name, "number": number,
+                }),
             ));
     }
     blocks
