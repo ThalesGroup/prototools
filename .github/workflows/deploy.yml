@@ -40,15 +40,24 @@ jobs:
       # See docs/specs/0102-prototext-args-crate.md for the dropped refactor
       # that would have made this fast.
 
+      # In a venv: the runner image's own Python and packages cannot shadow
+      # ours (ubuntu-latest moved to 26.04 and reproto then found no
+      # google._upb). protobuf as a binary wheel only: reproto needs its upb
+      # backend, which the pure-Python wheel lacks, so fail here if absent.
       - name: Install Python dependencies for reproto
-        run: pip install --quiet click google-re2 protobuf pyvis pyyaml rapidfuzz rich
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet --only-binary protobuf \
+            click google-re2 protobuf pyvis pyyaml rapidfuzz rich
+          "$RUNNER_TEMP/venv/bin/python" -c 'import sys, google.protobuf, google._upb._message; print(sys.version.split()[0], "protobuf", google.protobuf.__version__)'
 
       - name: Generate man pages
         run: |
           mkdir -p man/man1
           # prototext and protoscan omitted — see comment above.
           # Spec 0413 S2: both of reproto's pages.
-          REPROTO_GEN_MAN=man/man1 PYTHONPATH=reproto/src python3 -m reproto
+          REPROTO_GEN_MAN=man/man1 PYTHONPATH=reproto/src \
+            "$RUNNER_TEMP/venv/bin/python" -m reproto
 
       - name: Copy docs into website/content
         run: |
