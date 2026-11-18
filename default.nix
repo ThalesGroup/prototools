@@ -46,8 +46,10 @@ let
   # nixpkgs forbids and which stalls evaluation on a build. CI evaluates
   # `ci` with IFD disallowed so it cannot come back.
   crane = pkgs.callPackage (builtins.fetchTarball {
-    url    = "https://github.com/ipetkov/crane/archive/80ceeec0dc94ef967c371dcdc56adb280328f591.tar.gz";
-    sha256 = "1b9yqvf9ihj5n8m6lkrr3lqy22h2c302ldy2lap7b737v9jrsn3v";
+    # v0.21.3: from v0.21.0 on, no broken-string-indentation warning on
+    # recent Nix. Not 0.22: it needs Nix 2.31.2 or later.
+    url    = "https://github.com/ipetkov/crane/archive/2b3a5a88d852575758e1eb6ac9ee677fcd633fc1.tar.gz";
+    sha256 = "1a27r58apm5arxyydn78j9yz0aa7d20v4ai688d23lbivfs0jaa5";
   }) { inherit pkgs; };
 
   # ---------------------------------------------------------------------------
