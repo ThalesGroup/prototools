@@ -91,7 +91,7 @@ moved symbols, importing the new one.
   imports write them (`.proto`), not physical paths.
 - **S2.** `variants: NAME:` holds `seed:`, `prune:`, `move:` and `split:`
   applying only when the variant in use has that `name:`, appended to the
-  top-level lists. A name no variant has is warned (S8).
+  top-level lists. A name no variant has is W26 (S8): most likely a typo.
 - **S3.** `--move OLD=NEW` and `--split OLD=NEW[,NEW…]` on the command
   line, appended to the file's, as `-s`/`-p` are today.
 
@@ -102,7 +102,10 @@ moved symbols, importing the new one.
   loaded): each `dependency` entry `OLD` becomes `NEW`; a duplicate entry
   this creates is removed, and `public_dependency` and `weak_dependency`
   renumbered (a public import of `OLD` stays public). `OLD` is then pruned
-  as `file:OLD` is.
+  as `file:OLD` is: a move replaces `OLD` entirely; when `OLD` has symbols
+  `NEW` lacks, a split is the directive, and W24 says so of the importers
+  using them. This is what a downstream `--fdp-plugin` rewriting
+  `dependency` does today.
 - **S5.** A move chain (`A: B`, `B: C`) resolves to its end; a cycle is a
   usage error before loading.
 
@@ -120,10 +123,15 @@ moved symbols, importing the new one.
     in the remainder and in each importer, looked up against the `NEW`
     files' symbols. An FDP's references are fully qualified (protoc writes
     them so). One that is not (no leading `.`) stops the run with an
-    error naming the file and the reference: resolving it would take the
-    pool's scope rules, which this does not follow;
+    error naming the file, the reference and the split, and saying how to
+    go on: prune that file (`-p file:…`), or drop the split. Resolving it
+    would take the pool's scope rules, which this does not follow; and
+    such a name means input from something other than protoc, worth a
+    look before going on;
   - a `NEW` file importing `OLD` (directly or not) is a loop: the split is
-    not applied, and warned (S8);
+    not applied, and W26 says so (S8). Not an error: on a corpus of
+    thousands of files, one wrong directive should not cost the whole run;
+    `--fail-on W26` makes it fatal where wanted;
   - an empty remainder makes it a move of `OLD` onto the `NEW` files.
 
 ### Checks and codes
@@ -131,10 +139,15 @@ moved symbols, importing the new one.
 - **S7.** W24, a fixup that breaks a reference: after a move or split, a
   re-pointed importer references a symbol none of the files it now imports
   defines. Names the importer, the symbol and the directive.
-- **S8.** W25, a fixup that does nothing: an `OLD` no file imports and no
-  input holds, a `NEW` the input lacks, a split none of whose `NEW`
-  symbols `OLD` defines, a variant section for no variant, a split not
-  applied (S6's loop). Like W11 for a prune pattern matching nothing.
+- **S8.** Two codes for a fixup that does not apply, as they mean
+  different things to whoever maintains the fixups:
+  - **W25, idle:** a directive the input no longer needs, expected as a
+    corpus moves on, and a cue to drop it: an `OLD` no file imports and no
+    input holds; a split none of whose `NEW` symbols `OLD` defines. Like
+    W11 for a prune pattern matching nothing.
+  - **W26, broken:** a directive that is wrong, to be fixed, and what
+    `--fail-on` is for: a `NEW` the input lacks; a split not applied for a
+    loop (S6); a variant section matching no variant (S2).
 
 ## Alternatives considered
 
@@ -142,6 +155,12 @@ moved symbols, importing the new one.
   checks nothing (G3), and costs an adapter process per file.
 - **Moves as prunes plus W23 accepted.** The importers' types then do not
   resolve: W4 and the pool's refusals, the problem itself.
+- **A reference not fully qualified skips its split, with a warning**
+  (asked for downstream, so that one odd file does not cost a run over
+  thousands): not the default, nor an opt-in flag. No such reference has
+  been seen, and protoc writes none; the error names the file and the way
+  on (S6), which is that outcome, chosen by whoever reads it. The agreed
+  fallback, should such input ever be met in practice.
 
 ## Test plan
 
@@ -151,8 +170,9 @@ moved symbols, importing the new one.
    stay so after the move; a duplicate entry removed, indices renumbered.
 3. `split_reduces_and_fans_out` — `old` defines `X` and `Y`, `new`
    defines `Y`; importers using `X`, `Y` and both import what they use.
-4. `split_loop_is_refused` — `new` importing `old`: W25, `old` untouched.
-5. `wrong_move_is_w24`, `idle_fixup_is_w25`, `variant_section_applies`.
+4. `split_loop_is_refused` — `new` importing `old`: W26, `old` untouched.
+5. `wrong_move_is_w24`, `idle_fixup_is_w25`, `broken_fixup_is_w26`,
+   `variant_section_applies`.
 
 ## Measured outcome
 

@@ -17,10 +17,10 @@ Refs: docs/specs/0438-warning-codes-and-fail-on.md (the codes reported);
 A downstream tool turns a build's problems into actions: which inputs are
 stale, and which of its sources to extract again. Today it can only parse
 stderr, which is written for people: warnings squashed into summaries
-(`(N occurrences)`), silenced by `-q`, their facts embedded in prose (W19
-says "this file or one of its imports"). protoback knows nothing of where
-its inputs came from, and should not; it only needs to report the facts,
-completely, in a form a program can rely on.
+(`(N occurrences)`), silenced by `-q`, their facts embedded in prose
+(which import W19 blames, which file W5 is missing from). protoback knows
+nothing of where its inputs came from, and should not; it only needs to
+report the facts, completely, in a form a program can rely on.
 
 ## Goals
 
@@ -39,48 +39,63 @@ completely, in a form a program can rely on.
 
 ## Specification
 
-- **S1.** `--report-out FILE`: the report, written at exit, `--fail-on`'s
-  exit 3 included; on a usage error (exit 2) none is written.
+- **S1.** `--report-out FILE`: the report, never stale.
+  - Written at exit, `--fail-on`'s exit 3 included, atomically: to a
+    temporary file beside `FILE`, then renamed over it.
+  - A run that fails after its options are parsed (an I/O error, a
+    collision that stops it) writes what it knows, `"complete": false`,
+    with the exit status and the error.
+  - A previous `FILE` never outlives a run that names it: removed once the
+    options are parsed, before any work. Only a usage error found before
+    `--report-out` itself is read can leave one, and it exits 2 with no
+    run at all.
 - **S2.** The top level:
 
   ```json
   {
     "report_version": 1,
+    "complete": true,
     "tool": {"name": "protoback", "version": "0.3.7"},
-    "run": {"argv": ["…"], "variant": "proto2", "inputs": ["…"],
-            "exit_status": 0},
+    "run": {"argv": ["…"], "cwd": "…", "variant": "proto2",
+            "inputs": ["…"], "exit_status": 0, "error": null},
     "warnings": [ … ],
     "rewrites": { "prunes": [ … ], "moves": [ … ], "splits": [ … ] },
     "idle_directives": [ … ]
   }
   ```
 - **S3.** A warning: `{"code": "W19", "message": "…", "fields": {…}}`, one
-  per occurrence, unsquashed, in emission order. `fields` per code, for a
-  start:
+  per occurrence, unsquashed, in stderr's order: per file, the same from
+  run to run whatever the threads, so that two reports diff. `fields` per
+  code, for a start:
 
   | Code | Fields |
   |---|---|
   | W3 | `pruned`, `kept` (file → symbols, extension numbers) |
   | W4 | `file`, `type` |
   | W5 | `importer`, `import` |
-  | W19, W20 | `file` (the file refused), `reason` (the pool's) |
+  | W6 | `file`, `field`; `reason` when a refusal explains it (spec 0438 S8) |
+  | W19, W20 | `file`; `import`, when refused for its import (the knock-on form); else `reason`, upb's (the root) |
   | W22 | `file`, `options`, `number` |
   | W23 | `importer`, `import` |
+  | W24 | `importer`, `symbol`, `directive` (spec 0445) |
 
-  A code not listed has `fields: {}`; adding fields is compatible,
-  changing one bumps `report_version`.
+  A code not listed has `fields: {}` (T3 and T4 next, when wanted).
+  `report_version` is an integer, a major version: adding a field keeps
+  it, so a reader ignores fields it does not know; changing or removing
+  one bumps it. `argv` is verbatim, and `cwd` resolves its relative
+  paths and `inputs`'.
 - **S4.** `rewrites`: each prune with the pattern or rule that caused it
   (`-p`, `-C`, W3); each move and split (0445) with every importer's
   imports before and after, and the symbols removed from a split file.
 - **S5.** `idle_directives`: each prune or seed pattern matching nothing
-  (W11, W12), and each fixup doing nothing (0445's W25).
+  (W11, W12), and each fixup that did not apply (0445's W25, idle, and
+  W26, broken), with its exact reason.
 
 ## Prerequisite
 
-W19's `file` and `reason` (S3) need the pool's refusal reason carried to
-the warning, which today says "this file or one of its imports". That is
-the same change as making W19 and W6 say why on stderr, done first, on its
-own.
+W19's, W20's and W6's `import` and `reason` (S3) are the refusal reason
+spec 0438 S8 gives on stderr since 2026-11-18: the report carries the same
+facts, split into fields.
 
 ## Alternatives considered
 
@@ -95,7 +110,10 @@ own.
    the report; also under `-q`.
 2. `report_fields_per_code` — each code of S3's table, its fields.
 3. `report_written_on_fail_on` — exit 3, the report complete.
-4. `report_schema` — the file validates against S2's shape.
+4. `report_never_stale` — a previous report removed by a run that fails;
+   that run's own written incomplete, `complete: false`, with its error;
+   written through a rename, never seen half-written.
+5. `report_schema` — the file validates against S2's shape.
 
 ## Measured outcome
 
