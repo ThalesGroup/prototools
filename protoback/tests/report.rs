@@ -112,12 +112,10 @@ fn report_fields_per_code() {
     assert_eq!(w3["pruned"], "p2.proto");
     assert_eq!(w3["with"][0]["file"], "p.proto");
     assert_eq!(w3["with"][0]["symbols"], 1);
-    // One W5 from import discovery, which knows no importer; one from
-    // phase 2, which does: as stderr counts them.
-    let w5 = &warnings(&report, "W5")
-        .into_iter()
-        .find(|w| w["fields"].get("importer").is_some())
-        .unwrap()["fields"];
+    // Once, from phase 2, with its importer; stderr still counts two.
+    let w5 = warnings(&report, "W5");
+    assert_eq!(w5.len(), 1, "{report:#}");
+    let w5 = &w5[0]["fields"];
     assert_eq!(
         (&w5["importer"], &w5["import"]),
         (&"b.proto".into(), &"absent.proto".into())
@@ -251,4 +249,22 @@ fn report_schema_and_rewrites() {
     assert!(idle
         .iter()
         .any(|i| i["code"] == "W11" && i["directive"] == "desc:nothing/Here"));
+}
+
+#[test]
+fn report_lists_another_variants_section_codeless() {
+    let dir = setup("variants", &[("p", P)]);
+    let config = dir.join("filter.yaml");
+    std::fs::write(
+        &config,
+        "variants:\n  other:\n    prune:\n      - file:p.proto\n",
+    )
+    .unwrap();
+    let r = run(&dir, &["-C", config.to_str().unwrap()]);
+    assert_eq!(r.status, 0, "{}", r.stderr);
+    assert!(!r.stderr.contains("W26"), "{}", r.stderr);
+    let report = r.report.unwrap();
+    let idle = &report["idle_directives"][0];
+    assert_eq!(idle["code"], Value::Null);
+    assert_eq!(idle["directive"], "variants: other");
 }

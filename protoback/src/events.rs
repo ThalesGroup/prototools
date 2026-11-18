@@ -131,6 +131,8 @@ pub struct Events {
     /// The code and message the report gives the next warning, when not
     /// the ones printed (W1, shown as W5 unless detailed).
     report_as: Option<(&'static str, String)>,
+    /// The next warning stays out of the report (`w1_unreported`).
+    unreported: bool,
 }
 
 fn occurrences(count: usize) -> String {
@@ -187,6 +189,11 @@ impl Events {
 
     /// One occurrence, into the report: every one, whatever is printed.
     fn occur(&mut self, code: &str, message: &str) {
+        if std::mem::take(&mut self.unreported) {
+            self.pending = None;
+            self.report_as = None;
+            return;
+        }
         let fields = self.pending.take().unwrap_or_default();
         match self.report_as.take() {
             Some((code, message)) => crate::report::warning(code, &message, fields),
@@ -242,6 +249,7 @@ impl Events {
         self.call(&["w1", missing_file]);
         if self.pruned_files.contains(missing_file) || self.fallback_files.contains(missing_file) {
             self.pending = None;
+            self.unreported = false;
             return;
         }
         self.report_as = Some(("W5", format!("missing dependency file:{missing_file}")));
@@ -263,6 +271,14 @@ impl Events {
                 None,
             );
         }
+    }
+
+    /// `w1` for an import not found during import discovery: printed and
+    /// counted as ever, but not in the report, where phase 2 gives it once,
+    /// with its importer (spec 0446 S3).
+    pub fn w1_unreported(&mut self, missing_file: &str) {
+        self.unreported = true;
+        self.w1(missing_file);
     }
 
     /// A file pruned for its duplicate symbols or extension numbers (W3).

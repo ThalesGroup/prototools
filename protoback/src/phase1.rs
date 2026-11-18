@@ -36,6 +36,7 @@ pub fn run(r: &mut Run, topo: &mut Topology) {
         blobs: &mut r.blobs,
         path_seed_fqdns: &mut r.path_seed_fqdns,
         plugin: r.plugin.as_ref(),
+        importing: false,
     };
     let mut qual_files = Vec::new();
     for path in &seeds {
@@ -49,6 +50,7 @@ pub fn run(r: &mut Run, topo: &mut Topology) {
         let i = topo.load(qf);
         topo.files[i].is_seed = true;
     }
+    ctx.importing = true;
     // Import discovery. reproto's check `file not in known_files` compares
     // a file with names, so it always holds: every round retries every
     // file still missing, and warns W1 again. Kept, the dump records it.

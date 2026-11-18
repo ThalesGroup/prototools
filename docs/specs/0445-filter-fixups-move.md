@@ -109,7 +109,9 @@ whichever direction it is told.
   physical paths.
 - **S2.** `variants: NAME:` holds `seed:`, `prune:` and `move:`, applying
   only when the variant in use has that `name:`, appended to the
-  top-level lists.
+  top-level lists. A section for another variant is not warned: a file
+  serving several variants (G4) has one on every run. The report lists
+  it (spec 0446 S5). A typo in a variant's name goes unseen, the price.
 - **S3.** `--move OLD=TARGET[,TARGET…]` on the command line, repeatable,
   before the file's, as `-s`/`-p` are merged today (which decides which
   of an `OLD` given twice applies, S7).
@@ -160,7 +162,6 @@ whichever direction it is told.
       cycle: neither resolved;
     - a target a `prune:` pattern matches;
     - an `OLD` given twice;
-    - a variant section matching no variant (most likely a typo);
     - a target the input lacks: known only once phase 1 has loaded the
       input, after the imports were rewritten. Here the directive stays
       applied, W26 saying the target is missing (the importers then also

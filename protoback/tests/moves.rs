@@ -266,8 +266,6 @@ variants:
         "move 'old.proto': given twice; the second not applied",
         "move 'a.proto': its target 'old.proto' is itself moved; not applied",
         "move 'c.proto': its target 'pruned.proto' is pruned (file:pruned.proto); not applied",
-        "variants: 'nosuchvariant' matches no variant (the variant in use is 'google.protobuf'); \
-         its section not applied",
     ] {
         assert!(
             r.stderr.contains(expected),
@@ -275,6 +273,8 @@ variants:
             r.stderr
         );
     }
+    // Another variant's section: expected in a shared file, not warned.
+    assert!(!r.stderr.contains("nosuchvariant"), "{}", r.stderr);
     // The first old.proto move still applies.
     assert!(r
         .proto("b.proto")

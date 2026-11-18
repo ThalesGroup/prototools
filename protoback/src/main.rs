@@ -477,14 +477,17 @@ fn protoback(cli: Cli) -> u8 {
     let fallback = fallback_protos(&cli.use_variant, &variant);
     // Spec 0445: the moves, each wrong one left out with W26; a variants:
     // section for no variant in use, W26 too.
+    // A section for another variant: expected in a file serving several
+    // (spec 0445 G4), so not warned; listed in the report, codeless.
     for name in &config.unmatched_variants {
-        let message = format!(
-            "variants: '{name}' matches no variant (the variant in use is '{}'); \
-             its section not applied",
-            variant.name
+        report::idle(
+            None,
+            &format!("variants: {name}"),
+            &format!(
+                "not the variant in use ('{}'); its section not applied",
+                variant.name
+            ),
         );
-        report::idle("W26", &format!("variants: {name}"), &message);
-        events.warn("W26", &message);
     }
     let moves = moves::Moves::new(all_moves, &prune_fqdns, &mut events);
     let mut run = Run {

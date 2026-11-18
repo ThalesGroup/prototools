@@ -23,7 +23,7 @@ use crate::pathmatch::fqdn_match;
 /// the report's `idle_directives` (spec 0446 S5).
 fn not_applied(events: &mut Events, code: &str, m: &Move, message: &str) {
     crate::report::idle(
-        code,
+        Some(code),
         &format!("move: {}: {}", m.old, m.targets.join(", ")),
         message,
     );

@@ -309,6 +309,9 @@ pub struct LoadCtx<'a> {
     pub path_seed_fqdns: &'a mut std::collections::BTreeSet<String>,
     /// The plugin, which sees each file as it is read (spec 0431 S1).
     pub plugin: Option<&'a crate::plugin::Plugin>,
+    /// Import discovery under way: a file not found is an import, which
+    /// the report has from phase 2, with its importer.
+    pub importing: bool,
 }
 
 /// `blob_members`: the descriptors fdp-scan finds in a file-shaped root,
@@ -465,7 +468,12 @@ fn load_files(ctx: &mut LoadCtx, roots: &[PathBuf], rel_path: &Path) -> Vec<RawF
         }
     }
     if loaded.is_empty() {
-        ctx.events.w1(&posix_str(&rel_path.to_string_lossy()));
+        let missing = posix_str(&rel_path.to_string_lossy());
+        if ctx.importing {
+            ctx.events.w1_unreported(&missing);
+        } else {
+            ctx.events.w1(&missing);
+        }
     }
     loaded
 }

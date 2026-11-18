@@ -82,9 +82,11 @@ report the facts, completely, in a form a program can rely on.
 
   A code not listed has `fields: {}` (T3 and T4 next, when wanted).
   A warning has the code and message stderr gives it unless detailed: W1
-  is W5, `missing dependency file:X`. A missing import is two
-  occurrences, as stderr counts it: one from import discovery, which
-  knows no importer (`import` only), one from phase 2 (`importer` too).
+  is W5, `missing dependency file:X`. A missing import is one entry, from
+  phase 2, with its `importer`, though stderr counts it twice (import
+  discovery's W1 too, which knows no importer); a file named on the
+  command line and not found, which phase 2 never sees, is one entry
+  with `import` only.
   W4, which `-q` leaves unsaid, is in the report all the same.
   `report_version` is an integer, a major version: adding a field keeps
   it, so a reader ignores fields it does not know; changing or removing
@@ -107,7 +109,9 @@ report the facts, completely, in a form a program can rely on.
 - **S5.** `idle_directives`: each prune or seed pattern matching nothing
   (W11, W12), and each move that did not apply as written (spec 0445's
   W25, idle, and W26, broken), with its exact reason: `{code, directive,
-  reason}`, the reason the warning's message.
+  reason}`, the reason the warning's message. A `variants:` section for
+  another variant is listed too, `code` null: it is not warned (spec 0445
+  S2).
 - **S6.** `run.inputs`: each physical file read, `{root, path, files}`:
   its `-I` root, its path under it (the file found, `a.pb`, for an import
   of `a.proto`), and the FDPs it gave.
