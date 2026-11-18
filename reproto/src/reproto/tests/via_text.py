@@ -12,9 +12,9 @@ pass as it does on the binary sets.
 
 Explicit binary arguments become ``.textpb`` files in a temporary
 directory; each ``-I`` directory is mirrored, its binary sets as
-``.textpb``; a root-relative argument and a ``--filter-config`` follow the
-renaming. A blob root, a file protoc cannot decode, and everything else
-are passed as they are.
+``.textpb``; a root-relative argument, a ``--filter-config`` and a
+``path:`` pattern of ``-s``/``-p`` follow the renaming. A blob root, a
+file protoc cannot decode, and everything else are passed as they are.
 """
 
 from __future__ import annotations
@@ -107,6 +107,10 @@ def _arguments(argv: list[str], c: _Converter) -> list[str]:
             args.append("--desc-root=" + c.directory(Path(a.split("=", 1)[1])))
         elif a == "--filter-config":
             args += [a, c.filter_config(Path(next(it)))]
+        elif a in ("-s", "--seed", "-p", "--prune"):
+            # A path pattern names a physical file: renamed as the files.
+            v = next(it)
+            args += [a, v.replace(".pb", ".textpb") if v.startswith("path:") else v]
         elif Path(a).suffix in BINARY and Path(a).is_file():
             args.append(c.file(Path(a)))
         elif Path(a).suffix in BINARY and not a.startswith("-"):

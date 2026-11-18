@@ -184,6 +184,14 @@ def _blob_files(
     return selected
 
 
+def _pruned_import(ctx: Context, rel_path: Path, ext: str) -> bool:
+    """Whether the file an import resolves to, rel_path with ext, is pruned:
+    matched as found, as everywhere else a path pattern applies, and by the
+    import's .proto name too, as before."""
+    return (ctx.pruned_paths.matches(rel_path.with_suffix(ext))
+            or ctx.pruned_paths.matches(rel_path))
+
+
 def _load_files(
     ctx: Context,
     roots: list[Path],
@@ -250,7 +258,7 @@ def _load_files(
                 for ext in TEXT_EXTENSIONS:
                     res_path = root / (rel_path.with_suffix(ext))
                     if res_path.is_file():
-                        if ctx.pruned_paths.matches(rel_path):
+                        if _pruned_import(ctx, rel_path, ext):
                             continue
                         loaded_files.append(
                             QualFile(root, rel_path, res_path.read_text()))
@@ -258,7 +266,7 @@ def _load_files(
                 for ext in BINARY_EXTENSIONS:
                     res_path = root / (rel_path.with_suffix(ext))
                     if res_path.is_file():
-                        if ctx.pruned_paths.matches(rel_path):
+                        if _pruned_import(ctx, rel_path, ext):
                             continue
                         loaded_files.append(
                             QualFile(root, rel_path, res_path.read_bytes()))

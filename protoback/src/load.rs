@@ -437,9 +437,14 @@ fn load_files(ctx: &mut LoadCtx, roots: &[PathBuf], rel_path: &Path) -> Vec<RawF
             return loaded;
         } else if ext == PROTO_EXTENSION {
             for e in TEXT_EXTENSIONS.iter().chain(BINARY_EXTENSIONS) {
-                let candidate = root.join(with_suffix(rel_path, e));
+                let found = with_suffix(rel_path, e);
+                let candidate = root.join(&found);
                 if candidate.is_file() {
-                    if ctx.pruned_paths.matches(&rel_path.to_string_lossy()) {
+                    // The file found, as everywhere else a path pattern
+                    // applies; the import's `.proto` name too, as before.
+                    if ctx.pruned_paths.matches(&found.to_string_lossy())
+                        || ctx.pruned_paths.matches(&rel_path.to_string_lossy())
+                    {
                         continue;
                     }
                     if let Some(contents) = read(&candidate) {
