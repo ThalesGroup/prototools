@@ -68,7 +68,7 @@ by spec 0427) is ignored silently, so a stale variant looks meaningful.
   |---|---|
   | W1 | a file not found on the `-I` path; skipped |
   | W2 | an editions file written as proto2 (`--force-proto2-for-editions`) |
-  | W3 | a duplicate symbol pruned (and only that: a stripped import is W23) |
+  | W3 | a duplicate pruned: a symbol, or an extension number on one extendee (2026-11-18: extension numbers added; a stripped import is W23) |
   | W4 | an unresolvable type |
   | W5 | a missing dependency |
   | W6 | an option value that cannot be rendered: missing from the `.proto` |

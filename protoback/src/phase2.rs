@@ -16,7 +16,7 @@ use prototext_upb::descriptor_access::{
 use prototext_upb::{DynamicMessage, Pool};
 use regex::Regex;
 
-use crate::db::file_symbols;
+use crate::db::{extension_keys, file_symbols};
 use crate::pathmatch::fqdn_match;
 use crate::run::Run;
 use crate::topology::{Stripped, Topology};
@@ -243,8 +243,10 @@ fn strip_self_dependency(r: &mut Run, fdp: &mut DynamicMessage) {
     }
 }
 
-/// `_prune_if_duplicate`: a file declaring a symbol the database has is
-/// pruned, with a W3 naming the files it collides with.
+/// `_prune_if_duplicate`: a file declaring a symbol the database has, or an
+/// extension number another file uses on the same extendee (which the
+/// descriptor pool would refuse), is pruned, with a W3 naming the files it
+/// collides with (spec 0438 S1).
 fn prune_if_duplicate(
     r: &mut Run,
     topo: &mut Topology,
@@ -261,18 +263,48 @@ fn prune_if_duplicate(
             conflicts.insert(sym, r.db.name(f));
         }
     }
-    if conflicts.is_empty() {
+    // The file each taken (extendee, number) is held by, per extendee.
+    let mut taken: BTreeMap<String, BTreeMap<String, Vec<i32>>> = BTreeMap::new();
+    for (extendee, number) in extension_keys(&FileDescriptorProto(fdp.as_ref())) {
+        if let Some(f) = r.db.file_extending(&extendee, number) {
+            let owner = taken.entry(r.db.name(f)).or_default();
+            owner.entry(extendee).or_default().push(number);
+        }
+    }
+    if conflicts.is_empty() && taken.is_empty() {
         return false;
     }
-    let mut by_file: BTreeMap<String, usize> = BTreeMap::new();
-    for f in conflicts.values() {
-        *by_file.entry(f.clone()).or_default() += 1;
-    }
     let name = topo.files[i].name.clone();
-    let mut parts = vec![format!("file:{name} pruned — duplicate symbols with:")];
-    for (f, count) in by_file {
-        let noun = if count == 1 { "symbol" } else { "symbols" };
-        parts.push(format!("    file:{f} ({count} {noun})"));
+    let mut parts = Vec::new();
+    if !conflicts.is_empty() {
+        let mut by_file: BTreeMap<String, usize> = BTreeMap::new();
+        for f in conflicts.values() {
+            *by_file.entry(f.clone()).or_default() += 1;
+        }
+        parts.push(format!("file:{name} pruned — duplicate symbols with:"));
+        for (f, count) in by_file {
+            let noun = if count == 1 { "symbol" } else { "symbols" };
+            parts.push(format!("    file:{f} ({count} {noun})"));
+        }
+    }
+    if !taken.is_empty() {
+        let head = "duplicate extension numbers with:";
+        parts.push(if parts.is_empty() {
+            format!("file:{name} pruned — {head}")
+        } else {
+            format!("  and {head}")
+        });
+        for (f, by_extendee) in taken {
+            let numbers: Vec<String> = by_extendee
+                .into_iter()
+                .map(|(extendee, mut nums)| {
+                    nums.sort_unstable();
+                    let nums: Vec<String> = nums.iter().map(i32::to_string).collect();
+                    format!("{extendee} {}", nums.join(", "))
+                })
+                .collect();
+            parts.push(format!("    file:{f} ({})", numbers.join("; ")));
+        }
     }
     r.events.w3(&parts.join("\n"));
     topo.files[i].is_pruned = true;

@@ -17,7 +17,7 @@ from contextlib import contextmanager
 CODES: dict[str, str] = {
     "W1": "a file not found on the -I path; skipped (summarized with W5)",
     "W2": "an editions file written as proto2 (--force-proto2-for-editions)",
-    "W3": "a duplicate symbol pruned",
+    "W3": "a duplicate pruned: a symbol, or an extension number on one extendee",
     "W4": "an unresolvable type",
     "W5": "a missing dependency",
     "W6": "an option value or a file that cannot be rendered",
@@ -185,7 +185,8 @@ class WarningCollector:
         self.squash(code, f"'{proto_file}' {field_ctx}: {error}")
 
     def w3(self, message: str) -> None:
-        """Duplicate symbol pruning (W3) — always printed immediately."""
+        """A duplicate pruned, symbol or extension number (W3) — always
+        printed immediately."""
         warn("W3", message)
 
     def w23(self, message: str) -> None:

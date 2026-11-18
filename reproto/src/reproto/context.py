@@ -247,6 +247,11 @@ class Context(Options):
 
         # Pool and dicts
         self.pool_db: DescriptorDatabase = DescriptorDatabase()
+        # (extendee, number) -> the pool_db file extending it so: Python's
+        # DescriptorDatabase does not index extensions (its
+        # FindFileContainingExtension is a stub). Filled on pool_db.Add,
+        # read by _prune_if_duplicate.
+        self.extension_owners: dict[tuple[str, int], str] = {}
         self.pool: DescriptorPool = DescriptorPool(self.pool_db)
         # FDPs added to pool_db in insertion (topological) order (spec 0056).
         self.pool_db_fdps: list[FileDescriptorProto] = []

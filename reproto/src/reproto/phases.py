@@ -830,15 +830,42 @@ def _clear_features_recursive(msg: 'DescriptorProto') -> None:
             ext.options.ClearField('features')
 
 
+def _fdp_extension_keys(fdp: FileDescriptorProto) -> list[tuple[str, int]]:
+    """The (extendee, number) of each extension fdp declares, at any depth.
+
+    The extendee as written, its leading '.' dropped: protoc writes it fully
+    qualified.
+    """
+    keys: list[tuple[str, int]] = []
+
+    def _collect(extensions: Any, messages: Any) -> None:
+        for x in extensions:
+            keys.append((x.extendee.lstrip('.'), x.number))
+        for m in messages:
+            _collect(m.extension, m.nested_type)
+
+    _collect(fdp.extension, fdp.message_type)
+    return keys
+
+
+def _index_extensions(ctx: Context, name: str, fdp: FileDescriptorProto) -> None:
+    """Record fdp's extensions as pool_db's, after pool_db.Add."""
+    for key in _fdp_extension_keys(fdp):
+        ctx.extension_owners.setdefault(key, name)
+
+
 def _prune_if_duplicate(
     ctx: Context,
     n: ReFile,
     fdp: FileDescriptorProto,
 ) -> bool:
-    """Check fdp for symbols already registered in pool_db.
+    """Check fdp for symbols, or extension numbers, already in pool_db.
 
-    If any conflicts are found, emit a W3 warning, mark n as pruned, and
-    return True (caller should skip pool_db.Add).  Returns False otherwise.
+    An extension number another file already uses on the same extendee is a
+    duplicate too: the descriptor pool refuses the second file (spec 0438
+    S1, W3). If any conflicts are found, emit a W3 warning, mark n as
+    pruned, and return True (caller should skip pool_db.Add). Returns False
+    otherwise.
     """
     conflicts: dict[str, str] = {}
     for sym in _extract_fdp_symbols(fdp):
@@ -847,15 +874,31 @@ def _prune_if_duplicate(
             conflicts[sym] = existing.name
         except KeyError:
             pass
-    if not conflicts:
+    # The file each taken (extendee, number) is held by, per extendee.
+    taken: dict[str, dict[str, list[int]]] = {}
+    for extendee, number in _fdp_extension_keys(fdp):
+        owner = ctx.extension_owners.get((extendee, number))
+        if owner is not None:
+            taken.setdefault(owner, {}).setdefault(extendee, []).append(number)
+    if not conflicts and not taken:
         return False
-    by_file: dict[str, int] = {}
-    for fname in conflicts.values():
-        by_file[fname] = by_file.get(fname, 0) + 1
-    parts = [f"file:{n.name} pruned — duplicate symbols with:"]
-    for fname, count in sorted(by_file.items()):
-        noun = "symbol" if count == 1 else "symbols"
-        parts.append(f"    file:{fname} ({count} {noun})")
+    parts: list[str] = []
+    if conflicts:
+        by_file: dict[str, int] = {}
+        for fname in conflicts.values():
+            by_file[fname] = by_file.get(fname, 0) + 1
+        parts.append(f"file:{n.name} pruned — duplicate symbols with:")
+        for fname, count in sorted(by_file.items()):
+            noun = "symbol" if count == 1 else "symbols"
+            parts.append(f"    file:{fname} ({count} {noun})")
+    if taken:
+        head = "duplicate extension numbers with:"
+        parts.append(f"file:{n.name} pruned — {head}" if not parts else f"  and {head}")
+        for fname, by_extendee in sorted(taken.items()):
+            numbers = "; ".join(
+                f"{extendee} {', '.join(str(k) for k in sorted(nums))}"
+                for extendee, nums in sorted(by_extendee.items()))
+            parts.append(f"    file:{fname} ({numbers})")
     from .lib.warnings import get_collector
     get_collector().w3('\n'.join(parts))
     n.is_pruned = True
@@ -994,6 +1037,7 @@ def _phase2_build_pool(
                         _strip_unresolvable_dependencies(ctx, n, fdp)
                         _strip_unresolvable_field_types(ctx, n, fdp)
                         ctx.pool_db.Add(fdp)
+                        _index_extensions(ctx, n.name, fdp)
                         ctx.pool_db_fdps.append(fdp)
                     except TypeError as e:
                         # NOTE: TypeError can occur when attempting to add a descriptor

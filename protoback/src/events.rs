@@ -29,7 +29,10 @@ pub const CODES: &[(&str, &str)] = &[
         "W2",
         "an editions file written as proto2 (--force-proto2-for-editions)",
     ),
-    ("W3", "a duplicate symbol pruned"),
+    (
+        "W3",
+        "a duplicate pruned: a symbol, or an extension number on one extendee",
+    ),
     ("W4", "an unresolvable type"),
     ("W5", "a missing dependency"),
     ("W6", "an option value or a file that cannot be rendered"),
@@ -221,7 +224,7 @@ impl Events {
         }
     }
 
-    /// A file pruned for its duplicate symbols (W3).
+    /// A file pruned for its duplicate symbols or extension numbers (W3).
     pub fn w3(&mut self, message: &str) {
         self.call(&["w3", message]);
         self.warn("W3", message);

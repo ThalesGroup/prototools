@@ -10,7 +10,9 @@
 
 use crate::hash::HashMap;
 
-use prototext_upb::descriptor_access::{DescriptorProto, FileDescriptorProto};
+use prototext_upb::descriptor_access::{
+    DescriptorProto, FieldDescriptorProto, FileDescriptorProto,
+};
 use prototext_upb::DynamicMessage;
 
 #[derive(Default)]
@@ -20,6 +22,10 @@ pub struct Database {
     by_name: HashMap<String, usize>,
     /// Symbol → the file that last declared it.
     symbols: HashMap<String, usize>,
+    /// (extendee, number) → the first file extending it so: reproto's
+    /// `ctx.extension_owners`, Python's `DescriptorDatabase` indexing no
+    /// extensions.
+    extensions: HashMap<(String, i32), usize>,
 }
 
 fn text(b: &[u8]) -> String {
@@ -72,6 +78,28 @@ pub fn file_symbols(fdp: &FileDescriptorProto<'_>) -> Vec<String> {
     out
 }
 
+/// reproto's `_fdp_extension_keys`: the (extendee, number) of each
+/// extension the file declares, at any depth, the extendee as written but
+/// for its leading `.` (protoc writes it fully qualified).
+pub fn extension_keys(fdp: &FileDescriptorProto<'_>) -> Vec<(String, i32)> {
+    fn collect(
+        extensions: Vec<FieldDescriptorProto<'_>>,
+        messages: Vec<DescriptorProto<'_>>,
+        out: &mut Vec<(String, i32)>,
+    ) {
+        for x in extensions {
+            let extendee = text(x.extendee());
+            out.push((extendee.trim_start_matches('.').to_string(), x.number()));
+        }
+        for m in messages {
+            collect(m.extension(), m.nested_type(), out);
+        }
+    }
+    let mut out = Vec::new();
+    collect(fdp.extension(), fdp.message_type(), &mut out);
+    out
+}
+
 impl Database {
     /// `DescriptorDatabase.Add`: the file, and its symbols indexed, a later
     /// file's taking the place of an earlier's.
@@ -103,6 +131,9 @@ impl Database {
         for s in symbols {
             self.symbols.insert(s, i);
         }
+        for key in extension_keys(&f) {
+            self.extensions.entry(key).or_insert(i);
+        }
         self.by_name.insert(name, i);
         self.files.push(fdp);
     }
@@ -130,6 +161,13 @@ impl Database {
         }
         let top_level = symbol.rsplit_once('.').map_or("", |(t, _)| t);
         self.symbols.get(top_level).copied()
+    }
+
+    /// The file whose extension already uses `number` on `extendee`.
+    pub fn file_extending(&self, extendee: &str, number: i32) -> Option<usize> {
+        self.extensions
+            .get(&(extendee.to_string(), number))
+            .copied()
     }
 
     /// The name of file `i`.
