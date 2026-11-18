@@ -1598,8 +1598,9 @@ def _phase7_output(ctx: Context, out_repo: Path) -> None:
                     # A bug: the file is not rendered (spec 0429 S16).
                     ctx.out_desc = None
                     from .lib.warnings import get_collector
-                    from .anomalies import INTERNAL_ERROR, debug_exception
-                    get_collector().w6(re_fdp.name, '', INTERNAL_ERROR)
+                    from .anomalies import INTERNAL_ERROR, debug_exception, pool_refusal
+                    get_collector().w6(re_fdp.name, '',
+                                       pool_refusal(ctx, re_fdp.name) or INTERNAL_ERROR)
                     debug_exception(ctx.debug, f"'{re_fdp.name}'", e)
                     if ctx.debug:
                         cli_warning(str(re_fdp.this))
@@ -1720,7 +1721,10 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
                 fd = ctx.pool.FindFileByName(proto_name)
             except (KeyError, TypeError) as e:
                 from .lib.warnings import get_collector
-                get_collector().w6(proto_name, "schema db", str(e), code="W20")
+                from .anomalies import pool_refusal, refused_itself
+                get_collector().w6(
+                    proto_name, "schema db",
+                    pool_refusal(ctx, proto_name) or refused_itself(str(e)), code="W20")
                 advance()
                 continue
 
@@ -2156,13 +2160,12 @@ def _phase_emit_scoring_graphs(ctx: 'Context', out_dir: Path) -> None:
 
         try:
             fd = ctx.pool.FindFileByName(proto_name)
-        except KeyError:
+        except (KeyError, TypeError) as e:
             from .lib.warnings import get_collector
-            get_collector().w6(proto_name, "scoring graph", "not in descriptor pool", code="W21")
-            continue
-        except TypeError as e:
-            from .lib.warnings import get_collector
-            get_collector().w6(proto_name, "scoring graph", str(e), code="W21")
+            from .anomalies import pool_refusal, refused_itself
+            get_collector().w6(
+                proto_name, "scoring graph",
+                pool_refusal(ctx, proto_name) or refused_itself(str(e)), code="W21")
             continue
 
         group_fqdns = _collect_group_fqdns(fd)

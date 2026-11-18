@@ -180,13 +180,49 @@ ANOMALIES: dict[str, Anomaly] = {
 # (it changes with upb's version, and the two tools' upb differ) or
 # Python's. The text is shown under --debug only (debug_exception).
 
-# The pool could not build the file being rendered, or one of its imports:
-# a name that does not resolve, a duplicate symbol, a definition upb
-# refuses.
-POOL_REFUSED = "the descriptor pool refused this file or one of its imports"
-
 # Any other failure: a bug in reproto, named by the element it occurred in.
 INTERNAL_ERROR = "internal error"
+
+# Python's wrapping of upb's own message, which protoback's upb gives bare.
+_PY_PREFIX = "Couldn't build proto file into descriptor pool: "
+
+
+def refused_itself(upb: str) -> str:
+    """The reason of a file the pool refused itself: upb's message (spec
+    0438 S8), the one text both tools' upb share."""
+    return f"the descriptor pool refused it: {upb.removeprefix(_PY_PREFIX)}"
+
+
+def refused_import(dep: str) -> str:
+    """The reason of a file refused because its import dep was, the first
+    in dependency order (spec 0438 S8)."""
+    return f"the descriptor pool refused its import '{dep}'"
+
+
+def pool_refusal(ctx: Any, name: str) -> str | None:
+    """Why the pool refuses file name, None if it builds it: its first
+    refused import, else upb's message. What W19, W20, W21, and W6 in such
+    a file, say. A file in an import cycle counts as refused, as protoback's
+    loader has it."""
+    cache: dict[str, str | None] = ctx.pool_refusals
+    if name in cache:
+        return cache[name]
+    cache[name] = refused_itself("import cycle")
+    reason: str | None = None
+    try:
+        ctx.pool.FindFileByName(name)
+    except (KeyError, ValueError, TypeError, AttributeError) as e:
+        try:
+            deps = list(ctx.pool_db.FindFileByName(name).dependency)
+        except KeyError:
+            deps = None
+        if deps is None:
+            reason = refused_itself(f"file not found: {name}")
+        else:
+            refused = [d for d in deps if pool_refusal(ctx, d) is not None]
+            reason = refused_import(refused[0]) if refused else refused_itself(str(e))
+    cache[name] = reason
+    return reason
 
 
 def debug_exception(debug: bool, where: str, exc: BaseException) -> None:
@@ -213,15 +249,16 @@ def report(code: str, depth: int, *, suppress_stderr: bool = False, **kwargs: An
     anomaly = ANOMALIES[code]
 
     # A3/C5, a render failure: W6, buffered and sorted with the rest, under
-    # its fixed reason (POOL_REFUSED, INTERNAL_ERROR).
+    # its reason (INTERNAL_ERROR, or why the pool refused the file).
     if code in ('A3', 'C5'):
         proto_file = kwargs.get('file', '')
         field_name = kwargs.get('name', '')
         field_ctx = f"field '{field_name}'" if field_name else ''
         reason = kwargs['reason']
         # A file the pool refuses is W19; anything else not rendered, W6.
+        refused = code == 'A3' and reason != INTERNAL_ERROR
         get_collector().w6(proto_file, field_ctx, reason,
-                           code="W19" if reason == POOL_REFUSED else "W6")
+                           code="W19" if refused else "W6")
     else:
         ctx_map = _Ignore(kwargs)
         if anomaly.stderr and not suppress_stderr:

@@ -435,22 +435,48 @@ pub fn replay(events: &mut Events, reports: Vec<file::RenderEvent>) {
         match r {
             file::RenderEvent::Warning(code, m) => events.warn(code, &m),
             file::RenderEvent::Squash(code, m) => events.squash(code, &m, None, None),
-            // A file the pool refuses is W19; anything else not rendered, W6.
+            // W19, a file the pool refuses; W6, anything else not rendered.
             file::RenderEvent::W6 {
+                code,
                 file,
                 field,
                 reason,
-            } => {
-                let code = if reason == POOL_REFUSED { "W19" } else { "W6" };
-                events.w6(code, &file, &field, &reason)
-            }
+            } => events.w6(code, &file, &field, &reason),
             file::RenderEvent::Prost(name) => events.w_prost(&name),
         }
     }
 }
 
-/// The fixed reason of a file the pool refused (spec 0429 S16).
-pub const POOL_REFUSED: &str = "the descriptor pool refused this file or one of its imports";
+/// The reason of a file the pool refused itself: upb's message, which
+/// reproto reads the same (spec 0438 S8).
+pub fn refused_itself(upb: &str) -> String {
+    format!("the descriptor pool refused it: {upb}")
+}
+
+/// The reason of a file refused because its import `dep` was, the first
+/// in `dependency` order (spec 0438 S8).
+pub fn refused_import(dep: &str) -> String {
+    format!("the descriptor pool refused its import '{dep}'")
+}
+
+/// What W6 says of a render failure: in a file the pool refused, why it
+/// did; else a bug (spec 0429 S16).
+pub fn failure_reason(loads: &options::PoolLoads, file: &str) -> String {
+    loads
+        .refused
+        .get(file)
+        .cloned()
+        .unwrap_or_else(|| "internal error".to_string())
+}
+
+/// What W20 and W21 say of a file missing from the pool: why it is.
+pub fn refusal(loads: &options::PoolLoads, file: &str) -> String {
+    loads
+        .refused
+        .get(file)
+        .cloned()
+        .unwrap_or_else(|| refused_itself("not loaded"))
+}
 
 /// `f` on a pool of `jobs` threads (spec 0429 S4); on this thread when no
 /// pool can be had. Each pool thread first takes every CPU the process
@@ -540,7 +566,7 @@ fn write_files(
         phase.advance(1);
         if r.failed {
             // reproto's phase 7 catches the failure: W6, internal error.
-            events.w6("W6", &p.name, "", "internal error");
+            events.w6("W6", &p.name, "", &failure_reason(shared.loads, &p.name));
         }
         if let Err(Written::File(e)) = r.written {
             return Err(e);
@@ -662,8 +688,8 @@ fn write_scoring_yaml(
         .collect();
     for (name, path, doc) in docs {
         let Some(doc) = doc else {
-            // A file the pool refused: W6, its fixed reason (spec 0429 S16).
-            events.w6("W21", &name, "scoring graph", POOL_REFUSED);
+            // A file the pool refused, and why (spec 0438 S8).
+            events.w6("W21", &name, "scoring graph", &refusal(shared.loads, &name));
             continue;
         };
         if let Some(parent) = path.parent() {

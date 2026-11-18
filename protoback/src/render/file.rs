@@ -55,6 +55,8 @@ pub enum RenderEvent {
     /// A squashed warning: its code and message (W22).
     Squash(&'static str, String),
     W6 {
+        /// W6, or W19 for a file the pool refused.
+        code: &'static str,
         file: String,
         field: String,
         reason: String,
@@ -83,6 +85,7 @@ impl Ctx<'_, '_> {
     /// A3 or C5: a W6, counted.
     pub fn w6(&self, file: String, field: String, reason: &str) {
         self.events.borrow_mut().push(RenderEvent::W6 {
+            code: "W6",
             file,
             field,
             reason: reason.to_string(),
@@ -713,9 +716,13 @@ fn file_options(
     depth: usize,
 ) -> Block {
     use super::options::{options, Options};
-    const POOL_REFUSED: &str = "the descriptor pool refused this file or one of its imports";
-    let a3 = |reason: &str| {
-        ctx.w6(ctx.file_name(), String::new(), reason);
+    let a3 = |code: &'static str, reason: &str| {
+        ctx.events.borrow_mut().push(RenderEvent::W6 {
+            code,
+            file: ctx.file_name(),
+            field: String::new(),
+            reason: reason.to_string(),
+        });
         let mut b = Block::new();
         b.push(anomaly(
             "OMITTED",
@@ -726,14 +733,13 @@ fn file_options(
         b
     };
     if ctx.refused {
-        // reproto's `debug_exception`: the pool's own reason behind the
-        // fixed one, under --debug.
+        let reason = super::failure_reason(ctx.shared.loads, &ctx.file_name());
+        // reproto's `debug_exception`, under --debug.
         if ctx.shared.debug {
-            if let Some(reason) = ctx.shared.loads.refused.get(&ctx.file_name()) {
-                crate::console::warning(&format!("'{}': file options: {reason}", ctx.file_name()));
-            }
+            crate::console::warning(&format!("'{}': file options: {reason}", ctx.file_name()));
         }
-        return a3(POOL_REFUSED);
+        // W19, with the pool's reason (spec 0438 S8).
+        return a3("W19", &reason);
     }
     let mut out = Block::new();
     let Some(o) = f.options() else {
@@ -747,7 +753,7 @@ fn file_options(
     out.extend(features_block(ctx, o.features(), depth, false, &package));
     match options(&ctx.scope(&package), Options::File, &msg, false, depth, &[]) {
         Ok(blocks) => blocks.into_iter().for_each(|b| out.extend(b)),
-        Err(_) => return a3("internal error"),
+        Err(_) => return a3("W6", "internal error"),
     }
     out
 }

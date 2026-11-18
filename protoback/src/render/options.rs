@@ -58,8 +58,8 @@ impl Options {
 /// rendering, in that order: rendering itself only reads it.
 pub struct PoolLoads {
     /// The files whose build fails, or one of whose imports does, each
-    /// with the pool's reason (what `--debug` shows, as reproto's
-    /// `debug_exception`).
+    /// with its reason (`refused_itself`, `refused_import`): what W19, W20,
+    /// W21, and W6 in such a file, say.
     pub refused: BTreeMap<String, String>,
     /// The files loaded: whose extensions a scoring graph lists (spec 0430
     /// S1).
@@ -98,15 +98,23 @@ pub fn pool_loads(db: &Database, summoned: &[String]) -> PoolLoads {
                 .iter()
                 .map(|d| String::from_utf8_lossy(d).into_owned())
                 .collect();
+            // Each import loaded first; the first refused names the reason.
+            let mut refused_import = None;
             for d in &deps {
-                self.load(d);
+                if !self.load(d) && refused_import.is_none() {
+                    refused_import = Some(d.clone());
+                }
             }
             let added = fdp
                 .encode()
                 .map_err(|e| e.to_string())
                 .and_then(|bytes| self.pool.add_file(&bytes).map_err(|e| e.0));
-            if let Err(reason) = &added {
-                self.reasons.insert(name.to_string(), reason.clone());
+            if let Err(upb) = &added {
+                let reason = match &refused_import {
+                    Some(d) => super::refused_import(d),
+                    None => super::refused_itself(upb),
+                };
+                self.reasons.insert(name.to_string(), reason);
             }
             let ok = added.is_ok();
             self.done.insert(name.to_string(), ok);

@@ -453,10 +453,11 @@ class ReFieldDescriptorProto(NodeBase[FieldDescriptorProto]):
             )
             out.extend(formatted)
         except (KeyError, ValueError, TypeError, AttributeError) as e:
-            from .anomalies import INTERNAL_ERROR, debug_exception, report
+            from .anomalies import INTERNAL_ERROR, debug_exception, pool_refusal, report
             debug_exception(ctx.debug, f"'{ctx.current_file}' field '{self.name}': options", e)
+            reason = pool_refusal(ctx, ctx.current_file) or INTERNAL_ERROR
             out.append(report("C5", depth, name=self.name, file=ctx.current_file,
-                               reason=INTERNAL_ERROR))
+                               reason=reason))
             out.append(BlockLine(string, depth))
 
         # --- Field group definition (only for fields of type group) -----------

@@ -138,12 +138,14 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
         fio_desc = ctx.fio_desc
         FiOClass = ctx.fio_cls
 
-        from .anomalies import INTERNAL_ERROR, POOL_REFUSED, debug_exception, report
+        from .anomalies import (INTERNAL_ERROR, debug_exception, pool_refusal,
+                                refused_itself, report)
         try:
             f_desc: FileDescriptor = ctx.pool.FindFileByName(self.name)
         except (KeyError, ValueError, TypeError, AttributeError) as e:
             debug_exception(ctx.debug, f"'{self.name}': file options", e)
-            out.append(report("A3", depth, file=self.name, reason=POOL_REFUSED))
+            reason = pool_refusal(ctx, self.name) or refused_itself(str(e))
+            out.append(report("A3", depth, file=self.name, reason=reason))
             return out
 
         try:

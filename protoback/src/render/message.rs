@@ -414,11 +414,12 @@ pub fn field(ctx: &Ctx<'_, '_>, fd: usize, depth: usize, is_oneof: bool) -> Bloc
             depth,
         )),
         Err(()) => {
-            ctx.w6(ctx.file_name(), format!("field '{name}'"), "internal error");
+            let reason = super::failure_reason(ctx.shared.loads, &ctx.file_name());
+            ctx.w6(ctx.file_name(), format!("field '{name}'"), &reason);
             out.push(anomaly(
                 "WARNING",
                 "render",
-                "field options could not be rendered (internal error)",
+                &format!("field options could not be rendered ({reason})"),
                 depth,
             ));
             out.push(Line::code(string, depth));

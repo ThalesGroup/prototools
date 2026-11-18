@@ -252,6 +252,9 @@ class Context(Options):
         # FindFileContainingExtension is a stub). Filled on pool_db.Add,
         # read by _prune_if_duplicate.
         self.extension_owners: dict[tuple[str, int], str] = {}
+        # File name -> why the pool refuses it, None if it builds it
+        # (anomalies.pool_refusal, spec 0438 S8).
+        self.pool_refusals: dict[str, str | None] = {}
         self.pool: DescriptorPool = DescriptorPool(self.pool_db)
         # FDPs added to pool_db in insertion (topological) order (spec 0056).
         self.pool_db_fdps: list[FileDescriptorProto] = []

@@ -129,6 +129,23 @@ by spec 0427) is ignored silently, so a stale variant looks meaningful.
   options, in wire order.
 - **S7. Both tools alike**: the same lines, the same summary, the same
   exit statuses.
+- **S8. Why the pool refused a file** (2026-11-18; amends spec 0429
+  S16, whose fixed "the descriptor pool refused this file or one of its
+  imports" told neither which file nor why). One reason per refused file,
+  said by W19, W20, W21, and by W6 for a render failure in such a file
+  (where "internal error" hid the refusal, its usual cause):
+  - `the descriptor pool refused its import 'Y'`, Y the first of its
+    `dependency` the pool refuses, which says nothing of upb's wording;
+  - else `the descriptor pool refused it: <upb's message>`, Python
+    protobuf's prefix (`Couldn't build proto file into descriptor pool: `)
+    dropped, so that both tools say upb's own text.
+
+  The risk S16 named stays: the two tools' upb are of different releases,
+  and a message reworded between them would differ in the harness. None
+  does on its corpus; one that does is to be mapped to a fixed text in
+  both tools (`anomalies.refused_itself`, `render::refused_itself`), not
+  hidden again. "internal error" remains for a failure no refusal
+  explains: a bug.
 
 ## Alternatives considered
 

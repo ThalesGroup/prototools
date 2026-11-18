@@ -290,7 +290,9 @@ reproto first.)
     changes with its version, and the two tools' upb differ (Python
     protobuf 7.34.1, upb of protobuf 34.1; protoback's, 36.2). The fixed
     message therefore names the cause and the file, not upb's reason,
-    which `--debug` shows.
+    which `--debug` shows. Amended by spec 0438 S8 (2026-11-18): a
+    refusal names the import refused, or gives upb's message, Python's
+    prefix dropped; W6 in a refused file gives that reason.
   - **Done in reproto** (2026-11-15, `test_render_failures.py`, each
     test failing before): A3 and C5 take a `reason`, `POOL_REFUSED` or
     `INTERNAL_ERROR` (`anomalies.py`), filed as W6 under it;

@@ -236,8 +236,13 @@ pub fn build(
         None => (collect_graphs(shared, &scoring_files), None),
     };
     for (origin, _) in scoring_files.iter().zip(&present).filter(|(_, &p)| !p) {
-        // A file the pool refused: W6, its fixed reason (spec 0429 S16).
-        events.w6("W20", origin, "schema db", render::POOL_REFUSED);
+        // A file the pool refused, and why (spec 0438 S8).
+        events.w6(
+            "W20",
+            origin,
+            "schema db",
+            &render::refusal(shared.loads, origin),
+        );
     }
     let graphs = kept;
     collecting.done();
