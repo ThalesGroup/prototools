@@ -61,7 +61,10 @@ pub const CODES: &[(&str, &str)] = &[
         "W22",
         "an option field the options type does not declare: an orphan",
     ),
-    ("W23", "an import of a pruned file stripped from its importer"),
+    (
+        "W23",
+        "an import of a pruned file stripped from its importer",
+    ),
     (
         "T1",
         "text: a field by number declared nowhere, read as length-delimited",
