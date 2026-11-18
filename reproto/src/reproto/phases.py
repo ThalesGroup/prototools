@@ -735,7 +735,7 @@ def _strip_unresolvable_dependencies(
         else:
             topo_file.stripped_dependencies.append(dep)
         if dep in ctx.pruned_file_names:
-            collector.w3(f"stripped pruned dependency \"{dep}\" from {fdp.name}")
+            collector.w23(f"stripped pruned dependency \"{dep}\" from {fdp.name}")
         else:
             collector.w1(dep)
 

@@ -345,7 +345,7 @@ fn strip_unresolvable_dependencies(
             file.stripped_dependencies.push(dep.clone());
         }
         if r.pruned_file_names.contains(&dep) {
-            r.events.w3(&format!(
+            r.events.w23(&format!(
                 "stripped pruned dependency \"{dep}\" from {file_name}"
             ));
         } else {

@@ -37,6 +37,7 @@ CODES: dict[str, str] = {
     "W20": "a schema-database entry that cannot be built",
     "W21": "a scoring-graph entry that cannot be built",
     "W22": "an option field the options type does not declare: an orphan",
+    "W23": "an import of a pruned file stripped from its importer",
     "T1": "text: a field by number declared nowhere, read as length-delimited",
     "T2": "text: a string protoc printed as a message, rebuilt",
     "T3": "text: an [extension] declared nowhere, skipped",
@@ -186,6 +187,12 @@ class WarningCollector:
     def w3(self, message: str) -> None:
         """Duplicate symbol pruning (W3) — always printed immediately."""
         warn("W3", message)
+
+    def w23(self, message: str) -> None:
+        """An import of a pruned file stripped from its importer (W23, spec
+        0438 S1): apart from W3, so that `--fail-on W3` means a duplicate
+        pruned and nothing else. Printed immediately."""
+        warn("W23", message)
 
     def w7(self, fdp_name: str, shadowed_path: str, kept_path: str) -> None:
         """Duplicate FDP name across -I roots (W7, spec 0148) — always

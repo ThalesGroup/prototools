@@ -52,7 +52,7 @@ class Recorder:
         self._handler = _Handler(level=logging.DEBUG)
         logging.getLogger().addHandler(self._handler)
         collector = get_collector()
-        for code in ("w1", "w3", "w4", "w5", "w6", "w7"):
+        for code in ("w1", "w3", "w4", "w5", "w6", "w7", "w23"):
             method = getattr(collector, code)
 
             def wrapped(*args: Any, _code: str = code, _method: Any = method) -> None:

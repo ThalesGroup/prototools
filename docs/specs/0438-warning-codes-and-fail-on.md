@@ -68,7 +68,7 @@ by spec 0427) is ignored silently, so a stale variant looks meaningful.
   |---|---|
   | W1 | a file not found on the `-I` path; skipped |
   | W2 | an editions file written as proto2 (`--force-proto2-for-editions`) |
-  | W3 | a duplicate symbol pruned |
+  | W3 | a duplicate symbol pruned (and only that: a stripped import is W23) |
   | W4 | an unresolvable type |
   | W5 | a missing dependency |
   | W6 | an option value that cannot be rendered: missing from the `.proto` |
@@ -88,6 +88,7 @@ by spec 0427) is ignored silently, so a stale variant looks meaningful.
   | W20 | a schema-database entry that cannot be built (was W6) |
   | W21 | a scoring-graph entry that cannot be built (was W6) |
   | W22 | an option field the options type does not declare: an orphan (G5) |
+  | W23 | an import of a pruned file stripped from its importer (was W3, 2026-11-18) |
   | T1 | text: a field by number declared nowhere, read as length-delimited (was W1) |
   | T2 | text: a string protoc printed as a message, rebuilt (was W2) |
   | T3 | text: an `[extension]` declared nowhere, skipped (was W3) |

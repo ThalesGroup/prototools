@@ -61,6 +61,7 @@ pub const CODES: &[(&str, &str)] = &[
         "W22",
         "an option field the options type does not declare: an orphan",
     ),
+    ("W23", "an import of a pruned file stripped from its importer"),
     (
         "T1",
         "text: a field by number declared nowhere, read as length-delimited",
@@ -217,11 +218,18 @@ impl Events {
         }
     }
 
-    /// A file pruned for its duplicate symbols, or a pruned import
-    /// stripped (W3).
+    /// A file pruned for its duplicate symbols (W3).
     pub fn w3(&mut self, message: &str) {
         self.call(&["w3", message]);
         self.warn("W3", message);
+    }
+
+    /// An import of a pruned file stripped from its importer (W23, spec
+    /// 0438 S1): apart from W3, so that `--fail-on W3` means a duplicate
+    /// pruned and nothing else.
+    pub fn w23(&mut self, message: &str) {
+        self.call(&["w23", message]);
+        self.warn("W23", message);
     }
 
     /// A type no file defines (W4).
