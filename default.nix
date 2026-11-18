@@ -883,6 +883,7 @@ in
   nixpkgs-staging-unstable-reproto-alone = stagingUnstable.reprotoAlone;
   prototext-fixtures-check = prototextFixturesCheck;
   protoscan            = rust.protoscan;
+  protoback            = rust.protoback;
   fdp-scan-lib         = rust.fdpScanLib;
   prototext-graph-lib  = rust.prototextGraphLib;
   crates-io            = cratesIo;

@@ -398,15 +398,16 @@ let
   '';
 
   # ---------------------------------------------------------------------------
-  # protoback — reproto in Rust, under way (spec 0424). Not published, and
-  # not in nixpkgs: the differential harness's candidate (spec 0428 S10). Its
+  # protoback — reproto in Rust, on upb (spec 0424). Not published on
+  # crates.io, and not in nixpkgs; exported as `protoback` for downstream
+  # builds, and the differential harness's candidate (spec 0428 S10). Its
   # completion and man pages come from the binary itself, as protoscan's
   # (spec 0433 S7).
   # ---------------------------------------------------------------------------
   protoback = pkgs.runCommand "protoback-${workspaceVersion}" {
     nativeBuildInputs = [ pkgs.installShellFiles ];
     meta = metaCommon // {
-      description = "reproto in Rust, on upb (under way)";
+      description = "reproto in Rust, on upb";
       mainProgram = "protoback";
     };
   } (''
