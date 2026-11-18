@@ -773,7 +773,8 @@ def run(work: Path, reference: list[str], candidate: list[str], jobs: int,
 # not Click's. Each option the reference shows must appear in the
 # candidate's help with its text; the candidate shows no option of its own
 # but these.
-HELP_OWN = {"--help", "--version", "--jobs", "--fdp-plugin-cmd"}
+HELP_OWN = {"--help", "--version", "--jobs", "--fdp-plugin-cmd",
+            "--move"}  # spec 0445, protoback only
 # Click's built-ins, which clap words otherwise.
 HELP_BUILTIN = {"--help", "--version"}
 

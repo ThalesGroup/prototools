@@ -44,7 +44,8 @@ pub fn run(r: &mut Run, topo: &mut Topology) {
             return;
         }
     }
-    for qf in qual_files {
+    for mut qf in qual_files {
+        qf.imports = r.moves.rewrite_names(qf.imports);
         let i = topo.load(qf);
         topo.files[i].is_seed = true;
     }
@@ -63,7 +64,9 @@ pub fn run(r: &mut Run, topo: &mut Topology) {
                 return;
             }
             if qfiles.len() == 1 {
-                topo.load(qfiles.remove(0));
+                let mut qf = qfiles.remove(0);
+                qf.imports = r.moves.rewrite_names(qf.imports);
+                topo.load(qf);
                 if r.debug {
                     ctx.events.info(&format!("  Loading: {name}"));
                 }
@@ -81,7 +84,9 @@ pub fn run(r: &mut Run, topo: &mut Topology) {
             return;
         }
         if let Some(qf) = &qf {
-            topo.load(qf.clone());
+            let mut qf = qf.clone();
+            qf.imports = r.moves.rewrite_names(qf.imports);
+            topo.load(qf);
             if !r.quiet {
                 r.events
                     .attention(&format!("Using embedded fallback: {proto}"));
@@ -93,6 +98,11 @@ pub fn run(r: &mut Run, topo: &mut Topology) {
         }
     }
     read_text_files(r, topo);
+    // Spec 0445 S7: W25 for an idle move, W26 for a target not loaded.
+    r.moves.check_loaded(
+        |name| topo.find(name).is_some_and(|i| !topo.files[i].is_ref()),
+        &mut r.events,
+    );
 }
 
 /// The variant's `.pb` for `proto_name`, its first file re-serialized.
@@ -186,7 +196,7 @@ fn read_text_files(r: &mut Run, topo: &mut Topology) {
                 let qf = topo.files[i].qfile.as_mut().expect("loaded");
                 qf.text = None;
                 if let Some((_, imports)) = name_and_imports(answer.as_deref().unwrap_or(&bytes)) {
-                    qf.imports = imports;
+                    qf.imports = r.moves.rewrite_names(imports);
                 }
                 qf.contents = bytes;
             }

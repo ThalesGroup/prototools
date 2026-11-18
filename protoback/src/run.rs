@@ -54,4 +54,6 @@ pub struct Run {
     pub schema_db_extra_nodes: Vec<usize>,
     /// `--fdp-plugin` or `--fdp-plugin-cmd`, running (spec 0431).
     pub plugin: Option<crate::plugin::Plugin>,
+    /// The `move:` fixups, and what they did (spec 0445).
+    pub moves: crate::moves::Moves,
 }

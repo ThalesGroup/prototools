@@ -69,6 +69,18 @@ pub const CODES: &[(&str, &str)] = &[
         "an import of a pruned file stripped from its importer",
     ),
     (
+        "W24",
+        "a definition lost to a move: no file its importer sees defines it",
+    ),
+    (
+        "W25",
+        "a move that is idle: nothing imports its file, no input holds it",
+    ),
+    (
+        "W26",
+        "a move that is wrong, not applied (or a target the input lacks)",
+    ),
+    (
         "T1",
         "text: a field by number declared nowhere, read as length-delimited",
     ),
@@ -319,6 +331,12 @@ impl Events {
         if repeated {
             console::info("Run with --detailed-warnings to see all warning occurrences.");
         }
+    }
+
+    /// How many warnings of `code` were given.
+    #[cfg(test)]
+    pub fn count_of(&self, code: &str) -> usize {
+        self.counts.get(code).copied().unwrap_or(0)
     }
 
     /// The `--fail-on` codes that occurred, `T4 (3 occurrences), W5 (1

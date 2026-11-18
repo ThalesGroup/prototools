@@ -89,6 +89,9 @@ by spec 0427) is ignored silently, so a stale variant looks meaningful.
   | W21 | a scoring-graph entry that cannot be built (was W6) |
   | W22 | an option field the options type does not declare: an orphan (G5) |
   | W23 | an import of a pruned file stripped from its importer (was W3, 2026-11-18) |
+  | W24 | a definition lost to a move: no file its importer sees defines it (spec 0445; protoback only) |
+  | W25 | a move that is idle: nothing imports its file, no input holds it (spec 0445; protoback only) |
+  | W26 | a move that is wrong, not applied, or a target the input lacks (spec 0445; protoback only) |
   | T1 | text: a field by number declared nowhere, read as length-delimited (was W1) |
   | T2 | text: a string protoc printed as a message, rebuilt (was W2) |
   | T3 | text: an `[extension]` declared nowhere, skipped (was W3) |

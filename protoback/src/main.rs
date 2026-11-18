@@ -21,6 +21,7 @@ mod hash;
 mod instantiate;
 mod load;
 mod man;
+mod moves;
 mod pathmatch;
 mod phase1;
 mod phase2;
@@ -97,8 +98,19 @@ fn partition(values: &[String]) -> Result<(Vec<String>, Vec<String>), String> {
     Ok((fqdns, paths))
 }
 
-/// reproto's `filter_config.load`: the seed and prune lists of the file.
-fn filter_config(path: &Path) -> Result<(Vec<String>, Vec<String>), String> {
+/// A `-C` file's lists: reproto's `filter_config.load` (`seed:`,
+/// `prune:`), and protoback's `move:` and `variants:` (spec 0445 S1, S2).
+#[derive(Default)]
+struct FilterConfig {
+    seeds: Vec<String>,
+    prunes: Vec<String>,
+    moves: Vec<moves::Move>,
+    /// `variants:` sections naming no variant in use: W26.
+    unmatched_variants: Vec<String>,
+}
+
+/// The `-C` file, its `variants:` section for `variant` appended.
+fn filter_config(path: &Path, variant: &str) -> Result<FilterConfig, String> {
     let p = path.display();
     let text = std::fs::read_to_string(path).map_err(|e| format!("{p}: {e}"))?;
     let raw: serde_yaml::Value =
@@ -108,31 +120,103 @@ fn filter_config(path: &Path) -> Result<(Vec<String>, Vec<String>), String> {
         serde_yaml::Value::Mapping(m) => m,
         _ => return Err(format!("{p}: filter-config must be a YAML mapping")),
     };
+    let mut config = FilterConfig::default();
+    lists(
+        &map,
+        &format!("{p}"),
+        &["seed", "prune", "move", "variants"],
+        &mut config,
+    )?;
+    match map.get("variants") {
+        None | Some(serde_yaml::Value::Null) => {}
+        Some(serde_yaml::Value::Mapping(sections)) => {
+            for (name, section) in sections {
+                let Some(name) = name.as_str() else {
+                    return Err(format!("{p}: 'variants' keys must be variant names"));
+                };
+                let section = match section {
+                    serde_yaml::Value::Null => serde_yaml::Mapping::new(),
+                    serde_yaml::Value::Mapping(m) => m.clone(),
+                    _ => return Err(format!("{p}: 'variants: {name}' must be a mapping")),
+                };
+                let mut own = FilterConfig::default();
+                let at = format!("{p}: variants: {name}");
+                lists(&section, &at, &["seed", "prune", "move"], &mut own)?;
+                if name == variant {
+                    config.seeds.extend(own.seeds);
+                    config.prunes.extend(own.prunes);
+                    config.moves.extend(own.moves);
+                } else {
+                    config.unmatched_variants.push(name.to_string());
+                }
+            }
+        }
+        Some(_) => return Err(format!("{p}: 'variants' must be a mapping")),
+    }
+    Ok(config)
+}
+
+/// One mapping's `seed:`, `prune:` and `move:` into `out`, any key not in
+/// `allowed` refused.
+fn lists(
+    map: &serde_yaml::Mapping,
+    at: &str,
+    allowed: &[&str],
+    out: &mut FilterConfig,
+) -> Result<(), String> {
     let mut unknown: Vec<String> = map
         .keys()
         .filter_map(|k| k.as_str())
-        .filter(|k| *k != "seed" && *k != "prune")
+        .filter(|k| !allowed.contains(k))
         .map(str::to_string)
         .collect();
     if !unknown.is_empty() {
         unknown.sort();
         return Err(format!(
-            "{p}: unknown filter-config key(s): {}",
+            "{at}: unknown filter-config key(s): {}",
             unknown.join(", ")
         ));
     }
-    let list = |key: &str| -> Result<Vec<String>, String> {
+    let strings = |key: &str| -> Result<Vec<String>, String> {
         match map.get(key) {
             None | Some(serde_yaml::Value::Null) => Ok(Vec::new()),
             Some(serde_yaml::Value::Sequence(s)) => s
                 .iter()
                 .map(|v| v.as_str().map(str::to_string).ok_or(()))
                 .collect::<Result<_, _>>()
-                .map_err(|()| format!("{p}: '{key}' must be a list of strings")),
-            Some(_) => Err(format!("{p}: '{key}' must be a list of strings")),
+                .map_err(|()| format!("{at}: '{key}' must be a list of strings")),
+            Some(_) => Err(format!("{at}: '{key}' must be a list of strings")),
         }
     };
-    Ok((list("seed")?, list("prune")?))
+    out.seeds.extend(strings("seed")?);
+    out.prunes.extend(strings("prune")?);
+    let bad = || format!("{at}: 'move' must be a list of OLD: TARGET or OLD: [TARGET, ...]");
+    match map.get("move") {
+        None | Some(serde_yaml::Value::Null) => {}
+        Some(serde_yaml::Value::Sequence(entries)) => {
+            for entry in entries {
+                let serde_yaml::Value::Mapping(m) = entry else {
+                    return Err(bad());
+                };
+                let mut it = m.iter();
+                let (Some((old, target)), None) = (it.next(), it.next()) else {
+                    return Err(bad());
+                };
+                let old = old.as_str().ok_or_else(bad)?.to_string();
+                let targets: Vec<String> = match target {
+                    serde_yaml::Value::String(t) => vec![t.clone()],
+                    serde_yaml::Value::Sequence(ts) if !ts.is_empty() => ts
+                        .iter()
+                        .map(|t| t.as_str().map(str::to_string).ok_or_else(bad))
+                        .collect::<Result<_, _>>()?,
+                    _ => return Err(bad()),
+                };
+                out.moves.push(moves::Move { old, targets });
+            }
+        }
+        Some(_) => return Err(bad()),
+    }
+    Ok(())
 }
 
 /// The fallbacks `--use-variant` asks for, in reproto's order.
@@ -290,15 +374,23 @@ fn main() -> ExitCode {
             Err(e) => return usage(&e),
         }
     }
-    let (mut config_seeds, mut config_prunes) = (Vec::new(), Vec::new());
+    let mut config = FilterConfig::default();
     if let Some(path) = &cli.filter_config {
-        match filter_config(path) {
-            Ok((s, p)) => (config_seeds, config_prunes) = (s, p),
+        match filter_config(path, &variant.name) {
+            Ok(c) => config = c,
             Err(e) => return usage(&e),
         }
     }
-    let all_seeds: Vec<String> = cli.seeds.iter().cloned().chain(config_seeds).collect();
-    let all_stumps: Vec<String> = cli.stumps.iter().cloned().chain(config_prunes).collect();
+    let mut all_moves = Vec::new();
+    for value in &cli.moves {
+        match moves::parse_cli(value) {
+            Ok(m) => all_moves.push(m),
+            Err(e) => return usage(&e),
+        }
+    }
+    all_moves.extend(config.moves);
+    let all_seeds: Vec<String> = cli.seeds.iter().cloned().chain(config.seeds).collect();
+    let all_stumps: Vec<String> = cli.stumps.iter().cloned().chain(config.prunes).collect();
     let ((seed_fqdns, seed_paths), (prune_fqdns, prune_paths)) =
         match (partition(&all_seeds), partition(&all_stumps)) {
             (Ok(s), Ok(p)) => (s, p),
@@ -357,6 +449,19 @@ fn main() -> ExitCode {
         .build_global();
 
     let fallback = fallback_protos(&cli.use_variant, &variant);
+    // Spec 0445: the moves, each wrong one left out with W26; a variants:
+    // section for no variant in use, W26 too.
+    for name in &config.unmatched_variants {
+        events.warn(
+            "W26",
+            &format!(
+                "variants: '{name}' matches no variant (the variant in use is '{}'); \
+                 its section not applied",
+                variant.name
+            ),
+        );
+    }
+    let moves = moves::Moves::new(all_moves, &prune_fqdns, &mut events);
     let mut run = Run {
         roots,
         pb_files,
@@ -383,6 +488,7 @@ fn main() -> ExitCode {
         seed_nodes: BTreeSet::new(),
         schema_db_extra_nodes: Vec::new(),
         plugin,
+        moves,
     };
     // The graph dump's record starts with the run, as reproto's recorder.
     run.events.record();

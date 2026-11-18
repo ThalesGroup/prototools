@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0445 — filter fixups: `move:`
 
-Status: draft
+Status: implemented
+Implemented in: 2026-11-18
 App: protoback (not reproto: N3)
 Refs: docs/specs/0149-reproto-filter-config-file.md (the `-C` file this
         extends, and its strict loader); docs/specs/0438-warning-codes-and-fail-on.md
@@ -109,8 +110,9 @@ whichever direction it is told.
 - **S2.** `variants: NAME:` holds `seed:`, `prune:` and `move:`, applying
   only when the variant in use has that `name:`, appended to the
   top-level lists.
-- **S3.** `--move OLD=TARGET[,TARGET…]` on the command line, appended to
-  the file's, as `-s`/`-p` are today.
+- **S3.** `--move OLD=TARGET[,TARGET…]` on the command line, repeatable,
+  before the file's, as `-s`/`-p` are merged today (which decides which
+  of an `OLD` given twice applies, S7).
 
 ### The rewrite
 
@@ -121,6 +123,8 @@ whichever direction it is told.
     order, an entry this duplicates removed;
   - `public_dependency` and `weak_dependency` renumbered: a public import
     of `OLD` gives public imports of the targets, a weak one weak ones;
+  - `option_dependency` (an edition 2024 `import option`) rewritten
+    alike;
   - a target is loaded only because something now imports it.
 - **S5.** `OLD` is pruned, as `file:OLD` is, however it is reached
   (through an import, or by a directory walk).
@@ -133,9 +137,12 @@ whichever direction it is told.
   pass on through `import public`, followed. Uses checked:
   - types: a field's `type_name`, an extension's `extendee`, a method's
     `input_type` and `output_type`;
-  - option extensions: each extension field set in an options message of
-    the importer (file, message, field, enum, value, service, method,
-    oneof, extension range), by its number on that options type.
+  - option extensions: each field set in an options message of the
+    importer (file, message, field, enum, value, service, method, oneof,
+    extension range) whose number is no field of that options type in the
+    variant's descriptor.proto, and which no visible file declares. The
+    file that declared it is `OLD`, pruned, so the set of declarations
+    cannot say; the options type's own fields can.
 
   W24 names the importer, the definition (a type's full name, or an
   option's options type and number), and the move. It does not name the
@@ -149,12 +156,16 @@ whichever direction it is told.
     directive did something.
   - **W26, broken:** a directive that is wrong, to be fixed, and what
     `--fail-on` is for. The directive is not applied:
-    - a target the input lacks;
     - a target that is itself moved (a chain, `A: B` with `B: C`) or in a
       cycle: neither resolved;
     - a target a `prune:` pattern matches;
     - an `OLD` given twice;
-    - a variant section matching no variant (most likely a typo).
+    - a variant section matching no variant (most likely a typo);
+    - a target the input lacks: known only once phase 1 has loaded the
+      input, after the imports were rewritten. Here the directive stays
+      applied, W26 saying the target is missing (the importers then also
+      get W1 and W5 for it): undoing a load is not worth it for a
+      directive that is wrong anyway.
 
 ## Alternatives considered
 
@@ -182,4 +193,11 @@ whichever direction it is told.
 
 ## Measured outcome
 
-(At implementation.)
+`protoback/src/moves.rs`; tests in `protoback/tests/moves.rs` (12, one
+per item of the test plan, `broken_move_is_w26` covering S7's cases but
+the missing target, which `a_missing_target_is_w26` covers) and in the
+module (6: the rewrite of public and weak imports, the static W26 checks,
+`option_numbers` at each level, `--move`'s value). No change without a
+move: harness against reproto, 1,668 cases and 1,654 graph dumps
+identical; `--move` listed among protoback's own options
+(`scripts/protoback-harness`, `HELP_OWN`).

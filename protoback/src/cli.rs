@@ -188,6 +188,14 @@ pub struct Cli {
         value_name = "FILE"
     )]
     pub filter_config: Option<PathBuf>,
+    #[arg(
+        long = "move",
+        action = ArgAction::Append,
+        help = "A file moved to one or several others (spec 0445): every import of OLD becomes imports of the TARGETs, and OLD is pruned. Repeatable; also a -C file's move: list (OLD: TARGET or OLD: [TARGET, ...]), and its variants: NAME: sections (seed:, prune:, move: for the variant of that name only).",
+        help_heading = "Filtering",
+        value_name = "OLD=TARGET[,TARGET...]"
+    )]
+    pub moves: Vec<String>,
 
     #[arg(
         long = "force-proto2-output",

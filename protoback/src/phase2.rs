@@ -169,9 +169,11 @@ fn merge(r: &mut Run, topo: &mut Topology, i: usize, ready: Option<Prepared>) {
         return;
     };
     let name = topo.files[i].name.clone();
-    if r.prunings
-        .iter()
-        .any(|p| fqdn_match(p, &format!("file:{name}")))
+    // A moved file is pruned, however it was reached (spec 0445 S5).
+    if r.moves.is_old(&name)
+        || r.prunings
+            .iter()
+            .any(|p| fqdn_match(p, &format!("file:{name}")))
     {
         topo.files[i].is_pruned = true;
         r.pruned_file_names.insert(name);
@@ -198,12 +200,19 @@ fn merge(r: &mut Run, topo: &mut Topology, i: usize, ready: Option<Prepared>) {
             fdp = patched;
         }
     }
+    // Spec 0445 S4: the imports of moved files, re-pointed.
+    r.moves.rewrite_fdp(&mut fdp);
     patch_go_package(r, &mut fdp);
     strip_self_dependency(r, &mut fdp);
     if !r.keep_duplicates && prune_if_duplicate(r, topo, i, &fdp, symbols) {
         return;
     }
     strip_unresolvable_dependencies(r, topo, i, &mut fdp);
+    // Spec 0445 S6: what a re-pointed importer lost, before its fields of
+    // types that do not resolve are stripped.
+    let descriptor = r.variant.descriptor_proto.clone();
+    r.moves
+        .check_importer(&fdp, &r.db, &descriptor, &mut r.events);
     strip_unresolvable_field_types(r, topo, i, &mut fdp);
     r.db.add(fdp);
 }
