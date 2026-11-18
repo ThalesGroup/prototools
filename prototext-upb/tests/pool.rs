@@ -604,3 +604,40 @@ fn the_generation_counts_added_files_and_ids_follow_definitions() {
     assert_ne!(a.id(), other.id());
     assert_eq!(a.pool_generation(), pool.generation());
 }
+
+// ── A refused file's extensions (vendor/patches/0001) ───────────────────────
+
+/// `tests/fixtures/ext/*.proto`, each compiled alone: three files extending
+/// `base.Config`, `second` and `third` reusing numbers `first` holds.
+fn ext_fixture(name: &str) -> &'static [u8] {
+    match name {
+        "base" => include_bytes!("fixtures/ext/base.pb"),
+        "first" => include_bytes!("fixtures/ext/first.pb"),
+        "second" => include_bytes!("fixtures/ext/second.pb"),
+        "third" => include_bytes!("fixtures/ext/third.pb"),
+        _ => unreachable!(),
+    }
+}
+
+/// upb leaves a refused file's extensions in its address-keyed table while
+/// freeing them; `third`, allocated where `second` was, then tripped an
+/// assertion in `insert` (an abort), or with NDEBUG left entries into freed
+/// memory. The vendored patch removes them with the file: the files that
+/// reuse a number are refused, and only `first`'s extensions remain.
+#[test]
+fn a_refused_file_leaves_no_extension_behind() {
+    let pool = Pool::new();
+    for name in ["base", "first", "second", "third"] {
+        let report = pool.load_set(ext_fixture(name));
+        let refused = !report.skipped.is_empty();
+        assert_eq!(
+            refused,
+            name == "second" || name == "third",
+            "{name}: {:?}",
+            report.skipped
+        );
+    }
+    let config = pool.get_message_by_name("base.Config").unwrap();
+    let numbers: Vec<u32> = config.all_extensions().iter().map(|f| f.number()).collect();
+    assert_eq!(numbers, [1012, 1016, 1022, 1038]);
+}

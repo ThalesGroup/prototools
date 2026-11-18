@@ -22,13 +22,15 @@ path = [
 SPDX-FileCopyrightText = "cargo-hakari contributors"
 SPDX-License-Identifier = "MIT OR Apache-2.0"
 
-# upb, Google's C protobuf runtime, vendored unmodified from protobuf v36.2
-# (prototext-upb/vendor/VERSION; spec 0415 S1), with that release's
-# descriptor.proto and protoc's compilation of it (spec 0424 S6).
+# upb, Google's C protobuf runtime, vendored from protobuf v36.2
+# (prototext-upb/vendor/VERSION; spec 0415 S1), unmodified but for the
+# upstream fixes in vendor/patches, with that release's descriptor.proto
+# and protoc's compilation of it (spec 0424 S6).
 [[annotations]]
 path = [
   "prototext-upb/vendor/LICENSE",
   "prototext-upb/vendor/upb/**",
+  "prototext-upb/vendor/patches/**",
   "prototext-upb/vendor/descriptor.proto",
   "prototext-upb/vendor/descriptor.pb",
 ]

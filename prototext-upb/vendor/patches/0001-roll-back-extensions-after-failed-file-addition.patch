@@ -1,0 +1,31 @@
+upb: roll back a file's extensions when adding it fails.
+
+Upstream protobuf 9c66da89 (PR 29097, issue 28900), merged 2026-08-12,
+first released in 37.0; v36.2 lacks it. Without it, a refused file's
+extensions stay in the pool's address-keyed table after its arena is
+freed: a later file allocated at the same address trips an assertion
+in insert, or with NDEBUG leaves an entry into freed memory.
+
+Delete this patch when vendoring 37.0 or later: update-upb stops if it
+no longer applies.
+
+diff --git upb/upb.c upb/upb.c
+--- upb/upb.c
++++ upb/upb.c
+@@ -8987,6 +8987,16 @@ const upb_FileDef* upb_DefPool_FindFileContainingSymbol(const upb_DefPool* s,
+ }
+ 
+ static void remove_filedef(upb_DefPool* s, upb_FileDef* file) {
++  intptr_t ext_iter = UPB_INTTABLE_BEGIN;
++  uintptr_t ext_key;
++  upb_value ext_val;
++  while (upb_inttable_next(&s->exts, &ext_key, &ext_val, &ext_iter)) {
++    const upb_FieldDef* ext = upb_value_getconstptr(ext_val);
++    if (upb_FieldDef_File(ext) == file) {
++      upb_inttable_removeiter(&s->exts, &ext_iter);
++    }
++  }
++
+   intptr_t iter = UPB_INTTABLE_BEGIN;
+   upb_StringView key;
+   upb_value val;

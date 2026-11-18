@@ -19,7 +19,9 @@
 #
 # Writes vendor/upb/upb.{c,h}, vendor/utf8_range/*, vendor/LICENSE,
 # vendor/descriptor.proto, vendor/descriptor.pb and vendor/VERSION (the
-# SHA-256 of each and where it came from), then regenerates
+# SHA-256 of each and where it came from), applies vendor/patches/*.patch
+# (fixes from upstream not yet in a release we vendor; one that no longer
+# applies is already in the release: delete it), then regenerates
 # prototext-upb/src/descriptor_access.rs from descriptor.pb. Run on the
 # version already vendored, it changes nothing: a check of the vendored
 # files.
@@ -63,6 +65,16 @@ for entry in "${files[@]}"; do
     cp "$src/$from" "$vendor/$to"
 done
 cp "$work/descriptor.proto" "$vendor/descriptor.proto"
+patches=()
+for p in "$vendor"/patches/*.patch; do
+    [[ -e $p ]] || continue
+    if ! patch -s -p0 --forward --dry-run -d "$vendor" < "$p" >/dev/null; then
+        echo "update-upb: $p no longer applies; if $tag has it, delete it" >&2
+        exit 1
+    fi
+    patch -s -p0 --forward -d "$vendor" < "$p"
+    patches+=("patches/$(basename "$p")")
+done
 # Under the name it has everywhere, google/protobuf/descriptor.proto, and
 # with its comments (--include_source_info): the generated accessors are
 # documented from them.
@@ -78,6 +90,9 @@ cp "$work/descriptor.proto" "$work/include/google/protobuf/descriptor.proto"
     for entry in "${files[@]}"; do
         read -r to from <<< "$entry"
         echo "$(cd "$vendor" && sha256sum "$to" | cut -d' ' -f1)  $to  <- $from"
+    done
+    for p in "${patches[@]}"; do
+        echo "$(cd "$vendor" && sha256sum "$p" | cut -d' ' -f1)  $p  (applied)"
     done
     echo "$(cd "$vendor" && sha256sum descriptor.proto | cut -d' ' -f1)  descriptor.proto  <- protobuf $tag src/google/protobuf/descriptor.proto"
     echo "$(cd "$vendor" && sha256sum descriptor.pb | cut -d' ' -f1)  descriptor.pb  <- protoc ${tag#v} --include_source_info descriptor.proto"

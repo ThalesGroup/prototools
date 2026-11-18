@@ -1,0 +1,15 @@
+// SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+//
+// SPDX-License-Identifier: MIT
+
+syntax = "proto2";
+package third;
+import "base.proto";
+extend base.Config {
+  optional int32 e1037 = 1037;
+  optional int32 e1003 = 1003;
+  optional int32 e1036 = 1036;
+  optional int32 e1025 = 1025;
+  optional int32 e1038 = 1038;
+  optional int32 e1014 = 1014;
+}
