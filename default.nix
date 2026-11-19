@@ -121,6 +121,9 @@ let
         ./reproto/src/reproto/variants/google-protobuf.yaml
         (pkgs.lib.fileset.fileFilter (f: f.hasExt "pb")
           ./reproto/src/reproto/variants/google-protobuf)
+        # reproto's built-in profiles, which protoback embeds (spec 0447 S6).
+        (pkgs.lib.fileset.fileFilter (f: f.hasExt "yaml")
+          ./reproto/src/reproto/profiles)
         # pyvis's page, which protoback embeds to write reproto's
         # --scoring-html-out byte for byte (spec 0430 S8).
         ./protoback/src/scoring/html
