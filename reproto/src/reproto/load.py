@@ -98,6 +98,14 @@ class PathPatterns:
         )
 
 
+def fdp_imports(fdp: FileDescriptorProto) -> list[str]:
+    """The files `fdp` needs loaded: its imports, then its `import option`s
+    (edition 2024), each once."""
+    out = list(fdp.dependency)
+    out.extend(d for d in fdp.option_dependency if d not in out)
+    return out
+
+
 class QualFile:
     def __init__(
             self,
@@ -147,7 +155,7 @@ class QualFile:
         from its descriptor."""
         if self._imports is not None:
             return self._imports
-        return list(self.desc.dependency)
+        return fdp_imports(self.desc)
 
     @imports.setter
     def imports(self, v: list[str]) -> None:

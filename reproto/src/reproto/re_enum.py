@@ -236,7 +236,8 @@ class ReEnumDescriptorProto(NodeBase[EnumDescriptorProto]):
         out.append_div_maybe(depth)
 
         # --- Enum intro ------------------------------------------------------
-        out.insert(0, BlockLine(f'enum {self.name} {{', depth))
+        from .syntax import visibility_prefix
+        out.insert(0, BlockLine(f'{visibility_prefix(ctx, self.this)}enum {self.name} {{', depth))
 
         # --- Binary output side-channel (spec 0076) --------------------------
         if outer_slot is not None:
@@ -247,6 +248,8 @@ class ReEnumDescriptorProto(NodeBase[EnumDescriptorProto]):
             from .context import DescOut
             enum_out = _EDP()
             enum_out.CopyFrom(self.this)
+            if ctx.target_syntax != "editions":
+                enum_out.ClearField('visibility')
             if enum_out.HasField('options') and ctx.target_syntax != "editions":
                 enum_out.options.ClearField('features')
             enum_out.ClearField('value')

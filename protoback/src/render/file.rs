@@ -151,6 +151,21 @@ impl Ctx<'_, '_> {
 /// editions file written as editions only: `option features.x = V;`
 /// standalone, `features.x = V,` inline; the six runtime features, in
 /// that order, their values named by the edition defaults' tables.
+/// reproto's `visibility_prefix`: `local ` or `export ` before a message or
+/// an enum whose visibility (edition 2024) is set, whatever the file's
+/// default, so that it roundtrips; nothing in a file written as proto2 or
+/// proto3, which has no visibility.
+pub fn visibility_prefix(ctx: &Ctx<'_, '_>, set: bool, visibility: i32) -> &'static str {
+    // descriptor.proto's SymbolVisibility.
+    const LOCAL: i32 = 1;
+    const EXPORT: i32 = 2;
+    match (ctx.editions_target() && set, visibility) {
+        (true, LOCAL) => "local ",
+        (true, EXPORT) => "export ",
+        _ => "",
+    }
+}
+
 pub fn features_block(
     ctx: &Ctx<'_, '_>,
     fs: Option<prototext_upb::descriptor_access::FeatureSet<'_>>,
@@ -163,6 +178,18 @@ pub fn features_block(
         return out;
     };
     if !ctx.editions_target() {
+        return out;
+    }
+    // Present but empty: written so, that it roundtrips (`features = {}`).
+    if fs.0.encode().is_ok_and(|b| b.is_empty()) {
+        out.push(Line::code(
+            if inline {
+                "features = {},"
+            } else {
+                "option features = {};"
+            },
+            depth,
+        ));
         return out;
     }
     let set: [(&str, Option<i32>); 6] = [
@@ -608,6 +635,41 @@ fn render_body(
         };
         out.push(Line::new(format!("{cmd} {dep_name};"), depth, kind));
     }
+    // Edition 2024's `import option`s, after the ordinary imports, as
+    // protoc prints them; a plain import in a file written as proto2.
+    let imported: Vec<&[u8]> = f.dependency();
+    for d in f.option_dependency() {
+        if imported.contains(&d) {
+            continue;
+        }
+        let d = text(d);
+        let cmd = if ctx.editions_target() {
+            "import option"
+        } else {
+            "import"
+        };
+        let Some(dep) = shared.graph.find(&format!("file:{d}")) else {
+            out.push(Line::orphan(format!("{cmd} file:{d};"), depth));
+            continue;
+        };
+        let node = &shared.graph.nodes[dep];
+        let kind = if node.is_reachable || node.is_summoned {
+            LineType::Code
+        } else {
+            LineType::Orphan
+        };
+        let dep_name = if node.is_summoned && node.present {
+            let dep_file = node.fqdn.strip_prefix("file:").unwrap_or_default();
+            json_dumps(
+                &shared
+                    .variant
+                    .canonize_dependency(dep_file, shared.keep_variant_descriptor),
+            )
+        } else {
+            node.fqdn.clone()
+        };
+        out.push(Line::new(format!("{cmd} {dep_name};"), depth, kind));
+    }
     let topo_file = shared.topo_file(&name);
     if let Some(tf) = topo_file {
         for dep in &tf.stripped_dependencies {
@@ -673,7 +735,14 @@ fn render_body(
         let mut lines = super::message::message(ctx, msg, depth, false, path.as_deref());
         lines.insert(
             0,
-            Line::code(format!("message {} {{", text(m.name())), depth),
+            Line::code(
+                format!(
+                    "{}message {} {{",
+                    visibility_prefix(ctx, m.has_visibility(), m.visibility()),
+                    text(m.name())
+                ),
+                depth,
+            ),
         );
         super::message::collapse_empty(&mut lines);
         if let (Some(sci), Some(path)) = (&ctx.sci, path) {

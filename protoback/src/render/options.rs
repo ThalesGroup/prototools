@@ -306,13 +306,9 @@ impl Scope<'_> {
 
 /// `canonize_opt_name` for a built-in option: its short name, `None` for
 /// `features` and `feature_support` (rendered elsewhere, or not at all);
-/// an orphan when the variant lists it. The pattern covers eight options
-/// messages, not `OneofOptions`: a oneof's options keep their full name.
+/// an orphan when the variant lists it. The nine options messages,
+/// `OneofOptions` included.
 fn builtin_name(variant: &Variant, kind: Options, field: &Field) -> Option<(String, bool)> {
-    if kind == Options::Oneof {
-        let full = field.full_name();
-        return Some((format!(".{full}"), false));
-    }
     let short = field.name().to_string();
     if short == "features" || short == "feature_support" {
         return None;

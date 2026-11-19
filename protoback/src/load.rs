@@ -82,11 +82,19 @@ pub fn name_and_imports(bytes: &[u8]) -> Option<(String, Vec<String>)> {
     let m = decode_fdp(bytes)?;
     let f = FileDescriptorProto(m.as_ref());
     let name = String::from_utf8_lossy(f.name()).into_owned();
-    let imports = f
+    // Its imports, then its `import option`s (edition 2024), each once:
+    // reproto's `fdp_imports`.
+    let mut imports: Vec<String> = f
         .dependency()
         .iter()
         .map(|d| String::from_utf8_lossy(d).into_owned())
         .collect();
+    for d in f.option_dependency() {
+        let d = String::from_utf8_lossy(d).into_owned();
+        if !imports.contains(&d) {
+            imports.push(d);
+        }
+    }
     Some((name, imports))
 }
 

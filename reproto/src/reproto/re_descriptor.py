@@ -646,7 +646,9 @@ class ReDescriptorProto(SourceCodeInfoMixin, NodeBase[DescriptorProto]):
             if ctx.out_sci is not None and nested.is_summoned and sci_path is not None:
                 nested_sci_path = sci_path + [3, n_idx]
             text, inp = nested.render(ctx, depth+1, sci_path=nested_sci_path)
-            text.insert(0, BlockLine(f'message {nested.name} {{', depth+1))
+            from .syntax import visibility_prefix
+            text.insert(0, BlockLine(
+                f'{visibility_prefix(ctx, nested.this)}message {nested.name} {{', depth+1))
             if text[1].text == '}':  # body is empty: collapse to one line
                 text[0].postpend('}')
                 text.pop(1)
@@ -703,6 +705,8 @@ class ReDescriptorProto(SourceCodeInfoMixin, NodeBase[DescriptorProto]):
             from .re_field import ReFieldDescriptorProto as _ReField
             msg_out = _DP()
             msg_out.CopyFrom(self.this)
+            if ctx.target_syntax != "editions":
+                msg_out.ClearField('visibility')
             # options.features: clear if not editions target
             if msg_out.HasField('options') and ctx.target_syntax != "editions":
                 msg_out.options.ClearField('features')

@@ -133,7 +133,7 @@ def builtin_option_pattern(package: str) -> re._Regexp:
     """
     return re.compile(
         rf'^(\.?)({re.escape(package)})\.'
-        r'((Enum|EnumValue|ExtensionRange|Field|File|Message|Method|Service)Options\.(.*))$')
+        r'((Enum|EnumValue|ExtensionRange|Field|File|Message|Method|Oneof|Service)Options\.(.*))$')
 
 
 FileOptions_extensions: dict[int, str] = dict()

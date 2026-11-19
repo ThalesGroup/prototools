@@ -677,6 +677,18 @@ fn the_scan_finds_a_files_name_and_imports_only() {
 }
 
 #[test]
+fn the_scan_finds_option_imports_too() {
+    // Edition 2024's `import option`: a file to load, after the imports,
+    // each once.
+    let text = r#"
+        name: "a.proto" dependency: "b.proto"
+        option_dependency: "o.proto" option_dependency: "b.proto"
+    "#;
+    let (_, imports) = scan_imports(text).unwrap();
+    assert_eq!(imports, ["b.proto", "o.proto"]);
+}
+
+#[test]
 fn a_sets_text_splits_into_its_files() {
     let files = split_set(OPTIONS_TEXT).unwrap();
     let names: Vec<String> = files.iter().map(|f| scan_imports(f).unwrap().0).collect();

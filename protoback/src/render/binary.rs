@@ -73,9 +73,24 @@ pub fn file(ctx: &Ctx<'_, '_>, locations: &[Location]) -> Option<Vec<u8>> {
             .iter()
             .map(|d| shared.variant.canonize_dependency(&text(d), keep))
             .collect();
+        // `import option`s: canonized alike; ordinary imports in a file
+        // written as proto2, as the text has them.
+        let option_deps: Vec<String> = f
+            .option_dependency()
+            .iter()
+            .map(|d| shared.variant.canonize_dependency(&text(d), keep))
+            .collect();
         w.clear_dependency();
         for d in &deps {
             w.push_dependency(d.as_bytes()).ok()?;
+        }
+        w.clear_option_dependency();
+        for d in &option_deps {
+            if ctx.editions_target() {
+                w.push_option_dependency(d.as_bytes()).ok()?;
+            } else if !deps.contains(d) {
+                w.push_dependency(d.as_bytes()).ok()?;
+            }
         }
         if !keep {
             // reproto assigns it but under --keep-descriptor-path: an
@@ -180,6 +195,7 @@ fn message(ctx: &Ctx<'_, '_>, msg: usize) -> Option<Vec<u8>> {
     {
         let mut w = DescriptorProtoMut(out.as_mut());
         if !ctx.editions_target() {
+            w.clear_visibility();
             if m.has_options() {
                 w.options_mut().ok()?.clear_features();
             }
@@ -328,6 +344,9 @@ fn enumeration(ctx: &Ctx<'_, '_>, en: usize) -> Option<Vec<u8>> {
     let mut out = copy(ctx, en)?;
     let editions = ctx.editions_target();
     let mut w = EnumDescriptorProtoMut(out.as_mut());
+    if !editions {
+        w.clear_visibility();
+    }
     if e.has_options() && !editions {
         w.options_mut().ok()?.clear_features();
     }

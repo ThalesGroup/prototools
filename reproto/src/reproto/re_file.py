@@ -404,6 +404,21 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
             )
             text = f'{import_cmd} {dep_name};'
             out.append(BlockLine(text, depth, kind))
+        # --- Option imports (edition 2024's `import option`) -----------------
+        # After the ordinary imports, as protoc prints them; a plain import
+        # in a file written as proto2, where `import option` does not exist.
+        for d in self.this.option_dependency:
+            if d in self.dependency:
+                continue
+            dependency = ReFileDescriptorProto.from_ref(ctx, Ref(d))
+            kind = CODE if dependency.is_visible() or dependency.is_summoned else ORPHAN
+            dep_name = (
+                json.dumps(canonize_dependency(ctx, dependency.name))
+                if dependency.is_summoned and dependency.is_present()
+                else dependency.fqdn
+            )
+            import_cmd = 'import option' if ctx.target_syntax == "editions" else 'import'
+            out.append(BlockLine(f'{import_cmd} {dep_name};', depth, kind))
         # --- Stripped unresolvable dependencies (spec 0053) -------------------
         # These imports were removed from the FDP before pool registration
         # because their target was either pruned as a duplicate or absent.
@@ -475,7 +490,9 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
             if ctx.out_sci is not None and message.is_summoned:
                 sci_path = [4, sci_idx]
             lines, inp = message.render(ctx, sci_path=sci_path)
-            lines.insert(0, BlockLine(f'message {message.name} {{', depth))
+            from .syntax import visibility_prefix
+            lines.insert(0, BlockLine(
+                f'{visibility_prefix(ctx, message.this)}message {message.name} {{', depth))
             if lines[1].text == '}':  # body is empty: collapse to one line
                 lines[0].postpend('}')
                 lines.pop(1)
@@ -532,6 +549,15 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
             fdp_out.name = canonize_dependency(ctx, fdp_out.name)
             for i, dep in enumerate(fdp_out.dependency):
                 fdp_out.dependency[i] = canonize_dependency(ctx, dep)
+            # `import option`s: canonized alike; ordinary imports in a file
+            # written as proto2, as the text has them.
+            option_deps = [canonize_dependency(ctx, d) for d in fdp_out.option_dependency]
+            fdp_out.ClearField('option_dependency')
+            if ctx.target_syntax == "editions":
+                fdp_out.option_dependency.extend(option_deps)
+            else:
+                fdp_out.dependency.extend(
+                    d for d in option_deps if d not in fdp_out.dependency)
             # package: canonize via variant namespace rules, so
             # self-referencing type names (rewritten below and in
             # ReFieldDescriptorProto/ReMethodDescriptorProto) stay

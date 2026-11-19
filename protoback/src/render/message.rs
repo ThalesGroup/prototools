@@ -953,7 +953,14 @@ pub fn message(
         let mut lines = message(ctx, nested, depth + 1, false, path.as_deref());
         lines.insert(
             0,
-            Line::code(format!("message {} {{", text(n.name())), depth + 1),
+            Line::code(
+                format!(
+                    "{}message {} {{",
+                    super::file::visibility_prefix(ctx, n.has_visibility(), n.visibility()),
+                    text(n.name())
+                ),
+                depth + 1,
+            ),
         );
         collapse_empty(&mut lines);
         mark(ctx, &mut lines, path);
@@ -1147,7 +1154,17 @@ pub fn enumeration(ctx: &Ctx<'_, '_>, en: usize, depth: usize, sci_path: Option<
     }
     out.push(Line::code("}", depth));
     out.div_maybe(depth);
-    out.insert(0, Line::code(format!("enum {} {{", text(e.name())), depth));
+    out.insert(
+        0,
+        Line::code(
+            format!(
+                "{}enum {} {{",
+                super::file::visibility_prefix(ctx, e.has_visibility(), e.visibility()),
+                text(e.name())
+            ),
+            depth,
+        ),
+    );
     out
 }
 

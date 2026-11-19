@@ -92,6 +92,8 @@ pub struct SymbolTable {
     packages: HashMap<String, String>,
     /// A file's imports, and its public ones.
     imports: HashMap<String, (Vec<String>, Vec<String>)>,
+    /// A file's `import option`s (edition 2024).
+    option_imports: HashMap<String, Vec<String>>,
 }
 
 fn text(b: &[u8]) -> String {
@@ -155,6 +157,8 @@ impl SymbolTable {
             .filter_map(|&i| usize::try_from(i).ok().and_then(|i| deps.get(i)).cloned())
             .collect();
         self.imports.insert(file.clone(), (deps, public));
+        let options: Vec<String> = f.option_dependency().iter().map(|d| text(d)).collect();
+        self.option_imports.insert(file.clone(), options);
         for m in f.message_type() {
             self.add_message(&package, &m, &file, renaming);
         }
@@ -221,6 +225,9 @@ impl SymbolTable {
     pub fn closure(&self, file: &str) -> HashSet<String> {
         let mut files = HashSet::default();
         let mut todo = vec![file.to_string()];
+        // The file's own `import option`s supply its options too; theirs
+        // do not reach it (protoc's rule; reproto's `_closure`).
+        todo.extend(self.option_imports.get(file).into_iter().flatten().cloned());
         while let Some(f) = todo.pop() {
             if let Some((deps, _)) = self.imports.get(&f) {
                 if files.insert(f) {

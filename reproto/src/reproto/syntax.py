@@ -14,7 +14,7 @@ fdp_syntax() is the one exception: it is called before ctx.syntax is set
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from google.protobuf.descriptor_pb2 import FieldDescriptorProto, FileDescriptorProto
 
@@ -267,6 +267,21 @@ def _edition_name(edition: 'Edition.ValueType') -> str:
     return name
 
 
+def visibility_prefix(ctx: Context, proto: Any) -> str:
+    """`local ` or `export ` before a message or an enum whose visibility
+    (edition 2024) is set, whatever the file's default, so that it
+    roundtrips; nothing in a file written as proto2 or proto3, which has no
+    visibility."""
+    from google.protobuf.descriptor_pb2 import SymbolVisibility
+    if ctx.target_syntax != "editions" or not proto.HasField('visibility'):
+        return ''
+    if proto.visibility == SymbolVisibility.VISIBILITY_LOCAL:
+        return 'local '
+    if proto.visibility == SymbolVisibility.VISIBILITY_EXPORT:
+        return 'export '
+    return ''
+
+
 def allow_weak_import(ctx: Context) -> bool:
     """Return True iff import weak is legal in the target syntax."""
     return ctx.target_syntax in ("proto2", "editions")
@@ -409,6 +424,13 @@ def render_features_block(
         for fd, val in fs.ListFields()
         if fd.name in _FEATURE_FIELDS_SET
     }
+    # Present but empty: written so, that it roundtrips (`features = {}`).
+    if fs.ByteSize() == 0:
+        if inline:
+            out.append(BlockLine('features = {},', depth))
+        else:
+            out.append(BlockLine('option features = {};', depth))
+        return out
     for fname in _FEATURE_FIELDS:
         if fname not in set_fields:
             continue

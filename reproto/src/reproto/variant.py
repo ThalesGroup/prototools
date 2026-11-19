@@ -32,6 +32,7 @@ _EDITION_ORPHANS: dict[str, list[str]] = {
     'FileOptions':           ['features', 'feature_support'],
     'MessageOptions':        ['features', 'feature_support'],
     'MethodOptions':         ['features', 'feature_support'],
+    'OneofOptions':          ['features', 'feature_support'],
     'ServiceOptions':        ['features', 'feature_support'],
 }
 

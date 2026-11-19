@@ -336,7 +336,8 @@ pub fn field_bodies<'t>(text: &'t str, field: &str) -> Result<Vec<&'t str>, Text
 }
 
 /// The name and imports of `text`, a `FileDescriptorProto` in the text
-/// format, from its top-level `name` and `dependency` fields, without
+/// format, from its top-level `name`, `dependency` and `option_dependency`
+/// fields (an `import option`, edition 2024: a file to load too), without
 /// parsing the rest (spec 0427 S1). An error where a string does not end,
 /// or the brackets do not match.
 pub fn scan_imports(text: &str) -> Result<(String, Vec<String>), TextError> {
@@ -346,7 +347,7 @@ pub fn scan_imports(text: &str) -> Result<(String, Vec<String>), TextError> {
     skim(
         text,
         |field, i, depth| {
-            if depth != 0 || (field != "name" && field != "dependency") {
+            if depth != 0 || !matches!(field, "name" | "dependency" | "option_dependency") {
                 return Ok(None);
             }
             // `field: "…" "…"`, adjacent strings joined.
@@ -368,7 +369,7 @@ pub fn scan_imports(text: &str) -> Result<(String, Vec<String>), TextError> {
             let value = String::from_utf8_lossy(&value).into_owned();
             if field == "name" {
                 name = Some(value);
-            } else {
+            } else if !imports.contains(&value) {
                 imports.push(value);
             }
             Ok(Some(j))

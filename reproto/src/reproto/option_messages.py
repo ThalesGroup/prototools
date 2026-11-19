@@ -125,6 +125,10 @@ def _closure(ctx: Context, name: str) -> frozenset[str]:
             continue
         seen.add(n)
         todo.extend(fdp.dependency)
+        # The file's own `import option`s (edition 2024) supply its options
+        # too; theirs do not reach it (protoc's rule).
+        if n == name:
+            todo.extend(fdp.option_dependency)
     closure = frozenset(seen)
     ctx.import_closures[name] = closure
     return closure
