@@ -318,7 +318,7 @@ vim +'set ft=pbtxt' <( \
 reproto \
     --schema-db-out stash/opmeta.desc \
     --scoring-html-out stash/opmeta.html \
-    --use-variant descriptor \
+    --builtin descriptor \
     -I $GOOGLEAPIS_DESCS \
     --seed 'desc:.google.cloud.apigeeregistry.v1.OperationMetadata' \
     --seed 'desc:.google.cloud.apihub.v1.OperationMetadata' \
@@ -387,7 +387,7 @@ xdg-open stash/opmeta-hopcroft.html
 reproto -q \
     --schema-db-out stash/iprules.desc \
     --scoring-html-out stash/iprules.html \
-    --use-variant descriptor \
+    --builtin descriptor \
     -I $GOOGLEAPIS_DESCS \
     --seed 'desc:.google.cloud.securitycenter.v2.Allowed' \
     --seed 'desc:.google.cloud.securitycenter.v2.Denied' \
@@ -431,7 +431,7 @@ out=$( \
 \
 reproto -q \
     -O stash/reproto-out \
-    --use-variant descriptor \
+    --builtin descriptor \
     $GOOGLEAPIS_DESCS/google/type/postal_address.pb
 # \
 # Let's see the result.
@@ -450,7 +450,7 @@ bat --style=numbers,header-filename -l proto \
 # Decompile the entire googleapis DB: thousands of .proto files reconstructed.
 \
 reproto -O stash/googleapis-out \
-    --use-variant descriptor \
+    --builtin descriptor \
     -I $GOOGLEAPIS_DESCS .
 # \
 #                                                                                \
@@ -487,7 +487,7 @@ demo/header "8. Seeding and pruning"
 \
 reproto -q \
     -O stash/audit-seed \
-    --use-variant descriptor \
+    --builtin descriptor \
     -I $GOOGLEAPIS_DESCS \
     google/cloud/audit/audit_log.pb
 \
@@ -508,7 +508,7 @@ code --reuse-window stash/audit-seed/google/cloud/audit/audit_log.proto
 \
 reproto -q \
     -O stash/audit-pruned \
-    --use-variant descriptor \
+    --builtin descriptor \
     -I $GOOGLEAPIS_DESCS \
     --prune 'file:google/rpc/status.proto' \
     google/cloud/audit/audit_log.pb

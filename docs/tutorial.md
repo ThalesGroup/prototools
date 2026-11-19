@@ -464,12 +464,13 @@ through `prototext encode`.
 
 `reproto` can reverse a `.pb` FileDescriptorSet back into `.proto` source.
 Use the googleapis descriptor itself as a demonstration.
-`--use-variant descriptor` tells reproto to use its own built-in copy of
+`--builtin descriptor` tells reproto to use its own built-in copy of
 `descriptor.proto` as the schema baseline, rather than reconstructing it from
-the input — ensuring all well-known descriptor types resolve correctly:
+the input — ensuring all well-known descriptor types resolve correctly. (An
+input without `descriptor.proto` needs no flag: the built-in copy fills it in.)
 
 ```
-reproto --use-variant descriptor \
+reproto --builtin descriptor \
     -O stash/googleapis-src \
     $GOOGLEAPIS_DB
 ```
@@ -558,7 +559,7 @@ protoc \
 **Reconstruct as editions (default — no flag):**
 
 ```
-reproto --use-variant descriptor \
+reproto --builtin descriptor \
     --proto-out=stash/out_editions \
     stash/editions_rendering.pb
 ```
@@ -595,7 +596,7 @@ message AllFeatures {
 **Reconstruct as proto2 (`--force-proto2-output`):**
 
 ```
-reproto --use-variant descriptor \
+reproto --builtin descriptor \
     --force-proto2-output \
     --proto-out=stash/out_proto2 \
     stash/editions_rendering.pb

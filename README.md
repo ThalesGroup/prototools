@@ -55,7 +55,7 @@ fed directly to `reproto` to recover `.proto` source.
 
 ```
 protoscan --proto-out extracted/ some_binary
-reproto --use-variant descriptor -O src/ -I extracted/ extracted/*.pb
+reproto --builtin descriptor -O src/ -I extracted/ extracted/*.pb
 ```
 
 ## Installation

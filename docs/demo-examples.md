@@ -21,7 +21,7 @@ GOOGLEAPIS_DESCS=$(dirname $GOOGLEAPIS_DB)/googleapis/proto
 ## A — Full closure: `google/apps/meet/v2/service.pb` (12 files)
 
 ```bash
-reproto -I $GOOGLEAPIS_DESCS --use-variant descriptor \
+reproto -I $GOOGLEAPIS_DESCS --builtin descriptor \
   $GOOGLEAPIS_DESCS/google/apps/meet/v2/service.pb -O stash/meet-full
 ```
 
@@ -36,7 +36,7 @@ Good opening example: one seed file, 12 output files, shows import bridging at w
 ## B — Seed on one message type: `resource.pb` (4 files)
 
 ```bash
-reproto -I $GOOGLEAPIS_DESCS --use-variant descriptor \
+reproto -I $GOOGLEAPIS_DESCS --builtin descriptor \
   $GOOGLEAPIS_DESCS/google/apps/meet/v2/resource.pb -O stash/meet-seed
 ```
 
@@ -51,7 +51,7 @@ machinery.  Dramatic reduction.
 ## C — Prune annotation boilerplate from seed (2 files)
 
 ```bash
-reproto -I $GOOGLEAPIS_DESCS --use-variant descriptor \
+reproto -I $GOOGLEAPIS_DESCS --builtin descriptor \
   $GOOGLEAPIS_DESCS/google/apps/meet/v2/resource.pb \
   --prune 'file:google/api/field_behavior.proto' \
   --prune 'file:google/api/resource.proto' \
@@ -78,7 +78,7 @@ chain compilable.
 ## E — Bridge chain: `iam_policy.proto` → `policy.proto` → `type/expr.proto`
 
 ```bash
-reproto -I $GOOGLEAPIS_DESCS --use-variant descriptor \
+reproto -I $GOOGLEAPIS_DESCS --builtin descriptor \
   $GOOGLEAPIS_DESCS/google/cloud/billing/v1/cloud_billing.pb -O stash/billing
 ```
 
@@ -94,7 +94,7 @@ via the 2-hop bridge.
 ## F — Larger API: `google/cloud/kms/v1/service.pb` (16 files)
 
 ```bash
-reproto -I $GOOGLEAPIS_DESCS --use-variant descriptor \
+reproto -I $GOOGLEAPIS_DESCS --builtin descriptor \
   $GOOGLEAPIS_DESCS/google/cloud/kms/v1/service.pb -O stash/kms
 ```
 
@@ -124,7 +124,7 @@ message PortRange { int64 min = 1; int64 max = 2; }
 Hopcroft finds this automatically and merges them into one state.
 
 ```bash
-reproto -I $GOOGLEAPIS_DESCS --use-variant descriptor \
+reproto -I $GOOGLEAPIS_DESCS --builtin descriptor \
   $GOOGLEAPIS_DESCS/google/cloud/securitycenter/v2/ip_rules.pb \
   --seed 'desc:.google.cloud.securitycenter.v2.Allowed' \
   --seed 'desc:.google.cloud.securitycenter.v2.Denied' \
@@ -175,7 +175,7 @@ to learn this shape once, regardless of which service produced the binary.
 Sample command (8 seeds from different services):
 
 ```bash
-reproto -I $GOOGLEAPIS_DESCS --use-variant descriptor \
+reproto -I $GOOGLEAPIS_DESCS --builtin descriptor \
   $GOOGLEAPIS_DB \
   --seed 'desc:.google.cloud.apigeeregistry.v1.OperationMetadata' \
   --seed 'desc:.google.cloud.apihub.v1.OperationMetadata' \
@@ -202,7 +202,7 @@ showing that a schema DB built from v20 already covers v21 through v24 without
 any changes.
 
 ```bash
-reproto -I $GOOGLEAPIS_DESCS --use-variant descriptor \
+reproto -I $GOOGLEAPIS_DESCS --builtin descriptor \
   $GOOGLEAPIS_DB \
   --seed 'desc:.google.ads.googleads.v20.resources.QualifyingQuestion' \
   --seed 'desc:.google.ads.googleads.v21.resources.QualifyingQuestion' \
