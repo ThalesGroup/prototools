@@ -43,6 +43,7 @@ where = ["src"]
 [tool.setuptools.package-data]
 "reproto" = ["completions.sh", "completions.zsh", "completions.fish"]
 "reproto.variants" = ["*.yaml", "**/*.pb"]
+"reproto.profiles" = ["*.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["src/reproto/tests"]

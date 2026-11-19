@@ -92,6 +92,9 @@ by spec 0427) is ignored silently, so a stale variant looks meaningful.
   | W24 | a definition lost to a move: no file its importer sees defines it (spec 0445; protoback only) |
   | W25 | a move that is idle: nothing imports its file, no input holds it (spec 0445; protoback only) |
   | W26 | a move that is wrong, not applied, or a target the input lacks (spec 0445; protoback only) |
+  | W27 | the input's own `google/protobuf/descriptor.proto` dropped for the vendor descriptor (spec 0447) |
+  | W28 | an option the target's reader cannot represent, redacted (spec 0447; protoback only) |
+  | W29 | a profile folder's file replacing an input's copy that defines something it lacks (spec 0447) |
   | T1 | text: a field by number declared nowhere, read as length-delimited (was W1) |
   | T2 | text: a string protoc printed as a message, rebuilt (was W2) |
   | T3 | text: an `[extension]` declared nowhere, skipped (was W3) |

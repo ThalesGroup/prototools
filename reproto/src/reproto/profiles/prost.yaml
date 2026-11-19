@@ -1,0 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+#
+# SPDX-License-Identifier: MIT
+
+# prost-reflect and other readers that do not read editions (spec 0447).
+editions: proto2

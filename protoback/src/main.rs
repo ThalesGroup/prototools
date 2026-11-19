@@ -29,6 +29,7 @@ mod phase4;
 mod phase5;
 mod phase6;
 mod plugin;
+mod profile;
 mod render;
 mod report;
 mod run;
@@ -42,8 +43,6 @@ use crate::hash::HashMap;
 use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
-
-use clap::Parser;
 
 use cli::{Cli, UseVariant};
 use events::Events;
@@ -270,8 +269,31 @@ fn main() -> ExitCode {
         sub.extend(args.into_iter().skip(2));
         return instantiate::main(sub);
     }
-    let cli = Cli::parse();
-    let code = protoback(cli);
+    // Matches kept: a profile fills in only what the command line left at
+    // its default (spec 0447 S6).
+    let matches = <Cli as clap::CommandFactory>::command().get_matches();
+    let cli = match <Cli as clap::FromArgMatches>::from_arg_matches(&matches) {
+        Ok(cli) => cli,
+        Err(e) => e.exit(),
+    };
+    let explicit = |id: &str| {
+        matches!(
+            matches.value_source(id),
+            Some(clap::parser::ValueSource::CommandLine | clap::parser::ValueSource::EnvVariable)
+        )
+    };
+    let explicit: std::collections::HashSet<&'static str> = [
+        "descriptor",
+        "target",
+        "editions",
+        "import_descriptor",
+        "emit_descriptor",
+        "no_emit_descriptor",
+    ]
+    .into_iter()
+    .filter(|id| explicit(id))
+    .collect();
+    let code = protoback(cli, &explicit);
     report::finish(code);
     ExitCode::from(code)
 }
@@ -279,7 +301,7 @@ fn main() -> ExitCode {
 /// The run: its exit status, or, at its end, the process ended without
 /// freeing what it built (`exit_without_freeing`), the report written
 /// first. Every exit goes through `report::finish` (spec 0446 S1).
-fn protoback(cli: Cli) -> u8 {
+fn protoback(mut cli: Cli, explicit: &std::collections::HashSet<&'static str>) -> u8 {
     console::init(cli.quiet);
     // --report-out: a previous report removed now, so that none outlives
     // this run, whatever ends it (spec 0446 S1).
@@ -293,6 +315,56 @@ fn protoback(cli: Cli) -> u8 {
         return usage(&format!(
             "Invalid value for '--fail-on': unknown warning code '{code}'"
         ));
+    }
+    // Spec 0447 S6: the profiles, under the command line: an option it
+    // leaves at its default takes the profiles' value; lists accumulate.
+    let mut profile_folders = Vec::new();
+    if !cli.profile.is_empty() {
+        let prof = match profile::load(&cli.profile) {
+            Ok(p) => p,
+            Err(e) => return usage(&e),
+        };
+        let unset = |id: &str| !explicit.contains(id);
+        if let (Some(v), true) = (prof.strings.get("descriptor"), unset("descriptor")) {
+            cli.descriptor = Some(v.clone());
+        }
+        if let (Some(v), true) = (prof.strings.get("target"), unset("target")) {
+            cli.target = <cli::Target as clap::ValueEnum>::from_str(v, false).unwrap_or(cli.target);
+        }
+        if let (Some(v), true) = (prof.strings.get("editions"), unset("editions")) {
+            cli.editions =
+                <cli::Editions as clap::ValueEnum>::from_str(v, false).unwrap_or(cli.editions);
+        }
+        if let (Some(&v), true) = (
+            prof.bools.get("import_descriptor"),
+            unset("import_descriptor"),
+        ) {
+            cli.import_descriptor = v;
+        }
+        if let (Some(&v), true) = (
+            prof.bools.get("emit_descriptor"),
+            unset("emit_descriptor") && unset("no_emit_descriptor"),
+        ) {
+            cli.no_emit_descriptor = !v;
+        }
+        let mut builtin: Vec<UseVariant> = prof
+            .lists
+            .get("builtin")
+            .into_iter()
+            .flatten()
+            .filter_map(|v| <UseVariant as clap::ValueEnum>::from_str(v, false).ok())
+            .collect();
+        builtin.append(&mut cli.builtin);
+        cli.builtin = builtin;
+        let mut fail_on: Vec<String> = prof.lists.get("fail_on").cloned().unwrap_or_default();
+        if let Some(code) = fail_on.iter().find(|c| !events::is_code(c)) {
+            return usage(&format!(
+                "Invalid value for '--fail-on': unknown warning code '{code}'"
+            ));
+        }
+        fail_on.append(&mut cli.fail_on);
+        cli.fail_on = fail_on;
+        profile_folders = prof.folders;
     }
     // First: every warning from here on is counted (spec 0438 S4); the
     // deprecated options, in reproto's order.
@@ -393,6 +465,14 @@ fn protoback(cli: Cli) -> u8 {
     }
     if !cli.use_variant.is_empty() {
         events.warn("W18", "--use-variant is deprecated; use --builtin");
+    }
+    // Spec 0447: only --target keep, so far (phases B and C).
+    if cli.target != cli::Target::Keep {
+        let name = format!("{:?}", cli.target).to_lowercase();
+        return usage(&format!("--target {name}: not implemented yet (spec 0447)"));
+    }
+    if cli.import_descriptor {
+        return usage("--import-descriptor: not implemented yet (spec 0447)");
     }
     if let Err(e) = stub_check(&cli, out_repo.as_deref()) {
         return usage(&e);
@@ -532,6 +612,7 @@ fn protoback(cli: Cli) -> u8 {
         fallback_protos: fallback,
         fill_in_protos: fill_in,
         infer_descriptor,
+        profile_folders,
         descriptor_error: None,
         variant,
         keep_duplicates: cli.keep_duplicates,
@@ -723,7 +804,9 @@ fn protoback(cli: Cli) -> u8 {
         emit_extension_ranges: cli.emit_extension_ranges,
         source_info: !cli.no_source_info,
         force_proto2_output: cli.force_proto2_output,
-        force_proto2_for_editions: cli.force_proto2_for_editions || cli.prost_workaround,
+        force_proto2_for_editions: cli.force_proto2_for_editions
+            || cli.prost_workaround
+            || cli.editions == cli::Editions::Proto2,
         redact_comments: cli.redact_comments,
         redact_orphans: cli.redact_orphans,
         loads: &loads,

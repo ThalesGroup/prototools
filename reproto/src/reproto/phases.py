@@ -640,6 +640,18 @@ def _phase1_load_files(
                     ctx.filled_in_files.append(name)
                     filled = True
 
+    # Spec 0447 S6: each file of a profile's folder replaces the input's
+    # copy, or adds to the input; the copies replaced, kept for W29.
+    replaced: list[tuple[str, QualFile, Path]] = []
+    for folder in ctx.profile_folders:
+        for qf in load_from_path(ctx, [folder], Path('.')):
+            existing = topo.files.get(qf.name)
+            if existing is not None and not existing.is_ref():
+                replaced.append((qf.name, existing.qfile, folder))
+            ReFile(topo, qf)
+            topo.merge_files()
+            topo.files[qf.name].qfile = qf
+
     fill_in(descriptor=False)
     # The descriptor known before the texts are read: their option names
     # are read against its options messages (spec 0447 S1).
@@ -647,6 +659,13 @@ def _phase1_load_files(
         _infer_descriptor(ctx, topo)
     fill_in(descriptor=True)
     _read_text_files(ctx, topo)
+    # W29: a replacement is meant to be a superset of the copy it replaces.
+    for name, old, folder in replaced:
+        missing = sorted(_definitions(old.desc) - _definitions(topo.files[name].qfile.desc))
+        if missing:
+            shown = ', '.join(missing[:3]) + (', ...' if len(missing) > 3 else '')
+            warn("W29", f"'{name}': the copy in {folder} lacks what the input's "
+                        f"defines: {shown}")
     return seed_files
 
 
@@ -694,6 +713,40 @@ def _file_facts(f: ReFile) -> FileFacts:
         todo.extend(m.nested_type)
     return FileFacts(fdp.package, extendees,
                      any(m.name == 'FileOptions' for m in fdp.message_type))
+
+
+def _definitions(fdp: FileDescriptorProto) -> set[str]:
+    """Every definition of the file, by full name: messages, their fields
+    and extensions, enums and their values, extensions, services and their
+    methods (W29's comparison, spec 0447 S6)."""
+    out: set[str] = set()
+    package = fdp.package
+
+    def join(prefix: str, name: str) -> str:
+        return f'{prefix}.{name}' if prefix else name
+
+    def enums(prefix: str, es: Any) -> None:
+        for e in es:
+            out.add(join(prefix, e.name))
+            out.update(join(prefix, v.name) for v in e.value)
+
+    def messages(prefix: str, ms: Any) -> None:
+        for m in ms:
+            full = join(prefix, m.name)
+            out.add(full)
+            out.update(join(full, f.name) for f in m.field)
+            out.update(join(full, x.name) for x in m.extension)
+            enums(full, m.enum_type)
+            messages(full, m.nested_type)
+
+    messages(package, fdp.message_type)
+    enums(package, fdp.enum_type)
+    out.update(join(package, x.name) for x in fdp.extension)
+    for s in fdp.service:
+        full = join(package, s.name)
+        out.add(full)
+        out.update(join(full, m.name) for m in s.method)
+    return out
 
 
 def _infer_descriptor(ctx: Context, topo: Topology) -> None:

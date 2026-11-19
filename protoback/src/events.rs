@@ -81,6 +81,18 @@ pub const CODES: &[(&str, &str)] = &[
         "a move that is wrong, not applied (or a target the input lacks)",
     ),
     (
+        "W27",
+        "the input's own google/protobuf/descriptor.proto dropped for the vendor descriptor",
+    ),
+    (
+        "W28",
+        "an option the target's reader cannot represent, redacted",
+    ),
+    (
+        "W29",
+        "a profile folder's file replacing an input's copy that defines something it lacks",
+    ),
+    (
         "T1",
         "text: a field by number declared nowhere, read as length-delimited",
     ),

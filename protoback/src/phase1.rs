@@ -105,6 +105,37 @@ pub fn run(r: &mut Run, topo: &mut Topology) {
             topo.files[i].qfile = Some(qf);
         }
     }
+    // Spec 0447 S6: each file of a profile's folder replaces the input's
+    // copy, or adds to the input; the copies replaced, kept for W29.
+    let mut replaced: Vec<(String, QualFile, PathBuf)> = Vec::new();
+    for folder in r.profile_folders.clone() {
+        let mut ctx = LoadCtx {
+            pruned_paths: &r.pruned_paths,
+            path_seeds: &r.path_seeds,
+            events: &mut r.events,
+            blobs: &mut r.blobs,
+            path_seed_fqdns: &mut r.path_seed_fqdns,
+            plugin: r.plugin.as_ref(),
+            importing: false,
+        };
+        let qfiles = load_from_path(&mut ctx, std::slice::from_ref(&folder), Path::new("."));
+        if plugin_failed(r.plugin.as_ref()) {
+            return;
+        }
+        for mut qf in qfiles {
+            if let Some(i) = topo.find(&qf.name) {
+                if let (false, Some(old)) = (topo.files[i].is_ref(), &topo.files[i].qfile) {
+                    replaced.push((qf.name.clone(), old.clone(), folder.clone()));
+                }
+            }
+            qf.imports = r.moves.rewrite_names(qf.imports);
+            topo.load(qf.clone());
+            topo.merge();
+            if let Some(i) = topo.find(&qf.name) {
+                topo.files[i].qfile = Some(qf);
+            }
+        }
+    }
     fill_in(r, topo, false);
     // The descriptor known before the texts are read: their option names
     // are read against its options messages (spec 0447 S1).
@@ -113,6 +144,28 @@ pub fn run(r: &mut Run, topo: &mut Topology) {
     }
     fill_in(r, topo, true);
     read_text_files(r, topo);
+    // W29: a replacement is meant to be a superset of the copy it replaces.
+    for (name, old, folder) in replaced {
+        let new = topo
+            .find(&name)
+            .and_then(|i| topo.files[i].qfile.as_ref())
+            .map(definitions)
+            .unwrap_or_default();
+        let missing: Vec<String> = definitions(&old).difference(&new).cloned().collect();
+        if !missing.is_empty() {
+            let mut shown = missing[..missing.len().min(3)].join(", ");
+            if missing.len() > 3 {
+                shown.push_str(", ...");
+            }
+            r.events.warn(
+                "W29",
+                &format!(
+                    "'{name}': the copy in {} lacks what the input's defines: {shown}",
+                    folder.display()
+                ),
+            );
+        }
+    }
     // Spec 0445 S7: W25 for an idle move, W26 for a target not loaded.
     r.moves.check_loaded(
         |name| topo.find(name).is_some_and(|i| !topo.files[i].is_ref()),
@@ -168,6 +221,74 @@ const OPTION_CARRIERS: &[&str] = &[
     "FeatureSet",
 ];
 
+/// The file's descriptor, decoded; a text not read yet parsed alone, as
+/// reproto's `QualFile.desc` does.
+fn decode_fdp(qf: &QualFile) -> Option<DynamicMessage> {
+    let def = Pool::vendored().get_message_by_name("google.protobuf.FileDescriptorProto")?;
+    let parsed;
+    let bytes: &[u8] = match (&qf.text, qf.contents.is_empty()) {
+        (Some(text), true) => {
+            parsed = prototext_upb::text_format::parse_descriptor(text, false).ok()?;
+            &parsed
+        }
+        _ => &qf.contents,
+    };
+    DynamicMessage::decode(&def, bytes).ok()
+}
+
+/// Every definition of the file, by full name: messages, their fields and
+/// extensions, enums and their values, extensions, services and their
+/// methods (W29's comparison, spec 0447 S6; reproto's `_definitions`).
+fn definitions(qf: &QualFile) -> std::collections::BTreeSet<String> {
+    use prototext_upb::descriptor_access::{
+        DescriptorProto, EnumDescriptorProto, FileDescriptorProto,
+    };
+    let mut out = std::collections::BTreeSet::new();
+    let Some(fdp) = decode_fdp(qf) else {
+        return out;
+    };
+    let f = FileDescriptorProto(fdp.as_ref());
+    let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+    let join = |prefix: &str, name: &[u8]| {
+        if prefix.is_empty() {
+            text(name)
+        } else {
+            format!("{prefix}.{}", text(name))
+        }
+    };
+    let enums = |out: &mut std::collections::BTreeSet<String>,
+                 prefix: &str,
+                 es: Vec<EnumDescriptorProto>| {
+        for e in es {
+            let full = join(prefix, e.name());
+            out.extend(e.value().iter().map(|v| join(prefix, v.name())));
+            out.insert(full);
+        }
+    };
+    let package = text(f.package());
+    let mut todo: Vec<(String, DescriptorProto)> = f
+        .message_type()
+        .into_iter()
+        .map(|m| (package.clone(), m))
+        .collect();
+    while let Some((prefix, m)) = todo.pop() {
+        let full = join(&prefix, m.name());
+        out.extend(m.field().iter().map(|x| join(&full, x.name())));
+        out.extend(m.extension().iter().map(|x| join(&full, x.name())));
+        enums(&mut out, &full, m.enum_type());
+        todo.extend(m.nested_type().into_iter().map(|n| (full.clone(), n)));
+        out.insert(full);
+    }
+    enums(&mut out, &package, f.enum_type());
+    out.extend(f.extension().iter().map(|x| join(&package, x.name())));
+    for s in f.service() {
+        let full = join(&package, s.name());
+        out.extend(s.method().iter().map(|m| join(&full, m.name())));
+        out.insert(full);
+    }
+    out
+}
+
 /// What inference reads of a loaded file (reproto's `FileFacts`).
 struct FileFacts {
     package: String,
@@ -207,8 +328,7 @@ fn file_facts(qf: &QualFile) -> Option<FileFacts> {
             defines_file_options: FILE_OPTIONS.is_match(text),
         });
     }
-    let def = Pool::vendored().get_message_by_name("google.protobuf.FileDescriptorProto")?;
-    let fdp = DynamicMessage::decode(&def, &qf.contents).ok()?;
+    let fdp = decode_fdp(qf)?;
     let f = FileDescriptorProto(fdp.as_ref());
     let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
     let mut extendees: Vec<String> = f.extension().iter().map(|x| text(x.extendee())).collect();

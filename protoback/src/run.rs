@@ -35,6 +35,9 @@ pub struct Run {
     pub fill_in_protos: Vec<String>,
     /// No --descriptor, no variant: the descriptor inferred (spec 0447 S1).
     pub infer_descriptor: bool,
+    /// The profiles' folders (spec 0447 S6): each file in one replaces the
+    /// input's copy.
+    pub profile_folders: Vec<PathBuf>,
     /// The inference's failure: custom options extending several
     /// descriptors' options.
     pub descriptor_error: Option<String>,

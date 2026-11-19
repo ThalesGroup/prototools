@@ -57,6 +57,21 @@ impl UseVariant {
     }
 }
 
+/// `--target` (spec 0447 S3): what reads the output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum Target {
+    Keep,
+    Protoc,
+    Portable,
+}
+
+/// `--editions` (spec 0447 S7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum Editions {
+    Keep,
+    Proto2,
+}
+
 #[derive(Debug, Parser)]
 #[command(
     name = "protoback",
@@ -165,6 +180,36 @@ pub struct Cli {
         value_name = "NAME"
     )]
     pub descriptor: Option<String>,
+    #[arg(
+        long = "profile",
+        action = ArgAction::Append,
+        help = "A saved set of options (spec 0447): looked up as a path (.yaml optional), then in $PROTOBACK_PROFILE_PATH's folders, then among the built-in profiles (prost). Repeatable, applied in order; options given on the command line override them.",
+        help_heading = "Variant / Schema",
+        value_name = "NAME"
+    )]
+    pub profile: Vec<String>,
+    #[arg(
+        long = "target",
+        value_enum,
+        default_value = "keep",
+        help = "What reads the output (spec 0447): keep, the input's names and paths, nothing added (default); protoc, the vendor descriptor written as google/protobuf/descriptor.proto; portable, for a compiler that knows only its own descriptor.",
+        help_heading = "Variant / Schema"
+    )]
+    pub target: Target,
+    #[arg(
+        long = "import-descriptor",
+        help = "Under --target keep, import the descriptor in each file setting a built-in option only that descriptor declares (for a protoc that knows it only once loaded).",
+        help_heading = "Variant / Schema"
+    )]
+    pub import_descriptor: bool,
+    #[arg(
+        long = "editions",
+        value_enum,
+        default_value = "keep",
+        help = "keep (default), or proto2: editions files written as proto2, as --force-proto2-for-editions does.",
+        help_heading = "Rendering"
+    )]
+    pub editions: Editions,
     #[arg(
         long = "no-builtin",
         help = "Do not fill in, from built-in copies, the well-known files and the descriptor.proto the input lacks.",

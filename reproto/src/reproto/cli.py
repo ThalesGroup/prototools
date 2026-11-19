@@ -227,6 +227,10 @@ _SECTIONS: dict[str, str] = {
     '--builtin':             'Variant / Schema',
     '--no-builtin':          'Variant / Schema',
     '--descriptor':          'Variant / Schema',
+    '--profile':             'Variant / Schema',
+    '--target':              'Variant / Schema',
+    '--import-descriptor':   'Variant / Schema',
+    '--editions':            'Rendering',
     '--keep-descriptor-path': 'Variant / Schema',
     '--no-emit-descriptor':  'Variant / Schema',
     '--seed':                'Filtering',
@@ -471,6 +475,39 @@ class _SectionedCommand(click.Command):
         'imports write it. Without it, inferred from what the input\'s custom '
         'options extend: protoc\'s, unless they extend another package\'s.'
     ),
+)
+@click.option(
+    '--profile',
+    'profile',
+    multiple=True,
+    metavar='NAME',
+    help=(
+        'A saved set of options (spec 0447): looked up as a path (.yaml '
+        'optional), then in $PROTOBACK_PROFILE_PATH\'s folders, then among the '
+        'built-in profiles (prost). Repeatable, applied in order; options given '
+        'on the command line override them.'
+    ),
+)
+@click.option(
+    '--target',
+    'target',
+    type=click.Choice(['keep', 'protoc', 'portable']),
+    default='keep',
+    help="What reads the output (spec 0447): keep, the input's names and paths, nothing added (default); protoc, the vendor descriptor written as google/protobuf/descriptor.proto; portable, for a compiler that knows only its own descriptor.",
+)
+@click.option(
+    '--import-descriptor',
+    'import_descriptor',
+    is_flag=True,
+    default=False,
+    help='Under --target keep, import the descriptor in each file setting a built-in option only that descriptor declares (for a protoc that knows it only once loaded).',
+)
+@click.option(
+    '--editions',
+    'editions',
+    type=click.Choice(['keep', 'proto2']),
+    default='keep',
+    help='keep (default), or proto2: editions files written as proto2, as --force-proto2-for-editions does.',
 )
 @click.option(
     '--no-builtin',
@@ -781,6 +818,10 @@ def main(
         builtin: tuple[str, ...],
         no_builtin: bool,
         descriptor: str | None,
+        profile: tuple[str, ...],
+        target: str,
+        import_descriptor: bool,
+        editions: str,
         keep_descriptor_path: bool,
         emit_descriptor: bool,
         seeds: list[str],
@@ -808,6 +849,36 @@ def main(
     '''
     Parse DESCRIPTOR_FILES and generate output based on the options given.
     '''
+    # Spec 0447 S6: the profiles, under the command line: an option it
+    # leaves at its default takes the profiles' value; lists accumulate.
+    profile_folders: list[Path] = []
+    if profile:
+        from .profile import load as load_profiles
+        try:
+            prof = load_profiles(profile)
+        except ValueError as e:
+            raise click.UsageError(str(e))
+        param_source = click.get_current_context().get_parameter_source
+
+        def unset(name: str) -> bool:
+            return param_source(name) in (click.core.ParameterSource.DEFAULT, None)
+        if 'descriptor' in prof.scalars and unset('descriptor'):
+            descriptor = prof.scalars['descriptor']
+        if 'target' in prof.scalars and unset('target'):
+            target = prof.scalars['target']
+        if 'editions' in prof.scalars and unset('editions'):
+            editions = prof.scalars['editions']
+        if 'import_descriptor' in prof.scalars and unset('import_descriptor'):
+            import_descriptor = prof.scalars['import_descriptor']
+        if 'emit_descriptor' in prof.scalars and unset('emit_descriptor'):
+            emit_descriptor = prof.scalars['emit_descriptor']
+        builtin = tuple(prof.lists['builtin']) + builtin
+        try:
+            fail_on = _check_codes(tuple(prof.lists['fail_on'])) + fail_on
+        except click.BadParameter as e:
+            raise click.UsageError(f"Invalid value for '--fail-on': {e.message}")
+        profile_folders = prof.folders
+
     global _quiet
     _quiet = quiet
 
@@ -870,6 +941,13 @@ def main(
             emit_scoring_html = emit_pyvis
     if use_variant:
         warn('W18', '--use-variant is deprecated; use --builtin')
+    # Spec 0447: only --target keep, so far (phases B and C).
+    if target != 'keep':
+        raise click.UsageError(f"--target {target}: not implemented yet (spec 0447)")
+    if import_descriptor:
+        raise click.UsageError("--import-descriptor: not implemented yet (spec 0447)")
+    if editions == 'proto2':
+        force_proto2_for_editions = True
 
     # No DESCRIPTOR_FILES means "everything under the -I roots" — which is
     # what every invocation that uses -I spells out anyway (spec 0243 S13).
@@ -1014,6 +1092,7 @@ def main(
         fallback_protos=fallback_protos,
         fill_in_protos=fill_in_protos,
         infer_descriptor=infer_descriptor,
+        profile_folders=profile_folders,
         keep_variant_descriptor=keep_descriptor_path,
         variant_descriptor_proto=variant['variant_descriptor_proto'],
         variant_well_known=variant['variant_well_known'],

@@ -124,6 +124,9 @@ class Options:
     fill_in_protos: list[str] = field(default_factory=list)
     # No --descriptor, no variant: the descriptor inferred (spec 0447 S1).
     infer_descriptor: bool = False
+    # The profiles' folders (spec 0447 S6): each file in one replaces the
+    # input's copy.
+    profile_folders: list[Path] = field(default_factory=list)
     go_root: str | None = None
     emit_scoring_html: Path | None = None
     with_leaf_nodes: bool = False
