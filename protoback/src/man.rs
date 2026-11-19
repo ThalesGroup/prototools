@@ -75,8 +75,9 @@ fn warnings_section() -> String {
 /// `protoback.1`'s sections clap cannot derive.
 const MAIN_EXTRA: &str = r#".SH ENVIRONMENT
 .TP
-\fBREPROTO_VARIANT\fR
-Path to a variant YAML file used when \fB\-\-proto\-variant\fR is not given.
+\fBPROTOBACK_PROFILE_PATH\fR
+Folders, separated by colons, where \fB\-\-profile\fR looks for a profile
+after the current directory and before the built-in ones.
 .TP
 \fBPROTOBACK_PYTHON\fR
 The Python interpreter \fB\-\-fdp\-plugin\fR runs plugins with (default:

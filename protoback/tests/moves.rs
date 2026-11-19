@@ -256,10 +256,6 @@ move:
   - old.proto: other.proto
   - a.proto: old.proto
   - c.proto: pruned.proto
-variants:
-  nosuchvariant:
-    move:
-      - x.proto: y.proto
 ";
     let r = run(&dir, Some(config), &[]);
     for expected in [
@@ -273,8 +269,6 @@ variants:
             r.stderr
         );
     }
-    // Another variant's section: expected in a shared file, not warned.
-    assert!(!r.stderr.contains("nosuchvariant"), "{}", r.stderr);
     // The first old.proto move still applies.
     assert!(r
         .proto("b.proto")
@@ -298,23 +292,19 @@ fn a_missing_target_is_w26() {
     );
 }
 
+/// Variants are gone (spec 0447 S8): a `variants:` section is an unknown
+/// key, refused.
 #[test]
-fn variant_section_applies() {
-    let dir = setup(
-        "variant",
-        &[
-            ("old", OLD),
-            ("new", NEW),
-            ("b", &importer("old.proto", false)),
-        ],
-    );
+fn a_variants_section_is_refused() {
+    let dir = setup("variant", &[("old", OLD), ("new", NEW)]);
     let config = "variants:\n  google.protobuf:\n    move:\n      - old.proto: new.proto\n";
     let r = run(&dir, Some(config), &[]);
-    assert_eq!(r.status, 0, "{}", r.stderr);
-    assert!(r
-        .proto("b.proto")
-        .unwrap()
-        .contains("import \"new.proto\";"));
+    assert_eq!(r.status, 2, "{}", r.stderr);
+    assert!(
+        r.stderr.contains("unknown filter-config key(s): variants"),
+        "{}",
+        r.stderr
+    );
 }
 
 #[test]

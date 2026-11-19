@@ -110,21 +110,13 @@ def test_custom_features_are_written_as_features(
     assert "features.(pb.cpp).string_type = VIEW" in text
 
 
-# A variant rooted on a descriptor.proto of another package, its names kept
-# (no renaming): custom features extend that package's FeatureSet, and are
+# A descriptor.proto of another package, named by --descriptor, its names
+# kept (--target keep): custom features extend that package's FeatureSet, and are
 # read from it. protoc's own descriptor.proto and cpp_features.proto, moved
 # to package `proto2` under other paths, stand for such a root; a stock
 # protoc cannot compile against them, so the rendered text is checked.
 ROOT = "internal/proto2/descriptor.proto"
 CPP = "internal/pb/cpp_features.proto"
-KEEP_VARIANT = f"""name: internal-keep
-description: a proto2-rooted descriptor, names kept
-descriptor_proto: {ROOT}
-well_known: {{}}
-import_rewrites: []
-namespace_rewrites: []
-orphans: {{}}
-"""
 
 
 def _rename_package(fdp: descriptor_pb2.FileDescriptorProto) -> None:
@@ -176,13 +168,11 @@ def test_custom_features_under_a_root_of_another_package(tmp_path: Path) -> None
         fds = descriptor_pb2.FileDescriptorSet()
         fds.file.append(fdp)
         path.write_bytes(fds.SerializeToString())
-    variant = tmp_path / "keep.yaml"
-    variant.write_text(KEEP_VARIANT, encoding="utf-8")
 
     out = tmp_path / "out"
     result = subprocess.run(
         [*REPROTO_CMD, "-q", f"-I{inputs}", "-O", str(out),
-         "--proto-variant", str(variant), "f/feat.pb", ROOT.replace(".proto", ".pb")],
+         "--descriptor", ROOT, "f/feat.pb", ROOT.replace(".proto", ".pb")],
         capture_output=True, text=True,
     )
     assert result.returncode == 0, result.stderr
@@ -233,13 +223,11 @@ def test_a_custom_option_on_a_root_of_another_package_is_kept(tmp_path: Path) ->
         one = descriptor_pb2.FileDescriptorSet()
         one.file.append(fdp)
         path.write_bytes(one.SerializeToString())
-    variant = tmp_path / "keep.yaml"
-    variant.write_text(KEEP_VARIANT, encoding="utf-8")
 
     out = tmp_path / "out"
     result = subprocess.run(
         [*REPROTO_CMD, "-q", "-b", f"-I{inputs}", "-O", str(out),
-         "--proto-variant", str(variant), "u.pb", ROOT.replace(".proto", ".pb")],
+         "--descriptor", ROOT, "u.pb", ROOT.replace(".proto", ".pb")],
         capture_output=True, text=True,
     )
     assert result.returncode == 0, result.stderr

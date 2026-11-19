@@ -2,12 +2,12 @@
 #
 # SPDX-License-Identifier: MIT
 
-"""variant.py — load and parse a reproto variant specification file.
+"""variant.py — the built-in google.protobuf variant: the descriptor's
+path, the well-known files' fallbacks, and the orphans.
 
-Resolution order (first match wins):
-  1. explicit path passed by the caller (from --proto_variant CLI flag)
-  2. REPROTO_VARIANT environment variable
-  3. built-in OSS default: reproto/variants/google-protobuf.yaml
+Variant files are gone (spec 0447 S8): --proto-variant is a usage error,
+$REPROTO_VARIANT ignored; --target protoc derives its renaming from the
+descriptor in use. The built-in file stays the tools' data.
 
 The returned dict contains all variant_* keys expected by Options.
 Edition orphans (features, feature_support, verification) are always
@@ -18,8 +18,6 @@ Unknown YAML keys are silently ignored.
 from __future__ import annotations
 
 import importlib.resources
-import os
-from pathlib import Path
 
 import yaml
 
@@ -92,27 +90,10 @@ def _parse(raw: dict, root: object, stem: str) -> dict:
     }
 
 
-def load(path: str | None = None) -> dict:
-    """Load a variant file and return a variant_* dict.
-
-    Args:
-        path: explicit path (from --proto_variant), or None.
-
-    Resolution order:
-        1. path argument (if not None)
-        2. REPROTO_VARIANT environment variable
-        3. built-in google-protobuf.yaml (via importlib.resources)
-    """
-    resolved: str | None = path or os.environ.get('REPROTO_VARIANT')
-
-    if resolved is None:
-        root = importlib.resources.files('reproto.variants')
-        stem = 'google-protobuf'
-    else:
-        abs_resolved = str(Path(resolved).resolve())
-        root = Path(abs_resolved).parent
-        stem = Path(abs_resolved).stem
-
+def load() -> dict:
+    """The built-in variant, as a variant_* dict."""
+    root = importlib.resources.files('reproto.variants')
+    stem = 'google-protobuf'
     text = root.joinpath(f'{stem}.yaml').read_text(encoding='utf-8')
     raw = yaml.safe_load(text)
     return _parse(raw if isinstance(raw, dict) else {}, root, stem)

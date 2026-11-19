@@ -86,9 +86,7 @@ struct Rewrites {
 
 #[derive(Serialize)]
 struct Idle {
-    /// None for what is not warned: a variants: section for another
-    /// variant.
-    code: Option<String>,
+    code: String,
     directive: String,
     reason: String,
 }
@@ -218,12 +216,11 @@ pub fn moved(importer: &str, olds: &[String], before: &[String], after: &[String
     });
 }
 
-/// A directive that did not apply as written (W11, W12, W25, W26; or no
-/// code, a variants: section for another variant).
-pub fn idle(code: Option<&str>, directive: &str, reason: &str) {
+/// A directive that did not apply as written (W11, W12, W25, W26).
+pub fn idle(code: &str, directive: &str, reason: &str) {
     with(|r| {
         r.idle_directives.push(Idle {
-            code: code.map(str::to_string),
+            code: code.to_string(),
             directive: directive.to_string(),
             reason: reason.to_string(),
         })

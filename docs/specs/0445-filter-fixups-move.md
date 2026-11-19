@@ -107,7 +107,8 @@ whichever direction it is told.
   `move:` is a list of one-key mappings, `OLD: TARGET` or
   `OLD: [TARGET, …]`, file names as imports write them (`.proto`), not
   physical paths.
-- **S2.** `variants: NAME:` holds `seed:`, `prune:` and `move:`, applying
+- **S2.** (Gone with variants, spec 0447 S8: `variants:` is now an
+  unknown key, refused.) `variants: NAME:` held `seed:`, `prune:` and `move:`, applying
   only when the variant in use has that `name:`, appended to the
   top-level lists. A section for another variant is not warned: a file
   serving several variants (G4) has one on every run. The report lists

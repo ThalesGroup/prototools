@@ -130,15 +130,17 @@ def compile_proto_multi(
 STOCK_INCLUDE = Path(shutil.which("protoc") or "protoc").resolve().parent.parent / "include"
 
 
-def vendor_descriptor(tmp_path: Path, extra: str = "") -> None:
+def vendor_descriptor(tmp_path: Path, extra: str = "", top: str = "") -> None:
     """protoc's descriptor.proto as a vendor's (spec 0447): package `vendor`,
     at vendor/proto/descriptor.proto, compiled alone into in/vdesc.pb;
-    `extra`, fields added to its FieldOptions."""
+    `extra`, fields added to its FieldOptions; `top`, definitions added at
+    its end."""
     src = tmp_path / "src" / "vendor" / "proto"
     src.mkdir(parents=True)
     text = (STOCK_INCLUDE / "google/protobuf/descriptor.proto").read_text(encoding="utf-8")
     text = text.replace("package google.protobuf;", "package vendor;")
     text = text.replace("message FieldOptions {\n", "message FieldOptions {\n" + extra, 1)
+    text += top
     (src / "descriptor.proto").write_text(text, encoding="utf-8")
     (tmp_path / "in").mkdir(exist_ok=True)
     subprocess.run(["protoc", f"-I{tmp_path / 'src'}",

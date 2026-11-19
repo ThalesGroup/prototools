@@ -134,7 +134,32 @@ def test_the_input_stock_descriptor_is_dropped_with_w27(tmp_path: Path) -> None:
     assert "vendor_only" in _read(tmp_path, "google/protobuf/descriptor.proto")
 
 
-def test_protoc_with_a_variant_is_a_usage_error(tmp_path: Path) -> None:
+def test_protoc_with_keep_descriptor_path_is_a_usage_error(tmp_path: Path) -> None:
     r = _run(tmp_path, "--target", "protoc", "--keep-descriptor-path")
     assert r.returncode == 2, r.stderr
-    assert "--target protoc derives its renaming from the descriptor" in r.stderr, r.stderr
+    assert "--target protoc and --keep-descriptor-path (--target keep) are exclusive" in r.stderr
+
+
+def test_proto_variant_is_a_usage_error(tmp_path: Path) -> None:
+    r = _run(tmp_path, "--proto-variant", "any.yaml")
+    assert r.returncode == 2, r.stderr
+    assert ("--proto-variant: variants are gone (spec 0447); "
+            "use --profile, --descriptor and --target") in r.stderr, r.stderr
+
+
+def test_reproto_variant_env_is_ignored_with_a_notice(tmp_path: Path) -> None:
+    vendor_descriptor(tmp_path, VENDOR_ONLY)
+    inp = tmp_path / "in"
+    (inp / "e.textpb").write_text(STOCK_FIELD, encoding="utf-8")
+    env = {**os.environ, "REPROTO_VARIANT": str(tmp_path / "gone.yaml")}
+    r = subprocess.run([*REPROTO_CMD, f"-I{inp}", "-O", str(tmp_path / "out")],
+                       capture_output=True, text=True, env=env)
+    assert r.returncode == 0, r.stderr
+    assert ("$REPROTO_VARIANT is ignored: variants are gone (spec 0447); "
+            "use --profile") in r.stderr, r.stderr
+
+
+def test_keep_descriptor_path_is_deprecated(tmp_path: Path) -> None:
+    r = _run(tmp_path, "--keep-descriptor-path")
+    assert r.returncode == 0, r.stderr
+    assert "Warning [W18]: --keep-descriptor-path is deprecated; use --target keep" in r.stderr

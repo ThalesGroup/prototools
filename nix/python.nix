@@ -501,7 +501,7 @@ let
     #
     mkdir -p "$out"
     reproto \
-      --use-variant all \
+      --builtin all \
       --force-proto2-for-editions \
       --proto-out="$out/googleapis/proto" \
       --emit-scoring-yaml \
@@ -636,7 +636,7 @@ print('\n'.join(lines[:$N_EXTRA]))
     # ── Build the schema DB ───────────────────────────────────────────────────
     mkdir -p "$out"
     reproto \
-      --use-variant all \
+      --builtin all \
       --force-proto2-for-editions \
       -I"$PB" \
       --proto-out="$out/custom/proto" \

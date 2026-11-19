@@ -163,8 +163,7 @@ pub struct Cli {
     #[arg(
         long = "proto-variant",
         add = ArgValueCompleter::new(crate::complete::complete_yaml_path),
-        env = "REPROTO_VARIANT",
-        help = "Path to a variant specification YAML file. If omitted, $REPROTO_VARIANT is used; otherwise the built-in google.protobuf default applies.",
+        help = "Removed (spec 0447): variants are gone; use --profile, --descriptor and --target.",
         help_heading = "Variant / Schema",
         value_name = "FILE"
     )]
@@ -218,7 +217,7 @@ pub struct Cli {
     pub no_builtin: bool,
     #[arg(
         long = "keep-descriptor-path",
-        help = "Keep the variant descriptor import path as-is (do not rewrite to google/protobuf/descriptor.proto)",
+        help = "Deprecated: use --target keep (the default).",
         help_heading = "Variant / Schema"
     )]
     pub keep_descriptor_path: bool,

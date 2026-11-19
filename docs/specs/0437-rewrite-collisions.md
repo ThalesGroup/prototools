@@ -6,7 +6,9 @@ SPDX-License-Identifier: MIT
 
 # 0437 — two files rewritten onto one path
 
-Status: implemented
+Status: superseded (implemented 2026-11-17, superseded 2026-11-19 by
+        docs/specs/0447-output-targets-and-profiles.md: variants gone,
+        --target protoc the one renaming)
 Implemented in: 2026-11-17
 App: reproto, protoback
 Refs: docs/specs/0086-canonize-output-names.md (the import

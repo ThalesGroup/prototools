@@ -2,13 +2,13 @@
 #
 # SPDX-License-Identifier: MIT
 
-"""The options types come from the variant's own descriptor.proto.
+"""The options types come from the descriptor's own descriptor.proto.
 
-A variant names its descriptor.proto by path (`descriptor_proto`); the
+--descriptor names the descriptor.proto by path (spec 0447 S1); the
 package that file declares is the package of the options types reproto
 parses options with, and of the nine `*Options` a proto3 file may extend
-(A5). Neither is assumed from the path: here the variant's descriptor.proto
-is `alt/descriptor.proto`, `package altpb`.
+(A5). Neither is assumed from the path: here the descriptor.proto is
+`alt/descriptor.proto`, `package altpb`.
 """
 
 from __future__ import annotations
@@ -69,8 +69,6 @@ def _set(tmp: Path) -> Path:
     fds.file.extend([_alt_descriptor(), use, ext3])
     pb = root / "set.pb"
     pb.write_bytes(fds.SerializeToString())
-    (tmp / "alt.yaml").write_text(f"name: alt\ndescriptor_proto: {_NAME}\n",
-                                  encoding="utf-8")
     return pb
 
 
@@ -80,21 +78,21 @@ def _reproto(tmp: Path) -> tuple[subprocess.CompletedProcess[str], Path]:
     env = {**os.environ}
     env.pop("REPROTO_VARIANT", None)
     result = subprocess.run(
-        [*REPROTO_CMD, "--proto-variant", str(tmp / "alt.yaml"), f"-I{pb.parent}",
+        [*REPROTO_CMD, "--descriptor", _NAME, f"-I{pb.parent}",
          f"--proto-out={out}", "set.pb"],
         capture_output=True, text=True, env=env,
     )
     return result, out
 
 
-def test_options_parse_with_the_variants_own_package(tmp_path: Path) -> None:
+def test_options_parse_with_the_descriptors_own_package(tmp_path: Path) -> None:
     result, out = _reproto(tmp_path)
     assert result.returncode == 0, result.stderr
     text = (out / "use.proto").read_text(encoding="utf-8")
     assert "[deprecated = true]" in text
 
 
-def test_a_proto3_file_may_extend_the_variants_options(tmp_path: Path) -> None:
+def test_a_proto3_file_may_extend_the_descriptors_options(tmp_path: Path) -> None:
     """A5 allows extending the nine *Options of the input's own
     descriptor.proto, whatever its package."""
     result, out = _reproto(tmp_path)

@@ -99,19 +99,24 @@ fn partition(values: &[String]) -> Result<(Vec<String>, Vec<String>), String> {
     Ok((fqdns, paths))
 }
 
+/// Spec 0447 S8, both tools' words.
+const VARIANTS_GONE: &str =
+    "--proto-variant: variants are gone (spec 0447); use --profile, --descriptor and --target";
+const REPROTO_VARIANT_IGNORED: &str =
+    "$REPROTO_VARIANT is ignored: variants are gone (spec 0447); use --profile";
+
 /// A `-C` file's lists: reproto's `filter_config.load` (`seed:`,
-/// `prune:`), and protoback's `move:` and `variants:` (spec 0445 S1, S2).
+/// `prune:`), and protoback's `move:` (spec 0445 S1). Its `variants:`
+/// sections went with variants (spec 0447 S8): an unknown key.
 #[derive(Default)]
 struct FilterConfig {
     seeds: Vec<String>,
     prunes: Vec<String>,
     moves: Vec<moves::Move>,
-    /// `variants:` sections naming no variant in use: W26.
-    unmatched_variants: Vec<String>,
 }
 
-/// The `-C` file, its `variants:` section for `variant` appended.
-fn filter_config(path: &Path, variant: &str) -> Result<FilterConfig, String> {
+/// The `-C` file.
+fn filter_config(path: &Path) -> Result<FilterConfig, String> {
     let p = path.display();
     let text = std::fs::read_to_string(path).map_err(|e| format!("{p}: {e}"))?;
     let raw: serde_yaml::Value =
@@ -125,35 +130,9 @@ fn filter_config(path: &Path, variant: &str) -> Result<FilterConfig, String> {
     lists(
         &map,
         &format!("{p}"),
-        &["seed", "prune", "move", "variants"],
+        &["seed", "prune", "move"],
         &mut config,
     )?;
-    match map.get("variants") {
-        None | Some(serde_yaml::Value::Null) => {}
-        Some(serde_yaml::Value::Mapping(sections)) => {
-            for (name, section) in sections {
-                let Some(name) = name.as_str() else {
-                    return Err(format!("{p}: 'variants' keys must be variant names"));
-                };
-                let section = match section {
-                    serde_yaml::Value::Null => serde_yaml::Mapping::new(),
-                    serde_yaml::Value::Mapping(m) => m.clone(),
-                    _ => return Err(format!("{p}: 'variants: {name}' must be a mapping")),
-                };
-                let mut own = FilterConfig::default();
-                let at = format!("{p}: variants: {name}");
-                lists(&section, &at, &["seed", "prune", "move"], &mut own)?;
-                if name == variant {
-                    config.seeds.extend(own.seeds);
-                    config.prunes.extend(own.prunes);
-                    config.moves.extend(own.moves);
-                } else {
-                    config.unmatched_variants.push(name.to_string());
-                }
-            }
-        }
-        Some(_) => return Err(format!("{p}: 'variants' must be a mapping")),
-    }
     Ok(config)
 }
 
@@ -416,16 +395,16 @@ fn protoback(mut cli: Cli, explicit: &std::collections::HashSet<&'static str>) -
         cli.pb_files.clone()
     };
 
-    let mut variant = match Variant::load(cli.proto_variant.as_deref()) {
+    let mut variant = match Variant::load(None) {
         Ok(v) => v,
         Err(e) => return usage(&e),
     };
-    // Spec 0447 S1: --descriptor names the descriptor; else a variant does;
-    // else it is inferred from the input, once loaded.
+    // Spec 0447 S1: --descriptor names the descriptor; else it is inferred
+    // from the input, once loaded.
     if let Some(d) = &cli.descriptor {
         variant.descriptor_proto = d.clone();
     }
-    let infer_descriptor = cli.descriptor.is_none() && cli.proto_variant.is_none();
+    let infer_descriptor = cli.descriptor.is_none();
     report::variant(&variant.name);
     for key in &variant.unread_keys {
         events.warn(
@@ -467,17 +446,25 @@ fn protoback(mut cli: Cli, explicit: &std::collections::HashSet<&'static str>) -
     if !cli.use_variant.is_empty() {
         events.warn("W18", "--use-variant is deprecated; use --builtin");
     }
+    // Spec 0447 S8: variants are gone.
+    if cli.keep_descriptor_path {
+        events.warn(
+            "W18",
+            "--keep-descriptor-path is deprecated; use --target keep",
+        );
+    }
+    if cli.proto_variant.is_some() {
+        return usage(VARIANTS_GONE);
+    }
+    if std::env::var_os("REPROTO_VARIANT").is_some() && !cli.quiet {
+        events.attention(REPROTO_VARIANT_IGNORED);
+    }
     // Spec 0447: portable not yet (phase C).
     if cli.target == cli::Target::Portable {
         return usage("--target portable: not implemented yet (spec 0447)");
     }
-    if cli.target == cli::Target::Protoc
-        && (cli.proto_variant.is_some() || cli.keep_descriptor_path)
-    {
-        return usage(
-            "--target protoc derives its renaming from the descriptor; \
-             drop --proto-variant and --keep-descriptor-path",
-        );
+    if cli.target == cli::Target::Protoc && cli.keep_descriptor_path {
+        return usage("--target protoc and --keep-descriptor-path (--target keep) are exclusive");
     }
     if let Err(e) = stub_check(&cli, out_repo.as_deref()) {
         return usage(&e);
@@ -500,7 +487,7 @@ fn protoback(mut cli: Cli, explicit: &std::collections::HashSet<&'static str>) -
     }
     let mut config = FilterConfig::default();
     if let Some(path) = &cli.filter_config {
-        match filter_config(path, &variant.name) {
+        match filter_config(path) {
             Ok(c) => config = c,
             Err(e) => return usage(&e),
         }
@@ -589,20 +576,6 @@ fn protoback(mut cli: Cli, explicit: &std::collections::HashSet<&'static str>) -
             .filter(|p| !fallback.contains(p))
             .collect()
     };
-    // Spec 0445: the moves, each wrong one left out with W26; a variants:
-    // section for no variant in use, W26 too.
-    // A section for another variant: expected in a file serving several
-    // (spec 0445 G4), so not warned; listed in the report, codeless.
-    for name in &config.unmatched_variants {
-        report::idle(
-            None,
-            &format!("variants: {name}"),
-            &format!(
-                "not the variant in use ('{}'); its section not applied",
-                variant.name
-            ),
-        );
-    }
     let moves = moves::Moves::new(all_moves, &prune_fqdns, &mut events);
     let mut run = Run {
         roots,

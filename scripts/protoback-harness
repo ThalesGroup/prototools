@@ -53,12 +53,12 @@ WKT_SOURCES = REPO / "prototext/wkt/SOURCES"
 ANOMALIES = REPO / "tests/fixtures/anomalies.pb"
 
 # The flag sets every fixture runs with: the options that change the
-# output (S11). A case without a --use-variant of its own gets the
+# output (S11). A case without a --builtin of its own gets the
 # embedded descriptor.proto, as the test suite does: without it, reproto
 # stops on any input that does not include descriptor.proto.
 FLAG_SETS: dict[str, list[str]] = {
     "default": [],
-    "all-variants": ["--use-variant", "all"],
+    "all-builtin": ["--builtin", "all"],
     "force-proto2-output": ["--force-proto2-output"],
     "force-proto2-for-editions": ["--force-proto2-for-editions"],
     "schema-db": ["--emit-binary", "--emit-scoring-yaml",
@@ -82,13 +82,13 @@ FLAG_SETS: dict[str, list[str]] = {
     "scoring-html-bad-hide": ["--schema-db-out=out/db.desc", "--scoring-html-out=out/graph.html",
                               "--hide", "google.*"],
 }
-DEFAULT_VARIANT = ["--use-variant", "descriptor"]
+DEFAULT_BUILTIN = ["--builtin", "descriptor"]
 
 # googleapisDb's flags (nix/python.nix), and customDb's.
-GOOGLEAPIS_FLAGS = ["--use-variant", "all", "--force-proto2-for-editions",
+GOOGLEAPIS_FLAGS = ["--builtin", "all", "--force-proto2-for-editions",
                     "--emit-scoring-yaml", "--emit-binary",
                     "--schema-db-out=out/googleapis.desc"]
-CUSTOM_FLAGS = ["--use-variant", "all", "--force-proto2-for-editions",
+CUSTOM_FLAGS = ["--builtin", "all", "--force-proto2-for-editions",
                 "--emit-scoring-yaml", "--schema-db-out=out/custom.desc"]
 
 
@@ -446,10 +446,11 @@ def cases(corpus: Path) -> list[Case]:
     for name, o in (("proto-child", "out/s/proto"), ("stub", "out/s"),
                     ("other-child", "out/s/desc"), ("nested-proto", "out/s/n/proto"),
                     ("outside", "out/elsewhere")):
-        out.append(Case(f"stub-dir/{name}", ["-I", str(ab_dir), "--use-variant", "descriptor",
+        out.append(Case(f"stub-dir/{name}", ["-I", str(ab_dir), "--builtin", "descriptor",
                                              "--schema-db-out=out/s.desc", f"-O{o}",
                                              "address_book.pb"]))
-    for name, flags in (("plain", []), ("use-variant", ["--use-variant", "descriptor"])):
+    for name, flags in (("plain", []), ("builtin", ["--builtin", "descriptor"]),
+                        ("use-variant", ["--use-variant", "descriptor"])):
         out.append(Case(f"nothing-loaded/{name}", [*flags, "-O", "out/o", "missing.pb"]))
 
     # Seeds and prunes on one set with imports.
@@ -588,8 +589,8 @@ def cases(corpus: Path) -> list[Case]:
                          "--proto-out=out/googleapis/proto", *GOOGLEAPIS_FLAGS,
                          "googleapis.pb"]))
     for case in out:
-        if case.tool == "reproto" and "--use-variant" not in case.args:
-            case.args[:0] = DEFAULT_VARIANT
+        if case.tool == "reproto" and not {"--builtin", "--use-variant"} & set(case.args):
+            case.args[:0] = DEFAULT_BUILTIN
     return out
 
 

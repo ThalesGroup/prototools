@@ -108,18 +108,6 @@ def test_fail_on_an_unknown_code_is_a_usage_error(inputs: Path) -> None:
     assert "unknown warning code 'W99'" in result.stderr
 
 
-def test_a_variant_key_no_tool_reads_is_said(inputs: Path) -> None:
-    variant = inputs.parent / "v.yaml"
-    variant.write_text(
-        "name: stale\ndescriptor_proto: google/protobuf/descriptor.proto\n"
-        "annotation_modules:\n  - some.module_pb2\n",
-        encoding="utf-8",
-    )
-    result = _run(inputs, "--proto-variant", str(variant))
-    assert ("Warning [W17]: variant 'stale': key 'annotation_modules' is not read; "
-            "it has no effect") in result.stderr.splitlines()
-
-
 @pytest.mark.skipif(
     "reproto.tests.via_text" in REPROTO_CMD,
     reason="the text format cannot keep a group: protoc prints it as a message, read "

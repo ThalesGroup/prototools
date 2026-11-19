@@ -458,159 +458,64 @@ def test_TC_MS4_item_node_excluded_from_entries(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# TC-6: Canonized output paths via variant import rewrites (spec 0086)
+# TC-6: Canonized output paths under --target protoc (specs 0086, 0447 S3)
 # ---------------------------------------------------------------------------
 
+# A file of a vendor descriptor's types (spec 0447's fixture, conftest).
+_VENDOR_USER = """name: "c.proto" package: "c" dependency: "vendor/proto/descriptor.proto"
+message_type { name: "M" field { name: "m" number: 1 label: LABEL_OPTIONAL
+  type: TYPE_ENUM type_name: ".vendor.FileOptions.OptimizeMode" } }
+"""
+
+
 def test_TC6_canonized_output_paths(tmp_path: Path) -> None:
-    """Variant import_rewrites + namespace_rewrites: all outputs use canonized names.
+    """--target protoc rewrites the vendor descriptor's path and package:
+    every output uses the rewritten names.
 
-    Uses address_book + phone_number fixtures with a variant that rewrites:
-    - phone_number.proto -> canonical/phone_number.proto  (import_rewrites)
-    - .tutorial.          -> .canonical.tutorial.          (namespace_rewrites)
-
-    Verifies §86.1/§86.2 (file paths):
-    - output .proto is at canonical/phone_number.proto (not phone_number.proto)
-    - output .yaml  is at canonical/phone_number.yaml  (not phone_number.yaml)
-    - import statement inside address_book.proto references canonical/phone_number.proto
-
-    Verifies §86.3 (binary fdp.name and fdp.dependency):
-    - phone_number.pb carries fdp.name == canonical/phone_number.proto
-    - address_book.pb carries the canonized dependency path
-
-    Verifies §86.4 (binary type_name):
-    - address_book.pb Person.phones field carries
-      type_name == .canonical.tutorial.PhoneNumber (not .tutorial.PhoneNumber)
+    - its .proto and .yaml at google/protobuf/descriptor.*, not at its
+      input path (spec 0086 §86.1, §86.2);
+    - the importer's import, and its binary dependency, the rewritten path
+      (§86.1, §86.3);
+    - the binary's own name and package rewritten, its self-references
+      consistent with that package (§86.3, spec 0159);
+    - the importer's binary type_name rewritten (§86.4).
     """
-    pb_dir = tmp_path / "pb"
-    pb_dir.mkdir()
+    from google.protobuf.descriptor_pb2 import FileDescriptorProto
+
+    from reproto.tests.conftest import vendor_descriptor
+    vendor_descriptor(tmp_path)
+    inputs = tmp_path / "in"
+    (inputs / "c.textpb").write_text(_VENDOR_USER, encoding="utf-8")
     out_dir = tmp_path / "out"
-    out_dir.mkdir()
-
-    # Compile address_book + phone_number into a single FDS with --include_imports
-    from reproto.tests.conftest import compile_proto_multi
-    pb = compile_proto_multi(pb_dir / "ab.pb", "address_book.proto", "phone_number.proto")
-
-    # Write a variant YAML that rewrites phone_number.proto -> canonical/phone_number.proto
-    variant_yaml = tmp_path / "test_variant.yaml"
-    variant_yaml.write_text(
-        "name: test\n"
-        "descriptor_proto: google/protobuf/descriptor.proto\n"
-        "well_known: {}\n"
-        "import_rewrites:\n"
-        "  - match: phone_number.proto\n"
-        "    action: rewrite\n"
-        "    to: canonical/phone_number.proto\n"
-        "namespace_rewrites:\n"
-        "  - match: .tutorial.\n"
-        "    action: rewrite\n"
-        "    to: .canonical.tutorial.\n"
-        "orphans: {}\n"
-    )
-
-    # The custom variant has no embedded .pb files, so --use-variant descriptor
-    # cannot load the fallback from it.  Copy the embedded descriptor.pb from
-    # the built-in google-protobuf variant into the temp variant directory so
-    # load_embedded_proto_fallback() finds it under variant_root/variant_stem/.
-    import importlib.resources
-    embedded_pb = (
-        importlib.resources.files("reproto.variants")
-        .joinpath("google-protobuf")
-        .joinpath("google").joinpath("protobuf").joinpath("descriptor.pb")
-        .read_bytes()
-    )
-    descriptor_dir = tmp_path / "test_variant" / "google" / "protobuf"
-    descriptor_dir.mkdir(parents=True)
-    (descriptor_dir / "descriptor.pb").write_bytes(embedded_pb)
-
-    src_path = str(Path(__file__).parent.parent.parent)
-    import os
-    pythonpath_parts = [src_path]
-    if existing := os.environ.get("PYTHONPATH"):
-        pythonpath_parts.append(existing)
-    env = {**os.environ, "PYTHONPATH": os.pathsep.join(pythonpath_parts)}
-    env.pop("REPROTO_VARIANT", None)
-
+    env = {k: v for k, v in os.environ.items() if k != "REPROTO_VARIANT"}
     result = subprocess.run(
-        [
-            *REPROTO_CMD,
-            "--proto-variant", str(variant_yaml),
-            "--use-variant", "descriptor",
-            f"-I{FIXTURES_DIR}",
-            f"--proto-out={out_dir}",
-            "--emit-scoring-yaml",
-            "--emit-binary",
-            str(pb),
-        ],
+        # Named: nothing here extends its options, for S1 to infer it.
+        [*REPROTO_CMD, "--target", "protoc", "--descriptor", "vendor/proto/descriptor.proto",
+         f"-I{inputs}", f"--proto-out={out_dir}",
+         "--emit-scoring-yaml", "--emit-binary"],
         capture_output=True, text=True, env=env,
     )
     assert result.returncode == 0, result.stderr
 
-    # §86.1 — .proto output must be at canonized path
-    assert (out_dir / "canonical" / "phone_number.proto").exists(), (
-        "phone_number.proto must be written at canonical/phone_number.proto"
-    )
-    assert not (out_dir / "phone_number.proto").exists(), (
-        "phone_number.proto must NOT be written at the original path"
-    )
+    canonical = out_dir / "google" / "protobuf"
+    assert (canonical / "descriptor.proto").exists()
+    assert not (out_dir / "vendor" / "proto" / "descriptor.proto").exists()
+    assert (canonical / "descriptor.yaml").exists()
+    assert not (out_dir / "vendor" / "proto" / "descriptor.yaml").exists()
+    assert 'import "google/protobuf/descriptor.proto"' in (out_dir / "c.proto").read_text()
 
-    # §86.2 — .yaml output must be at canonized path
-    assert (out_dir / "canonical" / "phone_number.yaml").exists(), (
-        "phone_number.yaml must be written at canonical/phone_number.yaml"
-    )
-    assert not (out_dir / "phone_number.yaml").exists(), (
-        "phone_number.yaml must NOT be written at the original path"
-    )
+    desc = FileDescriptorProto()
+    desc.ParseFromString((canonical / "descriptor.pb").read_bytes())
+    assert desc.name == "google/protobuf/descriptor.proto"
+    assert desc.package == "google.protobuf"
+    options = next(m for m in desc.message_type if m.name == "FileOptions")
+    optimize = next(f for f in options.field if f.name == "optimize_for")
+    assert optimize.type_name == ".google.protobuf.FileOptions.OptimizeMode"
 
-    # §86.1 — import statement inside address_book.proto must reference the canonized path
-    ab_proto = (out_dir / "address_book.proto").read_text()
-    assert 'import "canonical/phone_number.proto"' in ab_proto, (
-        "address_book.proto must import canonical/phone_number.proto"
-    )
-    assert 'import "phone_number.proto"' not in ab_proto, (
-        "address_book.proto must not import the original phone_number.proto path"
-    )
-
-    # §86.3 — binary phone_number.pb must carry the canonized file name
-    from google.protobuf.descriptor_pb2 import FileDescriptorProto
-    pn_pb_path = out_dir / "canonical" / "phone_number.pb"
-    assert pn_pb_path.exists(), "phone_number.pb must be written at canonical/phone_number.pb"
-    pn_fdp = FileDescriptorProto()
-    pn_fdp.ParseFromString(pn_pb_path.read_bytes())
-    assert pn_fdp.name == "canonical/phone_number.proto", (
-        f"phone_number.pb fdp.name must be canonized, got {pn_fdp.name!r}"
-    )
-
-    # spec 0159 — phone_number.pb's own package must be canonized alongside
-    # its self-referencing type names, so PhoneNumber.type's type_name stays
-    # consistent with its own file's declared package.
-    assert pn_fdp.package == "canonical.tutorial", (
-        f"phone_number.pb package must be canonized, got {pn_fdp.package!r}"
-    )
-    phone_number_msg = next(m for m in pn_fdp.message_type if m.name == "PhoneNumber")
-    type_field = next(f for f in phone_number_msg.field if f.name == "type")
-    assert type_field.type_name == ".canonical.tutorial.PhoneNumber.PhoneType", (
-        f"PhoneNumber.type type_name must stay consistent with the canonized "
-        f"package, got {type_field.type_name!r}"
-    )
-
-    # §86.3 — binary address_book.pb must carry the canonized dependency path
-    ab_pb_path = out_dir / "address_book.pb"
-    assert ab_pb_path.exists(), "address_book.pb must be written"
-    ab_fdp = FileDescriptorProto()
-    ab_fdp.ParseFromString(ab_pb_path.read_bytes())
-    assert "canonical/phone_number.proto" in ab_fdp.dependency, (
-        f"address_book.pb dependency must contain canonized path, got {list(ab_fdp.dependency)!r}"
-    )
-    assert "phone_number.proto" not in ab_fdp.dependency, (
-        "address_book.pb must not contain the original phone_number.proto dependency"
-    )
-
-    # §86.4 — binary address_book.pb Person.phones field must carry the canonized type_name
-    person_msg = next(m for m in ab_fdp.message_type if m.name == "Person")
-    phones_field = next(f for f in person_msg.field if f.name == "phones")
-    assert phones_field.type_name == ".canonical.tutorial.PhoneNumber", (
-        f"phones field type_name must be canonized, got {phones_field.type_name!r}"
-    )
+    user = FileDescriptorProto()
+    user.ParseFromString((out_dir / "c.pb").read_bytes())
+    assert list(user.dependency) == ["google/protobuf/descriptor.proto"]
+    assert user.message_type[0].field[0].type_name == ".google.protobuf.FileOptions.OptimizeMode"
 
 
 # ---------------------------------------------------------------------------

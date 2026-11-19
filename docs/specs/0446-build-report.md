@@ -109,9 +109,9 @@ report the facts, completely, in a form a program can rely on.
 - **S5.** `idle_directives`: each prune or seed pattern matching nothing
   (W11, W12), and each move that did not apply as written (spec 0445's
   W25, idle, and W26, broken), with its exact reason: `{code, directive,
-  reason}`, the reason the warning's message. A `variants:` section for
-  another variant is listed too, `code` null: it is not warned (spec 0445
-  S2).
+  reason}`, the reason the warning's message. (A `variants:` section for
+  another variant was listed too, `code` null, until variants went: spec
+  0447 S8.)
 - **S6.** `run.inputs`: each physical file read, `{root, path, files}`:
   its `-I` root, its path under it (the file found, `a.pb`, for an import
   of `a.proto`), and the FDPs it gave.

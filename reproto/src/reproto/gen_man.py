@@ -123,8 +123,9 @@ def _render(cmd: click.Command) -> str:
 
     buf.append(r'.SH ENVIRONMENT')
     buf.append(r'.TP')
-    buf.append(r'\fBREPROTO_VARIANT\fR')
-    buf.append(r'Path to a variant YAML file used when \fB\-\-proto\-variant\fR is not given.')
+    buf.append(r'\fBPROTOBACK_PROFILE_PATH\fR')
+    buf.append(r'Folders, separated by colons, where \fB\-\-profile\fR looks for a profile')
+    buf.append(r'after the current directory and before the built-in ones.')
     buf.append(r'.TP')
     buf.append(r'\fBREPROTO_GEN_MAN\fR')
     buf.append(r'When set to a directory, write the man pages of \fBreproto\fR and')

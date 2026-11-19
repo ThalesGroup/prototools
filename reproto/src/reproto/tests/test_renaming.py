@@ -2,110 +2,75 @@
 #
 # SPDX-License-Identifier: MIT
 
-"""The variant's rewrites, one renaming (spec 0440).
+"""The renaming --target protoc derives, written (specs 0440, 0447 S3).
 
-A variant rewriting `priv/` to `google/protobuf/` and `.priv.` to
-`.google.protobuf.`: names are written as spec 0434 writes them, in the
-output namespace (S3); two symbols rewritten onto one name stop the run
-(S2); --keep-descriptor-path keeps the input's names.
+The vendor descriptor's definitions renamed to `google.protobuf`: names are
+written as spec 0434 writes them, in the output namespace (0440 S3), in the
+importers and in the descriptor itself, whose package is the stock one in
+its file alone; two symbols renamed onto one name stop the run (0440 S2).
 """
 
 import os
 import subprocess
 from pathlib import Path
 
-import pytest
+from .conftest import REPROTO_CMD, vendor_descriptor
 
-from .conftest import REPROTO_CMD
-
-VARIANTS = Path(__file__).resolve().parents[1] / "variants"
-
-EXTRA = """syntax = "proto2";
-package priv;
-import "google/protobuf/descriptor.proto";
-message Empty { optional int32 marker = 1; }
-message Note { optional string text = 1; optional Empty empty = 2; }
-extend google.protobuf.FieldOptions { optional string tag = 50201; }
-"""
-USE = """syntax = "proto2";
-package app;
-import "priv/extra.proto";
-import "google/protobuf/empty.proto";
-message M {
-  optional priv.Note note = 1 [(priv.tag) = "t"];
-  optional priv.Empty mine = 2;
-  optional google.protobuf.Empty theirs = 3;
-}
-message N {
-  message google {}
-  optional .priv.Note note = 1;
-}
-"""
+USE = '''name: "app/use.proto" package: "app" dependency: "vendor/proto/descriptor.proto"
+extension { name: "tag" number: 50201 label: LABEL_OPTIONAL type: TYPE_STRING
+  extendee: ".vendor.FieldOptions" }
+message_type { name: "M"
+  field { name: "mode" number: 1 label: LABEL_OPTIONAL type: TYPE_ENUM
+    type_name: ".vendor.FileOptions.OptimizeMode" options { 50201: "t" } } }
+message_type { name: "N"
+  nested_type { name: "google" }
+  field { name: "mode" number: 1 label: LABEL_OPTIONAL type: TYPE_ENUM
+    type_name: ".vendor.FileOptions.OptimizeMode" } }
+'''
+# A file of protoc's own package, beside the vendor descriptor.
+EMPTY = '''name: "google/protobuf/empty.proto" package: "google.protobuf"
+message_type { name: "Empty" }
+'''
 
 
-def _variant(tmp_path: Path) -> Path:
-    text = (VARIANTS / "google-protobuf.yaml").read_text(encoding="utf-8")
-    text = text.replace("name: google.protobuf", "name: priv-test", 1)
-    text = text.replace(
-        "import_rewrites: []",
-        "import_rewrites:\n  - match: priv/\n    action: rewrite\n    to: google/protobuf/", 1)
-    text = text.replace(
-        "namespace_rewrites: []",
-        "namespace_rewrites:\n  - match: .priv.\n    action: rewrite\n    to: .google.protobuf.", 1)
-    path = tmp_path / "variant.yaml"
-    path.write_text(text, encoding="utf-8")
-    return path
-
-
-def _run(tmp_path: Path, *flags: str) -> subprocess.CompletedProcess[str]:
-    src = tmp_path / "src"
-    (src / "priv").mkdir(parents=True, exist_ok=True)
-    (src / "app").mkdir(exist_ok=True)
-    (src / "priv" / "extra.proto").write_text(EXTRA, encoding="utf-8")
-    (src / "app" / "use.proto").write_text(USE, encoding="utf-8")
+def _run(tmp_path: Path, *flags: str, top: str = "",
+         files: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    vendor_descriptor(tmp_path, top=top)
     inp = tmp_path / "in"
-    inp.mkdir(exist_ok=True)
-    subprocess.run(["protoc", f"-I{src}", "--include_imports",
-                    f"--descriptor_set_out={inp / 'in.pb'}", "app/use.proto"],
-                   check=True, capture_output=True)
+    for name, text in ({"use.textpb": USE} if files is None else files).items():
+        (inp / name).write_text(text, encoding="utf-8")
     env = {k: v for k, v in os.environ.items() if k != "REPROTO_VARIANT"}
     return subprocess.run(
-        [*REPROTO_CMD, "--proto-variant", str(_variant(tmp_path)), *flags,
-         f"-I{inp}", "-O", str(tmp_path / "out")],
+        [*REPROTO_CMD, "--target", "protoc", *flags, f"-I{inp}", "-O", str(tmp_path / "out")],
         capture_output=True, text=True, env=env,
     )
 
 
-def test_two_symbols_rewritten_onto_one_name_stop_the_run(tmp_path: Path) -> None:
+def test_renamed_names_are_written_in_the_output_namespace(tmp_path: Path) -> None:
     result = _run(tmp_path)
-    assert result.returncode == 1, result.stderr
-    assert ("'priv/extra.proto' and 'google/protobuf/empty.proto' both define "
-            "'google.protobuf.Empty' once rewritten; prune one (-p)") in result.stderr
-    # The outermost name only: not its field.
-    assert "Empty.marker" not in result.stderr
-    assert not (tmp_path / "out" / "app" / "use.proto").exists()
-
-
-def test_rewritten_names_are_written_in_the_output_namespace(tmp_path: Path) -> None:
-    result = _run(tmp_path, "-p", "file:google/protobuf/empty.proto")
     assert result.returncode == 0, result.stderr
     out = tmp_path / "out"
     use = (out / "app" / "use.proto").read_text(encoding="utf-8")
-    extra = (out / "google" / "protobuf" / "extra.proto").read_text(encoding="utf-8")
-    # From another package: in full, no dot; the option name too.
-    assert 'optional google.protobuf.Note note = 1 [(google.protobuf.tag) = "t"];' in use
+    # From another package: in full, no dot.
+    assert "optional google.protobuf.FileOptions.OptimizeMode mode = 1" in use, use
     # Where `google` is captured (N.google): the dot.
-    assert "optional .google.protobuf.Note note = 1;" in use
-    # Within its own output package: short.
-    assert "optional Empty empty = 2;" in extra
+    assert "optional .google.protobuf.FileOptions.OptimizeMode mode = 1;" in use, use
+    assert "extend google.protobuf.FieldOptions {" in use, use
+    # Within the descriptor, its own output package: short.
+    desc = (out / "google" / "protobuf" / "descriptor.proto").read_text(encoding="utf-8")
+    assert "optional OptimizeMode optimize_for = 9" in desc, desc
+    assert "optional FeatureSet features = 50;" in desc, desc
     compiled = subprocess.run(["protoc", f"-I{out}", "-o", os.devnull, "app/use.proto"],
                               capture_output=True, text=True)
     assert compiled.returncode == 0, compiled.stderr
 
 
-@pytest.mark.parametrize("prune", [[], ["-p", "file:google/protobuf/empty.proto"]])
-def test_keep_descriptor_path_keeps_the_input_names(tmp_path: Path, prune: list[str]) -> None:
-    result = _run(tmp_path, "--keep-descriptor-path", *prune)
-    assert result.returncode == 0, result.stderr
-    text = (tmp_path / "out" / "app" / "use.proto").read_text(encoding="utf-8")
-    assert 'optional priv.Note note = 1 [(priv.tag) = "t"];' in text
+def test_two_symbols_renamed_onto_one_name_stop_the_run(tmp_path: Path) -> None:
+    result = _run(tmp_path, top="message Empty { optional int32 marker = 1; }\n",
+                  files={"use.textpb": USE, "empty.textpb": EMPTY})
+    assert result.returncode == 1, result.stderr
+    assert ("'google/protobuf/empty.proto' and 'vendor/proto/descriptor.proto' both define "
+            "'google.protobuf.Empty' once rewritten; prune one (-p)") in result.stderr, result.stderr
+    # The outermost name only: not its field.
+    assert "Empty.marker" not in result.stderr
+    assert not (tmp_path / "out" / "app" / "use.proto").exists()

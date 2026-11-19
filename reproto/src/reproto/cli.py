@@ -434,14 +434,10 @@ class _SectionedCommand(click.Command):
 @click.option(
     '--proto-variant',
     required=False,
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    type=click.Path(path_type=Path),
     default=None,
     shell_complete=complete_yaml_path,
-    help=(
-        'Path to a variant specification YAML file. '
-        'If omitted, $REPROTO_VARIANT is used; '
-        'otherwise the built-in google.protobuf default applies.'
-    ),
+    help='Removed (spec 0447): variants are gone; use --profile, --descriptor and --target.',
 )
 
 @click.option(
@@ -523,7 +519,7 @@ class _SectionedCommand(click.Command):
 @click.option(
     '--keep-descriptor-path',
     is_flag=True,
-    help='Keep the variant descriptor import path as-is (do not rewrite to google/protobuf/descriptor.proto)',
+    help='Deprecated: use --target keep (the default).',
 )
 
 @click.option(
@@ -883,7 +879,7 @@ def main(
     _quiet = quiet
 
     import sys as _sys
-    from .lib.warnings import configure_collector, get_collector, warn
+    from .lib.warnings import cli_attention, configure_collector, get_collector, warn
     # First: every warning from here on is counted (spec 0438 S4).
     configure_collector(detailed=detailed_warnings)
 
@@ -941,13 +937,22 @@ def main(
             emit_scoring_html = emit_pyvis
     if use_variant:
         warn('W18', '--use-variant is deprecated; use --builtin')
+    # Spec 0447 S8: variants are gone.
+    if keep_descriptor_path:
+        warn('W18', '--keep-descriptor-path is deprecated; use --target keep')
+    if proto_variant is not None:
+        raise click.UsageError(
+            "--proto-variant: variants are gone (spec 0447); "
+            "use --profile, --descriptor and --target")
+    if 'REPROTO_VARIANT' in os.environ and not quiet:
+        cli_attention("$REPROTO_VARIANT is ignored: variants are gone (spec 0447); "
+                      "use --profile")
     # Spec 0447 S9: portable is protoback's alone.
     if target == 'portable':
         raise click.UsageError("--target portable: not implemented by reproto; use protoback")
-    if target == 'protoc' and (proto_variant is not None or keep_descriptor_path):
+    if target == 'protoc' and keep_descriptor_path:
         raise click.UsageError(
-            "--target protoc derives its renaming from the descriptor; "
-            "drop --proto-variant and --keep-descriptor-path")
+            "--target protoc and --keep-descriptor-path (--target keep) are exclusive")
     if editions == 'proto2':
         force_proto2_for_editions = True
 
@@ -997,14 +1002,12 @@ def main(
     if proto_out is not None:
         proto_out.mkdir(parents=True, exist_ok=True)
 
-    # Load variant (path arg > REPROTO_VARIANT env > built-in google-protobuf.yaml)
-    variant = variant_mod.load(str(proto_variant) if proto_variant else None)
-    # Spec 0447 S1: --descriptor names the descriptor; else a variant does;
-    # else it is inferred from the input, once loaded.
+    variant = variant_mod.load()
+    # Spec 0447 S1: --descriptor names the descriptor; else it is inferred
+    # from the input, once loaded.
     if descriptor is not None:
         variant['variant_descriptor_proto'] = descriptor
-    infer_descriptor = (descriptor is None and proto_variant is None
-                        and 'REPROTO_VARIANT' not in os.environ)
+    infer_descriptor = descriptor is None
 
     if fdp_plugin:
         source = Path(fdp_plugin).read_text(encoding='utf-8')

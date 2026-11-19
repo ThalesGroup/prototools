@@ -168,7 +168,7 @@ fn report_written_on_fail_on() {
 fn report_never_stale() {
     let dir = setup("stale", &[("p", P)]);
     std::fs::write(dir.join("report.json"), "previous run").unwrap();
-    // A run that fails once options are parsed: a variant that is no file.
+    // A run that fails once options are parsed: --proto-variant, gone.
     let r = run(&dir, &["--proto-variant", "/nonexistent/variant.yaml"]);
     assert_eq!(r.status, 2, "{}", r.stderr);
     let report = r.report.expect("this run's report, not the previous one");
@@ -249,22 +249,4 @@ fn report_schema_and_rewrites() {
     assert!(idle
         .iter()
         .any(|i| i["code"] == "W11" && i["directive"] == "desc:nothing/Here"));
-}
-
-#[test]
-fn report_lists_another_variants_section_codeless() {
-    let dir = setup("variants", &[("p", P)]);
-    let config = dir.join("filter.yaml");
-    std::fs::write(
-        &config,
-        "variants:\n  other:\n    prune:\n      - file:p.proto\n",
-    )
-    .unwrap();
-    let r = run(&dir, &["-C", config.to_str().unwrap()]);
-    assert_eq!(r.status, 0, "{}", r.stderr);
-    assert!(!r.stderr.contains("W26"), "{}", r.stderr);
-    let report = r.report.unwrap();
-    let idle = &report["idle_directives"][0];
-    assert_eq!(idle["code"], Value::Null);
-    assert_eq!(idle["directive"], "variants: other");
 }
