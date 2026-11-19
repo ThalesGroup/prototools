@@ -158,7 +158,11 @@ imports, and a batch hides failures.
 - **S5. Redaction** (`portable`): an option set on a built-in field the
   stock descriptor lacks, or to an enum value it lacks (`EDITION_2026` in a
   descriptor newer than the reader), written as an orphan comment with its
-  number and value, warned (W28), and listed in the report. In the
+  number and value, warned (W28), and listed in the report. Anywhere in
+  the option's value: an enum value or a field of a nested message the
+  stock descriptor lacks redacts the option, each element of a repeated
+  one on its own (an `edition_defaults` entry for an edition the reader
+  does not know goes, the others stay). In the
   binary descriptors the field stays as the input has it, raw, under its
   number: the binary copies the input's options. Checked: Python's protobuf
   (upb) loads such a descriptor, keeping the field as an unknown field, and
@@ -166,6 +170,14 @@ imports, and a batch hides failures.
   reader that drops unknown fields (prost, by its design) loses the value,
   not the descriptor. The one risk: stock protobuf later giving that number
   another meaning, then misread.
+
+- **S5b. Names** (`portable`): protoc checks names from edition 2024 on
+  (`STYLE2024`), a check a vendor's compiler may not have made, and no
+  option of protoc's turns it off. An edition 2024 (or later) file written
+  as editions, not setting `enforce_naming_style` itself, is written with
+  `option features.enforce_naming_style = STYLE_LEGACY;`, warned (W30);
+  its binary descriptor keeps the input's options. Every such file, its
+  names checked or not: the option only lifts a check.
 
 ### Profiles
 
@@ -217,6 +229,7 @@ imports, and a batch hides failures.
   | W27 | the input's own `google/protobuf/descriptor.proto` dropped for the vendor descriptor (target `protoc`) |
   | W28 | an option the target's reader cannot represent, redacted (target `portable`) |
   | W29 | a profile folder's file replacing an input's copy that defines something it lacks |
+  | W30 | an edition 2024 file written with `enforce_naming_style = STYLE_LEGACY` (target `portable`) |
 
 ## Alternatives considered
 

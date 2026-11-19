@@ -95,6 +95,7 @@ by spec 0427) is ignored silently, so a stale variant looks meaningful.
   | W27 | the input's own `google/protobuf/descriptor.proto` dropped for the vendor descriptor (spec 0447) |
   | W28 | an option the target's reader cannot represent, redacted (spec 0447; protoback only) |
   | W29 | a profile folder's file replacing an input's copy that defines something it lacks (spec 0447) |
+  | W30 | an edition 2024 file written with `enforce_naming_style = STYLE_LEGACY` (spec 0447, target portable; protoback only) |
   | T1 | text: a field by number declared nowhere, read as length-delimited (was W1) |
   | T2 | text: a string protoc printed as a message, rebuilt (was W2) |
   | T3 | text: an `[extension]` declared nowhere, skipped (was W3) |

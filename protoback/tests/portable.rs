@@ -13,7 +13,8 @@ use std::process::Command;
 
 /// A vendor's descriptor.proto, small: `FieldOptions` has a field protoc's
 /// lacks (`vendor_only`, 90) and its `CType` a value protoc's lacks
-/// (`VENDOR_TYPE`, 7).
+/// (`VENDOR_TYPE`, 7); its `Edition` a value protoc's lacks (1002), which
+/// an `edition_defaults` entry can hold.
 const VENDOR: &str = r#"name: "vendor/proto/descriptor.proto" package: "vendor"
 message_type { name: "FileOptions"
   field { name: "java_package" number: 1 label: LABEL_OPTIONAL type: TYPE_STRING }
@@ -23,10 +24,18 @@ message_type { name: "FieldOptions"
     type_name: ".vendor.FieldOptions.CType" }
   field { name: "deprecated" number: 3 label: LABEL_OPTIONAL type: TYPE_BOOL }
   field { name: "vendor_only" number: 90 label: LABEL_OPTIONAL type: TYPE_BOOL }
+  field { name: "edition_defaults" number: 20 label: LABEL_REPEATED type: TYPE_MESSAGE
+    type_name: ".vendor.FieldOptions.EditionDefault" }
+  nested_type { name: "EditionDefault"
+    field { name: "value" number: 2 label: LABEL_OPTIONAL type: TYPE_STRING }
+    field { name: "edition" number: 3 label: LABEL_OPTIONAL type: TYPE_ENUM
+      type_name: ".vendor.Edition" } }
   enum_type { name: "CType" value { name: "STRING" number: 0 }
     value { name: "CORD" number: 1 } value { name: "STRING_PIECE" number: 2 }
     value { name: "VENDOR_TYPE" number: 7 } }
-  extension_range { start: 1000 end: 536870912 } }"#;
+  extension_range { start: 1000 end: 536870912 } }
+enum_type { name: "Edition" value { name: "EDITION_2023" number: 1000 }
+  value { name: "EDITION_2026" number: 1002 } }"#;
 
 /// A custom option on the vendor's FieldOptions, set; the vendor-only field
 /// and value set; a stock field set. By number: a text is parsed as the
@@ -43,7 +52,9 @@ message_type { name: "M"
   field { name: "h" number: 3 label: LABEL_OPTIONAL type: TYPE_STRING
     options { 1: 7 } }
   field { name: "i" number: 4 label: LABEL_OPTIONAL type: TYPE_STRING
-    options { 1: 1 } } }"#;
+    options { 1: 1 } }
+  field { name: "j" number: 5 label: LABEL_OPTIONAL type: TYPE_STRING
+    options { 20 { 3: 1000 2: "a" } 20 { 3: 1002 2: "b" } } } }"#;
 
 fn setup(test: &str) -> PathBuf {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("portable-{test}"));
@@ -140,6 +151,27 @@ fn portable_redacts_what_protocs_descriptor_lacks() {
     assert!(line("VENDOR_TYPE").ends_with("// field 1, value 7"), "{c}");
     // A value protoc's enum has: written.
     assert!(!line("CORD").starts_with("//"), "{c}");
+    // Nested in an aggregate, element by element: the entry of an edition
+    // protoc lacks redacted, the other written.
+    assert!(
+        r.stderr.contains(
+            "'c.proto': option edition_defaults: value 1002 of field 3 of \
+             FieldOptions.EditionDefault (field 20 of FieldOptions) is not in protoc's \
+             descriptor: written as an orphan (--target portable)"
+        ),
+        "{}",
+        r.stderr
+    );
+    // The entry is written over lines; the note follows its last.
+    assert!(line("value: 'b'").starts_with("//"), "{c}");
+    assert!(line("EDITION_2026").starts_with("//"), "{c}");
+    assert!(
+        line("field 20, value 1002")
+            .ends_with("},  // field 20, value 1002 of field 3 of FieldOptions.EditionDefault"),
+        "{c}"
+    );
+    assert!(!line("value: 'a'").starts_with("//"), "{c}");
+    assert!(!line("EDITION_2023").starts_with("//"), "{c}");
     // The binary keeps the input's options: field 90 = 1.
     let db = std::fs::read(&r.db).unwrap();
     assert!(
@@ -169,4 +201,54 @@ fn portable_with_keep_descriptor_path_is_a_usage_error() {
         "{}",
         r.stderr
     );
+}
+
+/// An edition 2024 file, a name protoc's naming check refuses.
+const EDITION_2024: &str = r#"name: "e.proto" package: "e" syntax: "editions" edition: EDITION_2024
+message_type { name: "BTI_IBlock" field { name: "x" number: 1 type: TYPE_INT32 } }"#;
+
+#[test]
+fn portable_turns_protocs_naming_check_off_in_edition_2024_files() {
+    let dir = setup("naming");
+    std::fs::write(dir.join("in/e.textpb"), EDITION_2024).unwrap();
+    // The same, edition 2023: protoc does not check names there.
+    std::fs::write(
+        dir.join("in/e23.textpb"),
+        EDITION_2024
+            .replace("e.proto", "e23.proto")
+            .replace("package: \"e\"", "package: \"e23\"")
+            .replace("EDITION_2024", "EDITION_2023"),
+    )
+    .unwrap();
+    // The same, setting the feature itself (STYLE2024, 1).
+    std::fs::write(
+        dir.join("in/e24.textpb"),
+        EDITION_2024
+            .replace("e.proto", "e24.proto")
+            .replace("package: \"e\"", "package: \"e24\"")
+            .replace(
+                "edition: EDITION_2024",
+                "edition: EDITION_2024 options { features { 7: 1 } }",
+            ),
+    )
+    .unwrap();
+    const LINE: &str = "option features.enforce_naming_style = STYLE_LEGACY;";
+    let r = run(&dir, &["--target", "portable"]);
+    assert_eq!(r.status, 0, "{}", r.stderr);
+    assert!(read(&r.out.join("e.proto")).contains(LINE));
+    assert!(
+        r.stderr.contains(
+            "'e.proto': option features.enforce_naming_style = STYLE_LEGACY added: protoc \
+             checks names from edition 2024 on (--target portable)"
+        ),
+        "{}",
+        r.stderr
+    );
+    assert!(!read(&r.out.join("e23.proto")).contains(LINE));
+    assert!(!read(&r.out.join("e24.proto")).contains(LINE));
+    // Only under portable.
+    let r = run(&dir, &[]);
+    assert_eq!(r.status, 0, "{}", r.stderr);
+    assert!(!read(&r.out.join("e.proto")).contains(LINE));
+    assert!(!r.stderr.contains("W30"), "{}", r.stderr);
 }

@@ -580,7 +580,8 @@ fn render_body(
     }
     out.div_maybe(depth);
 
-    let options = file_options(ctx, f, depth);
+    let mut options = file_options(ctx, f, depth);
+    options.extend(legacy_naming_style(ctx, f, depth));
     if !options.is_empty() {
         out.extend(options);
         out.div_maybe(depth);
@@ -783,6 +784,47 @@ fn render_body(
 
 /// `render_file_options`: the file's options, standalone; A3 when the pool
 /// refused the file, or when they cannot be rendered.
+/// Spec 0447, --target portable: protoc checks names from edition 2024
+/// on, a check a vendor's compiler may not have made, and no option of
+/// protoc's turns it off. An edition 2024 (or later) file written as
+/// editions, not setting `enforce_naming_style` itself, is written with
+/// `option features.enforce_naming_style = STYLE_LEGACY;` (W30). Its
+/// descriptor keeps the input's options.
+fn legacy_naming_style(
+    ctx: &Ctx<'_, '_>,
+    f: &prototext_upb::descriptor_access::FileDescriptorProto<'_>,
+    depth: usize,
+) -> Block {
+    // descriptor.proto's EDITION_2024.
+    const EDITION_2024: i32 = 1001;
+    let mut out = Block::new();
+    let sets_it = f
+        .options()
+        .and_then(|o| o.features())
+        .is_some_and(|fs| fs.has_enforce_naming_style());
+    if ctx.shared.variant.portable.is_none()
+        || !ctx.editions_target()
+        || ctx.edition.is_none_or(|e| e < EDITION_2024)
+        || sets_it
+    {
+        return out;
+    }
+    out.push(Line::code(
+        "option features.enforce_naming_style = STYLE_LEGACY;",
+        depth,
+    ));
+    let file = ctx.file_name();
+    ctx.events.borrow_mut().push(RenderEvent::Squash(
+        "W30",
+        format!(
+            "'{file}': option features.enforce_naming_style = STYLE_LEGACY added: \
+             protoc checks names from edition 2024 on (--target portable)"
+        ),
+        serde_json::json!({ "file": file }),
+    ));
+    out
+}
+
 fn file_options(
     ctx: &Ctx<'_, '_>,
     f: &prototext_upb::descriptor_access::FileDescriptorProto<'_>,

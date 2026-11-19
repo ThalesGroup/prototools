@@ -121,11 +121,15 @@ pub struct Portable {
     /// `.vendor.FieldOptions` -> `.google.protobuf.FieldOptions`, and the
     /// other options messages and FeatureSet, by whole name.
     extendee_rules: Vec<Rule>,
-    /// The fields of each options message the stock one lacks, by number.
-    pub redacted_fields: std::collections::BTreeMap<String, std::collections::BTreeSet<u32>>,
-    /// Each enum field of an options message the stock one has: the values
-    /// stock's enum has.
-    pub stock_values: std::collections::BTreeMap<(String, String), std::collections::BTreeSet<i32>>,
+    /// The descriptor in use's package: a type of it named within it, as
+    /// the two maps below name protoc's.
+    pub package: String,
+    /// Each message of protoc's descriptor, named within its package
+    /// (`FieldOptions.EditionDefault`): its fields' numbers.
+    pub stock_messages: std::collections::BTreeMap<String, std::collections::BTreeSet<u32>>,
+    /// Each enum of protoc's descriptor, named within its package
+    /// (`Edition`): its values' numbers.
+    pub stock_enums: std::collections::BTreeMap<String, std::collections::BTreeSet<i32>>,
 }
 
 /// The messages custom options and features extend.
@@ -175,45 +179,6 @@ pub fn stock_descriptor_pb() -> &'static [u8] {
         .find(|(n, _)| *n == "google/protobuf/descriptor.pb")
         .map(|(_, b)| *b)
         .unwrap_or_default()
-}
-
-/// The numbers of the values of the enum `full` (`.pkg.Msg.Enum`) of `fdp`.
-fn enum_values(
-    fdp: &FileDescriptorProto<'_>,
-    full: &str,
-) -> Option<std::collections::BTreeSet<i32>> {
-    let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
-    let package = text(fdp.package());
-    let rest = full.strip_prefix('.')?;
-    let rest = if package.is_empty() {
-        rest
-    } else {
-        rest.strip_prefix(&package)?.strip_prefix('.')?
-    };
-    let mut parts: Vec<&str> = rest.split('.').collect();
-    let last = parts.pop()?;
-    let values = |e: &prototext_upb::descriptor_access::EnumDescriptorProto<'_>| {
-        e.value().iter().map(|v| v.number()).collect()
-    };
-    if parts.is_empty() {
-        return fdp
-            .enum_type()
-            .iter()
-            .find(|e| e.name() == last.as_bytes())
-            .map(values);
-    }
-    let mut messages = fdp.message_type();
-    let mut found = None;
-    for part in parts {
-        let m = messages.into_iter().find(|m| m.name() == part.as_bytes())?;
-        messages = m.nested_type();
-        found = Some(m);
-    }
-    found?
-        .enum_type()
-        .iter()
-        .find(|e| e.name() == last.as_bytes())
-        .map(values)
 }
 
 /// reproto's `rule_matches`.
@@ -475,36 +440,43 @@ impl Variant {
                 });
             }
         }
-        for name in EXTENDEES.iter().filter(|n| **n != "FeatureSet") {
-            let (Some(m), Some(s)) = (mine.get(*name), theirs.get(*name)) else {
-                continue;
+        portable.package = package;
+        let mut todo: Vec<(
+            String,
+            prototext_upb::descriptor_access::DescriptorProto<'_>,
+        )> = stock
+            .message_type()
+            .into_iter()
+            .map(|m| (String::new(), m))
+            .collect();
+        let values = |e: &prototext_upb::descriptor_access::EnumDescriptorProto<'_>| {
+            e.value()
+                .iter()
+                .map(|v| v.number())
+                .collect::<BTreeSet<i32>>()
+        };
+        for e in stock.enum_type() {
+            portable.stock_enums.insert(text(e.name()), values(&e));
+        }
+        while let Some((scope, m)) = todo.pop() {
+            let name = if scope.is_empty() {
+                text(m.name())
+            } else {
+                format!("{scope}.{}", text(m.name()))
             };
-            let known: BTreeSet<u32> = s
-                .field()
-                .iter()
-                .filter_map(|f| u32::try_from(f.number()).ok())
-                .collect();
-            let lacking: BTreeSet<u32> = m
-                .field()
-                .iter()
-                .filter_map(|f| u32::try_from(f.number()).ok())
-                .filter(|n| !known.contains(n))
-                .collect();
-            if !lacking.is_empty() {
+            portable.stock_messages.insert(
+                name.clone(),
+                m.field()
+                    .iter()
+                    .filter_map(|f| u32::try_from(f.number()).ok())
+                    .collect(),
+            );
+            for e in m.enum_type() {
                 portable
-                    .redacted_fields
-                    .insert((*name).to_string(), lacking);
+                    .stock_enums
+                    .insert(format!("{name}.{}", text(e.name())), values(&e));
             }
-            for f in s.field() {
-                if f.r#type() != 14 {
-                    continue; // TYPE_ENUM
-                }
-                if let Some(values) = enum_values(stock, &text(f.type_name())) {
-                    portable
-                        .stock_values
-                        .insert(((*name).to_string(), text(f.name())), values);
-                }
-            }
+            todo.extend(m.nested_type().into_iter().map(|n| (name.clone(), n)));
         }
         self.portable = Some(portable);
     }

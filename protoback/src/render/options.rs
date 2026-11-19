@@ -320,67 +320,107 @@ fn builtin_name(variant: &Variant, kind: Options, field: &Field) -> Option<(Stri
     Some((short, orphan))
 }
 
-/// Spec 0447 S5, --target portable: a built-in option protoc's descriptor
-/// cannot represent (a field its options message lacks, or an enum value
-/// its enum lacks) is written as an orphan, its number (and value) noted
-/// after it, the note returned; with W28, listed in the report. The binary
-/// keeps it as the input has it.
-fn redacted(scope: &Scope<'_>, kind: Options, field: &Field, value: &Value<'_>) -> Option<String> {
-    let p = scope.variant.portable.as_ref()?;
+/// Spec 0447 S5, --target portable: of a built-in option's value, each
+/// element (one for a singular option) protoc's descriptor cannot
+/// represent: a field its options message lacks, or, anywhere in the
+/// value, an enum value its enum lacks or a field its message lacks. Each
+/// such element is written as an orphan, the returned note after it, with
+/// W28, listed in the report; the binary keeps it as the input has it.
+/// `None` for the elements written as they are.
+fn redactions(
+    scope: &Scope<'_>,
+    kind: Options,
+    field: &Field,
+    value: &Value<'_>,
+) -> Vec<Option<String>> {
+    let Some(p) = &scope.variant.portable else {
+        return Vec::new();
+    };
     let options = kind.type_name();
     let number = field.number();
     let name = field.name();
-    let (what, note) = if p
-        .redacted_fields
-        .get(options)
-        .is_some_and(|fields| fields.contains(&number))
-    {
-        (
-            format!("field {number} of {options} is not in protoc's descriptor"),
-            format!("field {number}"),
-        )
-    } else if let Some(known) = p.stock_values.get(&(options.to_string(), name.to_string())) {
-        let values: Vec<i32> = match value {
-            Value::Enum(n) => vec![*n],
-            Value::List(l) => l
-                .iter()
-                .filter_map(|v| match v {
-                    Value::Enum(n) => Some(n),
-                    _ => None,
-                })
-                .collect(),
-            _ => Vec::new(),
-        };
-        let lacking: Vec<String> = values
-            .iter()
-            .filter(|n| !known.contains(n))
-            .map(i32::to_string)
-            .collect();
-        if lacking.is_empty() {
-            return None;
-        }
-        let lacking = lacking.join(", ");
-        (
-            format!("value {lacking} of field {number} of {options} is not in protoc's descriptor"),
-            format!("field {number}, value {lacking}"),
-        )
-    } else {
-        return None;
+    let elements: Vec<Value<'_>> = match (field.cardinality(), value) {
+        (Cardinality::Repeated, Value::List(list)) => list.iter().collect(),
+        (_, v) => vec![v.clone()],
     };
-    scope
-        .events
-        .borrow_mut()
-        .push(super::file::RenderEvent::Squash(
-            "W28",
-            format!(
-                "'{}': option {name}: {what}: written as an orphan (--target portable)",
-                scope.file
-            ),
-            serde_json::json!({
-                "file": scope.file, "options": options, "field": name, "number": number,
-            }),
-        ));
-    Some(note)
+    let whole = !p
+        .stock_messages
+        .get(options)
+        .is_some_and(|fields| fields.contains(&number));
+    elements
+        .iter()
+        .map(|v| {
+            let (what, note) = if whole {
+                (
+                    format!("field {number} of {options}"),
+                    format!("field {number}"),
+                )
+            } else {
+                let inner = lacking(p, field, v)?;
+                let what = match v {
+                    Value::Message(_) => format!("{inner} (field {number} of {options})"),
+                    _ => format!("{inner} of field {number} of {options}"),
+                };
+                (what, format!("field {number}, {inner}"))
+            };
+            scope
+                .events
+                .borrow_mut()
+                .push(super::file::RenderEvent::Squash(
+                    "W28",
+                    format!(
+                        "'{}': option {name}: {what} is not in protoc's descriptor: \
+                         written as an orphan (--target portable)",
+                        scope.file
+                    ),
+                    serde_json::json!({
+                        "file": scope.file, "options": options, "field": name,
+                        "number": number, "what": what,
+                    }),
+                ));
+            Some(note)
+        })
+        .collect()
+}
+
+/// What of `value` (of `field`) protoc's descriptor lacks, if anything: an
+/// enum value its enum lacks (`value N`), or a field its message lacks
+/// (`field N of M`), at any depth (`… of field N of M`). Types are named
+/// within their package, the descriptor in use's matched to protoc's.
+fn lacking(p: &crate::variant::Portable, field: &Field, value: &Value<'_>) -> Option<String> {
+    let within = |full: &str| -> String {
+        match full.strip_prefix(&format!("{}.", p.package)) {
+            Some(rest) if !p.package.is_empty() => rest.to_string(),
+            _ => full.to_string(),
+        }
+    };
+    match (value, field.kind()) {
+        (Value::Enum(n), Kind::Enum(e)) => {
+            let known = p.stock_enums.get(&within(e.full_name()));
+            (!known.is_some_and(|values| values.contains(n))).then(|| format!("value {n}"))
+        }
+        (Value::Message(Some(m)), _) => {
+            let name = within(m.descriptor().full_name());
+            // A type protoc's descriptor lacks: its field is the vendor's
+            // own, said where that field is.
+            let known = p.stock_messages.get(&name)?;
+            for (f, v) in m.set_fields() {
+                if f.is_extension() {
+                    continue;
+                }
+                let n = f.number();
+                if !known.contains(&n) {
+                    return Some(format!("field {n} of {name}"));
+                }
+                if let Some(inner) = lacking(p, &f, &v) {
+                    return Some(format!("{inner} of field {n} of {name}"));
+                }
+            }
+            None
+        }
+        (Value::List(list), _) => list.iter().find_map(|v| lacking(p, field, &v)),
+        _ => None,
+    }
 }
 
 /// A scalar option value's text (`Scalar.__str__`, through `get_scalar`).
@@ -525,13 +565,13 @@ pub fn options(
             continue;
         }
         if let Some((name, orphan)) = builtin_name(scope.variant, kind, field) {
-            let note = redacted(scope, kind, field, value);
+            let notes = redactions(scope, kind, field, value);
             entries.push(Entry {
                 name,
-                orphan: orphan || note.is_some(),
+                orphan,
                 field,
                 value,
-                note,
+                notes,
             });
         }
     }
@@ -676,13 +716,14 @@ fn unknown_blocks(
 }
 
 /// An option to write: its name, whether it is an orphan, its field and
-/// value, and what a redacted one says after it (spec 0447 S5).
+/// value, and, element by element, what a redacted one says after it (spec
+/// 0447 S5; none, or one per element of its value).
 struct Entry<'f, 'v> {
     name: String,
     orphan: bool,
     field: &'f Field,
     value: &'f Value<'v>,
-    note: Option<String>,
+    notes: Vec<Option<String>>,
 }
 
 /// The extensions among `fields` reproto's options pool knows, by number,
@@ -705,7 +746,7 @@ fn custom_entries<'f, 'v>(
                 orphan,
                 field,
                 value,
-                note: None,
+                notes: Vec::new(),
             }
         })
         .collect()
@@ -725,14 +766,16 @@ fn render_entries(
         orphan,
         field,
         value,
-        note,
+        notes,
     } in entries
     {
         let values: Vec<Value<'_>> = match (field.cardinality(), value) {
             (Cardinality::Repeated, Value::List(list)) => list.iter().collect(),
             (_, v) => vec![v.clone()],
         };
-        for v in values {
+        for (i, v) in values.into_iter().enumerate() {
+            let note = notes.get(i).cloned().flatten();
+            let orphan = orphan || note.is_some();
             let mut block = dump_option(scope, field, &v, &name, depth)?;
             if composite {
                 block.postpend(",");
