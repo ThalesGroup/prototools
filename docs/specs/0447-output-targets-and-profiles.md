@@ -263,13 +263,16 @@ imports, and a batch hides failures.
   descriptor) identical after each phase; the schema databases of the
   Nix recipes build with `--builtin` in place of `--use-variant`.
 - Departures from the text:
-  - S5: the orphan comment holds the option's name and value; its
-    number is in W28's message and the report's entry.
+  - S5: the field's number (and, for a value its enum lacks, the value's)
+    is noted after the orphan, `/// vendor_only = true,  // field 90`, and
+    is in W28's message and the report's entry.
   - Test plan 7 has no test of its own: the public corpora run without
     `--descriptor` through the harness and the Nix recipes, unchanged.
   - The import rule and the extends `portable` maps add the dependency
     to the file as read, so the binary descriptors carry it too: one
     `dependency` more than the input (S4's cost, in the binary as well).
-  - A vendor descriptor reduced to a few messages is not one the text
-    read resolves option names against (they resolve against protoc's);
-    a complete one is. Seen on a test fixture only.
+  - A text input is parsed as the descriptor's `FileDescriptorProto`, its
+    option names resolved against the options messages that message's
+    fields refer to. A descriptor without `FileDescriptorProto` (a test
+    fixture reduced to two options messages) falls back to protoc's, and
+    so to protoc's options: no real descriptor.proto lacks it.

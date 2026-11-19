@@ -29,8 +29,9 @@ message_type { name: "FieldOptions"
   extension_range { start: 1000 end: 536870912 } }"#;
 
 /// A custom option on the vendor's FieldOptions, set; the vendor-only field
-/// and value set; a stock field set. By number: the small descriptor above
-/// is not one the text read resolves option names against.
+/// and value set; a stock field set. By number: a text is parsed as the
+/// descriptor's FileDescriptorProto, which the small descriptor above lacks,
+/// so names would resolve against protoc's options.
 const USER: &str = r#"name: "c.proto" package: "c" dependency: "vendor/proto/descriptor.proto"
 extension { name: "tag" number: 50000 label: LABEL_OPTIONAL type: TYPE_INT32
   extendee: ".vendor.FieldOptions" }
@@ -132,8 +133,11 @@ fn portable_redacts_what_protocs_descriptor_lacks() {
             .trim()
             .to_string()
     };
+    // An orphan, its number (and value) noted after it (S5).
     assert!(line("vendor_only").starts_with("//"), "{c}");
+    assert!(line("vendor_only").ends_with("// field 90"), "{c}");
     assert!(line("VENDOR_TYPE").starts_with("//"), "{c}");
+    assert!(line("VENDOR_TYPE").ends_with("// field 1, value 7"), "{c}");
     // A value protoc's enum has: written.
     assert!(!line("CORD").starts_with("//"), "{c}");
     // The binary keeps the input's options: field 90 = 1.

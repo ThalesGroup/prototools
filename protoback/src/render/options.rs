@@ -320,23 +320,25 @@ fn builtin_name(variant: &Variant, kind: Options, field: &Field) -> Option<(Stri
     Some((short, orphan))
 }
 
-/// Spec 0447 S5, --target portable: whether a built-in option is one
-/// protoc's descriptor cannot represent (a field its options message lacks,
-/// or an enum value its enum lacks): then written as an orphan, with W28,
-/// listed in the report. The binary keeps it as the input has it.
-fn redacted(scope: &Scope<'_>, kind: Options, field: &Field, value: &Value<'_>) -> bool {
-    let Some(p) = &scope.variant.portable else {
-        return false;
-    };
+/// Spec 0447 S5, --target portable: a built-in option protoc's descriptor
+/// cannot represent (a field its options message lacks, or an enum value
+/// its enum lacks) is written as an orphan, its number (and value) noted
+/// after it, the note returned; with W28, listed in the report. The binary
+/// keeps it as the input has it.
+fn redacted(scope: &Scope<'_>, kind: Options, field: &Field, value: &Value<'_>) -> Option<String> {
+    let p = scope.variant.portable.as_ref()?;
     let options = kind.type_name();
     let number = field.number();
     let name = field.name();
-    let what = if p
+    let (what, note) = if p
         .redacted_fields
         .get(options)
         .is_some_and(|fields| fields.contains(&number))
     {
-        format!("field {number} of {options} is not in protoc's descriptor")
+        (
+            format!("field {number} of {options} is not in protoc's descriptor"),
+            format!("field {number}"),
+        )
     } else if let Some(known) = p.stock_values.get(&(options.to_string(), name.to_string())) {
         let values: Vec<i32> = match value {
             Value::Enum(n) => vec![*n],
@@ -355,14 +357,15 @@ fn redacted(scope: &Scope<'_>, kind: Options, field: &Field, value: &Value<'_>) 
             .map(i32::to_string)
             .collect();
         if lacking.is_empty() {
-            return false;
+            return None;
         }
-        format!(
-            "value {} of field {number} of {options} is not in protoc's descriptor",
-            lacking.join(", ")
+        let lacking = lacking.join(", ");
+        (
+            format!("value {lacking} of field {number} of {options} is not in protoc's descriptor"),
+            format!("field {number}, value {lacking}"),
         )
     } else {
-        return false;
+        return None;
     };
     scope
         .events
@@ -377,7 +380,7 @@ fn redacted(scope: &Scope<'_>, kind: Options, field: &Field, value: &Value<'_>) 
                 "file": scope.file, "options": options, "field": name, "number": number,
             }),
         ));
-    true
+    Some(note)
 }
 
 /// A scalar option value's text (`Scalar.__str__`, through `get_scalar`).
@@ -516,14 +519,20 @@ pub fn options(
     exclude: &[&str],
 ) -> Result<Vec<Block>, Unrenderable> {
     let fields = msg.as_ref().set_fields();
-    let mut entries: Vec<(String, bool, &Field, &Value<'_>)> = Vec::new();
+    let mut entries: Vec<Entry<'_, '_>> = Vec::new();
     for (field, value) in &fields {
         if field.is_extension() || exclude.contains(&field.name()) {
             continue;
         }
         if let Some((name, orphan)) = builtin_name(scope.variant, kind, field) {
-            let redacted = redacted(scope, kind, field, value);
-            entries.push((name, orphan || redacted, field, value));
+            let note = redacted(scope, kind, field, value);
+            entries.push(Entry {
+                name,
+                orphan: orphan || note.is_some(),
+                field,
+                value,
+                note,
+            });
         }
     }
     entries.extend(custom_entries(scope, &fields));
@@ -666,12 +675,22 @@ fn unknown_blocks(
     blocks
 }
 
+/// An option to write: its name, whether it is an orphan, its field and
+/// value, and what a redacted one says after it (spec 0447 S5).
+struct Entry<'f, 'v> {
+    name: String,
+    orphan: bool,
+    field: &'f Field,
+    value: &'f Value<'v>,
+    note: Option<String>,
+}
+
 /// The extensions among `fields` reproto's options pool knows, by number,
 /// each with its name and whether it is an orphan.
 fn custom_entries<'f, 'v>(
     scope: &Scope<'_>,
     fields: &'f [(Field, Value<'v>)],
-) -> Vec<(String, bool, &'f Field, &'f Value<'v>)> {
+) -> Vec<Entry<'f, 'v>> {
     let mut custom: Vec<&(Field, Value<'_>)> = fields
         .iter()
         .filter(|(f, _)| f.is_extension() && scope.visible(f))
@@ -681,7 +700,13 @@ fn custom_entries<'f, 'v>(
         .into_iter()
         .map(|(field, value)| {
             let (name, orphan) = scope.custom_name(field);
-            (name, orphan, field, value)
+            Entry {
+                name,
+                orphan,
+                field,
+                value,
+                note: None,
+            }
         })
         .collect()
 }
@@ -690,12 +715,19 @@ fn custom_entries<'f, 'v>(
 /// composite, a repeated one's values one each; an orphan's lines marked.
 fn render_entries(
     scope: &Scope<'_>,
-    entries: Vec<(String, bool, &Field, &Value<'_>)>,
+    entries: Vec<Entry<'_, '_>>,
     composite: bool,
     depth: usize,
 ) -> Result<Vec<Block>, Unrenderable> {
     let mut blocks = Vec::new();
-    for (name, orphan, field, value) in entries {
+    for Entry {
+        name,
+        orphan,
+        field,
+        value,
+        note,
+    } in entries
+    {
         let values: Vec<Value<'_>> = match (field.cardinality(), value) {
             (Cardinality::Repeated, Value::List(list)) => list.iter().collect(),
             (_, v) => vec![v.clone()],
@@ -709,6 +741,9 @@ fn render_entries(
                     first.text.insert_str(0, "option ");
                 }
                 block.postpend(";");
+            }
+            if let Some(note) = &note {
+                block.postpend(&format!("  // {note}"));
             }
             let kind = if orphan {
                 LineType::Orphan
@@ -753,7 +788,14 @@ pub fn feature_blocks(
         block.push(Line::new(text, depth, kind));
         block
     };
-    for (name, orphan, field, value) in custom_entries(scope, &fields) {
+    for Entry {
+        name,
+        orphan,
+        field,
+        value,
+        ..
+    } in custom_entries(scope, &fields)
+    {
         let name = format!("features.{name}");
         let flat = match (field.cardinality(), value) {
             (Cardinality::Repeated, _) => None,
