@@ -168,12 +168,21 @@ const OPTION_CARRIERS: &[&str] = &[
     "FeatureSet",
 ];
 
+/// What inference reads of a loaded file (reproto's `FileFacts`).
+struct FileFacts {
+    package: String,
+    /// The extendees of its extensions, at any depth.
+    extendees: Vec<String>,
+    /// Whether it defines a top-level `FileOptions`.
+    defines_file_options: bool,
+}
+
 /// reproto's `_file_facts`: a loaded file's package, the extendees of its
 /// extensions, and whether it defines `FileOptions`: from its descriptor,
 /// or, a text not read yet, from a scan of it. In a text FDP, `extendee` and
 /// `package` are string fields no other descriptor field shares the name of,
 /// so the scan finds exactly them.
-fn file_facts(qf: &QualFile) -> Option<(String, Vec<String>, bool)> {
+fn file_facts(qf: &QualFile) -> Option<FileFacts> {
     use prototext_upb::descriptor_access::FileDescriptorProto;
     use regex::Regex;
     use std::sync::LazyLock;
@@ -192,7 +201,11 @@ fn file_facts(qf: &QualFile) -> Option<(String, Vec<String>, bool)> {
             .captures_iter(text)
             .map(|c| c[1].to_string())
             .collect();
-        return Some((package, extendees, FILE_OPTIONS.is_match(text)));
+        return Some(FileFacts {
+            package,
+            extendees,
+            defines_file_options: FILE_OPTIONS.is_match(text),
+        });
     }
     let def = Pool::vendored().get_message_by_name("google.protobuf.FileDescriptorProto")?;
     let fdp = DynamicMessage::decode(&def, &qf.contents).ok()?;
@@ -205,7 +218,11 @@ fn file_facts(qf: &QualFile) -> Option<(String, Vec<String>, bool)> {
         todo.extend(m.nested_type());
     }
     let defines = f.message_type().iter().any(|m| m.name() == b"FileOptions");
-    Some((text(f.package()), extendees, defines))
+    Some(FileFacts {
+        package: text(f.package()),
+        extendees,
+        defines_file_options: defines,
+    })
 }
 
 /// reproto's `_infer_descriptor` (spec 0447 S1): the descriptor the input
@@ -215,7 +232,7 @@ fn file_facts(qf: &QualFile) -> Option<(String, Vec<String>, bool)> {
 /// of that package defining `FileOptions`. In several: an error naming a
 /// file extending each.
 fn infer_descriptor(r: &mut Run, topo: &Topology) {
-    let mut facts: Vec<(String, (String, Vec<String>, bool))> = topo
+    let mut facts: Vec<(String, FileFacts)> = topo
         .files
         .iter()
         .filter(|f| !f.is_ref())
@@ -223,8 +240,8 @@ fn infer_descriptor(r: &mut Run, topo: &Topology) {
         .collect();
     facts.sort_by(|a, b| a.0.cmp(&b.0));
     let mut packages: std::collections::BTreeMap<String, String> = Default::default();
-    for (name, (_, extendees, _)) in &facts {
-        for e in extendees {
+    for (name, f) in &facts {
+        for e in &f.extendees {
             let e = e.trim_start_matches('.');
             let (package, carrier) = e.rsplit_once('.').unwrap_or(("", e));
             if OPTION_CARRIERS.contains(&carrier) && package != "google.protobuf" {
@@ -251,7 +268,7 @@ fn infer_descriptor(r: &mut Run, topo: &Topology) {
     };
     if let Some((name, _)) = facts
         .iter()
-        .find(|(_, (p, _, defines))| p == package && *defines)
+        .find(|(_, f)| f.package == *package && f.defines_file_options)
     {
         r.variant.descriptor_proto = name.clone();
     }

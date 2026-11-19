@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import itertools
 from collections.abc import Callable
-from typing import Any
+from typing import Any, NamedTuple
 import logging
 import sys
 from pathlib import Path
@@ -666,15 +666,25 @@ _PACKAGE = re.compile(r"""\bpackage\s*:\s*["']([^"']*)["']""")
 _FILE_OPTIONS = re.compile(r"""\bname\s*:\s*["']FileOptions["']""")
 
 
-def _file_facts(f: ReFile) -> tuple[str, list[str], bool]:
+class FileFacts(NamedTuple):
+    """What inference reads of a loaded file."""
+    package: str
+    # The extendees of its extensions, at any depth.
+    extendees: list[str]
+    # Whether it defines a top-level `FileOptions`.
+    defines_file_options: bool
+
+
+def _file_facts(f: ReFile) -> FileFacts:
     """A loaded file's package, the extendees of its extensions, and whether
     it defines `FileOptions`: from its descriptor, or, a text not read yet,
     from a scan of it."""
     text = f.qfile.text
     if text is not None:
         package = _PACKAGE.search(text)
-        return (package.group(1) if package else '', _EXTENDEE.findall(text),
-                _FILE_OPTIONS.search(text) is not None)
+        return FileFacts(str(package.group(1)) if package else '',
+                         [str(e) for e in _EXTENDEE.findall(text)],
+                         _FILE_OPTIONS.search(text) is not None)
     fdp = f.qfile.desc
     extendees = [x.extendee for x in fdp.extension]
     todo = list(fdp.message_type)
@@ -682,8 +692,8 @@ def _file_facts(f: ReFile) -> tuple[str, list[str], bool]:
         m = todo.pop()
         extendees.extend(x.extendee for x in m.extension)
         todo.extend(m.nested_type)
-    return (fdp.package, extendees,
-            any(m.name == 'FileOptions' for m in fdp.message_type))
+    return FileFacts(fdp.package, extendees,
+                     any(m.name == 'FileOptions' for m in fdp.message_type))
 
 
 def _infer_descriptor(ctx: Context, topo: Topology) -> None:
@@ -696,8 +706,8 @@ def _infer_descriptor(ctx: Context, topo: Topology) -> None:
                     key=lambda f: f.name)
     facts = {f.name: _file_facts(f) for f in loaded}
     packages: dict[str, str] = {}
-    for name, (_, extendees, _) in facts.items():
-        for e in extendees:
+    for name, f in facts.items():
+        for e in f.extendees:
             package, _, carrier = e.lstrip('.').rpartition('.')
             if carrier in _OPTION_CARRIERS and package != 'google.protobuf':
                 packages.setdefault(package, name)
@@ -709,8 +719,8 @@ def _infer_descriptor(ctx: Context, topo: Topology) -> None:
             f"the input's custom options extend the options of several "
             f"descriptors: {named}; name the one to use with --descriptor")
     package = next(iter(packages))
-    for name, (file_package, _, defines) in facts.items():
-        if file_package == package and defines:
+    for name, f in facts.items():
+        if f.package == package and f.defines_file_options:
             ctx.variant_descriptor_proto = name
             ctx.descriptor_proto = name
             return
