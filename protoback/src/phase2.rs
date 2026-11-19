@@ -35,7 +35,7 @@ impl DescriptorProtoError {
         match self {
             DescriptorProtoError::Missing(path) => Some(format!(
                 "descriptor.proto not found in input files ({path}); add it to your input set \
-                 or use --use-variant to load the embedded fallback"
+                 or use --builtin to load the built-in copy"
             )),
             _ => None,
         }
@@ -45,11 +45,11 @@ impl DescriptorProtoError {
     pub fn message(&self) -> String {
         match self {
             DescriptorProtoError::Missing(_) => "descriptor.proto not found in the input set; \
-                add it to your -I tree or use --use-variant descriptor"
+                add it to your -I tree or use --builtin descriptor"
                 .to_string(),
             DescriptorProtoError::Unresolved => {
                 "descriptor.proto is referenced but could not be loaded; \
-                add it to your -I tree or use --use-variant descriptor"
+                add it to your -I tree or use --builtin descriptor"
                     .to_string()
             }
             DescriptorProtoError::HasTargets => {

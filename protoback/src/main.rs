@@ -343,10 +343,16 @@ fn protoback(cli: Cli) -> u8 {
         cli.pb_files.clone()
     };
 
-    let variant = match Variant::load(cli.proto_variant.as_deref()) {
+    let mut variant = match Variant::load(cli.proto_variant.as_deref()) {
         Ok(v) => v,
         Err(e) => return usage(&e),
     };
+    // Spec 0447 S1: --descriptor names the descriptor; else a variant does;
+    // else it is inferred from the input, once loaded.
+    if let Some(d) = &cli.descriptor {
+        variant.descriptor_proto = d.clone();
+    }
+    let infer_descriptor = cli.descriptor.is_none() && cli.proto_variant.is_none();
     report::variant(&variant.name);
     for key in &variant.unread_keys {
         events.warn(
@@ -384,6 +390,12 @@ fn protoback(cli: Cli) -> u8 {
     }
     if cli.emit_pyvis.is_some() {
         events.warn("W18", "--emit-pyvis is deprecated; use --scoring-html-out");
+    }
+    if !cli.use_variant.is_empty() {
+        events.warn("W18", "--use-variant is deprecated; use --builtin");
+    }
+    if let Err(e) = stub_check(&cli, out_repo.as_deref()) {
+        return usage(&e);
     }
     // reproto's `--hide` check: `desc:` patterns only, normalised as
     // seeds and prunes are. show.py then matches them against bare FQDNs
@@ -474,7 +486,24 @@ fn protoback(cli: Cli) -> u8 {
         .start_handler(|_| affinity::widen())
         .build_global();
 
-    let fallback = fallback_protos(&cli.use_variant, &variant);
+    // --builtin, and --use-variant, its deprecated spelling.
+    let builtin: Vec<UseVariant> = cli
+        .use_variant
+        .iter()
+        .chain(&cli.builtin)
+        .copied()
+        .collect();
+    let fallback = fallback_protos(&builtin, &variant);
+    // Spec 0447 S2: every other built-in copy fills in what the input
+    // lacks, in the same order (leaves first), unless --no-builtin.
+    let fill_in: Vec<String> = if cli.no_builtin {
+        Vec::new()
+    } else {
+        fallback_protos(&[UseVariant::All], &variant)
+            .into_iter()
+            .filter(|p| !fallback.contains(p))
+            .collect()
+    };
     // Spec 0445: the moves, each wrong one left out with W26; a variants:
     // section for no variant in use, W26 too.
     // A section for another variant: expected in a file serving several
@@ -501,6 +530,9 @@ fn protoback(cli: Cli) -> u8 {
         path_seeds: PathPatterns::new(&seed_paths),
         path_seed_fqdns: BTreeSet::new(),
         fallback_protos: fallback,
+        fill_in_protos: fill_in,
+        infer_descriptor,
+        descriptor_error: None,
         variant,
         keep_duplicates: cli.keep_duplicates,
         build_schema_db: cli.build_schema_db.is_some() || cli.build_schema_db_deprecated.is_some(),
@@ -527,6 +559,10 @@ fn protoback(cli: Cli) -> u8 {
     if let Some(failure) = run.plugin.as_ref().and_then(plugin::Plugin::failure) {
         run.events.flush();
         return failed(&failure.to_string(), |m| eprintln!("{m}"));
+    }
+    if let Some(e) = run.descriptor_error.take() {
+        run.events.flush();
+        return failed(&format!("Error: {e}"), |m| eprintln!("{m}"));
     }
     // No file loaded: reproto's run stops here, successfully (`if not
     // topo.files: return None`), before descriptor.proto is looked for.
@@ -798,10 +834,22 @@ fn proto_out(cli: &Cli) -> Result<Option<PathBuf>, String> {
              - Add --dry-run                to run without writing any files"
             .into());
     }
-    // Spec 0155 G1: -O may not land inside --schema-db-out's stub directory
-    // (reserved for hopcroft.rkyv/index.rkyv) except as that stub's
-    // immediate 'proto' child.
-    if let (Some(db), Some(out)) = (&schema_db, &proto_out) {
+    if let Some(p) = &proto_out {
+        std::fs::create_dir_all(p).map_err(|e| format!("{}: {e}", p.display()))?;
+    }
+    Ok(proto_out)
+}
+
+/// Spec 0155 G1: -O may not land inside --schema-db-out's stub directory
+/// (reserved for hopcroft.rkyv/index.rkyv) except as that stub's immediate
+/// 'proto' child. Checked where reproto checks it: after the deprecation
+/// warnings, `-O` already created.
+fn stub_check(cli: &Cli, proto_out: Option<&Path>) -> Result<(), String> {
+    let schema_db = cli
+        .build_schema_db
+        .clone()
+        .or(cli.build_schema_db_deprecated.clone());
+    if let (Some(db), Some(out)) = (&schema_db, proto_out) {
         let stub_dir = resolve(&db.with_extension(""));
         if let Ok(rel) = resolve(out).strip_prefix(&stub_dir) {
             if rel != Path::new("proto") {
@@ -815,10 +863,7 @@ fn proto_out(cli: &Cli) -> Result<Option<PathBuf>, String> {
             }
         }
     }
-    if let Some(p) = &proto_out {
-        std::fs::create_dir_all(p).map_err(|e| format!("{}: {e}", p.display()))?;
-    }
-    Ok(proto_out)
+    Ok(())
 }
 
 /// Python's `Path.resolve()` (non-strict): absolute, the longest existing

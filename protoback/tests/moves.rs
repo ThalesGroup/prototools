@@ -56,7 +56,7 @@ impl Run {
 fn run(dir: &Path, config: Option<&str>, args: &[&str]) -> Run {
     let out = dir.join("out");
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_protoback"));
-    cmd.args(["--use-variant", "descriptor", "-I"])
+    cmd.args(["-I"])
         .arg(dir.join("in"))
         .arg("-O")
         .arg(&out)

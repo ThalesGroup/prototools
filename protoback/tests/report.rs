@@ -33,7 +33,7 @@ struct Run {
 fn run(dir: &Path, args: &[&str]) -> Run {
     let report = dir.join("report.json");
     let o = Command::new(env!("CARGO_BIN_EXE_protoback"))
-        .args(["--use-variant", "descriptor", "-I"])
+        .args(["-I"])
         .arg(dir.join("in"))
         .arg("-O")
         .arg(dir.join("out"))

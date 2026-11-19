@@ -30,6 +30,14 @@ pub struct Run {
     pub path_seeds: PathPatterns,
     pub path_seed_fqdns: BTreeSet<String>,
     pub fallback_protos: Vec<String>,
+    /// The built-in copies that fill in what the input lacks (spec 0447
+    /// S2): loaded only for a file imported but missing, silently.
+    pub fill_in_protos: Vec<String>,
+    /// No --descriptor, no variant: the descriptor inferred (spec 0447 S1).
+    pub infer_descriptor: bool,
+    /// The inference's failure: custom options extending several
+    /// descriptors' options.
+    pub descriptor_error: Option<String>,
     pub variant: Variant,
     pub keep_duplicates: bool,
     /// `--schema-db-out`: phase 6 sets the schema database's extra files

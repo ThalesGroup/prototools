@@ -224,6 +224,9 @@ _SECTIONS: dict[str, str] = {
     '--dry-run':             'Output',
     '--proto-variant':       'Variant / Schema',
     '--use-variant':         'Variant / Schema',
+    '--builtin':             'Variant / Schema',
+    '--no-builtin':          'Variant / Schema',
+    '--descriptor':          'Variant / Schema',
     '--keep-descriptor-path': 'Variant / Schema',
     '--no-emit-descriptor':  'Variant / Schema',
     '--seed':                'Filtering',
@@ -442,11 +445,41 @@ class _SectionedCommand(click.Command):
     'use_variant',
     type=click.Choice(_USE_VARIANT_CHOICES),
     multiple=True,
+    help='Deprecated: use --builtin.',
+)
+@click.option(
+    '--builtin',
+    'builtin',
+    type=click.Choice(_USE_VARIANT_CHOICES),
+    multiple=True,
     help=(
-        'Use the variant\'s embedded copy of a well-known file instead of '
-        'whatever the input .pb files contain. '
+        'Use the built-in copy of a well-known file, or of descriptor.proto, '
+        'even when the input has one. '
         'Accepts: any, empty, timestamp, duration, struct, wrappers, descriptor, all. '
-        'May be repeated.'
+        'May be repeated. Without it, a built-in copy only fills in a file the '
+        'input lacks.'
+    ),
+)
+@click.option(
+    '--descriptor',
+    'descriptor',
+    type=str,
+    default=None,
+    metavar='NAME',
+    help=(
+        'The descriptor.proto the input was compiled against, by its name as '
+        'imports write it. Without it, inferred from what the input\'s custom '
+        'options extend: protoc\'s, unless they extend another package\'s.'
+    ),
+)
+@click.option(
+    '--no-builtin',
+    'no_builtin',
+    is_flag=True,
+    default=False,
+    help=(
+        'Do not fill in, from built-in copies, the well-known files and the '
+        'descriptor.proto the input lacks.'
     ),
 )
 
@@ -745,6 +778,9 @@ def main(
         emit_scoring_graphs: bool,
         proto_variant: Path | None,
         use_variant: tuple[str, ...],
+        builtin: tuple[str, ...],
+        no_builtin: bool,
+        descriptor: str | None,
         keep_descriptor_path: bool,
         emit_descriptor: bool,
         seeds: list[str],
@@ -815,6 +851,7 @@ def main(
     from .context import PluginError
     from .reproto import (
         DescriptorProtoHasTargetsError,
+        DescriptorAmbiguousError,
         DescriptorProtoMissingError,
         DescriptorProtoUnbuildableError,
         DescriptorProtoUnresolvedError,
@@ -831,6 +868,8 @@ def main(
         warn('W18', '--emit-pyvis is deprecated; use --scoring-html-out')
         if emit_scoring_html is None:
             emit_scoring_html = emit_pyvis
+    if use_variant:
+        warn('W18', '--use-variant is deprecated; use --builtin')
 
     # No DESCRIPTOR_FILES means "everything under the -I roots" — which is
     # what every invocation that uses -I spells out anyway (spec 0243 S13).
@@ -880,6 +919,12 @@ def main(
 
     # Load variant (path arg > REPROTO_VARIANT env > built-in google-protobuf.yaml)
     variant = variant_mod.load(str(proto_variant) if proto_variant else None)
+    # Spec 0447 S1: --descriptor names the descriptor; else a variant does;
+    # else it is inferred from the input, once loaded.
+    if descriptor is not None:
+        variant['variant_descriptor_proto'] = descriptor
+    infer_descriptor = (descriptor is None and proto_variant is None
+                        and 'REPROTO_VARIANT' not in os.environ)
 
     if fdp_plugin:
         source = Path(fdp_plugin).read_text(encoding='utf-8')
@@ -892,8 +937,9 @@ def main(
     def _wk(canonical: str) -> str:
         return well_known.get(canonical, canonical)
 
-    # Expand --use-variant / -d into the fallback_protos list
-    use_variant_set: set[str] = set(use_variant)
+    # Expand --builtin (and --use-variant, its deprecated spelling) into the
+    # fallback_protos list
+    use_variant_set: set[str] = set(use_variant) | set(builtin)
     if 'all' in use_variant_set:
         use_variant_set = {
             'any', 'empty', 'timestamp', 'duration',
@@ -925,6 +971,14 @@ def main(
         fallback_protos.append(_wk('google/protobuf/type.proto'))
     if 'api' in use_variant_set:
         fallback_protos.append(_wk('google/protobuf/api.proto'))
+    # Spec 0447 S2: every other built-in copy fills in what the input lacks,
+    # in the same order (leaves first), unless --no-builtin.
+    fill_in_protos: list[str] = [] if no_builtin else [
+        p for p in [variant['variant_descriptor_proto']] + [
+            _wk(f'google/protobuf/{n}.proto') for n in (
+                'any', 'empty', 'timestamp', 'duration', 'struct', 'wrappers',
+                'source_context', 'field_mask', 'type', 'api')]
+        if p not in fallback_protos]
 
     # spec 0155 G1: -O may not land inside --schema-db-out's stub
     # directory (reserved for hopcroft.rkyv/index.rkyv) except as that
@@ -958,6 +1012,8 @@ def main(
         dump_resolved_features=dump_resolved_features,
         dump_graph=dump_graph,
         fallback_protos=fallback_protos,
+        fill_in_protos=fill_in_protos,
+        infer_descriptor=infer_descriptor,
         keep_variant_descriptor=keep_descriptor_path,
         variant_descriptor_proto=variant['variant_descriptor_proto'],
         variant_well_known=variant['variant_well_known'],
@@ -1093,15 +1149,17 @@ def main(
             path_seeds=seed_paths,
             path_prunings=prune_paths,
         )
+    except DescriptorAmbiguousError as e:
+        raise click.ClickException(str(e))
     except DescriptorProtoMissingError:
         raise click.ClickException(
             'descriptor.proto not found in the input set; '
-            'add it to your -I tree or use --use-variant descriptor'
+            'add it to your -I tree or use --builtin descriptor'
         )
     except DescriptorProtoUnresolvedError:
         raise click.ClickException(
             'descriptor.proto is referenced but could not be loaded; '
-            'add it to your -I tree or use --use-variant descriptor'
+            'add it to your -I tree or use --builtin descriptor'
         )
     except DescriptorProtoHasTargetsError:
         raise click.ClickException(

@@ -56,6 +56,8 @@ struct RunInfo {
     cwd: String,
     variant: Option<String>,
     inputs: Vec<Input>,
+    /// The files a built-in copy filled in (spec 0447 S2).
+    filled_in: Vec<String>,
     exit_status: i32,
     error: Option<String>,
 }
@@ -143,6 +145,10 @@ pub fn start(path: &Path) -> Result<(), String> {
 
 pub fn variant(name: &str) {
     with(|r| r.run.variant = Some(name.to_string()));
+}
+
+pub fn filled_in(name: &str) {
+    with(|r| r.run.filled_in.push(name.to_string()));
 }
 
 pub fn input(root: &Path, path: &Path, files: Vec<String>) {

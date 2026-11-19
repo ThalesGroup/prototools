@@ -154,8 +154,23 @@ pub struct Cli {
         value_name = "FILE"
     )]
     pub proto_variant: Option<PathBuf>,
-    #[arg(long = "use-variant", value_enum, action = ArgAction::Append, help = "Use the variant's embedded copy of a well-known file instead of whatever the input .pb files contain. Accepts: any, empty, timestamp, duration, struct, wrappers, descriptor, all. May be repeated.", help_heading = "Variant / Schema")]
+    #[arg(long = "use-variant", value_enum, action = ArgAction::Append, help = "Deprecated: use --builtin.", help_heading = "Variant / Schema")]
     pub use_variant: Vec<UseVariant>,
+    #[arg(long = "builtin", value_enum, action = ArgAction::Append, help = "Use the built-in copy of a well-known file, or of descriptor.proto, even when the input has one. Accepts: any, empty, timestamp, duration, struct, wrappers, descriptor, all. May be repeated. Without it, a built-in copy only fills in a file the input lacks.", help_heading = "Variant / Schema")]
+    pub builtin: Vec<UseVariant>,
+    #[arg(
+        long = "descriptor",
+        help = "The descriptor.proto the input was compiled against, by its name as imports write it. Without it, inferred from what the input's custom options extend: protoc's, unless they extend another package's.",
+        help_heading = "Variant / Schema",
+        value_name = "NAME"
+    )]
+    pub descriptor: Option<String>,
+    #[arg(
+        long = "no-builtin",
+        help = "Do not fill in, from built-in copies, the well-known files and the descriptor.proto the input lacks.",
+        help_heading = "Variant / Schema"
+    )]
+    pub no_builtin: bool,
     #[arg(
         long = "keep-descriptor-path",
         help = "Keep the variant descriptor import path as-is (do not rewrite to google/protobuf/descriptor.proto)",

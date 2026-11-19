@@ -56,6 +56,10 @@ class DescriptorProtoHasTargetsError(Exception):
     """Raised when 'descriptor.proto' itself has dependencies (corrupted)."""
 
 
+class DescriptorAmbiguousError(Exception):
+    """Spec 0447 S1: custom options extending several descriptors' options."""
+
+
 class DescriptorProtoUnbuildableError(Exception):
     """Raised when the descriptor pool refuses 'descriptor.proto' itself: no
     option can be read against it."""
@@ -486,6 +490,9 @@ def _phase1_load_files(
     from .lib.warnings import get_collector as _get_collector
     for _fp in ctx.fallback_protos:
         _get_collector().register_fallback_file(_fp)
+    # So for the files a built-in copy fills in (spec 0447 S2).
+    for _fp in ctx.fill_in_protos:
+        _get_collector().register_fallback_file(_fp)
 
     seed_files: set[ReFile] = set()
 
@@ -539,7 +546,7 @@ def _phase1_load_files(
             topo.merge_files()
 
     # Helper function to load embedded proto fallbacks
-    def load_embedded_proto_fallback(proto_name: str) -> 'QualFile | None':
+    def load_embedded_proto_fallback(proto_name: str, silent: bool = False) -> 'QualFile | None':
         """
         Load a proto fallback from the variant's resource directory.
 
@@ -571,7 +578,7 @@ def _phase1_load_files(
             qual_file.desc = fdp
             ReFile(topo, qual_file)
 
-            if not ctx.quiet:
+            if not ctx.quiet and not silent:
                 cli_attention(f"Using embedded fallback: {proto_name}")
             return qual_file
         except (ImportError, FileNotFoundError, DecodeError, IndexError, AttributeError) as e:
@@ -610,8 +617,103 @@ def _phase1_load_files(
         # Those imports must appear earlier in ctx.fallback_protos so the
         # topo-sort sees them in the right order — enforced by cli.py ordering.
 
+    # Spec 0447 S2: a built-in copy fills in a file imported but missing,
+    # silently; a filled-in file's own imports, filled in in turn. The
+    # descriptor apart, once known (S1), even when nothing imports it.
+    def fill_in(descriptor: bool) -> None:
+        filled = True
+        while filled:
+            filled = False
+            for name in ctx.fill_in_protos:
+                if (name == ctx.variant_descriptor_proto) != descriptor:
+                    continue
+                existing = topo.files.get(name)
+                if existing is None and not descriptor:
+                    continue  # nothing imports it
+                if existing is not None and not existing.is_ref():
+                    continue  # the input has it
+                loaded = load_embedded_proto_fallback(name, silent=True)
+                if loaded is not None:
+                    topo.merge_files()
+                    if topo.files[name].is_ref():
+                        topo.files[name].qfile = loaded
+                    ctx.filled_in_files.append(name)
+                    filled = True
+
+    fill_in(descriptor=False)
+    # The descriptor known before the texts are read: their option names
+    # are read against its options messages (spec 0447 S1).
+    if ctx.infer_descriptor:
+        _infer_descriptor(ctx, topo)
+    fill_in(descriptor=True)
     _read_text_files(ctx, topo)
     return seed_files
+
+
+STOCK_DESCRIPTOR = 'google/protobuf/descriptor.proto'
+
+# The descriptor messages custom options and features extend (spec 0447 S1).
+_OPTION_CARRIERS = frozenset((
+    'FileOptions', 'MessageOptions', 'FieldOptions', 'OneofOptions',
+    'ExtensionRangeOptions', 'EnumOptions', 'EnumValueOptions',
+    'ServiceOptions', 'MethodOptions', 'FeatureSet'))
+
+
+# A text FDP's `extendee` and `package`: string fields no other descriptor
+# field shares the name of, so a scan finds exactly them (spec 0447 S1).
+_EXTENDEE = re.compile(r"""\bextendee\s*:\s*["']([^"']*)["']""")
+_PACKAGE = re.compile(r"""\bpackage\s*:\s*["']([^"']*)["']""")
+_FILE_OPTIONS = re.compile(r"""\bname\s*:\s*["']FileOptions["']""")
+
+
+def _file_facts(f: ReFile) -> tuple[str, list[str], bool]:
+    """A loaded file's package, the extendees of its extensions, and whether
+    it defines `FileOptions`: from its descriptor, or, a text not read yet,
+    from a scan of it."""
+    text = f.qfile.text
+    if text is not None:
+        package = _PACKAGE.search(text)
+        return (package.group(1) if package else '', _EXTENDEE.findall(text),
+                _FILE_OPTIONS.search(text) is not None)
+    fdp = f.qfile.desc
+    extendees = [x.extendee for x in fdp.extension]
+    todo = list(fdp.message_type)
+    while todo:
+        m = todo.pop()
+        extendees.extend(x.extendee for x in m.extension)
+        todo.extend(m.nested_type)
+    return (fdp.package, extendees,
+            any(m.name == 'FileOptions' for m in fdp.message_type))
+
+
+def _infer_descriptor(ctx: Context, topo: Topology) -> None:
+    """Spec 0447 S1: the descriptor the input was compiled against, from
+    what its custom options and features extend, before the texts are read.
+    Extendees in protoc's package, or none: protoc's descriptor, as before.
+    In one other package: the loaded file of that package defining
+    `FileOptions`. In several: an error naming a file extending each."""
+    loaded = sorted((f for f in topo.files.values() if not f.is_ref()),
+                    key=lambda f: f.name)
+    facts = {f.name: _file_facts(f) for f in loaded}
+    packages: dict[str, str] = {}
+    for name, (_, extendees, _) in facts.items():
+        for e in extendees:
+            package, _, carrier = e.lstrip('.').rpartition('.')
+            if carrier in _OPTION_CARRIERS and package != 'google.protobuf':
+                packages.setdefault(package, name)
+    if not packages:
+        return
+    if len(packages) > 1:
+        named = ', '.join(f"{p} (as in {f})" for p, f in sorted(packages.items()))
+        raise DescriptorAmbiguousError(
+            f"the input's custom options extend the options of several "
+            f"descriptors: {named}; name the one to use with --descriptor")
+    package = next(iter(packages))
+    for name, (file_package, _, defines) in facts.items():
+        if file_package == package and defines:
+            ctx.variant_descriptor_proto = name
+            ctx.descriptor_proto = name
+            return
 
 
 def _read_text_files(ctx: Context, topo: Topology) -> None:
@@ -969,8 +1071,8 @@ def _phase2_build_pool(
         cli_error(
             f"descriptor.proto not found in input files "
             f"({ctx.variant_descriptor_proto}); "
-            f"add it to your input set or use --use-variant to load the "
-            f"embedded fallback"
+            f"add it to your input set or use --builtin to load the "
+            f"built-in copy"
         )
         raise DescriptorProtoMissingError
     descriptor_proto: ReFile = topo.files[ctx.variant_descriptor_proto]

@@ -119,6 +119,11 @@ class Options:
     # policy must be able to tell apart from "every message really is closed".
     emit_extension_ranges: bool = False
     fallback_protos: list[str] = field(default_factory=list)
+    # The built-in copies that fill in what the input lacks (spec 0447 S2):
+    # loaded only for a file imported but missing, silently.
+    fill_in_protos: list[str] = field(default_factory=list)
+    # No --descriptor, no variant: the descriptor inferred (spec 0447 S1).
+    infer_descriptor: bool = False
     go_root: str | None = None
     emit_scoring_html: Path | None = None
     with_leaf_nodes: bool = False
@@ -183,6 +188,8 @@ class Context(Options):
         self.pruned_fqdns = pruned_fqdns
         self.pruned_paths = pruned_paths
         self.path_seeds = path_seeds
+        # The files a built-in copy filled in (spec 0447 S2), in order.
+        self.filled_in_files: list[str] = []
         # Populated by load.py as matching candidate files are discovered
         # (spec 0149 G4); consumed by reproto() after phase 1 to extend the
         # FQDN seed list passed to _phase5_reachability.

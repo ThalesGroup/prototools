@@ -169,6 +169,7 @@ from .phases import (
     DescriptorProtoHasTargetsError,
     DescriptorProtoUnbuildableError,
     RewriteCollisionError,
+    DescriptorAmbiguousError,
     DescriptorProtoMissingError,
     DescriptorProtoUnresolvedError,
     # WellKnownTypeHasTargetsError removed by spec 0052
@@ -190,6 +191,7 @@ from .topology import Topology
 __all__ = [
     "reproto",
     "matches_any_pattern",
+    "DescriptorAmbiguousError",
     "DescriptorProtoMissingError",
     "DescriptorProtoUnresolvedError",
     "DescriptorProtoHasTargetsError",

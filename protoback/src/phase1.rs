@@ -24,7 +24,13 @@ fn plugin_failed(p: Option<&crate::plugin::Plugin>) -> bool {
 
 pub fn run(r: &mut Run, topo: &mut Topology) {
     // A fallback's file missing from -I is expected: no W1 for it.
-    for f in r.fallback_protos.clone() {
+    for f in r
+        .fallback_protos
+        .iter()
+        .chain(&r.fill_in_protos)
+        .cloned()
+        .collect::<Vec<_>>()
+    {
         r.events.register_fallback_file(&f);
     }
     let roots = r.roots.clone();
@@ -99,12 +105,156 @@ pub fn run(r: &mut Run, topo: &mut Topology) {
             topo.files[i].qfile = Some(qf);
         }
     }
+    fill_in(r, topo, false);
+    // The descriptor known before the texts are read: their option names
+    // are read against its options messages (spec 0447 S1).
+    if r.infer_descriptor {
+        infer_descriptor(r, topo);
+    }
+    fill_in(r, topo, true);
     read_text_files(r, topo);
     // Spec 0445 S7: W25 for an idle move, W26 for a target not loaded.
     r.moves.check_loaded(
         |name| topo.find(name).is_some_and(|i| !topo.files[i].is_ref()),
         &mut r.events,
     );
+}
+
+/// Spec 0447 S2: a built-in copy fills in a file imported but missing,
+/// silently; a filled-in file's own imports, filled in in turn. The
+/// descriptor apart (`descriptor`), once known (S1), even when nothing
+/// imports it: every run reads it.
+fn fill_in(r: &mut Run, topo: &mut Topology, descriptor: bool) {
+    let mut filled = true;
+    while filled {
+        filled = false;
+        for name in r.fill_in_protos.clone() {
+            if (name == r.variant.descriptor_proto) != descriptor {
+                continue;
+            }
+            let existing = topo.find(&name);
+            if existing.is_none() && !descriptor {
+                continue; // nothing imports it
+            }
+            if existing.is_some_and(|i| !topo.files[i].is_ref()) {
+                continue; // the input has it
+            }
+            let Some(mut qf) = embedded_fallback(r, &name) else {
+                continue;
+            };
+            qf.imports = r.moves.rewrite_names(qf.imports);
+            let i = topo.load(qf.clone());
+            topo.merge();
+            if topo.files[i].qfile.is_none() {
+                topo.files[i].qfile = Some(qf);
+            }
+            crate::report::filled_in(&name);
+            filled = true;
+        }
+    }
+}
+
+/// The descriptor messages custom options and features extend.
+const OPTION_CARRIERS: &[&str] = &[
+    "FileOptions",
+    "MessageOptions",
+    "FieldOptions",
+    "OneofOptions",
+    "ExtensionRangeOptions",
+    "EnumOptions",
+    "EnumValueOptions",
+    "ServiceOptions",
+    "MethodOptions",
+    "FeatureSet",
+];
+
+/// reproto's `_file_facts`: a loaded file's package, the extendees of its
+/// extensions, and whether it defines `FileOptions`: from its descriptor,
+/// or, a text not read yet, from a scan of it. In a text FDP, `extendee` and
+/// `package` are string fields no other descriptor field shares the name of,
+/// so the scan finds exactly them.
+fn file_facts(qf: &QualFile) -> Option<(String, Vec<String>, bool)> {
+    use prototext_upb::descriptor_access::FileDescriptorProto;
+    use regex::Regex;
+    use std::sync::LazyLock;
+    static EXTENDEE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#"\bextendee\s*:\s*["']([^"']*)["']"#).expect("valid"));
+    static PACKAGE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#"\bpackage\s*:\s*["']([^"']*)["']"#).expect("valid"));
+    static FILE_OPTIONS: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#"\bname\s*:\s*["']FileOptions["']"#).expect("valid"));
+    if let Some(text) = &qf.text {
+        let package = PACKAGE
+            .captures(text)
+            .map(|c| c[1].to_string())
+            .unwrap_or_default();
+        let extendees = EXTENDEE
+            .captures_iter(text)
+            .map(|c| c[1].to_string())
+            .collect();
+        return Some((package, extendees, FILE_OPTIONS.is_match(text)));
+    }
+    let def = Pool::vendored().get_message_by_name("google.protobuf.FileDescriptorProto")?;
+    let fdp = DynamicMessage::decode(&def, &qf.contents).ok()?;
+    let f = FileDescriptorProto(fdp.as_ref());
+    let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+    let mut extendees: Vec<String> = f.extension().iter().map(|x| text(x.extendee())).collect();
+    let mut todo = f.message_type();
+    while let Some(m) = todo.pop() {
+        extendees.extend(m.extension().iter().map(|x| text(x.extendee())));
+        todo.extend(m.nested_type());
+    }
+    let defines = f.message_type().iter().any(|m| m.name() == b"FileOptions");
+    Some((text(f.package()), extendees, defines))
+}
+
+/// reproto's `_infer_descriptor` (spec 0447 S1): the descriptor the input
+/// was compiled against, from what its custom options and features extend,
+/// before the texts are read. Extendees in protoc's package, or none:
+/// protoc's descriptor, as before. In one other package: the loaded file
+/// of that package defining `FileOptions`. In several: an error naming a
+/// file extending each.
+fn infer_descriptor(r: &mut Run, topo: &Topology) {
+    let mut facts: Vec<(String, (String, Vec<String>, bool))> = topo
+        .files
+        .iter()
+        .filter(|f| !f.is_ref())
+        .filter_map(|f| Some((f.name.clone(), file_facts(f.qfile.as_ref()?)?)))
+        .collect();
+    facts.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut packages: std::collections::BTreeMap<String, String> = Default::default();
+    for (name, (_, extendees, _)) in &facts {
+        for e in extendees {
+            let e = e.trim_start_matches('.');
+            let (package, carrier) = e.rsplit_once('.').unwrap_or(("", e));
+            if OPTION_CARRIERS.contains(&carrier) && package != "google.protobuf" {
+                packages
+                    .entry(package.to_string())
+                    .or_insert_with(|| name.clone());
+            }
+        }
+    }
+    if packages.len() > 1 {
+        let named: Vec<String> = packages
+            .iter()
+            .map(|(p, f)| format!("{p} (as in {f})"))
+            .collect();
+        r.descriptor_error = Some(format!(
+            "the input's custom options extend the options of several descriptors: {}; \
+             name the one to use with --descriptor",
+            named.join(", ")
+        ));
+        return;
+    }
+    let Some(package) = packages.keys().next() else {
+        return;
+    };
+    if let Some((name, _)) = facts
+        .iter()
+        .find(|(_, (p, _, defines))| p == package && *defines)
+    {
+        r.variant.descriptor_proto = name.clone();
+    }
 }
 
 /// The variant's `.pb` for `proto_name`, its first file re-serialized.
