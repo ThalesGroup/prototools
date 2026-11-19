@@ -16,6 +16,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from .conftest import REPROTO_CMD, STOCK_INCLUDE, vendor_descriptor
 
 VENDOR_ONLY = "  optional bool vendor_only = 90;\n"
@@ -163,3 +165,12 @@ def test_keep_descriptor_path_is_deprecated(tmp_path: Path) -> None:
     r = _run(tmp_path, "--keep-descriptor-path")
     assert r.returncode == 0, r.stderr
     assert "Warning [W18]: --keep-descriptor-path is deprecated; use --target keep" in r.stderr
+
+
+@pytest.mark.skipif("protoback" in " ".join(REPROTO_CMD),
+                    reason="protoback implements --target portable (protoback/tests/portable.rs)")
+def test_portable_is_a_usage_error_in_reproto(tmp_path: Path) -> None:
+    # Spec 0447 S9: a target reproto does not implement, never ignored.
+    r = _run(tmp_path, "--target", "portable")
+    assert r.returncode == 2, r.stderr
+    assert "--target portable: not implemented by reproto; use protoback" in r.stderr

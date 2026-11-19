@@ -109,7 +109,38 @@ pub struct Variant {
     /// in use; the descriptor's file and input package, once renamed.
     pub protoc_target: bool,
     pub renamed_descriptor: Option<(String, String)>,
+    /// Spec 0447 S3, --target portable: what is mapped and redacted.
+    pub portable: Option<Portable>,
 }
+
+/// --target portable (spec 0447 S3, S5): the descriptor in use kept as an
+/// ordinary file; the options messages custom options extend mapped to the
+/// stock ones; what the stock descriptor cannot represent redacted.
+#[derive(Debug, Clone, Default)]
+pub struct Portable {
+    /// `.vendor.FieldOptions` -> `.google.protobuf.FieldOptions`, and the
+    /// other options messages and FeatureSet, by whole name.
+    extendee_rules: Vec<Rule>,
+    /// The fields of each options message the stock one lacks, by number.
+    pub redacted_fields: std::collections::BTreeMap<String, std::collections::BTreeSet<u32>>,
+    /// Each enum field of an options message the stock one has: the values
+    /// stock's enum has.
+    pub stock_values: std::collections::BTreeMap<(String, String), std::collections::BTreeSet<i32>>,
+}
+
+/// The messages custom options and features extend.
+pub const EXTENDEES: &[&str] = &[
+    "FileOptions",
+    "MessageOptions",
+    "FieldOptions",
+    "OneofOptions",
+    "ExtensionRangeOptions",
+    "EnumOptions",
+    "EnumValueOptions",
+    "ServiceOptions",
+    "MethodOptions",
+    "FeatureSet",
+];
 
 /// The keys a variant file may have, every one read (`variant._KEYS`).
 const KEYS: &[&str] = &[
@@ -144,6 +175,45 @@ pub fn stock_descriptor_pb() -> &'static [u8] {
         .find(|(n, _)| *n == "google/protobuf/descriptor.pb")
         .map(|(_, b)| *b)
         .unwrap_or_default()
+}
+
+/// The numbers of the values of the enum `full` (`.pkg.Msg.Enum`) of `fdp`.
+fn enum_values(
+    fdp: &FileDescriptorProto<'_>,
+    full: &str,
+) -> Option<std::collections::BTreeSet<i32>> {
+    let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+    let package = text(fdp.package());
+    let rest = full.strip_prefix('.')?;
+    let rest = if package.is_empty() {
+        rest
+    } else {
+        rest.strip_prefix(&package)?.strip_prefix('.')?
+    };
+    let mut parts: Vec<&str> = rest.split('.').collect();
+    let last = parts.pop()?;
+    let values = |e: &prototext_upb::descriptor_access::EnumDescriptorProto<'_>| {
+        e.value().iter().map(|v| v.number()).collect()
+    };
+    if parts.is_empty() {
+        return fdp
+            .enum_type()
+            .iter()
+            .find(|e| e.name() == last.as_bytes())
+            .map(values);
+    }
+    let mut messages = fdp.message_type();
+    let mut found = None;
+    for part in parts {
+        let m = messages.into_iter().find(|m| m.name() == part.as_bytes())?;
+        messages = m.nested_type();
+        found = Some(m);
+    }
+    found?
+        .enum_type()
+        .iter()
+        .find(|e| e.name() == last.as_bytes())
+        .map(values)
 }
 
 /// reproto's `rule_matches`.
@@ -304,6 +374,7 @@ impl Variant {
             stem,
             protoc_target: false,
             renamed_descriptor: None,
+            portable: None,
         })
     }
 
@@ -362,6 +433,112 @@ impl Variant {
             }
         }
         self.namespace_package(package)
+    }
+
+    /// Spec 0447 S3, --target portable: `desc`, the descriptor in use,
+    /// against `stock`, protoc's (the tools' embedded copy); nothing for
+    /// the stock descriptor.
+    pub fn derive_portable(
+        &mut self,
+        desc: &FileDescriptorProto<'_>,
+        stock: &FileDescriptorProto<'_>,
+    ) {
+        use std::collections::{BTreeMap, BTreeSet};
+        let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+        let package = text(desc.package());
+        if package == STOCK_PACKAGE {
+            return;
+        }
+        let prefix = if package.is_empty() {
+            ".".to_string()
+        } else {
+            format!(".{package}.")
+        };
+        let mut portable = Portable::default();
+        let mine: BTreeMap<String, _> = desc
+            .message_type()
+            .into_iter()
+            .map(|m| (text(m.name()), m))
+            .collect();
+        let theirs: BTreeMap<String, _> = stock
+            .message_type()
+            .into_iter()
+            .map(|m| (text(m.name()), m))
+            .collect();
+        for name in EXTENDEES {
+            if mine.contains_key(*name) && theirs.contains_key(*name) {
+                portable.extendee_rules.push(Rule {
+                    prefix: format!("{prefix}{name}"),
+                    to: Some(format!(".{STOCK_PACKAGE}.{name}")),
+                    cont: false,
+                    whole: true,
+                });
+            }
+        }
+        for name in EXTENDEES.iter().filter(|n| **n != "FeatureSet") {
+            let (Some(m), Some(s)) = (mine.get(*name), theirs.get(*name)) else {
+                continue;
+            };
+            let known: BTreeSet<u32> = s
+                .field()
+                .iter()
+                .filter_map(|f| u32::try_from(f.number()).ok())
+                .collect();
+            let lacking: BTreeSet<u32> = m
+                .field()
+                .iter()
+                .filter_map(|f| u32::try_from(f.number()).ok())
+                .filter(|n| !known.contains(n))
+                .collect();
+            if !lacking.is_empty() {
+                portable
+                    .redacted_fields
+                    .insert((*name).to_string(), lacking);
+            }
+            for f in s.field() {
+                if f.r#type() != 14 {
+                    continue; // TYPE_ENUM
+                }
+                if let Some(values) = enum_values(stock, &text(f.type_name())) {
+                    portable
+                        .stock_values
+                        .insert(((*name).to_string(), text(f.name())), values);
+                }
+            }
+        }
+        self.portable = Some(portable);
+    }
+
+    /// An extendee's output name: under --target portable, an options
+    /// message of the descriptor in use mapped to the stock one (spec
+    /// 0447 S3); else `output_symbol`.
+    pub fn output_extendee(&self, name: &str, keep_descriptor: bool) -> String {
+        if let Some(p) = &self.portable {
+            if p.extendee_rules
+                .iter()
+                .any(|r| rule_matches(r, name, false))
+            {
+                return apply_rules(&p.extendee_rules, name, false);
+            }
+        }
+        self.output_symbol(name, keep_descriptor)
+    }
+
+    /// Whether an extendee is one --target portable maps.
+    pub fn maps_extendee(&self, name: &str) -> bool {
+        self.portable.as_ref().is_some_and(|p| {
+            p.extendee_rules
+                .iter()
+                .any(|r| rule_matches(r, name, false))
+        })
+    }
+
+    /// Spec 0447 S3, --target portable: the stock descriptor, imported for
+    /// the mapped extends, is protoc's own: not written to disk.
+    pub fn kept_off_disk(&self, name: &str) -> bool {
+        self.portable.is_some()
+            && name == STOCK_DESCRIPTOR
+            && self.descriptor_proto != STOCK_DESCRIPTOR
     }
 
     /// Spec 0447 S3, --target protoc: the descriptor in use (`fdp`, its

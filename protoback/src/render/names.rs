@@ -399,10 +399,29 @@ pub fn scope_name(shared: &Shared<'_>, node: usize) -> String {
 /// `scope` (an input name): the name protoc resolves back to it (spec 0434
 /// S4), all in output names (spec 0440 S3).
 pub fn type_ref(ctx: &super::file::Ctx<'_, '_>, target: &str, scope: &str, mode: Mode) -> String {
+    let out = ctx
+        .shared
+        .variant
+        .output_symbol(target, ctx.shared.keep_variant_descriptor);
+    out_type_ref(ctx, &out, scope, mode)
+}
+
+/// An extendee's name to write: `type_ref`, the extendee mapped under
+/// --target portable (spec 0447 S3).
+pub fn extendee_ref(ctx: &super::file::Ctx<'_, '_>, target: &str, scope: &str) -> String {
+    let out = ctx
+        .shared
+        .variant
+        .output_extendee(target, ctx.shared.keep_variant_descriptor);
+    out_type_ref(ctx, &out, scope, Mode::All)
+}
+
+/// `type_ref` of a target already in output names.
+fn out_type_ref(ctx: &super::file::Ctx<'_, '_>, out: &str, scope: &str, mode: Mode) -> String {
     let shared = ctx.shared;
     let keep = shared.keep_variant_descriptor;
     shared.names.type_name(
-        &shared.variant.output_symbol(target, keep),
+        out,
         &ctx.file_name(),
         &ctx.visible,
         &shared.variant.output_package(scope, &ctx.file_name(), keep),

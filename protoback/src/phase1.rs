@@ -150,6 +150,9 @@ pub fn run(r: &mut Run, topo: &mut Topology) {
     if r.target == crate::cli::Target::Protoc || r.import_descriptor {
         apply_import_rule(r, topo);
     }
+    if r.target == crate::cli::Target::Portable {
+        apply_portable(r, topo);
+    }
     // W29: a replacement is meant to be a superset of the copy it replaces.
     for (name, old, folder) in replaced {
         let new = topo
@@ -227,12 +230,85 @@ const OPTION_CARRIERS: &[&str] = &[
     "FeatureSet",
 ];
 
+/// The stock descriptor, the tools' embedded copy, decoded.
+fn stock_descriptor() -> Option<DynamicMessage> {
+    use prototext_upb::descriptor_access::FileDescriptorSet;
+    let def = Pool::vendored().get_message_by_name("google.protobuf.FileDescriptorSet")?;
+    let set = DynamicMessage::decode(&def, crate::variant::stock_descriptor_pb()).ok()?;
+    let first = FileDescriptorSet(set.as_ref()).file().into_iter().next()?;
+    let fdp = Pool::vendored().get_message_by_name("google.protobuf.FileDescriptorProto")?;
+    DynamicMessage::decode(&fdp, &first.0.encode().ok()?).ok()
+}
+
+/// Spec 0447 S3, --target portable: the mapping and the redaction derived
+/// from the descriptor in use; each file extending one of its options
+/// messages, now extending protoc's, imports protoc's descriptor (the
+/// built-in copy loaded when the input lacks it), as if the input had it.
+fn apply_portable(r: &mut Run, topo: &mut Topology) {
+    use crate::descriptor_import::with_dependency;
+    use crate::variant::STOCK_DESCRIPTOR;
+    use prototext_upb::descriptor_access::FileDescriptorProto;
+    let name = r.variant.descriptor_proto.clone();
+    let Some(d) = topo.find(&name).filter(|&d| !topo.files[d].is_ref()) else {
+        return;
+    };
+    let (Some(desc), Some(stock)) = (
+        topo.files[d].qfile.as_ref().and_then(decode_fdp),
+        stock_descriptor(),
+    ) else {
+        return;
+    };
+    r.variant.derive_portable(
+        &FileDescriptorProto(desc.as_ref()),
+        &FileDescriptorProto(stock.as_ref()),
+    );
+    let extending: Vec<usize> = (0..topo.files.len())
+        .filter(|&i| i != d && !topo.files[i].is_ref())
+        .filter(|&i| {
+            topo.files[i].qfile.as_ref().is_some_and(|qf| {
+                !qf.imports.iter().any(|n| n == STOCK_DESCRIPTOR)
+                    && file_facts(qf)
+                        .is_some_and(|f| f.extendees.iter().any(|e| r.variant.maps_extendee(e)))
+            })
+        })
+        .collect();
+    if extending.is_empty() {
+        return;
+    }
+    let s = match topo
+        .find(STOCK_DESCRIPTOR)
+        .filter(|&s| !topo.files[s].is_ref())
+    {
+        Some(s) => s,
+        None => {
+            let Some(qf) = embedded_fallback(r, STOCK_DESCRIPTOR) else {
+                return;
+            };
+            topo.load(qf.clone());
+            topo.merge();
+            let Some(s) = topo.find(STOCK_DESCRIPTOR) else {
+                return;
+            };
+            topo.files[s].qfile = Some(qf);
+            crate::report::filled_in(STOCK_DESCRIPTOR);
+            s
+        }
+    };
+    for i in extending {
+        if let Some(qf) = topo.files[i].qfile.as_mut() {
+            qf.contents = with_dependency(&qf.contents, STOCK_DESCRIPTOR);
+            qf.imports.push(STOCK_DESCRIPTOR.to_string());
+        }
+        topo.files[i].targets.insert(s);
+    }
+}
+
 /// Spec 0447 S4: each loaded file setting a built-in option field only the
 /// descriptor in use declares, and not importing it, gets the import, as
 /// if the input had it. reproto's `_apply_import_rule`.
 fn apply_import_rule(r: &Run, topo: &mut Topology) {
     use crate::descriptor_import::{message_fields, needs_import, with_dependency};
-    use prototext_upb::descriptor_access::{FileDescriptorProto, FileDescriptorSet};
+    use prototext_upb::descriptor_access::FileDescriptorProto;
     let name = r.variant.descriptor_proto.clone();
     let Some(d) = topo.find(&name).filter(|&d| !topo.files[d].is_ref()) else {
         return;
@@ -241,17 +317,10 @@ fn apply_import_rule(r: &Run, topo: &mut Topology) {
         return;
     };
     let fields = message_fields(&FileDescriptorProto(desc.as_ref()));
-    let Some(def) = Pool::vendored().get_message_by_name("google.protobuf.FileDescriptorSet")
-    else {
+    let Some(stock) = stock_descriptor() else {
         return;
     };
-    let Ok(set) = DynamicMessage::decode(&def, crate::variant::stock_descriptor_pb()) else {
-        return;
-    };
-    let Some(stock) = FileDescriptorSet(set.as_ref()).file().into_iter().next() else {
-        return;
-    };
-    let stock = message_fields(&stock);
+    let stock = message_fields(&FileDescriptorProto(stock.as_ref()));
     for i in 0..topo.files.len() {
         if i == d || topo.files[i].is_ref() {
             continue;

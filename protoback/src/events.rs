@@ -115,7 +115,7 @@ pub fn is_code(code: &str) -> bool {
 /// The squashed codes, in the order their summary lines are printed: the
 /// most actionable first (spec 0041), then by code.
 const SQUASHED_ORDER: &[&str] = &[
-    "W5", "W4", "W6", "W19", "W20", "W21", "W22", "T1", "T2", "T3", "T4",
+    "W5", "W4", "W6", "W19", "W20", "W21", "W22", "W28", "T1", "T2", "T3", "T4",
 ];
 
 #[derive(Debug, Default)]

@@ -296,7 +296,11 @@ fn field(ctx: &Ctx<'_, '_>, fd: usize) -> Option<Vec<u8>> {
                 .ok()?;
         }
         if !f.extendee().is_empty() {
-            w.set_extendee(rename(ctx, f.extendee()).as_bytes()).ok()?;
+            let shared = ctx.shared;
+            let extendee = shared
+                .variant
+                .output_extendee(&text(f.extendee()), shared.keep_variant_descriptor);
+            w.set_extendee(extendee.as_bytes()).ok()?;
         }
         w.set_label(if is_map { 3 } else { label }).ok()?;
         // A proto3 `optional` written as anything but proto3 is proto2's:

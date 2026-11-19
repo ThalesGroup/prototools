@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0447 — output targets and profiles, instead of variants
 
-Status: draft
+Status: implemented
+Implemented in: 2026-11-19
 App: protoback and reproto (reproto a subset: S9)
 Refs: docs/specs/0440-one-renaming-table.md (the renaming this replaces);
         docs/specs/0437-rewrite-collisions.md (the collisions it removes);
@@ -251,4 +252,24 @@ imports, and a batch hides failures.
 
 ## Measured outcome
 
-(At implementation.)
+- On a vendor fixture (protoc's descriptor as package `vendor`, a
+  `FieldOptions` field and a `CType` value only it declares, a custom
+  option, a field of a vendor type), each output file compiled alone:
+  `protoc` and `portable` compile with stock protoc; `keep` carries the
+  input's names and dependencies, one import more with
+  `--import-descriptor`, only where S4 says.
+- Without `--target`, the output is unchanged: the harness against
+  reproto (1,669 cases, 1,655 graph dumps, none of them naming a
+  descriptor) identical after each phase; the schema databases of the
+  Nix recipes build with `--builtin` in place of `--use-variant`.
+- Departures from the text:
+  - S5: the orphan comment holds the option's name and value; its
+    number is in W28's message and the report's entry.
+  - Test plan 7 has no test of its own: the public corpora run without
+    `--descriptor` through the harness and the Nix recipes, unchanged.
+  - The import rule and the extends `portable` maps add the dependency
+    to the file as read, so the binary descriptors carry it too: one
+    `dependency` more than the input (S4's cost, in the binary as well).
+  - A vendor descriptor reduced to a few messages is not one the text
+    read resolves option names against (they resolve against protoc's);
+    a complete one is. Seen on a test fixture only.

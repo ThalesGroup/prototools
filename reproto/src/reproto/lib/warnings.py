@@ -92,7 +92,7 @@ def _occ(count: int) -> str:
 
 # The squashed codes, in the order their summary lines are printed: the
 # most actionable first (spec 0041 §2, §7, §8), then by code.
-_SQUASHED_ORDER = ("W5", "W4", "W6", "W19", "W20", "W21", "W22", "T1", "T2", "T3", "T4")
+_SQUASHED_ORDER = ("W5", "W4", "W6", "W19", "W20", "W21", "W22", "W28", "T1", "T2", "T3", "T4")
 
 
 class WarningCollector:

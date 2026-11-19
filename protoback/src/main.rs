@@ -459,12 +459,11 @@ fn protoback(mut cli: Cli, explicit: &std::collections::HashSet<&'static str>) -
     if std::env::var_os("REPROTO_VARIANT").is_some() && !cli.quiet {
         events.attention(REPROTO_VARIANT_IGNORED);
     }
-    // Spec 0447: portable not yet (phase C).
-    if cli.target == cli::Target::Portable {
-        return usage("--target portable: not implemented yet (spec 0447)");
-    }
-    if cli.target == cli::Target::Protoc && cli.keep_descriptor_path {
-        return usage("--target protoc and --keep-descriptor-path (--target keep) are exclusive");
+    if cli.target != cli::Target::Keep && cli.keep_descriptor_path {
+        let name = format!("{:?}", cli.target).to_lowercase();
+        return usage(&format!(
+            "--target {name} and --keep-descriptor-path (--target keep) are exclusive"
+        ));
     }
     if let Err(e) = stub_check(&cli, out_repo.as_deref()) {
         return usage(&e);

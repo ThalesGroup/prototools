@@ -320,6 +320,66 @@ fn builtin_name(variant: &Variant, kind: Options, field: &Field) -> Option<(Stri
     Some((short, orphan))
 }
 
+/// Spec 0447 S5, --target portable: whether a built-in option is one
+/// protoc's descriptor cannot represent (a field its options message lacks,
+/// or an enum value its enum lacks): then written as an orphan, with W28,
+/// listed in the report. The binary keeps it as the input has it.
+fn redacted(scope: &Scope<'_>, kind: Options, field: &Field, value: &Value<'_>) -> bool {
+    let Some(p) = &scope.variant.portable else {
+        return false;
+    };
+    let options = kind.type_name();
+    let number = field.number();
+    let name = field.name();
+    let what = if p
+        .redacted_fields
+        .get(options)
+        .is_some_and(|fields| fields.contains(&number))
+    {
+        format!("field {number} of {options} is not in protoc's descriptor")
+    } else if let Some(known) = p.stock_values.get(&(options.to_string(), name.to_string())) {
+        let values: Vec<i32> = match value {
+            Value::Enum(n) => vec![*n],
+            Value::List(l) => l
+                .iter()
+                .filter_map(|v| match v {
+                    Value::Enum(n) => Some(n),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        let lacking: Vec<String> = values
+            .iter()
+            .filter(|n| !known.contains(n))
+            .map(i32::to_string)
+            .collect();
+        if lacking.is_empty() {
+            return false;
+        }
+        format!(
+            "value {} of field {number} of {options} is not in protoc's descriptor",
+            lacking.join(", ")
+        )
+    } else {
+        return false;
+    };
+    scope
+        .events
+        .borrow_mut()
+        .push(super::file::RenderEvent::Squash(
+            "W28",
+            format!(
+                "'{}': option {name}: {what}: written as an orphan (--target portable)",
+                scope.file
+            ),
+            serde_json::json!({
+                "file": scope.file, "options": options, "field": name, "number": number,
+            }),
+        ));
+    true
+}
+
 /// A scalar option value's text (`Scalar.__str__`, through `get_scalar`).
 fn scalar(field: &Field, value: &Value<'_>) -> Result<String, Unrenderable> {
     Ok(match (value, field.kind()) {
@@ -462,7 +522,8 @@ pub fn options(
             continue;
         }
         if let Some((name, orphan)) = builtin_name(scope.variant, kind, field) {
-            entries.push((name, orphan, field, value));
+            let redacted = redacted(scope, kind, field, value);
+            entries.push((name, orphan || redacted, field, value));
         }
     }
     entries.extend(custom_entries(scope, &fields));

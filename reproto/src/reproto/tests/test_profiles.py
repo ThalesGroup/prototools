@@ -14,7 +14,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from .conftest import REPROTO_CMD
+from .conftest import REPROTO_CMD, vendor_descriptor
 
 EDITIONS = '''name: "e.proto" package: "e" syntax: "editions" edition: EDITION_2023
 message_type { name: "E" field { name: "x" number: 1 label: LABEL_OPTIONAL type: TYPE_INT32 } }
@@ -105,8 +105,35 @@ def test_a_superset_replaces_silently(tmp_path: Path) -> None:
     assert "int32 y = 2" in a, a
 
 
-def test_target_portable_is_a_usage_error_for_now(tmp_path: Path) -> None:
-    # reproto never implements it (spec 0447 S9); protoback in phase C.
-    r = _run(tmp_path, {"a.textpb": ONE_FIELD}, "--target", "portable")
-    assert r.returncode == 2, r.stderr
-    assert "--target portable: not implemented" in r.stderr, r.stderr
+CUSTOM = """name: "c.proto" package: "c" dependency: "vendor/proto/descriptor.proto"
+extension { name: "tag" number: 50000 label: LABEL_OPTIONAL type: TYPE_INT32
+  extendee: ".vendor.FieldOptions" }
+"""
+
+
+def test_target_key_in_a_profile(tmp_path: Path) -> None:
+    # Spec 0447 test plan 5: `target: protoc` in a profile is --target protoc.
+    vendor_descriptor(tmp_path)
+    (tmp_path / "vendor-protoc.yaml").write_text("target: protoc\n", encoding="utf-8")
+    r = _run(tmp_path, {"c.textpb": CUSTOM}, "--profile", "vendor-protoc")
+    assert r.returncode == 0, r.stderr
+    c = (tmp_path / "out" / "c.proto").read_text(encoding="utf-8")
+    assert "extend google.protobuf.FieldOptions {" in c, c
+    assert (tmp_path / "out" / "google/protobuf/descriptor.proto").exists()
+
+
+def test_profiles_compose(tmp_path: Path) -> None:
+    # Spec 0447 test plan 5: a later profile's scalar wins; lists accumulate.
+    # The first, with a folder replacing a.proto by a copy lacking a field.
+    profs = tmp_path / "profs"
+    (profs / "first").mkdir(parents=True)
+    (profs / "first.yaml").write_text("editions: proto2\nfail_on: [W29]\n", encoding="utf-8")
+    (profs / "first" / "a.textpb").write_text(ONE_FIELD, encoding="utf-8")
+    (tmp_path / "second.yaml").write_text("editions: keep\nfail_on: [W1]\n", encoding="utf-8")
+    r = _run(tmp_path, {"e.textpb": EDITIONS, "a.textpb": TWO_FIELDS},
+             "--profile", "profs/first", "--profile", "second")
+    e = (tmp_path / "out" / "e.proto").read_text(encoding="utf-8")
+    assert 'edition = "2023";' in e, e
+    # fail_on accumulated: the first profile's W29 still fails the run.
+    assert "Warning [W29]" in r.stderr, r.stderr
+    assert r.returncode == 3, r.stderr

@@ -554,8 +554,9 @@ fn write_files(
                 .strip_prefix("file:")
                 .unwrap_or_default()
                 .to_string();
-            let suppress =
-                name == shared.variant.descriptor_proto && !output.write_variant_descriptor;
+            let suppress = (name == shared.variant.descriptor_proto
+                && !output.write_variant_descriptor)
+                || shared.variant.kept_off_disk(&name);
             let path = match (&output.out_repo, dry_run || suppress) {
                 (Some(out_repo), false) => Some(
                     out_repo.join(

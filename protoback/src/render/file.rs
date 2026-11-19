@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 
 use prototext_upb::descriptor_access::FieldDescriptorProto;
 
-use super::names::{scope_name, type_ref, Mode, Visible};
+use super::names::{scope_name, Visible};
 use super::pyfmt::{edition_name, json_dumps};
 use super::text::{Block, Line, LineType};
 use super::{text, Shared};
@@ -408,7 +408,7 @@ pub fn extend_blocks(
         };
         // Looked up among every symbol of the scope the extension is
         // declared in (spec 0434 S3).
-        let r = type_ref(ctx, &node_extendee, &scope_name(shared, owner), Mode::All);
+        let r = super::names::extendee_ref(ctx, &node_extendee, &scope_name(shared, owner));
         if !refs.contains(&r) {
             refs.push(r.clone());
         }
