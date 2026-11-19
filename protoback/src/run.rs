@@ -38,6 +38,10 @@ pub struct Run {
     /// The profiles' folders (spec 0447 S6): each file in one replaces the
     /// input's copy.
     pub profile_folders: Vec<PathBuf>,
+    /// Spec 0447 S3: what reads the output.
+    pub target: crate::cli::Target,
+    /// Spec 0447 S4: the import rule under keep (on under protoc).
+    pub import_descriptor: bool,
     /// The inference's failure: custom options extending several
     /// descriptors' options.
     pub descriptor_error: Option<String>,

@@ -98,7 +98,7 @@ pub fn file(ctx: &Ctx<'_, '_>, locations: &[Location]) -> Option<Vec<u8>> {
             w.set_package(
                 shared
                     .variant
-                    .output_package(&text(f.package()), keep)
+                    .output_package(&text(f.package()), &text(f.name()), keep)
                     .as_bytes(),
             )
             .ok()?;

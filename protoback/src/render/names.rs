@@ -148,7 +148,7 @@ impl SymbolTable {
             file.clone(),
             renaming
                 .variant
-                .output_package(&package, renaming.keep_descriptor),
+                .output_package(&package, &file, renaming.keep_descriptor),
         );
         let deps: Vec<String> = f.dependency().iter().map(|d| text(d)).collect();
         let public = f
@@ -405,7 +405,7 @@ pub fn type_ref(ctx: &super::file::Ctx<'_, '_>, target: &str, scope: &str, mode:
         &shared.variant.output_symbol(target, keep),
         &ctx.file_name(),
         &ctx.visible,
-        &shared.variant.output_package(scope, keep),
+        &shared.variant.output_package(scope, &ctx.file_name(), keep),
         mode,
     )
 }

@@ -569,9 +569,11 @@ fn render_body(
 
     let package = text(f.package());
     if !package.is_empty() {
-        let out_package = shared
-            .variant
-            .output_package(&package, shared.keep_variant_descriptor);
+        let out_package = shared.variant.output_package(
+            &package,
+            &text(f.name()),
+            shared.keep_variant_descriptor,
+        );
         out.push(Line::code(format!("package {out_package};"), depth));
         out.push(Line::code("", depth));
     }

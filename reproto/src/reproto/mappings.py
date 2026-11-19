@@ -59,11 +59,28 @@ from .context import Context
 from .fake_types import Fqdn, Ref
 from .globals import FIELD
 
+STOCK_PACKAGE = 'google.protobuf'
+STOCK_DESCRIPTOR = 'google/protobuf/descriptor.proto'
+
 # --- The renaming (spec 0440) ---------------------------------------------
 # The variant's rules are applied here and nowhere else: each output name
 # is one of these functions of the input name. Symbols and packages keep
 # their input names under --keep-descriptor-path; files are rewritten but
 # the variant's descriptor.proto (canonize_dependency).
+
+def rule_matches(rule: dict, name: str, inside: bool = True) -> bool:
+    """A rule's `match` a prefix of `name`. A rule of a whole name
+    (`whole`, the rules --target protoc derives, spec 0447 S3) matches
+    that name, or, `inside`, a name inside it: `.vendor.FileOptions`
+    matches `.vendor.FileOptions.Kind`, not `.vendor.FileOptionsX`; a
+    file's rule, the file alone."""
+    match = rule['match']
+    if not name.startswith(match):
+        return False
+    if not rule.get('whole') or len(name) == len(match):
+        return True
+    return inside and name[len(match)] == '.'
+
 
 def output_symbol(ctx: Context, name: str) -> str:
     """A symbol's output full name, from its input one, leading dot kept
@@ -75,11 +92,17 @@ def output_symbol(ctx: Context, name: str) -> str:
     return out if name.startswith('.') else out[1:]
 
 
-def output_package(ctx: Context, package: str) -> str:
+def output_package(ctx: Context, package: str, file: str) -> str:
     """A package's output name; also a scope's (a package or a message's
-    full name, no leading dot), matched as `.scope.`."""
+    full name, no leading dot), matched as `.scope.`; `file`, the file
+    it is the package or a scope of. Under --target protoc, the
+    descriptor's package is the stock one in the descriptor's file alone
+    (spec 0447 S3): its other files keep theirs."""
     if ctx.keep_variant_descriptor:
         return package
+    renamed = ctx.renamed_descriptor
+    if renamed is not None and file == renamed[0] and package == renamed[1]:
+        return STOCK_PACKAGE
     return apply_variant_namespace_to_package(ctx, package)
 
 
@@ -97,7 +120,7 @@ def apply_variant_namespace(ctx: Context, r: Ref) -> Ref:
     """
     s = str(r)
     for rule in ctx.variant_ns_rules:
-        if s.startswith(rule['match']):
+        if rule_matches(rule, s):
             if rule['action'] == 'rewrite':
                 s = rule['to'] + s[len(rule['match']):]
             # action == 'keep': leave s unchanged
@@ -250,7 +273,7 @@ def canonize_dependency(ctx: Context, name: str) -> str:
     if ctx.keep_variant_descriptor and name == ctx.variant_descriptor_proto:
         return name
     for rule in ctx.variant_import_rules:
-        if name.startswith(rule['match']):
+        if rule_matches(rule, name, inside=False):
             if rule['action'] == 'rewrite':
                 name = rule['to'] + name[len(rule['match']):]
             # action == 'keep': leave name unchanged

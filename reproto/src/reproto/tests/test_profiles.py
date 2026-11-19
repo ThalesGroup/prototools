@@ -105,7 +105,8 @@ def test_a_superset_replaces_silently(tmp_path: Path) -> None:
     assert "int32 y = 2" in a, a
 
 
-def test_targets_other_than_keep_are_not_implemented_yet(tmp_path: Path) -> None:
-    r = _run(tmp_path, {"a.textpb": ONE_FIELD}, "--target", "protoc")
+def test_target_portable_is_a_usage_error_for_now(tmp_path: Path) -> None:
+    # reproto never implements it (spec 0447 S9); protoback in phase C.
+    r = _run(tmp_path, {"a.textpb": ONE_FIELD}, "--target", "portable")
     assert r.returncode == 2, r.stderr
-    assert "--target protoc: not implemented yet (spec 0447)" in r.stderr, r.stderr
+    assert "--target portable: not implemented" in r.stderr, r.stderr

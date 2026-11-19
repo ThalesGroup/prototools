@@ -253,7 +253,7 @@ pub fn resolve_rewrite_collisions(
     graph: &mut Graph,
     variant: &crate::variant::Variant,
     keep_descriptor: bool,
-) -> Result<Vec<String>, Vec<String>> {
+) -> Result<Vec<(&'static str, String)>, Vec<String>> {
     let mut by_path: Vec<(String, Vec<(usize, String)>)> = Vec::new();
     for i in summoned(graph) {
         let name = graph.nodes[i]
@@ -283,13 +283,27 @@ pub fn resolve_rewrite_collisions(
             continue;
         }
         for (i, name) in files {
-            if name != *descriptor {
-                warnings.push(format!(
-                    "'{name}' and '{descriptor}' are both written as '{path}': \
-                     '{descriptor}', the variant's descriptor.proto, is kept"
-                ));
-                unsummon(graph, i);
+            if name == *descriptor {
+                continue;
             }
+            if variant.protoc_target {
+                warnings.push((
+                    "W27",
+                    format!(
+                        "'{name}' dropped: '{descriptor}', the descriptor in use, is \
+                         written as '{path}' (--target protoc)"
+                    ),
+                ));
+            } else {
+                warnings.push((
+                    "W13",
+                    format!(
+                        "'{name}' and '{descriptor}' are both written as '{path}': \
+                         '{descriptor}', the variant's descriptor.proto, is kept"
+                    ),
+                ));
+            }
+            unsummon(graph, i);
         }
     }
     // No namespace rule renaming: no symbol can collide (spec 0443 P1).

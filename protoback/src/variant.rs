@@ -7,6 +7,7 @@
 //! `REPROTO_VARIANT` (both through clap), then the built-in
 //! `google-protobuf`, whose files are reproto's, embedded (spec 0428 S7).
 
+use prototext_upb::descriptor_access::FileDescriptorProto;
 use std::path::{Path, PathBuf};
 
 use serde_yaml::Value;
@@ -104,6 +105,10 @@ pub struct Variant {
     /// of its file no tool reads, in the file's order (spec 0438 S5).
     pub name: String,
     pub unread_keys: Vec<String>,
+    /// Spec 0447 S3, --target protoc: the rules derived from the descriptor
+    /// in use; the descriptor's file and input package, once renamed.
+    pub protoc_target: bool,
+    pub renamed_descriptor: Option<(String, String)>,
 }
 
 /// The keys a variant file may have, every one read (`variant._KEYS`).
@@ -125,14 +130,39 @@ pub struct Rule {
     pub prefix: String,
     pub to: Option<String>,
     pub cont: bool,
+    /// A rule of a whole name (the rules --target protoc derives, spec
+    /// 0447 S3): `.vendor.FileOptions` matches `.vendor.FileOptions.Kind`,
+    /// not `.vendor.FileOptionsX`; a file's rule, the file alone.
+    pub whole: bool,
 }
+
+/// The stock descriptor: the tools' embedded copy (the built-in
+/// variant's), whatever variant is active (spec 0447 S4).
+pub fn stock_descriptor_pb() -> &'static [u8] {
+    BUILTIN_PBS
+        .iter()
+        .find(|(n, _)| *n == "google/protobuf/descriptor.pb")
+        .map(|(_, b)| *b)
+        .unwrap_or_default()
+}
+
+/// reproto's `rule_matches`.
+fn rule_matches(rule: &Rule, name: &str, inside: bool) -> bool {
+    let Some(rest) = name.strip_prefix(&rule.prefix) else {
+        return false;
+    };
+    !rule.whole || rest.is_empty() || (inside && rest.starts_with('.'))
+}
+
+pub const STOCK_PACKAGE: &str = "google.protobuf";
+pub const STOCK_DESCRIPTOR: &str = "google/protobuf/descriptor.proto";
 
 /// reproto's `apply_variant_namespace` and `canonize_dependency`: the rules
 /// in order, the first matching one ending the walk unless it continues.
-fn apply_rules(rules: &[Rule], name: &str) -> String {
+fn apply_rules(rules: &[Rule], name: &str, inside: bool) -> String {
     let mut s = name.to_string();
     for rule in rules {
-        if s.starts_with(&rule.prefix) {
+        if rule_matches(rule, &s, inside) {
             if let Some(to) = &rule.to {
                 s = format!("{to}{}", &s[rule.prefix.len()..]);
             }
@@ -203,7 +233,12 @@ fn rules(value: &Value) -> Vec<Rule> {
             let to = (field("action").as_deref() == Some("rewrite"))
                 .then(|| field("to").unwrap_or_default());
             let cont = m.get("continue").and_then(Value::as_bool).unwrap_or(false);
-            Some(Rule { prefix, to, cont })
+            Some(Rule {
+                prefix,
+                to,
+                cont,
+                whole: false,
+            })
         })
         .collect()
 }
@@ -267,12 +302,14 @@ impl Variant {
                 .collect(),
             root,
             stem,
+            protoc_target: false,
+            renamed_descriptor: None,
         })
     }
 
     /// `apply_variant_namespace`: a type reference (`.pkg.Type`).
     pub fn namespace(&self, name: &str) -> String {
-        apply_rules(&self.namespace_rules, name)
+        apply_rules(&self.namespace_rules, name, true)
     }
 
     /// `apply_variant_namespace_to_package`: a file's package, matched as
@@ -311,12 +348,63 @@ impl Variant {
     }
 
     /// `output_package`: a package's output name, or a scope's (a package
-    /// or a message's full name, no leading dot).
-    pub fn output_package(&self, package: &str, keep_descriptor: bool) -> String {
+    /// or a message's full name, no leading dot); `file`, the file it is
+    /// the package or a scope of. Under --target protoc, the descriptor's
+    /// package is the stock one in the descriptor's file alone (spec 0447
+    /// S3): its other files keep theirs.
+    pub fn output_package(&self, package: &str, file: &str, keep_descriptor: bool) -> String {
         if keep_descriptor {
-            package.to_string()
-        } else {
-            self.namespace_package(package)
+            return package.to_string();
+        }
+        if let Some((f, p)) = &self.renamed_descriptor {
+            if f == file && p == package {
+                return STOCK_PACKAGE.to_string();
+            }
+        }
+        self.namespace_package(package)
+    }
+
+    /// Spec 0447 S3, --target protoc: the descriptor in use (`fdp`, its
+    /// file) written as google/protobuf/descriptor.proto, its definitions
+    /// renamed to the stock package, and every reference to them; nothing
+    /// for the stock one. reproto's `_derive_protoc_renaming`.
+    pub fn derive_protoc_renaming(&mut self, fdp: &FileDescriptorProto<'_>) {
+        let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+        let name = self.descriptor_proto.clone();
+        self.protoc_target = true;
+        if name != STOCK_DESCRIPTOR {
+            self.import_rules = vec![Rule {
+                prefix: name.clone(),
+                to: Some(STOCK_DESCRIPTOR.to_string()),
+                cont: false,
+                whole: true,
+            }];
+        }
+        let package = text(fdp.package());
+        if package != STOCK_PACKAGE {
+            let prefix = if package.is_empty() {
+                ".".to_string()
+            } else {
+                format!(".{package}.")
+            };
+            let top: Vec<String> = fdp
+                .message_type()
+                .iter()
+                .map(|m| text(m.name()))
+                .chain(fdp.enum_type().iter().map(|e| text(e.name())))
+                .chain(fdp.extension().iter().map(|x| text(x.name())))
+                .chain(fdp.service().iter().map(|s| text(s.name())))
+                .collect();
+            self.namespace_rules = top
+                .into_iter()
+                .map(|n| Rule {
+                    prefix: format!("{prefix}{n}"),
+                    to: Some(format!(".{STOCK_PACKAGE}.{n}")),
+                    cont: false,
+                    whole: true,
+                })
+                .collect();
+            self.renamed_descriptor = Some((name, package));
         }
     }
 
@@ -326,7 +414,7 @@ impl Variant {
         if keep_descriptor && name == self.descriptor_proto {
             return name.to_string();
         }
-        apply_rules(&self.import_rules, name)
+        apply_rules(&self.import_rules, name, false)
     }
 
     /// A well-known type's path in this variant.

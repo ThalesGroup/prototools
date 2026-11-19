@@ -154,6 +154,13 @@ class Options:
     variant_well_known: dict[str, str] = field(default_factory=dict)
     variant_import_rules: list[dict] = field(default_factory=list)
     variant_ns_rules: list[dict] = field(default_factory=list)
+    # Spec 0447 S3: what reads the output; under protoc, the descriptor's
+    # file and input package once its renaming is derived (its package the
+    # stock one in that file alone).
+    target: str = 'keep'
+    # Spec 0447 S4: the import rule under keep (on under protoc).
+    import_descriptor: bool = False
+    renamed_descriptor: tuple[str, str] | None = None
     variant_orphans: dict[str, list[str]] = field(
         default_factory=_default_variant_orphans
     )

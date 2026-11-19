@@ -360,7 +360,7 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
 
         # Package
         if self.package != "":
-            out_package = output_package(ctx, self.package)
+            out_package = output_package(ctx, self.package, self.name)
             out.append(BlockLine(f'package {out_package};', depth))
             out.append(BlockLine('', depth))
         out.append_div_maybe(depth)
@@ -565,7 +565,7 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
             # Assigned but under --keep-descriptor-path: an absent package
             # comes out present and empty.
             if not ctx.keep_variant_descriptor:
-                fdp_out.package = output_package(ctx, fdp_out.package)
+                fdp_out.package = output_package(ctx, fdp_out.package, self.name)
             # source_code_info: synthesized from the text pass (spec 0141),
             # or omitted if synthesis is disabled / produced nothing.
             fdp_out.ClearField('source_code_info')

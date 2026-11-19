@@ -941,11 +941,13 @@ def main(
             emit_scoring_html = emit_pyvis
     if use_variant:
         warn('W18', '--use-variant is deprecated; use --builtin')
-    # Spec 0447: only --target keep, so far (phases B and C).
-    if target != 'keep':
-        raise click.UsageError(f"--target {target}: not implemented yet (spec 0447)")
-    if import_descriptor:
-        raise click.UsageError("--import-descriptor: not implemented yet (spec 0447)")
+    # Spec 0447 S9: portable is protoback's alone.
+    if target == 'portable':
+        raise click.UsageError("--target portable: not implemented by reproto; use protoback")
+    if target == 'protoc' and (proto_variant is not None or keep_descriptor_path):
+        raise click.UsageError(
+            "--target protoc derives its renaming from the descriptor; "
+            "drop --proto-variant and --keep-descriptor-path")
     if editions == 'proto2':
         force_proto2_for_editions = True
 
@@ -1092,6 +1094,8 @@ def main(
         fallback_protos=fallback_protos,
         fill_in_protos=fill_in_protos,
         infer_descriptor=infer_descriptor,
+        target=target,
+        import_descriptor=import_descriptor,
         profile_folders=profile_folders,
         keep_variant_descriptor=keep_descriptor_path,
         variant_descriptor_proto=variant['variant_descriptor_proto'],

@@ -11,6 +11,7 @@ mod cli;
 mod complete;
 mod console;
 mod db;
+mod descriptor_import;
 mod dump;
 mod events;
 mod features;
@@ -466,13 +467,17 @@ fn protoback(mut cli: Cli, explicit: &std::collections::HashSet<&'static str>) -
     if !cli.use_variant.is_empty() {
         events.warn("W18", "--use-variant is deprecated; use --builtin");
     }
-    // Spec 0447: only --target keep, so far (phases B and C).
-    if cli.target != cli::Target::Keep {
-        let name = format!("{:?}", cli.target).to_lowercase();
-        return usage(&format!("--target {name}: not implemented yet (spec 0447)"));
+    // Spec 0447: portable not yet (phase C).
+    if cli.target == cli::Target::Portable {
+        return usage("--target portable: not implemented yet (spec 0447)");
     }
-    if cli.import_descriptor {
-        return usage("--import-descriptor: not implemented yet (spec 0447)");
+    if cli.target == cli::Target::Protoc
+        && (cli.proto_variant.is_some() || cli.keep_descriptor_path)
+    {
+        return usage(
+            "--target protoc derives its renaming from the descriptor; \
+             drop --proto-variant and --keep-descriptor-path",
+        );
     }
     if let Err(e) = stub_check(&cli, out_repo.as_deref()) {
         return usage(&e);
@@ -613,6 +618,8 @@ fn protoback(mut cli: Cli, explicit: &std::collections::HashSet<&'static str>) -
         fill_in_protos: fill_in,
         infer_descriptor,
         profile_folders,
+        target: cli.target,
+        import_descriptor: cli.import_descriptor,
         descriptor_error: None,
         variant,
         keep_duplicates: cli.keep_duplicates,
@@ -706,7 +713,9 @@ fn protoback(mut cli: Cli, explicit: &std::collections::HashSet<&'static str>) -
     // Spec 0437: two files rewritten onto one output path.
     let keep = cli.keep_descriptor_path;
     match render::resolve_rewrite_collisions(&mut run.graph, &run.variant, keep) {
-        Ok(warnings) => warnings.iter().for_each(|w| run.events.warn("W13", w)),
+        Ok(warnings) => warnings
+            .iter()
+            .for_each(|(code, w)| run.events.warn(code, w)),
         Err(errors) => {
             run.events.flush();
             return failed(&format!("Error: {}", errors.join("\n")), |m| {

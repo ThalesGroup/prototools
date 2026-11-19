@@ -143,7 +143,13 @@ pub fn run(r: &mut Run, topo: &mut Topology) {
         infer_descriptor(r, topo);
     }
     fill_in(r, topo, true);
+    if r.target == crate::cli::Target::Protoc {
+        derive_protoc_renaming(r, topo);
+    }
     read_text_files(r, topo);
+    if r.target == crate::cli::Target::Protoc || r.import_descriptor {
+        apply_import_rule(r, topo);
+    }
     // W29: a replacement is meant to be a superset of the copy it replaces.
     for (name, old, folder) in replaced {
         let new = topo
@@ -220,6 +226,64 @@ const OPTION_CARRIERS: &[&str] = &[
     "MethodOptions",
     "FeatureSet",
 ];
+
+/// Spec 0447 S4: each loaded file setting a built-in option field only the
+/// descriptor in use declares, and not importing it, gets the import, as
+/// if the input had it. reproto's `_apply_import_rule`.
+fn apply_import_rule(r: &Run, topo: &mut Topology) {
+    use crate::descriptor_import::{message_fields, needs_import, with_dependency};
+    use prototext_upb::descriptor_access::{FileDescriptorProto, FileDescriptorSet};
+    let name = r.variant.descriptor_proto.clone();
+    let Some(d) = topo.find(&name).filter(|&d| !topo.files[d].is_ref()) else {
+        return;
+    };
+    let Some(desc) = topo.files[d].qfile.as_ref().and_then(decode_fdp) else {
+        return;
+    };
+    let fields = message_fields(&FileDescriptorProto(desc.as_ref()));
+    let Some(def) = Pool::vendored().get_message_by_name("google.protobuf.FileDescriptorSet")
+    else {
+        return;
+    };
+    let Ok(set) = DynamicMessage::decode(&def, crate::variant::stock_descriptor_pb()) else {
+        return;
+    };
+    let Some(stock) = FileDescriptorSet(set.as_ref()).file().into_iter().next() else {
+        return;
+    };
+    let stock = message_fields(&stock);
+    for i in 0..topo.files.len() {
+        if i == d || topo.files[i].is_ref() {
+            continue;
+        }
+        let Some(qf) = topo.files[i].qfile.as_mut() else {
+            continue;
+        };
+        if qf.imports.contains(&name) || !needs_import(&qf.contents, &fields, &stock) {
+            continue;
+        }
+        qf.contents = with_dependency(&qf.contents, &name);
+        qf.imports.push(name.clone());
+        topo.files[i].targets.insert(d);
+    }
+}
+
+/// Spec 0447 S3, --target protoc: the renaming derived from the descriptor
+/// in use, if loaded (else said where it is looked for).
+fn derive_protoc_renaming(r: &mut Run, topo: &Topology) {
+    use prototext_upb::descriptor_access::FileDescriptorProto;
+    let Some(i) = topo.find(&r.variant.descriptor_proto) else {
+        return;
+    };
+    if topo.files[i].is_ref() {
+        return;
+    }
+    let Some(fdp) = topo.files[i].qfile.as_ref().and_then(decode_fdp) else {
+        return;
+    };
+    r.variant
+        .derive_protoc_renaming(&FileDescriptorProto(fdp.as_ref()));
+}
 
 /// The file's descriptor, decoded; a text not read yet parsed alone, as
 /// reproto's `QualFile.desc` does.

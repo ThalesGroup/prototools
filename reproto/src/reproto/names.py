@@ -73,14 +73,15 @@ class SymbolTable:
     # The output names of symbols and packages (spec 0440 S3): the table
     # holds the names written, files by their input names.
     rename_symbol: Callable[[str], str] = field(default=_same)
-    rename_package: Callable[[str], str] = field(default=_same)
+    # A package's, in the file named (spec 0447 S3).
+    rename_package: Callable[[str, str], str] = field(default=lambda package, file: package)
 
     @classmethod
     def build(
         cls,
         fdps: Iterable[FileDescriptorProto],
         rename_symbol: Callable[[str], str] | None = None,
-        rename_package: Callable[[str], str] | None = None,
+        rename_package: Callable[[str, str], str] | None = None,
     ) -> SymbolTable:
         table = cls()
         if rename_symbol is not None:
@@ -99,7 +100,7 @@ class SymbolTable:
         file = fdp.name
         if file in self.packages:
             return
-        self.packages[file] = self.rename_package(fdp.package)
+        self.packages[file] = self.rename_package(fdp.package, file)
         public = [fdp.dependency[i] for i in fdp.public_dependency
                   if i < len(fdp.dependency)]
         self.imports[file] = (list(fdp.dependency), public)
@@ -241,7 +242,7 @@ def option_name(ctx: Context, extension: str, scope: str) -> str:
     from .mappings import output_package, output_symbol
     table = symbol_table(ctx)
     full = output_symbol(ctx, extension.lstrip('.'))
-    scope = output_package(ctx, scope)
+    scope = output_package(ctx, scope, ctx.current_file)
     if full not in table.symbols:
         return full
     visible = table.visible(ctx.current_file)
@@ -269,7 +270,7 @@ def symbol_table(ctx: Context) -> SymbolTable:
         table = SymbolTable.build(
             fdps,
             rename_symbol=lambda name: output_symbol(ctx, name),
-            rename_package=lambda package: output_package(ctx, package),
+            rename_package=lambda package, file: output_package(ctx, package, file),
         )
         ctx.symbol_table = table
     return table

@@ -298,7 +298,7 @@ impl Scope<'_> {
             self.visible,
             &self
                 .variant
-                .output_package(&self.option_scope, self.keep_descriptor),
+                .output_package(&self.option_scope, &self.file, self.keep_descriptor),
         );
         (format!("({name})"), orphan)
     }

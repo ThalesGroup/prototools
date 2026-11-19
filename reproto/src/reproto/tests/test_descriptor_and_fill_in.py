@@ -12,13 +12,10 @@ which --descriptor settles.
 """
 
 import os
-import shutil
 import subprocess
 from pathlib import Path
 
-from .conftest import REPROTO_CMD
-
-STOCK = Path(shutil.which("protoc") or "protoc").resolve().parent.parent / "include"
+from .conftest import REPROTO_CMD, vendor_descriptor
 
 USER = '''name: "b.proto" package: "b" dependency: "google/protobuf/timestamp.proto"
 message_type { name: "B" field { name: "t" number: 1 label: LABEL_OPTIONAL
@@ -45,20 +42,6 @@ def _run(tmp_path: Path, files: dict[str, str], *flags: str) -> subprocess.Compl
                           capture_output=True, text=True, env=env)
 
 
-def _vendor_descriptor(tmp_path: Path) -> None:
-    """protoc's descriptor.proto as a vendor's: package `vendor`, at
-    vendor/proto/descriptor.proto."""
-    src = tmp_path / "src" / "vendor" / "proto"
-    src.mkdir(parents=True)
-    text = (STOCK / "google/protobuf/descriptor.proto").read_text(encoding="utf-8")
-    (src / "descriptor.proto").write_text(
-        text.replace("package google.protobuf;", "package vendor;"), encoding="utf-8")
-    (tmp_path / "in").mkdir()
-    subprocess.run(["protoc", f"-I{tmp_path / 'src'}",
-                    f"--descriptor_set_out={tmp_path / 'in' / 'vdesc.pb'}",
-                    "vendor/proto/descriptor.proto"], check=True, capture_output=True)
-
-
 def test_a_stock_input_needs_no_option(tmp_path: Path) -> None:
     r = _run(tmp_path, {"b.textpb": USER})
     assert r.returncode == 0, r.stderr
@@ -80,7 +63,7 @@ def test_use_variant_is_deprecated(tmp_path: Path) -> None:
 
 
 def test_a_vendor_descriptor_is_inferred(tmp_path: Path) -> None:
-    _vendor_descriptor(tmp_path)
+    vendor_descriptor(tmp_path)
     r = _run(tmp_path, {"c.textpb": CUSTOM})
     assert r.returncode == 0, r.stderr
     c = (tmp_path / "out" / "c.proto").read_text(encoding="utf-8")
@@ -89,7 +72,7 @@ def test_a_vendor_descriptor_is_inferred(tmp_path: Path) -> None:
 
 
 def test_descriptor_overrides_the_inference(tmp_path: Path) -> None:
-    _vendor_descriptor(tmp_path)
+    vendor_descriptor(tmp_path)
     r = _run(tmp_path, {"c.textpb": CUSTOM}, "--descriptor", "google/protobuf/descriptor.proto")
     assert r.returncode == 0, r.stderr
     # Read against protoc's descriptor, the vendor's option is an orphan.
@@ -97,7 +80,7 @@ def test_descriptor_overrides_the_inference(tmp_path: Path) -> None:
 
 
 def test_two_vendors_are_an_error(tmp_path: Path) -> None:
-    _vendor_descriptor(tmp_path)
+    vendor_descriptor(tmp_path)
     r = _run(tmp_path, {"c.textpb": CUSTOM, "d.textpb": OTHER})
     assert r.returncode == 1, r.stderr
     assert ("extend the options of several descriptors: other (as in d.proto), "

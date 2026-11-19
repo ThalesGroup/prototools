@@ -658,7 +658,11 @@ def _phase1_load_files(
     if ctx.infer_descriptor:
         _infer_descriptor(ctx, topo)
     fill_in(descriptor=True)
+    if ctx.target == 'protoc':
+        _derive_protoc_renaming(ctx, topo)
     _read_text_files(ctx, topo)
+    if ctx.target == 'protoc' or ctx.import_descriptor:
+        _apply_import_rule(ctx, topo)
     # W29: a replacement is meant to be a superset of the copy it replaces.
     for name, old, folder in replaced:
         missing = sorted(_definitions(old.desc) - _definitions(topo.files[name].qfile.desc))
@@ -713,6 +717,55 @@ def _file_facts(f: ReFile) -> FileFacts:
         todo.extend(m.nested_type)
     return FileFacts(fdp.package, extendees,
                      any(m.name == 'FileOptions' for m in fdp.message_type))
+
+
+def _apply_import_rule(ctx: Context, topo: Topology) -> None:
+    """Spec 0447 S4: each loaded file setting a built-in option field only
+    the descriptor in use declares, and not importing it, gets the import,
+    as if the input had it."""
+    from .descriptor_import import message_fields, needs_import, stock_fields, with_dependency
+    name = ctx.variant_descriptor_proto
+    descriptor = topo.files.get(name)
+    if descriptor is None or descriptor.is_ref():
+        return
+    fields = message_fields(descriptor.qfile.desc)
+    stock = stock_fields()
+    for f in topo.files.values():
+        if f.is_ref() or f is descriptor:
+            continue
+        qf = f.qfile
+        # Read by now: a text's contents are its serialization.
+        assert isinstance(qf.contents, bytes)
+        fdp = qf.desc
+        if name in fdp.dependency or not needs_import(qf.contents, fields, stock):
+            continue
+        qf.contents = with_dependency(qf.contents, name)
+        fdp.dependency.append(name)
+        f.targets.add(descriptor)
+
+
+def _derive_protoc_renaming(ctx: Context, topo: Topology) -> None:
+    """Spec 0447 S3, --target protoc: the descriptor in use written as
+    google/protobuf/descriptor.proto, its definitions renamed to the stock
+    package, and every reference to them; nothing for the stock one."""
+    from .mappings import STOCK_DESCRIPTOR, STOCK_PACKAGE
+    name = ctx.variant_descriptor_proto
+    f = topo.files.get(name)
+    if f is None or f.is_ref():
+        return   # not loaded: said where it is looked for
+    fdp = f.qfile.desc
+    if name != STOCK_DESCRIPTOR:
+        ctx.variant_import_rules = [
+            {'match': name, 'action': 'rewrite', 'to': STOCK_DESCRIPTOR, 'whole': True}]
+    if fdp.package != STOCK_PACKAGE:
+        prefix = f'.{fdp.package}.' if fdp.package else '.'
+        top = [*(m.name for m in fdp.message_type), *(e.name for e in fdp.enum_type),
+               *(x.name for x in fdp.extension), *(s.name for s in fdp.service)]
+        ctx.variant_ns_rules = [
+            {'match': f'{prefix}{n}', 'action': 'rewrite',
+             'to': f'.{STOCK_PACKAGE}.{n}', 'whole': True}
+            for n in top]
+        ctx.renamed_descriptor = (name, fdp.package)
 
 
 def _definitions(fdp: FileDescriptorProto) -> set[str]:
@@ -1663,13 +1716,18 @@ def _resolve_rewrite_collisions(ctx: Context) -> None:
             errors.append(f"{_quoted_list(names)} are both written as '{path}'; prune one (-p)")
             continue
         for f in files:
-            if f.name != descriptor:
+            if f.name == descriptor:
+                continue
+            if ctx.target == 'protoc':
+                warn("W27", f"'{f.name}' dropped: '{descriptor}', the descriptor "
+                            f"in use, is written as '{path}' (--target protoc)")
+            else:
                 warn(
                     "W13",
                     f"'{f.name}' and '{descriptor}' are both written as '{path}': "
                     f"'{descriptor}', the variant's descriptor.proto, is kept",
                 )
-                _unsummon(f)
+            _unsummon(f)
     # No namespace rule renaming: no symbol can collide (spec 0443 P1).
     if not ctx.keep_variant_descriptor and any(
             rule['action'] == 'rewrite' for rule in ctx.variant_ns_rules):

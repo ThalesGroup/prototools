@@ -101,5 +101,6 @@ def type_ref(ctx: Context, target: str, scope: str, mode: 'Mode') -> str:
     convention (spec 0434 S4), all in output names (spec 0440 S3)."""
     from .names import symbol_table
     return symbol_table(ctx).type_name(
-        output_symbol(ctx, target), ctx.current_file, output_package(ctx, scope), mode)
+        output_symbol(ctx, target), ctx.current_file,
+        output_package(ctx, scope, ctx.current_file), mode)
     
