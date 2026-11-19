@@ -113,3 +113,55 @@ def test_a_file_refused_for_its_import_names_it(tmp_path: Path) -> None:
     assert f"[W19]: 'u.proto' : {imported}" in stderr
     assert f"[W20]: 'm2.proto' schema db: {itself}" in stderr
     assert f"[W20]: 'u.proto' schema db: {imported}" in stderr
+
+
+# u.proto with options on each kind of element, refused for its import.
+_U_OPTIONS = '''syntax = "proto2";
+package q;
+import "m2.proto";
+message U {
+  option deprecated = true;
+  optional p.M m = 1 [deprecated = true];
+  enum E {
+    option allow_alias = true;
+    A = 0 [deprecated = true];
+    B = 0;
+  }
+}
+service V {
+  option deprecated = true;
+  rpc Go(U) returns (U) { option deprecated = true; }
+}
+'''
+
+
+def test_a_refused_files_element_options_are_kept(tmp_path: Path) -> None:
+    """Spec 0429 S15: the pool refuses u.proto (for its import), so it
+    knows none of its elements; their options are read from their own
+    descriptors, as a field's are. They were dropped without a word, and an
+    enum value's failed the file."""
+    src = tmp_path / "src"
+    root = tmp_path / "pb"
+    src.mkdir()
+    root.mkdir()
+    for name, body in {"m.proto": _M, "m2.proto": _M.replace("x = 1", "y = 1"),
+                       "u.proto": _U_OPTIONS}.items():
+        (src / name).write_text(body, encoding="utf-8")
+        subprocess.run(["protoc", f"-I{src}",
+                        f"--descriptor_set_out={root / name.replace('.proto', '.pb')}",
+                        name], check=True, capture_output=True)
+    env = {**os.environ}
+    env.pop("REPROTO_VARIANT", None)
+    result = subprocess.run(
+        [*REPROTO_CMD, "--builtin", "descriptor", "--keep-duplicates",
+         f"-I{root}", f"--proto-out={tmp_path / 'out'}"],
+        capture_output=True, text=True, env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "[W6]" not in result.stderr, result.stderr
+    text = (tmp_path / "out" / "u.proto").read_text(encoding="utf-8")
+    lines = [line.strip() for line in text.splitlines()]
+    assert lines.count("option deprecated = true;") == 3, text   # message, service, method
+    assert "option allow_alias = true;" in lines, text
+    assert "A = 0 [deprecated = true];" in lines, text
+    assert "optional p.M m = 1 [deprecated = true];" in lines, text

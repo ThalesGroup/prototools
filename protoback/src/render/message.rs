@@ -41,10 +41,10 @@ fn packable(t: i32) -> bool {
 }
 
 /// `render_options`: the options of node `node`, a message, enum, service
-/// or method, which reproto finds through its pool: none when the pool
-/// refused the element's file or does not have the element (under a
-/// synthetic group), nor when one of them cannot be rendered (its
-/// `except`).
+/// or method, which reproto finds through its pool, or in the element's
+/// own descriptor when the pool refused its file (spec 0429 S15): none for
+/// an element the pool does not have otherwise (under a synthetic group),
+/// nor when one of them cannot be rendered (its `except`).
 fn element_options(
     ctx: &Ctx<'_, '_>,
     node: usize,
@@ -53,7 +53,10 @@ fn element_options(
     depth: usize,
     exclude: &[&str],
 ) -> Vec<Block> {
-    if ctx.refused || !ctx.in_pool(node) {
+    // Spec 0429 S15: in a file the pool refused, the options come from the
+    // element's own descriptor; a synthetic group, which no file defines,
+    // has none.
+    if !ctx.in_pool(node) {
         return Vec::new();
     }
     let scope = ctx.option_scope(node);
@@ -1179,7 +1182,9 @@ fn enum_value(
     depth: usize,
 ) -> Block {
     let prolog = Line::code(format!("{} = {}", text(v.name()), v.number()), depth);
-    if ctx.refused || !ctx.in_pool(en) {
+    // Spec 0429 S15: a refused file's enum value has its options from its
+    // own descriptor; a synthetic group's fails the file, as reproto's.
+    if !ctx.in_pool(en) {
         ctx.failed.set(true);
     }
     // An enum value is named as its enum's sibling (protoc's C++ scoping):

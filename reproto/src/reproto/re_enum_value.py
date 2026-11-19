@@ -72,14 +72,21 @@ class ReEnumValueDescriptorProto:
         # parse_fqdn returns ref with leading dot (e.g., '.google.protobuf.MyEnum')
         # Strip the dot for pool lookup
         full_type_name = ref.lstrip('.')
-        enum_desc = ctx.pool.FindEnumTypeByName(full_type_name)
-        enum_value_desc = enum_desc.values_by_name[self.name]
+        try:
+            enum_desc = ctx.pool.FindEnumTypeByName(full_type_name)
+            serialized = enum_desc.values_by_name[self.name].GetOptions().SerializeToString()
+        except (KeyError, ValueError, TypeError, AttributeError):
+            # Spec 0429 S15: in a file the pool refused, read from the
+            # value's own descriptor; else (a synthetic group's) the render
+            # fails, as before.
+            from .option_rendering import options_from_descriptor
+            if not options_from_descriptor(ctx, self.parent):
+                raise
+            serialized = self.this.options.SerializeToString()
 
         # Create a dynamic EnumValueOptions instance and parse
         # serialized data
-        evo_msg: Message = parse_options(
-            ctx, evo_desc, EvOClass,
-            enum_value_desc.GetOptions().SerializeToString())
+        evo_msg: Message = parse_options(ctx, evo_desc, EvOClass, serialized)
 
         out = Block()
         prolog = BlockLine(f'{self.name} = {self.number}', depth)

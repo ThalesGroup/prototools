@@ -176,6 +176,17 @@ class ReDescriptorProto(SourceCodeInfoMixin, NodeBase[DescriptorProto]):
         self._is_group = value
 
     @property
+    def is_synthetic_group(self) -> bool:
+        """A group made for an editions DELIMITED field under
+        --force-proto2-output: the graph's alone, not the pool's (protoback's
+        `synthetic_group`)."""
+        return getattr(self, '_is_synthetic_group', False)
+
+    @is_synthetic_group.setter
+    def is_synthetic_group(self, value: bool) -> None:
+        self._is_synthetic_group = value
+
+    @property
     def is_map_entry(self) -> bool:
         """Check if this message is a map entry (synthetic message from map<K,V>)."""
         return self.this.options.map_entry if self.this.HasField('options') else False
@@ -384,6 +395,7 @@ class ReDescriptorProto(SourceCodeInfoMixin, NodeBase[DescriptorProto]):
                 # is of the read-only underlying DescriptorProto/_this objects.
                 grp._initialize_from_message(ctx, inner.this)
                 grp.is_group = True
+                grp.is_synthetic_group = True
 
                 # Store (synthetic FQDN, group name) keyed by field number.
                 _delimited_groups[field_proto.number] = (synthetic_fqdn, candidate)

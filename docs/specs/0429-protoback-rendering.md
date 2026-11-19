@@ -235,13 +235,27 @@ reproto first.)
 - **S15. To confirm, each by a test first:** `ctx.syntax` and
   `ctx.out_sci` carried from one file into the next when a render fails;
   a file's, message's, service's or method's options dropped without a
-  warning when the pool does not know the element.
+  warning when the pool does not know the element. Settled 2026-11-19:
+  - Nothing is carried: each render sets its file's state first, and
+    phase 7 gives each file its own slot (protoback renders each file
+    with its own context). `test_render_state_per_file.py` makes a render
+    fail and checks the next file comes out as rendered alone.
+  - Confirmed, both tools: in a file the pool refused, the options of its
+    messages, enums, services and methods were dropped without a word,
+    and an enum value's options failed the file (W6, not written). Fixed
+    by reading them from the element's own descriptor, as a field's
+    options are; a synthetic group, which no file defines, still has
+    none. A file's options keep their A3 comment and W19.
+    `test_a_refused_files_element_options_are_kept`.
 - **S15b. `short_ref`'s collision test misses** (read 2026-11-15,
   `utils.py`): it looks a shortened candidate up under the reference's
   own FQDN prefix, so a message never collides with an enum of the same
   name, and an extendee, looked up as `message:…` (a prefix no node has,
   `_render_extend_blocks`), never collides at all. protoback reproduces
-  both (`render/names.rs`).
+  both (`render/names.rs`). Superseded by
+  docs/specs/0434-type-names-as-protoc-resolves-them.md: `short_ref` is
+  gone from both tools, names resolved through a symbol table as protoc
+  does.
 
 ### Text that is Python's
 

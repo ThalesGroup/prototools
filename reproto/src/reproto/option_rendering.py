@@ -147,6 +147,22 @@ def format_composite_options(
     return result
 
 
+def options_from_descriptor(ctx: Context, node: 'NodeBase[Any]') -> bool:
+    """Spec 0429 S15: whether `node`, an element the pool does not know,
+    has its options read from its own descriptor: yes in a file the pool
+    refused; no for anything else, a synthetic group or an element in one
+    included (protoback's `in_pool`). An enum value asks for its enum."""
+    from .anomalies import pool_refusal
+    if pool_refusal(ctx, ctx.current_file) is None:
+        return False
+    n: 'NodeBase[Any] | None' = node
+    while n is not None:
+        if getattr(n, 'is_synthetic_group', False):
+            return False
+        n = n.parent
+    return True
+
+
 def render_options(
     node: 'NodeBase[Any]',
     ctx: Context,
@@ -185,10 +201,20 @@ def render_options(
                 f"for pool lookup in {node.fqdn}"
             )
             return blocks
+        serialized = desc.GetOptions().SerializeToString()
+    except (KeyError, ValueError, TypeError, AttributeError) as e:
+        # Spec 0429 S15: in a file the pool refused, the element's options
+        # are read from its own descriptor, as a field's are, not dropped.
+        # A synthetic group, which no file defines, still has none.
+        if not options_from_descriptor(ctx, node):
+            logger.warning(
+                f"Could not find descriptor for {full_type_name} in pool: {e}"
+            )
+            return blocks
+        serialized = node.this.options.SerializeToString()
 
-        opts_msg = parse_options(
-            ctx, options_descriptor, options_class,
-            desc.GetOptions().SerializeToString())
+    try:
+        opts_msg = parse_options(ctx, options_descriptor, options_class, serialized)
 
         from .utils import option_scope
         blocks = render_options_from_message(
@@ -203,7 +229,7 @@ def render_options(
 
     except (KeyError, ValueError, TypeError, AttributeError) as e:
         logger.warning(
-            f"Could not find descriptor for {full_type_name} in pool: {e}"
+            f"Could not render the options of {full_type_name}: {e}"
         )
 
     return blocks

@@ -27,8 +27,9 @@ pub struct Ctx<'s, 'a> {
     pub target: String,
     /// The file's edition, for an editions file.
     pub edition: Option<i32>,
-    /// reproto's pool refused this file: its elements' options are not
-    /// found, and an enum value's lookup fails the file.
+    /// reproto's pool refused this file: its file options are written as
+    /// A3 (W19); its elements' come from their own descriptors (spec 0429
+    /// S15).
     pub refused: bool,
     /// A render step failed that reproto does not catch below the file:
     /// the file is not written.
