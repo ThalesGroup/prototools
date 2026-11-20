@@ -102,3 +102,12 @@ inherits      = "release"
 lto           = false
 codegen-units = 16
 incremental   = true
+
+# jemalloc's C, optimized in debug builds too.  Built at -O0 where the
+# compiler defines _FORTIFY_SOURCE (Nix's wrapper does by default), glibc's
+# headers warn that it needs optimization, and jemalloc's configure, whose
+# strerror_r check compiles with -Werror, stops: "cannot determine return
+# type of strerror_r" (jemalloc/jemalloc#3094).  This covers any shell, not
+# only the dev-shell's hardeningDisable.
+[profile.dev.package.tikv-jemalloc-sys]
+opt-level = 1

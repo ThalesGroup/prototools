@@ -2,4 +2,5 @@
 #
 # SPDX-License-Identifier: MIT
 
-/__pycache__
+# Every subpackage's, not only the top one's (profiles/ was missed).
+__pycache__/
