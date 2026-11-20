@@ -377,6 +377,8 @@ pub fn extend_blocks(
     // allowed.
     let mut members: Vec<(usize, String, Option<Vec<i32>>)> = Vec::new();
     let mut refs: Vec<String> = Vec::new();
+    // The extendees whose blocks are redacted (spec 0447 S5).
+    let mut redacted: Vec<String> = Vec::new();
     for (i, e) in extensions.iter().enumerate() {
         let extendee = text(e.extendee());
         if !allow_extend_block(ctx, &extendee) {
@@ -409,7 +411,30 @@ pub fn extend_blocks(
         };
         // Looked up among every symbol of the scope the extension is
         // declared in (spec 0434 S3).
-        let r = super::names::extendee_ref(ctx, &node_extendee, &scope_name(shared, owner));
+        let number = u32::try_from(e.number()).unwrap_or(0);
+        let r = super::names::extendee_ref(ctx, &node_extendee, number, &scope_name(shared, owner));
+        // Spec 0447 S5, --target portable: an extension protoc's options
+        // message cannot declare (no extension range for its number) is
+        // redacted, its extend block, under its own extendee, an orphan.
+        if shared.variant.redacts_extension(&node_extendee, number) {
+            if !redacted.contains(&r) {
+                redacted.push(r.clone());
+            }
+            let name = text(e.name());
+            ctx.events.borrow_mut().push(RenderEvent::Squash(
+                "W28",
+                format!(
+                    "'{}': extension {name}: number {number} of {node_extendee} is not in \
+                     an extension range of protoc's descriptor: written as an orphan \
+                     (--target portable)",
+                    ctx.file_name()
+                ),
+                serde_json::json!({
+                    "file": ctx.file_name(), "options": node_extendee, "field": name,
+                    "number": number,
+                }),
+            ));
+        }
         if !refs.contains(&r) {
             refs.push(r.clone());
         }
@@ -418,6 +443,7 @@ pub fn extend_blocks(
     for r in &refs {
         let mut block = Block::new();
         let mut is_orphan = true;
+        let redact = redacted.contains(r);
         for (fd, fr, path) in &members {
             if fr != r {
                 continue;
@@ -438,11 +464,14 @@ pub fn extend_blocks(
             }
             block.extend(blk);
         }
-        let kind = if track_orphans && is_orphan {
+        let kind = if redact || (track_orphans && is_orphan) {
             LineType::Orphan
         } else {
             LineType::Code
         };
+        if redact {
+            block.abandon();
+        }
         block.insert(0, Line::new(format!("extend {r} {{"), depth, kind));
         block.push(Line::new("}", depth, kind));
         out.extend(block);

@@ -575,7 +575,8 @@ pub fn options(
             });
         }
     }
-    entries.extend(custom_entries(scope, &fields));
+    let extendee = format!(".{}", msg.descriptor().full_name());
+    entries.extend(custom_entries(scope, &fields, &extendee));
     let mut blocks = render_entries(scope, entries, composite, depth)?;
     blocks.extend(unknown_blocks(scope, msg, &fields, composite, depth));
     Ok(blocks)
@@ -727,10 +728,14 @@ struct Entry<'f, 'v> {
 }
 
 /// The extensions among `fields` reproto's options pool knows, by number,
-/// each with its name and whether it is an orphan.
+/// each with its name and whether it is an orphan; `extendee`, the options
+/// message they extend (`.vendor.FileOptions`). Under --target portable,
+/// one protoc's options message cannot declare is redacted with its
+/// declaration (spec 0447 S5): an orphan, noted, with W28.
 fn custom_entries<'f, 'v>(
     scope: &Scope<'_>,
     fields: &'f [(Field, Value<'v>)],
+    extendee: &str,
 ) -> Vec<Entry<'f, 'v>> {
     let mut custom: Vec<&(Field, Value<'_>)> = fields
         .iter()
@@ -741,12 +746,39 @@ fn custom_entries<'f, 'v>(
         .into_iter()
         .map(|(field, value)| {
             let (name, orphan) = scope.custom_name(field);
+            let number = field.number();
+            let redact = scope.variant.redacts_extension(extendee, number);
+            let notes = if redact {
+                scope
+                    .events
+                    .borrow_mut()
+                    .push(super::file::RenderEvent::Squash(
+                        "W28",
+                        format!(
+                            "'{}': option {name}: number {number} of {extendee} is not in an \
+                             extension range of protoc's descriptor: written as an orphan \
+                             (--target portable)",
+                            scope.file
+                        ),
+                        serde_json::json!({
+                            "file": scope.file, "options": extendee, "field": name,
+                            "number": number,
+                        }),
+                    ));
+                let elements = match (field.cardinality(), value) {
+                    (Cardinality::Repeated, Value::List(list)) => list.len(),
+                    _ => 1,
+                };
+                vec![Some(format!("extension {number}")); elements]
+            } else {
+                Vec::new()
+            };
             Entry {
                 name,
-                orphan,
+                orphan: orphan || redact,
                 field,
                 value,
-                notes: Vec::new(),
+                notes,
             }
         })
         .collect()
@@ -837,8 +869,11 @@ pub fn feature_blocks(
         field,
         value,
         ..
-    } in custom_entries(scope, &fields)
-    {
+    } in custom_entries(
+        scope,
+        &fields,
+        &format!(".{}", msg.descriptor().full_name()),
+    ) {
         let name = format!("features.{name}");
         let flat = match (field.cardinality(), value) {
             (Cardinality::Repeated, _) => None,

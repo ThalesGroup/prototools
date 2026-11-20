@@ -130,6 +130,9 @@ pub struct Portable {
     /// Each enum of protoc's descriptor, named within its package
     /// (`Edition`): its values' numbers.
     pub stock_enums: std::collections::BTreeMap<String, std::collections::BTreeSet<i32>>,
+    /// Each message of protoc's descriptor: its extension ranges, `[start,
+    /// end)`.
+    pub stock_ranges: std::collections::BTreeMap<String, Vec<(u32, u32)>>,
 }
 
 /// The messages custom options and features extend.
@@ -471,6 +474,15 @@ impl Variant {
                     .filter_map(|f| u32::try_from(f.number()).ok())
                     .collect(),
             );
+            portable.stock_ranges.insert(
+                name.clone(),
+                m.extension_range()
+                    .iter()
+                    .filter_map(|r| {
+                        Some((u32::try_from(r.start()).ok()?, u32::try_from(r.end()).ok()?))
+                    })
+                    .collect(),
+            );
             for e in m.enum_type() {
                 portable
                     .stock_enums
@@ -481,10 +493,15 @@ impl Variant {
         self.portable = Some(portable);
     }
 
-    /// An extendee's output name: under --target portable, an options
-    /// message of the descriptor in use mapped to the stock one (spec
-    /// 0447 S3); else `output_symbol`.
-    pub fn output_extendee(&self, name: &str, keep_descriptor: bool) -> String {
+    /// An extendee's output name, for an extension numbered `number`:
+    /// under --target portable, an options message of the descriptor in
+    /// use mapped to the stock one (spec 0447 S3), unless the stock one has
+    /// no extension range for that number (the extension is then redacted,
+    /// S5, and keeps its extendee); else `output_symbol`.
+    pub fn output_extendee(&self, name: &str, number: u32, keep_descriptor: bool) -> String {
+        if self.redacts_extension(name, number) {
+            return self.output_symbol(name, keep_descriptor);
+        }
         if let Some(p) = &self.portable {
             if p.extendee_rules
                 .iter()
@@ -494,6 +511,27 @@ impl Variant {
             }
         }
         self.output_symbol(name, keep_descriptor)
+    }
+
+    /// Spec 0447 S5, --target portable: whether an extension of `extendee`
+    /// (`.vendor.FileOptions`) numbered `number` is one protoc's options
+    /// message cannot declare (the vendor's range `990 to 999`, say): a
+    /// mapped extendee whose stock message has no range for it.
+    pub fn redacts_extension(&self, extendee: &str, number: u32) -> bool {
+        let Some(p) = &self.portable else {
+            return false;
+        };
+        if !self.maps_extendee(extendee) {
+            return false;
+        }
+        let name = extendee.trim_start_matches('.');
+        let name = match name.strip_prefix(&format!("{}.", p.package)) {
+            Some(rest) if !p.package.is_empty() => rest,
+            _ => name,
+        };
+        !p.stock_ranges
+            .get(name)
+            .is_some_and(|ranges| ranges.iter().any(|&(s, e)| (s..e).contains(&number)))
     }
 
     /// Whether an extendee is one --target portable maps.

@@ -162,7 +162,11 @@ imports, and a batch hides failures.
   the option's value: an enum value or a field of a nested message the
   stock descriptor lacks redacts the option, each element of a repeated
   one on its own (an `edition_defaults` entry for an edition the reader
-  does not know goes, the others stay). In the
+  does not know goes, the others stay). An extension whose number the
+  stock extendee has no extension range for (a vendor's `990 to 999`) is
+  redacted too: its declaration, under its own extendee, and every option
+  set through it, orphans with W28; in the binary it keeps its extendee,
+  which declares the number, so that the set stays valid. In the
   binary descriptors the field stays as the input has it, raw, under its
   number: the binary copies the input's options. Checked: Python's protobuf
   (upb) loads such a descriptor, keeping the field as an unknown field, and

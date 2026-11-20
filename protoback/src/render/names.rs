@@ -406,13 +406,18 @@ pub fn type_ref(ctx: &super::file::Ctx<'_, '_>, target: &str, scope: &str, mode:
     out_type_ref(ctx, &out, scope, mode)
 }
 
-/// An extendee's name to write: `type_ref`, the extendee mapped under
-/// --target portable (spec 0447 S3).
-pub fn extendee_ref(ctx: &super::file::Ctx<'_, '_>, target: &str, scope: &str) -> String {
-    let out = ctx
-        .shared
-        .variant
-        .output_extendee(target, ctx.shared.keep_variant_descriptor);
+/// An extendee's name to write, for an extension numbered `number`:
+/// `type_ref`, the extendee mapped under --target portable (spec 0447 S3).
+pub fn extendee_ref(
+    ctx: &super::file::Ctx<'_, '_>,
+    target: &str,
+    number: u32,
+    scope: &str,
+) -> String {
+    let out =
+        ctx.shared
+            .variant
+            .output_extendee(target, number, ctx.shared.keep_variant_descriptor);
     out_type_ref(ctx, &out, scope, Mode::All)
 }
 

@@ -297,9 +297,11 @@ fn field(ctx: &Ctx<'_, '_>, fd: usize) -> Option<Vec<u8>> {
         }
         if !f.extendee().is_empty() {
             let shared = ctx.shared;
-            let extendee = shared
-                .variant
-                .output_extendee(&text(f.extendee()), shared.keep_variant_descriptor);
+            let extendee = shared.variant.output_extendee(
+                &text(f.extendee()),
+                u32::try_from(f.number()).unwrap_or(0),
+                shared.keep_variant_descriptor,
+            );
             w.set_extendee(extendee.as_bytes()).ok()?;
         }
         w.set_label(if is_map { 3 } else { label }).ok()?;

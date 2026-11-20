@@ -18,6 +18,7 @@ use std::process::Command;
 const VENDOR: &str = r#"name: "vendor/proto/descriptor.proto" package: "vendor"
 message_type { name: "FileOptions"
   field { name: "java_package" number: 1 label: LABEL_OPTIONAL type: TYPE_STRING }
+  extension_range { start: 990 end: 1000 }
   extension_range { start: 1000 end: 536870912 } }
 message_type { name: "FieldOptions"
   field { name: "ctype" number: 1 label: LABEL_OPTIONAL type: TYPE_ENUM
@@ -251,4 +252,61 @@ fn portable_turns_protocs_naming_check_off_in_edition_2024_files() {
     assert_eq!(r.status, 0, "{}", r.stderr);
     assert!(!read(&r.out.join("e.proto")).contains(LINE));
     assert!(!r.stderr.contains("W30"), "{}", r.stderr);
+}
+
+/// An extension in the vendor's range `990 to 999`, which protoc's
+/// `FileOptions` does not have, set in its own file; one of protoc's
+/// range beside it.
+const RANGE: &str = r#"name: "x.proto" package: "x" dependency: "vendor/proto/descriptor.proto"
+options { 990: 5 }
+extension { name: "cpp" number: 990 label: LABEL_OPTIONAL type: TYPE_INT32
+  extendee: ".vendor.FileOptions" }
+extension { name: "level" number: 50001 label: LABEL_OPTIONAL type: TYPE_INT32
+  extendee: ".vendor.FileOptions" }"#;
+
+#[test]
+fn portable_redacts_an_extension_protocs_ranges_lack() {
+    let dir = setup("range");
+    std::fs::write(dir.join("in/x.textpb"), RANGE).unwrap();
+    let r = run(&dir, &["--target", "portable"]);
+    assert_eq!(r.status, 0, "{}", r.stderr);
+    for expected in [
+        "'x.proto': extension cpp: number 990 of .vendor.FileOptions is not in an extension \
+         range of protoc's descriptor: written as an orphan (--target portable)",
+        "'x.proto': option (x.cpp): number 990 of .vendor.FileOptions is not in an extension \
+         range of protoc's descriptor: written as an orphan (--target portable)",
+    ] {
+        assert!(
+            r.stderr.contains(expected),
+            "missing: {expected}\n{}",
+            r.stderr
+        );
+    }
+    let x = read(&r.out.join("x.proto"));
+    let line = |needle: &str| {
+        x.lines()
+            .find(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("no {needle}:\n{x}"))
+            .trim()
+            .to_string()
+    };
+    // The declaration, under its own extendee, and the option: orphans.
+    assert!(line("extend vendor.FileOptions").starts_with("//"), "{x}");
+    assert!(line("cpp = 990").starts_with("//"), "{x}");
+    assert!(line("(x.cpp) = 5").starts_with("//"), "{x}");
+    assert!(line("(x.cpp) = 5").ends_with("// extension 990"), "{x}");
+    // One in protoc's range: mapped, written.
+    assert!(
+        !line("extend google.protobuf.FileOptions").starts_with("//"),
+        "{x}"
+    );
+    assert!(!line("level = 50001").starts_with("//"), "{x}");
+    // The binary keeps the redacted one's extendee: the set stays valid.
+    let db = std::fs::read(&r.db).unwrap();
+    let has = |s: &str| db.windows(s.len()).any(|w| w == s.as_bytes());
+    assert!(
+        has(".vendor.FileOptions"),
+        "the redacted extension's extendee"
+    );
+    assert!(has(".google.protobuf.FileOptions"), "the mapped one's");
 }
