@@ -419,7 +419,7 @@ pub fn run(shared: &Shared<'_>, output: &Output, events: &mut Events) -> Result<
         // With a database, its scoring graphs collected first, on every
         // thread; then their merge, on this thread, beside rendering on the
         // others (spec 0443 P6): the longest chain started first.
-        let (collected, speculation) = match output.schema_db {
+        let ((collected, written), speculation) = match output.schema_db {
             Some(_) => {
                 let mut speculation = crate::schema_db::speculate(shared, output);
                 let html = output.scoring_html.is_some();
@@ -431,15 +431,34 @@ pub fn run(shared: &Shared<'_>, output: &Output, events: &mut Events) -> Result<
             }
             None => (write_files(shared, output, dry_run, events)?, None),
         };
+        // Where the .proto files went, and how many: with the database's
+        // summary, or here without one, as reproto prints it.
+        let protos = match (dry_run, &output.out_repo) {
+            (false, Some(out_repo)) => Some((out_repo.as_path(), written)),
+            _ => None,
+        };
+        if let (None, Some((out_repo, count))) = (&output.schema_db, protos) {
+            print_protos_written(out_repo, count);
+        }
         if let (true, Some(out_repo)) = (shared.emit_scoring_yaml, &output.out_repo) {
             // Every summoned file loaded, rendered or not (spec 0430 S1).
             write_scoring_yaml(shared, out_repo, events)?;
         }
         if let Some(db) = &output.schema_db {
-            crate::schema_db::build(shared, output, collected, db, events, speculation)?;
+            crate::schema_db::build(shared, output, collected, db, events, speculation, protos)?;
         }
         Ok(())
     })
+}
+
+/// The summary line of the .proto files written: their directory, as
+/// Python's `Path` prints it, and their count.
+pub fn print_protos_written(out_repo: &Path, count: usize) {
+    let files = if count == 1 { "file" } else { "files" };
+    crate::console::note(&format!(
+        "  protos:     {} ({count} {files})",
+        crate::py_str(out_repo)
+    ));
 }
 
 /// A render's reports into the collector, in order (spec 0433 S3): its
@@ -533,8 +552,9 @@ fn write_files(
     output: &Output,
     dry_run: bool,
     events: &mut Events,
-) -> std::io::Result<crate::schema_db::Collected> {
+) -> std::io::Result<(crate::schema_db::Collected, usize)> {
     let mut collected = Vec::new();
+    let mut written = 0;
     let summoned_count = summoned(shared.graph).len() as u64;
     let phase = crate::console::phase(
         "Rendering proto files",
@@ -543,7 +563,7 @@ fn write_files(
     );
     if dry_run && !shared.wants_descriptor() {
         phase.done();
-        return Ok(collected);
+        return Ok((collected, written));
     }
     let graph = shared.graph;
     let plan: Vec<Planned> = summoned(graph)
@@ -588,6 +608,9 @@ fn write_files(
         if let Err(Written::File(e)) = r.written {
             return Err(e);
         }
+        if r.wrote {
+            written += 1;
+        }
         if let (true, Some(bytes)) = (shared.schema_db, r.descriptor) {
             collected.push((p.name.clone(), bytes));
         }
@@ -599,7 +622,7 @@ fn write_files(
             std::fs::write(buf, BUF_YAML)?;
         }
     }
-    Ok(collected)
+    Ok((collected, written))
 }
 
 /// A file rendered and written: its descriptor, for the schema database;
@@ -610,6 +633,8 @@ struct Rendered {
     reports: Vec<file::RenderEvent>,
     failed: bool,
     written: Result<(), Written>,
+    /// Its `.proto` text was written.
+    wrote: bool,
 }
 
 /// Where a file's writes failed: its directory, which reproto makes before
@@ -658,11 +683,13 @@ fn render_all(shared: &Shared<'_>, plan: &[Planned]) -> Vec<Rendered> {
                 )
             });
             let written = write_rendered(shared, p, output.as_ref());
+            let wrote = p.path.is_some() && output.is_some() && written.is_ok();
             Rendered {
                 descriptor: output.and_then(|(_, descriptor)| descriptor),
                 reports: r.events,
                 failed: r.failed,
                 written,
+                wrote,
             }
         })
         .collect()

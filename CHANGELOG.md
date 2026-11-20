@@ -10,6 +10,11 @@ SPDX-License-Identifier: MIT
 
 ### Changed
 
+- reproto and protoback say where they wrote the `.proto` files, and how
+  many: `  protos:     DIR (N files)`, after the schema database's summary,
+  or at the end of "Rendering proto files" without one. Nothing is printed
+  in a dry run or under `--quiet`. With `--schema-db-out`, `-O` defaults
+  to the database's stem followed by `/proto`, which nothing said.
 - reproto reads descriptors in the text format with prototext's own
   parser, each file once, in import order, with the files it imports
   (specs 0426, 0427), instead of Python's `text_format`. Custom options

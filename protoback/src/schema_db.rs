@@ -171,6 +171,7 @@ pub fn build(
     db_path: &Path,
     events: &mut Events,
     speculation: Option<Speculation>,
+    protos: Option<(&Path, usize)>,
 ) -> Result<(), Failure> {
     let extras = &output.extra_nodes;
 
@@ -372,6 +373,9 @@ pub fn build(
         "  index:      {}",
         dir.join("index.rkyv").display()
     ));
+    if let Some((out_repo, count)) = protos {
+        crate::render::print_protos_written(out_repo, count);
+    }
 
     // 7. The pages (spec 0430 S8).
     if let (Some(path), Some(raw), Some(minimized)) =

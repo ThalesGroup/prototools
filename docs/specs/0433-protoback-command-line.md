@@ -31,7 +31,7 @@ stderr, over the corpus (2026-11-16), is made of:
   which prints each at once instead; `--quiet` silences warnings;
 - the editions notices, seed and prune notices (`Seed not found`, `Did
   you mean`), the schema database's summary (`descriptor:`, `graph:`,
-  `index:`, `pyvis …`);
+  `index:`, `protos:`, `pyvis …`);
 - `--debug-fqdn`'s trace, a line per node (`FQDN S P R desc:.a.B`);
 - usage and other errors.
 
@@ -76,7 +76,11 @@ On a terminal it draws transient progress bars and colors.
 - **S3. Every message, at reproto's place.** The phase labels, the
   fallback notices, the editions, seed and prune notices, the database's
   summary, the errors, each printed where reproto prints it, in the same
-  order relative to the others.
+  order relative to the others. Added 2026-11-20, in both tools: a
+  `protos:     DIR (N files)` line says where the `.proto` texts went and
+  how many, after `index:` with `--schema-db-out` (whose `-O` defaults
+  to the database's stem followed by `/proto`), at the end of "Rendering
+  proto files" without it; none in a dry run or under `--quiet`.
 - **S4. `--debug-fqdn`**, reproduced (the user's decision); `--debug`,
   protoback's own (N1).
 - **S4b. Each warning once.** Under `--emit-binary` and

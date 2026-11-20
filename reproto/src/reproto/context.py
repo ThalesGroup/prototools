@@ -246,6 +246,10 @@ class Context(Options):
         # message.
         self.schema_db_fdp_origins: list[str] = []
 
+        # Where phase 7 wrote the .proto files, and how many: printed with
+        # the schema database's summary, or after phase 7 without one.
+        self.protos_written: tuple[Path, int] | None = None
+
         # WKT/fallback nodes identified by phase 6 sub-pass 3 (spec 0080).
         # These are transitive dependencies of summoned files that were not
         # summoned themselves.  _phase_build_schema_db promotes and renders

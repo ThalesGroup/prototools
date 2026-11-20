@@ -1772,6 +1772,15 @@ def _symbol_collisions(ctx: Context) -> list[str]:
     return lines
 
 
+def _print_protos_written(ctx: Context) -> None:
+    """Where phase 7 wrote the .proto files, and how many, unless --quiet."""
+    if ctx.protos_written is None or ctx.quiet:
+        return
+    out_repo, count = ctx.protos_written
+    files = 'file' if count == 1 else 'files'
+    sys.stderr.write(f'  protos:     {out_repo} ({count} {files})\n')
+
+
 def _phase7_output(ctx: Context, out_repo: Path) -> None:
     """Phase 7: Generate and write reconstructed .proto files."""
     create_option_message_classes(ctx)
@@ -1786,6 +1795,7 @@ def _phase7_output(ctx: Context, out_repo: Path) -> None:
     ]
 
     from .mappings import canonize_dependency
+    written = 0
     with _progress('Rendering proto files', 0 if ctx.quiet else len(summoned), quiet=ctx.quiet) as advance:
         for re_fdp in summoned:
             # --no-emit-descriptor suppresses disk output only (spec 0150):
@@ -1856,8 +1866,14 @@ def _phase7_output(ctx: Context, out_repo: Path) -> None:
                         cli_error(f"Failed to write {res_path}: {type(e).__name__}: {e}")
                         cli_error("Cannot continue due to I/O error.")
                         sys.exit(1)
+                    written += 1
 
             advance()
+
+    if not ctx.dry_run:
+        ctx.protos_written = (out_repo, written)
+        if ctx.build_schema_db is None:
+            _print_protos_written(ctx)
 
     # spec 0146: drop a minimal buf.yaml at the -O root so `buf lsp serve`
     # (used by protolens's Neovim integration, spec 0145) can resolve
@@ -2085,6 +2101,7 @@ def _phase_build_schema_db(ctx: 'Context', db_path: Path) -> None:
         eprintln(f'  descriptor: {db_path}\n')
         eprintln(f'  graph:      {schema_db_dir / "hopcroft.rkyv"}\n')
         eprintln(f'  index:      {schema_db_dir / "index.rkyv"}\n')
+        _print_protos_written(ctx)
 
     # ── 7. Write pyvis HTML visualisations (spec 0083) ────────────────────────
     if want_pyvis and initial_yaml is not None and compiled_yaml is not None:
