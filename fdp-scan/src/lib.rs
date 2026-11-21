@@ -11,7 +11,7 @@
 use std::sync::OnceLock;
 
 use prototext_graph::score::load::LoadedGraph;
-use prototext_graph::score::{score_one, Policy, ScoringOpts};
+use prototext_graph::score::{score_one, Ending, Policy, ScoringOpts};
 
 /// The only root a candidate is scored against (spec 0239 G3).
 ///
@@ -38,7 +38,60 @@ fn wkt_graph() -> &'static LoadedGraph {
 /// The `(start, end)` byte ranges of the `FileDescriptorProto` records
 /// embedded in `data`, in order.
 pub fn scan(data: &[u8]) -> Vec<(usize, usize)> {
-    walk_candidates(data)
+    scan_explained(data).found
+}
+
+/// What [`scan`] finds, and what it refused (spec 0448 S7).
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Explained {
+    /// Exactly what [`scan`] returns.
+    pub found: Vec<(usize, usize)>,
+    /// The candidates refused, in discovery order. Only anchors whose name
+    /// ends in `.proto` are listed: every `0x0A` byte is an anchor, and
+    /// listing the others would bury the ones worth reading.
+    pub rejected: Vec<Rejected>,
+}
+
+/// One refused candidate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rejected {
+    /// The offset of its field-1 tag.
+    pub start: usize,
+    /// The name it claims.
+    pub name: String,
+    pub reason: Reason,
+}
+
+/// Why a candidate was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reason {
+    /// The name ends in `.proto` but is not a plausible path (spec 0448 S5).
+    ImplausibleName,
+    /// The record holds only its `name` and does not stand alone (spec 0448
+    /// S6).
+    NameOnly,
+    /// The walk refused it: a veto, an unknown field, or a missing
+    /// `required` field (spec 0239 S4).
+    Defect,
+}
+
+/// [`scan`], with the candidates it refused and why. `scan` is this function's
+/// `found`, so the two cannot disagree.
+pub fn scan_explained(data: &[u8]) -> Explained {
+    scan_explained_with(data, wkt_graph(), FDP)
+}
+
+/// [`scan_explained`] against the caller's own descriptor schema: `graph`
+/// built from it (`reproto --schema-db-out --emit-extension-ranges`), and
+/// `root` the full name of its `FileDescriptorProto`.
+///
+/// For descriptors written against a fuller `descriptor.proto` than the
+/// stock one. Load `graph` with `prototext_graph::score::load::load_graph`.
+/// Their extra fields are then declared, so the walk checks their wire types
+/// and contents instead of reading them as opaque bytes, and an extra
+/// top-level field no longer ends the record (spec 0448 S4).
+pub fn scan_explained_with(data: &[u8], graph: &LoadedGraph, root: &str) -> Explained {
+    walk_candidates(data, graph, root)
 }
 
 // ============================================================================
@@ -47,18 +100,19 @@ pub fn scan(data: &[u8]) -> Vec<(usize, usize)> {
 /// Used to reject implausibly long strings during scanning.
 const MAX_PROTO_NAME_LEN: usize = 200;
 
-/// Returns true if `name` looks like a plausible canonical `.proto`
-/// import path: ends in `.proto`, is not absolute, and every
-/// `/`-separated component is non-empty, is not `.`/`..`, and contains
-/// no control characters.
+/// Returns true if `name` looks like a plausible `.proto` import path: ends
+/// in `.proto`, is not absolute, and every `/`-separated component is
+/// non-empty, is not `.`/`..`, and is made of `[A-Za-z0-9_.+-]` only (spec
+/// 0448 S5).
 ///
-/// This is deliberately *not* a POSIX path-legality check — POSIX
-/// forbids only `NUL` and `/` in a filename, and control characters
-/// (e.g. a literal newline) are technically legal there.  This checks
-/// plausibility as a genuine, protoc-managed import path instead:
-/// no real `.proto` import name is absolute, contains `.`/`..`
-/// components, or embeds control characters, even though the
-/// filesystem would tolerate all of these.
+/// Deliberately *not* a legality check: protoc accepts any name the
+/// filesystem does (`café.proto`, `a b.proto` and `x$y.proto` all compile).
+/// This is about which names are worth believing. Every path in googleapis
+/// (7 817 files) fits the set, as do the 7 554 names of a large private
+/// corpus. What it refuses is code that happens to end in `.proto` once
+/// cut, such as the Java codegen templates in every `libprotoc`
+/// (`\n$deprecation$private com.google.proto…`). A real file outside the
+/// set is refused visibly: [`scan_explained`] reports it.
 fn is_plausible_path(name: &str) -> bool {
     name.ends_with(".proto")
         && !name.starts_with('/')
@@ -66,12 +120,14 @@ fn is_plausible_path(name: &str) -> bool {
             !component.is_empty()
                 && component != "."
                 && component != ".."
-                && !component.chars().any(|c| c.is_control())
+                && component
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'+' | b'-'))
         })
 }
 
-fn walk_candidates(data: &[u8]) -> Vec<(usize, usize)> {
-    let mut result = Vec::new();
+fn walk_candidates(data: &[u8], graph: &LoadedGraph, root: &str) -> Explained {
+    let mut result = Explained::default();
     let data_len = data.len();
     let mut offset = 0;
 
@@ -93,11 +149,23 @@ fn walk_candidates(data: &[u8]) -> Vec<(usize, usize)> {
                 }
 
                 if let Ok(name_str) = std::str::from_utf8(&data[name_start..name_end]) {
-                    if name_str.len() <= MAX_PROTO_NAME_LEN && is_plausible_path(name_str) {
-                        if let Some(fdp_end) = score_candidate(data, offset) {
-                            result.push((offset, fdp_end));
-                            offset = fdp_end;
-                            continue;
+                    if name_str.ends_with(".proto") {
+                        let verdict = if is_plausible_path(name_str) {
+                            score_candidate_with(data, offset, graph, root)
+                        } else {
+                            Err(Reason::ImplausibleName)
+                        };
+                        match verdict {
+                            Ok(fdp_end) => {
+                                result.found.push((offset, fdp_end));
+                                offset = fdp_end;
+                                continue;
+                            }
+                            Err(reason) => result.rejected.push(Rejected {
+                                start: offset,
+                                name: name_str.to_string(),
+                                reason,
+                            }),
                         }
                     }
                 }
@@ -137,23 +205,57 @@ fn walk_candidates(data: &[u8]) -> Vec<(usize, usize)> {
 /// What that leaves is the one judgment the walk cannot make, because it is
 /// knowledge about `FileDescriptorProto` rather than about protobuf: whether
 /// the recovered record is worth reporting as a `.proto` file at all.
-fn score_candidate(data: &[u8], start: usize) -> Option<usize> {
+///
+/// An undeclared field nested in a declared one is no defect (spec 0448
+/// S1): the walk reads it and counts it in `undeclared`, which this does not
+/// read, so a record written against a fuller `descriptor.proto` keeps its
+/// options whole. An undeclared top-level field still ends the record.
+fn score_candidate_with(
+    data: &[u8],
+    start: usize,
+    graph: &LoadedGraph,
+    root: &str,
+) -> Result<usize, Reason> {
     let opts = ScoringOpts {
         policy: Policy::Scan,
         ..Default::default()
     };
-    let entry = score_one(&data[start..], FDP, wkt_graph().graph(), &opts)?;
+    let entry = score_one(&data[start..], root, graph.graph(), &opts).ok_or(Reason::Defect)?;
     if entry.vetoed || entry.unknowns != 0 || entry.mismatches != 0 {
-        return None;
+        return Err(Reason::Defect);
     }
     let end = start + entry.termination;
-    if !declares_more_than_a_name(&data[start..end]) {
-        return None;
+    if end == start {
+        // Nothing was clean, not even the name: not a record at all, and
+        // `stands_alone` would otherwise read the anchor's own `0x0A`.
+        return Err(Reason::Defect);
     }
-    Some(end)
+    if !declares_more_than_a_name(&data[start..end]) && !stands_alone(entry.ending) {
+        return Err(Reason::NameOnly);
+    }
+    Ok(end)
 }
 
-/// Whether `record` carries a top-level field other than `name` (spec 0313 S4).
+/// Whether a record that ended this way stands alone (spec 0448 S6): at the
+/// end of the buffer, at an undeclarable tag such as a NUL, or at a second
+/// `name` — the next record. Not when the walk was abandoned, nor at an
+/// undeclared field.
+///
+/// What admits a name-only record — protoc's whole output for an empty file
+/// with no package — while still refusing the `.proto` Java package names
+/// [`declares_more_than_a_name`] exists for: `java_package` is field 1 of
+/// `FileOptions`, and what follows it is more `FileOptions` fields, which
+/// either fail to read as a descriptor's or are undeclared in one.
+fn stands_alone(ending: Ending) -> bool {
+    matches!(
+        ending,
+        Ending::EndOfBuffer | Ending::OutOfRange | Ending::RepeatedSingular
+    )
+}
+
+/// Whether `record` carries a top-level field other than `name` (spec 0313
+/// S4). A record that does not is still accepted when it stands alone (spec
+/// 0448 S6, [`stands_alone`]).
 ///
 /// Structural rather than a threshold on `score()`, which is a sum over
 /// matched fields and so ranges over four orders of magnitude with record
@@ -230,6 +332,11 @@ fn decode_varint(data: &[u8]) -> Option<(u64, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A candidate scored against the embedded schema, as [`scan`] does.
+    fn score_candidate(data: &[u8], start: usize) -> Result<usize, Reason> {
+        score_candidate_with(data, start, wkt_graph(), FDP)
+    }
 
     /// A message carrying just field 1, `name` — a `FileDescriptorProto` or a
     /// `DescriptorProto` depending on where it is put.
@@ -346,7 +453,7 @@ mod tests {
         assert!(is_plausible_path("google/protobuf/descriptor.proto"));
         assert!(is_plausible_path("foo/bar_baz-qux.proto"));
         assert!(is_plausible_path("simple.proto"));
-        assert!(is_plausible_path("café.proto"));
+        assert!(is_plausible_path("a+b/c.d-e_f.proto"));
     }
 
     #[test]
@@ -358,6 +465,39 @@ mod tests {
         assert!(!is_plausible_path("foo/../bar.proto"));
         assert!(!is_plausible_path("not_a_proto_file"));
         assert!(!is_plausible_path("foo\nbar.proto"));
+    }
+
+    /// Spec 0448 S5. Legal names protoc accepts, refused as implausible: the
+    /// set is `[A-Za-z0-9_.+-]` per component. `café.proto` used to pass.
+    #[test]
+    fn names_outside_the_set_are_implausible() {
+        for name in [
+            "café.proto",
+            "a b.proto",
+            "x$y.proto",
+            "deprecation$private com.google.proto",
+            "   PARSER = new com.google.proto",
+        ] {
+            assert!(!is_plausible_path(name), "{name:?}");
+        }
+    }
+
+    /// Spec 0448 S7: an implausible name is reported, not silently dropped,
+    /// and a libprotoc template is one.
+    #[test]
+    fn a_codegen_template_is_reported_as_an_implausible_name() {
+        // `$` is the length, 36, so the name starts at `deprecation`.
+        let template = b"\n$deprecation$private com.google.protobuf.MapFieldBuilder<";
+        let explained = scan_explained(template);
+        assert!(explained.found.is_empty());
+        assert_eq!(
+            explained.rejected,
+            vec![Rejected {
+                start: 0,
+                name: "deprecation$private com.google.proto".to_string(),
+                reason: Reason::ImplausibleName,
+            }]
+        );
     }
 
     #[test]
@@ -381,16 +521,17 @@ mod tests {
 
     /// Encode `payload` as one length-delimited field-`number` record.
     fn framed(number: u32, payload: &[u8]) -> Vec<u8> {
-        let mut buf = vec![(number << 3) as u8 | 2];
-        let mut len = payload.len() as u64;
-        loop {
-            let byte = (len & 0x7F) as u8;
-            len >>= 7;
-            if len == 0 {
-                buf.push(byte);
-                break;
+        let mut buf = Vec::new();
+        for mut v in [u64::from(number) << 3 | 2, payload.len() as u64] {
+            loop {
+                let byte = (v & 0x7F) as u8;
+                v >>= 7;
+                if v == 0 {
+                    buf.push(byte);
+                    break;
+                }
+                buf.push(byte | 0x80);
             }
-            buf.push(byte | 0x80);
         }
         buf.extend_from_slice(payload);
         buf
@@ -456,7 +597,7 @@ mod tests {
         let (start, end) = framing_boundaries(&data)[0];
         assert_eq!(
             score_candidate(&data, start),
-            Some(end),
+            Ok(end),
             "the first record swallowed its successors"
         );
     }
@@ -471,7 +612,7 @@ mod tests {
             let fdp = make_fdp_with_messages("size/independence.proto", messages);
             assert_eq!(
                 score_candidate(&fdp, 0),
-                Some(fdp.len()),
+                Ok(fdp.len()),
                 "an FDP with {messages} message_type entries was rejected"
             );
         }
@@ -532,24 +673,195 @@ mod tests {
         );
     }
 
-    /// Spec 0313 test 3 / S4. The false positive the scanner actually faces.
-    /// `option java_package = "com.google.cloud.pubsublite.proto"` is field 1
-    /// of `FileOptions` — tag `0x0a`, a plausible path, and at the anchor
-    /// indistinguishable from a file name. Its first boundary is a flawless
-    /// one-field descriptor, so cleanliness cannot reject it and the veto
-    /// arrives only at the boundary after; without the floor the stub is
-    /// handed back.
+    /// Spec 0313 test 3 / S4, as spec 0448 S6 narrows it. The false positive
+    /// the scanner actually faces: `option java_package =
+    /// "com.google.cloud.pubsublite.proto"` is field 1 of `FileOptions` — tag
+    /// `0x0a`, a plausible path, and at the anchor indistinguishable from a
+    /// file name. Its first boundary is a flawless one-field descriptor, so
+    /// cleanliness cannot reject it; what gives it away is what follows it,
+    /// more `FileOptions` fields.
     #[test]
     fn a_java_package_name_is_not_a_descriptor() {
         let stub = name_field("com.google.cloud.pubsublite.proto");
-        assert_eq!(score_candidate(&stub, 0), None);
-        assert!(scan(&stub).is_empty());
+        let mut in_options = stub.clone();
+        in_options.extend_from_slice(&framed(8, b"Proto")); // java_outer_classname
+        assert_eq!(score_candidate(&in_options, 0), Err(Reason::NameOnly));
+        let explained = scan_explained(&in_options);
+        assert!(explained.found.is_empty());
+        assert_eq!(explained.rejected[0].reason, Reason::NameOnly);
 
         // One further depth-0 field and the same anchor is a real, if tiny,
         // descriptor: the floor is one field, not two.
         let mut real = stub.clone();
         real.extend_from_slice(&framed(2, b"pkg"));
-        assert_eq!(score_candidate(&real, 0), Some(real.len()));
+        assert_eq!(score_candidate(&real, 0), Ok(real.len()));
+    }
+
+    /// Spec 0448 S6. A name-only record — protoc's whole output for an empty
+    /// file with no package — is found when it stands alone: at the end of
+    /// the buffer, before a NUL, or before the next record.
+    #[test]
+    fn a_standalone_name_only_record_is_found() {
+        let empty = name_field("empty/e.proto");
+        assert_eq!(scan(&empty), vec![(0, empty.len())], "at the end");
+
+        let mut nul = empty.clone();
+        nul.push(0);
+        assert_eq!(scan(&nul), vec![(0, empty.len())], "before a NUL");
+
+        let next = make_fdp("next.proto");
+        let mut pair = empty.clone();
+        pair.extend_from_slice(&next);
+        assert_eq!(
+            scan(&pair),
+            vec![(0, empty.len()), (empty.len(), pair.len())],
+            "before the next record"
+        );
+
+        let mut rubbish = empty.clone();
+        rubbish.push(0x77);
+        assert!(scan(&rubbish).is_empty(), "before other bytes: refused");
+    }
+
+    /// A descriptor with one field more than the stock `descriptor.proto`
+    /// declares, nested at `options` or at the top, its fields in increasing
+    /// number order as protoc writes them.
+    fn with_undeclared(nested: bool) -> Vec<u8> {
+        let mut fdp = make_fdp("undeclared.proto");
+        if nested {
+            // FileOptions field 5: not declared, outside its extension ranges.
+            fdp.extend_from_slice(&framed(8, &framed(5, b"x")));
+        }
+        fdp.extend_from_slice(&framed(12, b"proto3")); // syntax
+        if !nested {
+            // FileDescriptorProto has no extension ranges: field 171 is out.
+            fdp.extend_from_slice(&framed(171, b"x"));
+        }
+        fdp
+    }
+
+    /// Spec 0448 S1. An undeclared field nested in a declared one no longer
+    /// cuts the record, whatever follows it.
+    #[test]
+    fn an_undeclared_nested_field_is_kept() {
+        let fdp = with_undeclared(true);
+        for tail in [&[][..], &[0x00][..], &[0x77][..], &[0x18, 0x01][..]] {
+            let mut buf = fdp.clone();
+            buf.extend_from_slice(tail);
+            assert_eq!(scan(&buf), vec![(0, fdp.len())], "tail {tail:02x?}");
+        }
+        let opts = ScoringOpts {
+            policy: Policy::Scan,
+            ..Default::default()
+        };
+        let e = score_one(&fdp, FDP, wkt_graph().graph(), &opts).expect("a root");
+        assert_eq!((e.undeclared, e.unknowns), (1, 0));
+    }
+
+    /// Spec 0448 S2. An undeclared top-level field still ends the record:
+    /// its bytes cannot be told from whatever follows the record, and an
+    /// opaque length-delimited one can claim any length.
+    #[test]
+    fn an_undeclared_top_level_field_ends_the_record() {
+        let fdp = with_undeclared(false);
+        let before = fdp.len() - framed(171, b"x").len();
+        assert_eq!(scan(&fdp), vec![(0, before)]);
+    }
+
+    /// A vendor `descriptor.proto` declaring more than the stock one: a
+    /// `FileOptions` field 5 and a top-level field 171, as scoring YAML the
+    /// way reproto emits it (spec 0448 S4).
+    fn vendor_graph() -> &'static LoadedGraph {
+        static GRAPH: OnceLock<LoadedGraph> = OnceLock::new();
+        GRAPH.get_or_init(|| {
+            let yaml = "extension_ranges: true\nentries:\n- vendor.FileDescriptorProto\n\
+                messages:\n  vendor.FileDescriptorProto:\n    fields:\n\
+                \x20   - number: 1\n      type: string\n\
+                \x20   - number: 2\n      type: string\n\
+                \x20   - number: 8\n      type: message\n      child: vendor.FileOptions\n\
+                \x20   - number: 12\n      type: string\n\
+                \x20   - number: 171\n      type: bytes\n\
+                \x20 vendor.FileOptions:\n    fields:\n\
+                \x20   - number: 1\n      type: string\n\
+                \x20   - number: 5\n      type: string\n    ext_ranges: [[1000, 536870911]]\n";
+            let (bytes, _, _) = prototext_graph::build_scoring_graph::build_from_strings(
+                &[yaml.to_string()],
+                false,
+                false,
+                |_, _| {},
+            )
+            .expect("the vendor graph builds");
+            LoadedGraph::from_static_bytes(Box::leak(bytes.into_boxed_slice()))
+                .expect("the vendor graph loads")
+        })
+    }
+
+    /// Spec 0448 S4. Against the caller's schema, the fields the stock one
+    /// lacks are declared: both records come back whole, a top-level field
+    /// 171 included, and nothing is read as undeclared.
+    #[test]
+    fn a_callers_schema_declares_what_the_stock_one_lacks() {
+        const ROOT: &str = "vendor.FileDescriptorProto";
+        for nested in [true, false] {
+            let fdp = with_undeclared(nested);
+            let mut buf = fdp.clone();
+            buf.push(0x77); // rubbish after the record
+            let found = scan_explained_with(&buf, vendor_graph(), ROOT).found;
+            assert_eq!(found, vec![(0, fdp.len())], "nested={nested}");
+
+            let opts = ScoringOpts {
+                policy: Policy::Scan,
+                ..Default::default()
+            };
+            let e = score_one(&fdp, ROOT, vendor_graph().graph(), &opts).expect("a root");
+            assert_eq!((e.undeclared, e.unknowns), (0, 0), "nested={nested}");
+        }
+        // The stock schema, for contrast, ends the record before field 171.
+        let fdp = with_undeclared(false);
+        assert!(scan(&fdp)[0].1 < fdp.len());
+    }
+
+    /// Spec 0448 S4. A wrong wire type on a field only the caller's schema
+    /// declares is now caught, where the stock schema would read it blind.
+    #[test]
+    fn a_callers_schema_checks_the_fields_it_adds() {
+        let mut fdp = make_fdp("vendor.proto");
+        fdp.extend_from_slice(&framed(8, &[0x28, 0x01])); // FileOptions 5 as a varint
+        let found = scan_explained_with(&fdp, vendor_graph(), "vendor.FileDescriptorProto").found;
+        assert_eq!(found, vec![(0, make_fdp("vendor.proto").len())]);
+        assert_eq!(scan(&fdp), vec![(0, fdp.len())], "stock: read blind, kept");
+    }
+
+    /// Spec 0448 S7: `Defect` is the walk's refusal.
+    #[test]
+    fn a_defect_is_reported() {
+        // `package` with the wrong wire type right after `name`: the walk
+        // vetoes there, and what is left is a name-only stub followed by
+        // other bytes.
+        let mut bad = name_field("a.proto");
+        bad.extend_from_slice(&[0x10, 0x01]); // package (string) as a varint
+        let explained = scan_explained(&bad);
+        assert!(explained.found.is_empty());
+        assert_eq!(explained.rejected.len(), 1);
+        assert_eq!(explained.rejected[0].reason, Reason::NameOnly);
+
+        // A record still dirty when the buffer ends is refused: an anomaly
+        // is reported at the next depth-0 boundary (spec 0313 S3), and the
+        // end of the buffer is none. Here a field number 0, which no schema
+        // can declare, inside `options`, the record's last field.
+        let mut fdp = make_fdp("defect.proto");
+        fdp.extend_from_slice(&framed(8, &[0x00, 0x00]));
+        let explained = scan_explained(&fdp);
+        assert_eq!(explained.found, vec![], "{explained:?}");
+        assert_eq!(explained.rejected[0].reason, Reason::Defect);
+    }
+
+    #[test]
+    fn scan_is_scan_explained_found() {
+        let mut buf = make_fdp("a.proto");
+        buf.extend_from_slice(b"\n$deprecation$private com.google.protobuf.Map");
+        buf.extend_from_slice(&with_undeclared(true));
+        assert_eq!(scan(&buf), scan_explained(&buf).found);
     }
 
     /// Spec 0313 test 4 / S2. Every member of the corpus, scored on its own

@@ -211,6 +211,7 @@ fn score_coefficients_rank_by_suspicion() {
             fqdn: "M",
             matches: 0,
             unknowns: 0,
+            undeclared: 0,
             out_of_range: 0,
             non_canonical: 0,
             mismatches: 0,
@@ -218,6 +219,7 @@ fn score_coefficients_rank_by_suspicion() {
             vetoed: false,
             truncated: 0,
             termination: 0,
+            ending: walk::Ending::EndOfBuffer,
         };
         f(&mut s);
         s.score()
@@ -2532,6 +2534,8 @@ fn test_scan_terminates_on_closed_state_unknown() {
     assert_eq!(r.termination, 2, "a closed state must end at an unknown");
     assert_eq!(r.matches, 1);
     assert_eq!(r.unknowns, 0, "the field was never consumed");
+    assert_eq!(r.undeclared, 0, "nor counted: it is not the record's");
+    assert_eq!(r.ending, walk::Ending::Undeclared);
 
     let open = compile_and_load(&scan_merged(
         vec![uint32(1, FieldLabel::Optional)],
@@ -2552,6 +2556,107 @@ fn test_scan_terminates_on_closed_state_unknown() {
     // S15 is `Scan`-only: under `Score` an unknown is an unknown, whatever
     // the graph declares.
     assert_eq!(score_entry(&pb, &open, "Rec").unknowns, 1);
+}
+
+/// Spec 0448 S1. Nested, an undeclared field is read and counted, not
+/// charged: the parent's length prefix fixes where the parent ends, so the
+/// record keeps it whatever follows, and its boundary cannot move.
+#[test]
+fn test_scan_undeclared_nested_field_is_kept() {
+    let mut states = crate::hash::HashMap::default();
+    states.insert(
+        "Rec".to_string(),
+        vec![
+            uint32(1, FieldLabel::Optional),
+            ScoringField {
+                number: 2,
+                kind: ScoringKind::Node,
+                child: Some("Opts".to_string()),
+                range: None,
+                label: FieldLabel::Optional,
+                packed: false,
+            },
+        ],
+    );
+    states.insert("Opts".to_string(), vec![uint32(1, FieldLabel::Optional)]);
+    let g = compile_and_load(&Merged {
+        states,
+        node_kinds: crate::hash::HashMap::default(),
+        roots: vec!["Rec".to_string()],
+        ext_ranges: crate::hash::HashMap::default(),
+        has_extension_ranges: true,
+    });
+
+    let mut opts = field_varint(1, 1);
+    opts.extend(field_len(5, b"x")); // undeclared in Opts
+    let mut pb = field_varint(1, 5); // 0..2
+    pb.extend(field_len(2, &opts));
+    let end = pb.len();
+
+    let r = score_entry_opts(&pb, &g, "Rec", &scan_opts());
+    assert_eq!(r.termination, end);
+    assert_eq!((r.undeclared, r.unknowns), (1, 0));
+    assert_eq!(r.ending, walk::Ending::EndOfBuffer);
+
+    pb.extend(tag(3, 7)); // rubbish after the record
+    let r = score_entry_opts(&pb, &g, "Rec", &scan_opts());
+    assert!(!r.vetoed);
+    assert_eq!(r.termination, end, "the record keeps its options");
+    assert_eq!(
+        (r.undeclared, r.unknowns),
+        (1, 0),
+        "restored with the snapshot"
+    );
+    assert_eq!(r.ending, walk::Ending::Abandoned);
+
+    // Under `Score` it is an unknown, as before.
+    let s = score_entry(&pb[..end], &g, "Rec");
+    assert_eq!((s.unknowns, s.undeclared), (1, 0));
+}
+
+/// Spec 0448 S1. What is relaxed is the schema's coverage, not the wire
+/// format: a declared field with the wrong wire type still ends the reading.
+#[test]
+fn test_scan_declared_field_with_wrong_wire_type_is_still_a_defect() {
+    let g = compile_and_load(&scan_merged(
+        vec![
+            uint32(1, FieldLabel::Optional),
+            string(2, FieldLabel::Optional),
+        ],
+        &[],
+    ));
+    let mut pb = field_varint(1, 5); // 0..2
+    pb.extend(field_varint(2, 1)); // string field 2 as a varint
+    let r = score_entry_opts(&pb, &g, "Rec", &scan_opts());
+    assert_eq!(r.termination, 2);
+    assert_eq!(r.matches, 1);
+    assert_eq!(r.ending, walk::Ending::Abandoned);
+}
+
+/// Spec 0448 S6. Each termination rule reports itself, so a caller can tell
+/// a record that ended at the next one from one that ran into a NUL.
+#[test]
+fn test_scan_reports_how_a_record_ended() {
+    let g = compile_and_load(&scan_merged(vec![string(1, FieldLabel::Optional)], &[]));
+    let rec = field_len(1, b"a"); // 0..3
+    for (tail, ending) in [
+        (vec![], walk::Ending::EndOfBuffer),
+        (vec![0x00], walk::Ending::OutOfRange),
+        (field_len(1, b"b"), walk::Ending::RepeatedSingular),
+        (field_varint(9, 1), walk::Ending::Undeclared),
+    ] {
+        let mut pb = rec.clone();
+        pb.extend(tail);
+        let r = score_entry_opts(&pb, &g, "Rec", &scan_opts());
+        assert_eq!((r.termination, r.ending), (3, ending));
+    }
+    // Under `Score` every root reads to the end.
+    let mut pb = rec.clone();
+    pb.push(0x00);
+    assert_eq!(
+        score_entry(&pb, &g, "Rec").ending,
+        walk::Ending::EndOfBuffer
+    );
 }
 
 /// Test 10 (S13). The offset is the first byte of the terminating tag. A

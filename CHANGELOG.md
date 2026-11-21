@@ -8,7 +8,31 @@ SPDX-License-Identifier: MIT
 
 ## [Unreleased]
 
+### Added
+
+- fdp-scan: `scan_explained`, which returns what `scan` finds and the
+  candidates it refused, each with its reason (an implausible name, a
+  name-only record that does not stand alone, a defect); and
+  `scan_explained_with`, which scans against the caller's own
+  `descriptor.proto`, for descriptors written against a fuller one than
+  the stock schema (spec 0448).
+- prototext-graph: `EntryScore::undeclared`, counting the undeclared
+  fields a scan read, and `EntryScore::ending`, saying how a scanned
+  record ended. A struct literal of `EntryScore` must now name both.
+
 ### Changed
+
+- fdp-scan, protoscan: a field the stock `descriptor.proto` does not
+  declare, nested in one it does (an option it lacks), no longer cuts the
+  descriptor before the field holding it; it is read and kept. Binaries
+  built against a fuller `descriptor.proto` lost a third of their
+  descriptors' contents this way. An undeclared top-level field still
+  ends the descriptor (spec 0448).
+- fdp-scan, protoscan: a `.proto` name is plausible only if each path
+  component is made of `A-Z a-z 0-9 _ . + -`, which drops the Java
+  codegen templates every `libprotoc` used to yield as five descriptors.
+  A descriptor holding only its name, protoc's output for an empty file,
+  is found when it stands alone.
 
 - reproto and protoback say where they wrote the `.proto` files, and how
   many: `  protos:     DIR (N files)`, after the schema database's summary,

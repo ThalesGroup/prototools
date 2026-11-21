@@ -10,7 +10,7 @@ pub(crate) mod walk;
 
 pub use min_score::MinScore;
 pub use walk::{
-    partition_roots, score_all, score_one, score_subset, EntryScore, Policy, ScoringOpts,
+    partition_roots, score_all, score_one, score_subset, Ending, EntryScore, Policy, ScoringOpts,
 };
 
 #[cfg(test)]

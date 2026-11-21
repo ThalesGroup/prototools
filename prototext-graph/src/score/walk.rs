@@ -56,6 +56,14 @@ pub struct EntryScore<'g> {
     pub fqdn: &'g str,
     pub matches: u64,
     pub unknowns: u64,
+    /// Under [`Policy::Scan`] only: fields a nested message does not declare
+    /// and no extension range covers (spec 0448 S1). Read like an extension
+    /// rather than charged as an `unknowns`, because a record written against
+    /// a fuller `descriptor.proto` than the graph's carries them; counted so
+    /// a caller can still see them. At depth 0 such a field still ends the
+    /// record (spec 0238 S12 rule 1). Under [`Policy::Score`] it is an
+    /// `unknowns` and this stays zero.
+    pub undeclared: u64,
     /// Values outside a `Range` leaf's declared extent: a `bool` other than
     /// 0/1, or a closed enum's undeclared number (spec 0178 S1). Legal on the
     /// wire, so never a veto — but no conformant writer emits one.
@@ -103,6 +111,30 @@ pub struct EntryScore<'g> {
     /// already consumed, at an offset that is not a record boundary and may
     /// lie past the true end of the record.
     pub termination: usize,
+    /// How the record ended, under [`Policy::Scan`] (spec 0448 S6). Always
+    /// [`Ending::EndOfBuffer`] under [`Policy::Score`], which reads to the
+    /// end. Meaningless on a vetoed or truncated entry, like `termination`.
+    pub ending: Ending,
+}
+
+/// Why a [`Policy::Scan`] record ended where `termination` says.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Ending {
+    /// The record ran to the end of the buffer.
+    #[default]
+    EndOfBuffer,
+    /// A tag with field number 0 or `>= 2^29`, which no schema can declare:
+    /// a NUL byte is one (spec 0238 S12 rule 1).
+    OutOfRange,
+    /// A field number the record's type does not declare, outside its
+    /// extension ranges (spec 0238 S12 rule 1).
+    Undeclared,
+    /// A second occurrence of a singular field, such as the next record's
+    /// first field (spec 0238 S12 rule 2).
+    RepeatedSingular,
+    /// The walk met an anomaly and the record is its last clean boundary
+    /// (spec 0313 S3): what follows did not read as a field of this type.
+    Abandoned,
 }
 
 impl EntryScore<'_> {
@@ -253,10 +285,10 @@ struct ActiveEntry {
 /// The last depth-0 field boundary at which an entry was still clean
 /// (spec 0313 S1).
 ///
-/// Two fields and no more, because a snapshot is by definition taken where
-/// every anomaly counter reads zero (spec 0313 S2): there is nothing else
-/// about a clean entry to remember. Restoring one is "zero the anomalies and
-/// put these two back".
+/// A snapshot is by definition taken where every anomaly counter reads zero
+/// (spec 0313 S2), so restoring one is "zero the anomalies and put `matches`
+/// and `undeclared` back" — `undeclared` being, by spec 0448 S1, not an
+/// anomaly.
 ///
 /// `Default` is the truthful answer for an entry that never reached a
 /// boundary — a record of no bytes, matching nothing.
@@ -266,6 +298,7 @@ struct Snapshot {
     /// where a record ending here ends.
     at: usize,
     matches: u64,
+    undeclared: u64,
 }
 
 /// Global walk state shared across all recursion levels.
@@ -626,6 +659,7 @@ pub fn score_subset<'g>(
             fqdn: graph.roots[r as usize].fqdn.as_str(),
             matches: 0,
             unknowns: 0,
+            undeclared: 0,
             out_of_range: 0,
             non_canonical: 0,
             mismatches: 0,
@@ -635,6 +669,7 @@ pub fn score_subset<'g>(
             // Overwritten only by an S12 termination, so "ran to the end" is
             // the value a root keeps by not stopping.
             termination: pb.len(),
+            ending: Ending::EndOfBuffer,
         })
         .collect();
 
@@ -674,12 +709,14 @@ fn report_last_clean_boundary(scores: &mut [EntryScore], snapshots: &[Snapshot],
     let snap = snapshots[e];
     let s = &mut scores[e];
     s.matches = snap.matches;
+    s.undeclared = snap.undeclared;
     s.unknowns = 0;
     s.mismatches = 0;
     s.non_canonical = 0;
     s.packing = 0;
     s.out_of_range = 0;
     s.termination = snap.at;
+    s.ending = Ending::Abandoned;
 }
 
 /// Split `graph`'s roots into at most `n` parts, balanced by size and
@@ -1407,18 +1444,23 @@ fn apply_cardinality_multi(
 /// Evaluated per `ActiveEntry`, so per depth-0 *state* rather than per root:
 /// entries sharing a state share their declared fields, their range set and
 /// their occurrence counts, and so necessarily terminate together.
-fn scan_terminates(graph: &ArchivedCompiledGraph, ae: &ActiveEntry, tag: &TagResult) -> bool {
+/// Returns which rule ended it, as the record's [`Ending`].
+fn scan_terminates(
+    graph: &ArchivedCompiledGraph,
+    ae: &ActiveEntry,
+    tag: &TagResult,
+) -> Option<Ending> {
     // A field number of 0 or >= 2^29 is undeclarable and unrangeable — no
     // extension clause can reach it — so rule 1 fires without a lookup.
     if tag.out_of_range {
-        return true;
+        return Some(Ending::OutOfRange);
     }
     let field_number = tag.field_number as u32;
     match find_transition(graph, (ae.trans_offset, ae.trans_len), field_number) {
         // Rule 1. Strict by construction: a state with an empty range set has
         // declared itself closed, and an undeclared field number in a closed
         // state is a boundary.
-        None => !in_ext_range(graph, ae.state_id, field_number),
+        None => (!in_ext_range(graph, ae.state_id, field_number)).then_some(Ending::Undeclared),
         // Rule 2. A singular field cannot appear twice in one record, so its
         // second appearance belongs to the next one. This is what makes a
         // `FileDescriptorSet` legible: the outer record header is a second
@@ -1426,13 +1468,12 @@ fn scan_terminates(graph: &ArchivedCompiledGraph, ae: &ActiveEntry, tag: &TagRes
         // — the rule is about cardinality, and a repeated `required` is a
         // repeated singular. (Under `Score` it stays a `mismatches`
         // candidate; nothing here changes that.)
-        Some(tr) => {
-            tr.label != LABEL_REPEATED
-                && ae
-                    .occurrences
-                    .binary_search_by_key(&field_number, |&(f, _)| f)
-                    .is_ok()
-        }
+        Some(tr) => (tr.label != LABEL_REPEATED
+            && ae
+                .occurrences
+                .binary_search_by_key(&field_number, |&(f, _)| f)
+                .is_ok())
+        .then_some(Ending::RepeatedSingular),
     }
 }
 
@@ -1680,9 +1721,13 @@ fn score_message_multi_inner(
                         && s.mismatches == 0
                         && s.non_canonical == 0
                         && s.out_of_range == 0;
-                    let matches = s.matches;
+                    let (matches, undeclared) = (s.matches, s.undeclared);
                     if clean {
-                        ws.snapshots[e] = Snapshot { at: pos, matches };
+                        ws.snapshots[e] = Snapshot {
+                            at: pos,
+                            matches,
+                            undeclared,
+                        };
                     } else {
                         report_last_clean_boundary(ws.scores, &ws.snapshots, e);
                     }
@@ -1727,9 +1772,9 @@ fn score_message_multi_inner(
         // truncate every other root's score. One pass, N independent offsets.
         if ws.policy == Policy::Scan && depth == 0 {
             for ae in active.iter_mut() {
-                if !scan_terminates(ws.graph, ae, &tag) {
+                let Some(ending) = scan_terminates(ws.graph, ae, &tag) else {
                     continue;
-                }
+                };
                 // At the termination point, not at EOF: a `required` field
                 // that would have appeared after the boundary is genuinely
                 // absent from the record that ended, and deferring this pass
@@ -1739,6 +1784,7 @@ fn score_message_multi_inner(
                 apply_cardinality_multi(ws.graph, ae, ws.scores, true);
                 for &e in &ae.entries {
                     ws.scores[e as usize].termination = tag_start;
+                    ws.scores[e as usize].ending = ending;
                 }
                 ae.entries.clear();
             }
@@ -1791,12 +1837,23 @@ fn score_message_multi_inner(
                         // validated. Read only under `Scan`; under `Score` an
                         // unknown is an unknown even on a graph that carries
                         // range data.
-                        if ws.policy == Policy::Scan
-                            && in_ext_range(ws.graph, ae.state_id, field_number as u32)
-                        {
-                            Verdict::Extension
-                        } else {
+                        //
+                        // Spec 0448 S1: under `Scan` an undeclared number
+                        // outside the ranges is read the same way, and
+                        // counted in `undeclared` rather than `unknowns`.
+                        // Only ever nested: at depth 0 such a number has
+                        // already ended the record (S12 rule 1, above), so
+                        // the parent's length prefix bounds every field
+                        // read here, and the record's end cannot move.
+                        if ws.policy != Policy::Scan {
                             Verdict::Unknown
+                        } else {
+                            if !in_ext_range(ws.graph, ae.state_id, field_number as u32) {
+                                for &e in &ae.entries {
+                                    ws.scores[e as usize].undeclared += 1;
+                                }
+                            }
+                            Verdict::Extension
                         }
                     }
                     Some(tr) => {
@@ -2447,6 +2504,7 @@ mod set_vetoed_tests {
             fqdn,
             matches: 0,
             unknowns: 0,
+            undeclared: 0,
             out_of_range: 0,
             non_canonical: 0,
             mismatches: 0,
@@ -2454,6 +2512,7 @@ mod set_vetoed_tests {
             vetoed: false,
             truncated: 0,
             termination: 0,
+            ending: Ending::EndOfBuffer,
         }
     }
 
@@ -2542,7 +2601,11 @@ mod set_vetoed_tests {
         let mut scores = vec![entry("pkg.Msg")];
         let mut ws = walk_state(&graph, &mut scores, None);
         ws.policy = Policy::Scan;
-        ws.snapshots = vec![Snapshot { at: 12, matches: 3 }];
+        ws.snapshots = vec![Snapshot {
+            at: 12,
+            matches: 3,
+            undeclared: 0,
+        }];
         ws.scores[0].matches = 9;
         ws.scores[0].unknowns = 4;
 
@@ -2556,6 +2619,7 @@ mod set_vetoed_tests {
         assert_eq!(ws.scores[0].termination, 12);
         assert_eq!(ws.scores[0].matches, 3);
         assert_eq!(ws.scores[0].unknowns, 0);
+        assert_eq!(ws.scores[0].ending, Ending::Abandoned);
     }
 }
 

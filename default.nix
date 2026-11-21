@@ -133,6 +133,11 @@ let
         (fixtureFilter ./reproto/src/reproto/tests/fixtures)
         (fixtureFilter ./prototext-graph/tests/fixtures)
         (fixtureFilter ./tests/fixtures)
+        # fdp-scan's regression corpus (spec 0448 S8): the layouts and their
+        # truth, which `fdp-scan/tests/corpus.rs` reads. Not the generator,
+        # which only fdpScanCorpusCheck runs.
+        (pkgs.lib.fileset.fileFilter (f: f.hasExt "bin" || f.hasExt "json")
+          ./fdp-scan/tests/corpus)
         # prototext-core/fixtures is taken wholesale rather than through
         # fixtureFilter: `benches/codec.rs` include_bytes! the .txtpb protoc
         # rendering, an extension fixtureFilter deliberately drops.  The
@@ -222,6 +227,31 @@ let
     if [ "$stale" = 1 ]; then
       echo "prototext/fixtures/prebuilt/ is stale. Refresh it with:" >&2
       echo "  cp \$(nix-build -A prototext-fixtures)/*.pb prototext/fixtures/prebuilt/" >&2
+      exit 1
+    fi
+    touch $out
+  '';
+
+  # fdp-scan's regression corpus regenerated with the pinned Python
+  # protobuf (spec 0448 S8). The layouts are the well-known types' own
+  # serialized descriptors, so they move with that version; committed as
+  # generated so that the corpus's contributor and we score the same bytes.
+  fdpScanCorpus = pkgs.runCommand "fdp-scan-corpus" {
+    strictDeps = true;
+    nativeBuildInputs = [ (pythonPkgs.python.withPackages (ps: [ ps.protobuf ])) ];
+  } ''
+    python3 -I ${./fdp-scan/tests/corpus/generate.py} public $out
+  '';
+
+  fdpScanCorpusCheck = pkgs.runCommand "fdp-scan-corpus-check" { } ''
+    committed=${pkgs.lib.fileset.toSource {
+      root = ./fdp-scan/tests/corpus;
+      fileset = pkgs.lib.fileset.fileFilter (f: f.hasExt "bin" || f.hasExt "json")
+        ./fdp-scan/tests/corpus;
+    }}
+    if ! diff -r ${fdpScanCorpus} "$committed" >/dev/null; then
+      echo "fdp-scan/tests/corpus/ is stale. Refresh it with:" >&2
+      echo "  cp \$(nix-build -A fdp-scan-corpus)/* fdp-scan/tests/corpus/" >&2
       exit 1
     fi
     touch $out
@@ -647,7 +677,7 @@ let
     python.pythonLint python.pythonRuff
     treeSitterTextprotoHighlightTest treeSitterTextprotoCheck
     reprotoWktCheck
-    wktDb wktPrebuiltCheck prototextFixturesCheck
+    wktDb wktPrebuiltCheck prototextFixturesCheck fdpScanCorpusCheck
     prototoolsClosureCheck
     completionTests
     python.protobackHarness python.protobackDumpHarness
@@ -667,7 +697,7 @@ let
     python.fdpScanTests python.prototextCodecTests
     python.pythonLint python.pythonRuff
     treeSitterTextprotoHighlightTest treeSitterTextprotoCheck
-    wktDb wktPrebuiltCheck prototextFixturesCheck
+    wktDb wktPrebuiltCheck prototextFixturesCheck fdpScanCorpusCheck
     prototoolsClosureCheck
     completionTests
     # nixpkgsStaging builds in its own workflow (nixpkgs-staging.yml): two
@@ -850,6 +880,8 @@ in
   reproto              = python.reproto;
   wkt-rkyv             = wktRkyv;
   wkt-prebuilt-check   = wktPrebuiltCheck;
+  fdp-scan-corpus      = fdpScanCorpus;
+  fdp-scan-corpus-check = fdpScanCorpusCheck;
   reproto-tests        = python.reprotoTests;
   reproto-tests-on-protoback = python.reprotoTestsOnProtoback;
   fdp-scan-tests       = python.fdpScanTests;

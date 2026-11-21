@@ -724,6 +724,7 @@ version = "0.3.6"
 dependencies = [
  "prototext",
  "prototext-graph",
+ "serde_json",
  "workspace-hack",
 ]
 
