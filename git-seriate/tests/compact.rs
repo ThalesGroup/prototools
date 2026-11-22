@@ -107,28 +107,89 @@ fn cutoff() -> String {
     (T0 + 3 * DAY + DAY / 2).to_string()
 }
 
+/// Level 1 is lossless: s2 changes nothing but is its source's only
+/// record, so it stays; nothing is dropped, and the branch doesn't move.
 #[test]
-fn level_1_drops_what_changes_nothing() {
+fn level_1_keeps_a_sources_only_record() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = history(tmp.path(), GROWING);
-    let tree = git(&repo, &["rev-parse", "main^{tree}"]);
+    let tip = git(&repo, &["rev-parse", "main"]);
+    let out = git_seriate(&repo, &["compact", "--into", "main", "--cutoff", &cutoff()]);
+    assert!(out.contains("dropped 0, reduced 0, converted 0"), "{out}");
     assert_eq!(
         subjects(&repo),
         "Snapshot s0\nSnapshot s1\nSnapshot s2\nSnapshot s3\nSnapshot s4\n"
     );
+    assert_eq!(git(&repo, &["rev-parse", "main"]), tip);
+}
 
-    let out = git_seriate(&repo, &["compact", "--into", "main", "--cutoff", &cutoff()]);
-    assert!(out.contains("changes nothing"), "{out}");
-    assert!(
-        out.contains("dropped 1, reduced 0, converted 0; previous tip saved as main-1"),
-        "{out}"
+/// Level 1 drops a manual commit that changes nothing, and the second copy
+/// of a snapshot stored twice; the first copy, its record, stays.
+#[test]
+fn level_1_drops_empty_manual_commits_and_second_copies() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = history(tmp.path(), &GROWING[..2]);
+    repeat_tip(&repo);
+    let note = git(
+        &repo,
+        &["commit-tree", "main^{tree}", "-p", "main", "-m", "A note"],
     );
-    assert_eq!(
-        subjects(&repo),
-        "Snapshot s0\nSnapshot s1\nSnapshot s3\nSnapshot s4\n"
+    git(&repo, &["update-ref", "refs/heads/main", note.trim()]);
+    let tree = git(&repo, &["rev-parse", "main^{tree}"]);
+
+    let out = git_seriate(
+        &repo,
+        // After the note, which is dated now.
+        &["compact", "--into", "main", "--cutoff", "2100-01-01"],
     );
+    assert!(out.contains("changes nothing, a second copy of"), "{out}");
+    assert!(out.contains("('A note'): changes nothing"), "{out}");
+    assert!(out.contains("dropped 2, reduced 0, converted 0"), "{out}");
+    assert_eq!(subjects(&repo), "Snapshot s0\nSnapshot s1\n");
     assert_eq!(git(&repo, &["rev-parse", "main^{tree}"]), tree);
+    // s1's first copy stays, and so does its branch.
+    assert!(!out.contains("delete branch"), "{out}");
+    git(&repo, &["rev-parse", "--verify", "refs/heads/s1"]);
     git(&repo, &["fsck", "--full", "--strict", "--no-dangling"]);
+}
+
+/// Two commits of one identity with different blocks are two records that
+/// contradict each other: refused, at every level, as by settle.
+#[test]
+fn compact_refuses_one_identity_with_two_blocks() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = history(tmp.path(), &GROWING[..2]);
+    let message = git(&repo, &["log", "-1", "--format=%B", "main"]);
+    let other = message.replace(
+        &format!("build_time: {}", T0 + DAY),
+        &format!("build_time: {}", T0 + 2 * DAY),
+    );
+    assert_ne!(message, other, "the block names its build time");
+    let commit = git(
+        &repo,
+        &[
+            "commit-tree",
+            "main^{tree}",
+            "-p",
+            "main",
+            "-m",
+            other.trim_end(),
+        ],
+    );
+    git(&repo, &["update-ref", "refs/heads/main", commit.trim()]);
+
+    let mut command = Command::new(env!("CARGO_BIN_EXE_git-seriate"));
+    isolated(&mut command, &repo);
+    let out = command
+        .arg("-C")
+        .arg(&repo)
+        .args(["compact", "--into", "main", "--cutoff", &after_everything()])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success());
+    assert!(stderr.contains("holds \"s1\" twice"), "{stderr}");
+    assert!(stderr.contains("with different blocks"), "{stderr}");
 }
 
 #[test]
@@ -149,9 +210,63 @@ fn level_2_drops_what_is_made_again_later() {
         ],
     );
     assert!(out.contains("dropped 3, reduced 0"), "{out}");
+    // Listed beforehand by --dry-run too: the record lost is named.
+    assert!(
+        out.contains("('Snapshot s2'): changes nothing; the only record of \"s2\" goes with it"),
+        "{out}"
+    );
     // s0 and s1 change only what s3 changes again; s2 changes nothing.
     assert_eq!(subjects(&repo), "Snapshot s3\nSnapshot s4\n");
     assert_eq!(git(&repo, &["rev-parse", "main^{tree}"]), tree);
+
+    // Their snapshot branches go with them, so settle doesn't put them
+    // back; the others stay.
+    for id in ["s0", "s1", "s2"] {
+        assert!(
+            out.contains(&format!(
+                "delete branch {id}: its snapshot's last commit is dropped"
+            )),
+            "{out}"
+        );
+    }
+    assert_eq!(
+        git(
+            &repo,
+            &["branch", "--list", "s*", "--format=%(refname:short)"]
+        ),
+        "s3\ns4\n"
+    );
+    let settled = git_seriate(&repo, &["settle", "--into", "main"]);
+    assert!(settled.contains("nothing new to settle"), "{settled}");
+    assert_eq!(subjects(&repo), "Snapshot s3\nSnapshot s4\n");
+}
+
+/// A dry run lists the branches it would delete, and deletes none.
+#[test]
+fn a_dry_run_lists_the_branches_and_deletes_none() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = history(tmp.path(), GROWING);
+    let out = git_seriate(
+        &repo,
+        &[
+            "compact",
+            "--into",
+            "main",
+            "--cutoff",
+            &cutoff(),
+            "--level",
+            "2",
+            "--dry-run",
+        ],
+    );
+    assert!(out.contains("delete branch s2:"), "{out}");
+    assert_eq!(
+        git(
+            &repo,
+            &["branch", "--list", "s*", "--format=%(refname:short)"]
+        ),
+        "s0\ns1\ns2\ns3\ns4\n"
+    );
 }
 
 #[test]
@@ -350,7 +465,7 @@ fn an_anchor_on_a_snapshot_still_held_is_not_warned_about() {
 #[test]
 fn an_anchor_on_a_snapshot_no_longer_held_is_warned_about() {
     let tmp = tempfile::tempdir().unwrap();
-    // s2 changes nothing, and no other commit holds it.
+    // s2 changes nothing, and no other commit holds it: level 2 drops it.
     let repo = history(tmp.path(), &GROWING[..3]);
     anchored_commit(&repo, "h.txt", "s2");
 
@@ -362,6 +477,8 @@ fn an_anchor_on_a_snapshot_no_longer_held_is_warned_about() {
             "main",
             "--cutoff",
             &after_everything(),
+            "--level",
+            "2",
             "--dry-run",
         ],
     );

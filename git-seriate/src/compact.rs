@@ -7,10 +7,14 @@
 //!
 //! Three levels, each including the ones below:
 //!
-//! 1. commits that change nothing in their own tree are dropped: lossless;
-//! 2. commits whose every change a later commit before the cutoff changes
-//!    again are dropped: the tree at the cutoff is unchanged, what is lost
-//!    is when a version appeared;
+//! 1. lossless: manual commits that change nothing, and the second copy of
+//!    a snapshot stored twice (same identity, same block), which changes
+//!    nothing, are dropped. A snapshot commit that changes nothing but is
+//!    its source's only record stays: `advise` dates files by it;
+//! 2. also the snapshot commits that change nothing, their sources' records
+//!    with them, and the commits whose every change a later commit before
+//!    the cutoff changes again: the tree at the cutoff is unchanged, what
+//!    is lost is when a version appeared, and which sources held it;
 //! 3. from the snapshot commits kept, the items a later commit changes
 //!    again are removed, and the commit says so (`reduced: true`).
 //!
@@ -53,6 +57,10 @@ pub struct Report {
     pub moved: bool,
     pub backup: Option<String>,
     pub warnings: Vec<String>,
+    /// The snapshot branches deleted (or, with `dry_run`, to delete): those
+    /// of the identities whose last commit is dropped, which `settle`
+    /// would otherwise take for new snapshots.
+    pub branches_deleted: Vec<String>,
 }
 
 /// One commit of the history, oldest first.
@@ -157,12 +165,51 @@ pub fn compact(
         reduced: bool,
     }
     let mut kept: Vec<Kept> = Vec::new();
+    // Each identity's first snapshot commit, with its block.
+    let mut first: HashMap<&str, &Commit> = HashMap::new();
     for (i, c) in before.iter().enumerate() {
         let short = c.id.to_hex_with_len(8);
+        // A second copy: equal blocks are one record, which the first copy
+        // keeps; different ones under one identity are refused, as by
+        // settle.
+        let copy_of = match &c.block {
+            Some(b) => match first.get(b.source.identity.as_str()) {
+                Some(f) if f.block.as_ref() == Some(b) => Some(*f),
+                Some(f) => {
+                    return Err(Error::Refused(format!(
+                        "the history holds {:?} twice, at {} and {short}, with different blocks",
+                        b.source.identity,
+                        f.id.to_hex_with_len(8)
+                    )))
+                }
+                None => {
+                    first.insert(&b.source.identity, c);
+                    None
+                }
+            },
+            None => None,
+        };
         if c.changes.is_empty() {
-            report
-                .actions
-                .push(format!("drop {short} ('{}'): changes nothing", c.subject));
+            match (&c.block, copy_of) {
+                (None, _) => report
+                    .actions
+                    .push(format!("drop {short} ('{}'): changes nothing", c.subject)),
+                (Some(_), Some(f)) => report.actions.push(format!(
+                    "drop {short} ('{}'): changes nothing, a second copy of {}",
+                    c.subject,
+                    f.id.to_hex_with_len(8)
+                )),
+                (Some(b), None) if options.level >= 2 => report.actions.push(format!(
+                    "drop {short} ('{}'): changes nothing; the only record of {:?} goes with it",
+                    c.subject, b.source.identity
+                )),
+                // The only record of its source: kept at level 1.
+                (Some(_), None) => kept.push(Kept {
+                    commit: c,
+                    changes: Vec::new(),
+                    reduced: false,
+                }),
+            }
             continue;
         }
         if options.level >= 2 && c.changes.iter().all(|ch| overwritten(i, ch)) {
@@ -200,7 +247,9 @@ pub fn compact(
     // leaves its anchors resolving.
     let kept_identities: std::collections::HashSet<&str> = kept
         .iter()
-        .filter_map(|k| k.commit.block.as_ref().map(|b| b.source.identity.as_str()))
+        .map(|k| k.commit)
+        .chain(after)
+        .filter_map(|c| c.block.as_ref().map(|b| b.source.identity.as_str()))
         .collect();
     let mut dropped_identities: Vec<&str> = before
         .iter()
@@ -208,7 +257,26 @@ pub fn compact(
         .filter_map(|c| c.block.as_ref().map(|b| b.source.identity.as_str()))
         .filter(|id| !kept_identities.contains(id))
         .collect();
+    dropped_identities.sort_unstable();
     dropped_identities.dedup();
+
+    // Their snapshot branches go too: left, `settle` would take them for
+    // new snapshots and put back what this drops.
+    let branches: HashMap<String, ObjectId> = store::list_with(repo, legacy)?
+        .into_iter()
+        .filter(|l| l.block.contents.is_some())
+        .map(|l| (l.branch, l.commit))
+        .collect();
+    let mut to_delete: Vec<(&str, ObjectId)> = Vec::new();
+    for id in &dropped_identities {
+        if let Some(&commit) = branches.get(*id) {
+            report.actions.push(format!(
+                "delete branch {id}: its snapshot's last commit is dropped"
+            ));
+            report.branches_deleted.push(id.to_string());
+            to_delete.push((id, commit));
+        }
+    }
     for c in &chain {
         if c.block.is_some() {
             continue;
@@ -331,5 +399,8 @@ pub fn compact(
         new_tip,
     )?;
     report.moved = true;
+    for (name, commit) in to_delete {
+        store::delete_branch(repo, name, commit)?;
+    }
     Ok(report)
 }

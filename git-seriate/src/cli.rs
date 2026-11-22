@@ -116,9 +116,11 @@ enum Command<E: Subcommand> {
         /// since the epoch).
         #[arg(long)]
         cutoff: String,
-        /// 1: drop commits that change nothing (lossless). 2: also those
-        /// whose every change is made again later. 3: also remove from
-        /// snapshot commits the items changed again later.
+        /// 1 (lossless): drop manual commits that change nothing, and second
+        /// copies of a snapshot. 2: also drop snapshot commits that change
+        /// nothing, their sources' records with them, and the commits whose
+        /// every change is made again later. 3: also remove from snapshot
+        /// commits the items changed again later.
         #[arg(long, default_value_t = 1)]
         level: u8,
         /// List what would be dropped, and write nothing.

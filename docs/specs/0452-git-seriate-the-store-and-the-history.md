@@ -289,16 +289,36 @@ drop them.
 deepest commit built at or after `DATE`, as for `settle`'s tail. Three
 levels, each including those below it, the first by default:
 
-1. commits that change nothing in their own tree are dropped: lossless;
-2. commits whose every change a later commit before the cutoff makes
-   again are dropped: what is lost is when a version appeared and where
-   it was ordered, never the tree;
+1. lossless: manual commits that change nothing in their own tree are
+   dropped, and the second copy of a snapshot stored twice, which changes
+   nothing, when its block equals the first copy's (one record, which the
+   first copy keeps). A snapshot commit that changes nothing but is its
+   source's only record stays: `advise` lists sources from the blocks,
+   dates a file by the newest source holding it, and stamps its outputs
+   with the sources' identities;
+2. also the snapshot commits that change nothing, their sources' records
+   with them, and the commits whose every change a later commit before
+   the cutoff makes again: what is lost is when a version appeared, where
+   it was ordered and which sources held it, never the tree. A source
+   dropped here leaves `advise`'s sources and `--check`'s stamps, and its
+   files may be dated by an older source;
 3. from the snapshot commits kept, the items a later commit changes again
    are removed, and the block says so: `reduced: true`, `contents` what
    is left. Manual commits are never reduced: they have no block to say
    so.
 
-Every commit dropped or reduced is listed, with why. The rebuilt tree at
+Two commits of one identity with different blocks are refused, at every
+level, as by `settle`: they are two records that contradict each other.
+
+*Amended 2026-11-22:* level 1 dropped every commit that changes nothing,
+sole records included, which lost sources from `advise` (found by the
+downstream front end); such commits now wait for level 2.
+
+Every commit dropped or reduced is listed, with why, a dropped record
+named. The snapshot branch of each identity whose last commit is dropped
+is deleted after the ref moves, and listed with the drops (by `--dry-run`
+too): left, `settle` would take it for a new snapshot and put back what
+`compact` dropped. The saved previous tip keeps it reachable. The rebuilt tree at
 the cutoff must equal the old one, or nothing is written. Commits at and
 after the cutoff keep their trees, on the new parents. The previous tip is
 saved as `NAME-N`, as by `settle`; commits are written with the committer
@@ -390,8 +410,12 @@ on repositories in temporary directories:
    `git verify-commit`), `--dry-run` writing nothing; `--stats` naming a
    misdated snapshot's phase 3 move and its new neighbors.
 6. `compact`: each level, the listing, `reduced: true`, the tree at the
-   cutoff unchanged; an anchor on a snapshot no longer held warned about,
-   one on a snapshot whose other copy stays not; a history holding one
+   cutoff unchanged; level 1 keeping a source's only record and dropping
+   an empty manual commit and a second copy, level 2 dropping the record,
+   named, and its snapshot branch, which a `settle` then doesn't put back;
+   a dry run deleting no branch; one identity with two blocks refused;
+   an anchor on a snapshot no longer held warned about, one on a
+   snapshot whose other copy stays not; a history holding one
    snapshot twice refused by `settle`, naming `compact --level 1`, and
    settled after it.
 7. S9's agreement, against the existing implementation's histories on the

@@ -172,21 +172,31 @@ pub fn drop(
         if glob.is_some_and(|g| !crate::plugins::glob_matches(g, &listed.branch)) {
             continue;
         }
-        repo.edit_references_as(
-            [RefEdit {
-                change: Change::Delete {
-                    expected: PreviousValue::MustExistAndMatch(Target::Object(listed.commit)),
-                    log: RefLog::AndReference,
-                },
-                name: branch_ref(&listed.branch)?,
-                deref: false,
-            }],
-            None,
-        )
-        .map_err(Error::git)?;
+        delete_branch(repo, &listed.branch, listed.commit)?;
         deleted.push(listed.branch);
     }
     Ok(deleted)
+}
+
+/// Delete the branch `name`, which must point at `commit`.
+pub(crate) fn delete_branch(
+    repo: &gix::Repository,
+    name: &str,
+    commit: ObjectId,
+) -> Result<(), Error> {
+    repo.edit_references_as(
+        [RefEdit {
+            change: Change::Delete {
+                expected: PreviousValue::MustExistAndMatch(Target::Object(commit)),
+                log: RefLog::AndReference,
+            },
+            name: branch_ref(name)?,
+            deref: false,
+        }],
+        None,
+    )
+    .map_err(Error::git)?;
+    Ok(())
 }
 
 /// What [`import`] did.

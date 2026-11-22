@@ -204,32 +204,57 @@ when you no longer need it.
 
 ## 4. Compacting the old part
 
-rack-e is an exact copy of rack-a: its commit changes nothing. `compact`
-garbage-collects the history before a cutoff:
+`compact` garbage-collects the history before a cutoff, at one of three
+levels, each including the ones below:
+
+1. **lossless, the default:** drop the manual commits that change
+   nothing, and the second copy of a snapshot stored twice;
+2. also drop the snapshot commits that change nothing, and the commits
+   whose every change is made again before the cutoff;
+3. also remove from snapshot commits the files changed again later.
+
+rack-e is an exact copy of rack-a: its commit changes nothing. But it is
+also the only record that rack-e held those files, as of its build time,
+and `git seriate-fdp advise` (section 6) dates files by such records. So
+level 1 keeps it:
 
 ```console
 $ git seriate compact --cutoff 2026-04-01 --dry-run
-drop 0912a3bc ('Snapshot rack-e'): changes nothing
-would compact main: dropped 1, reduced 0, converted 0
-$ git seriate compact --cutoff 2026-04-01
-drop 0912a3bc ('Snapshot rack-e'): changes nothing
-compacted main: dropped 1, reduced 0, converted 0; previous tip saved as main-2
+would compact main: dropped 0, reduced 0, converted 0
+```
+
+Level 2 gives up records for a shorter history; `--dry-run` names each
+one it would lose:
+
+```console
+$ git seriate compact --cutoff 2026-04-01 --level 2 --dry-run
+drop 2b3f522a ('Snapshot rack-b'): every change it makes is made again later
+drop ce9a19df ('Snapshot rack-a'): every change it makes is made again later
+drop 0912a3bc ('Snapshot rack-e'): changes nothing; the only record of "rack-e" goes with it
+delete branch rack-a: its snapshot's last commit is dropped
+delete branch rack-b: its snapshot's last commit is dropped
+delete branch rack-e: its snapshot's last commit is dropped
+would compact main: dropped 3, reduced 0, converted 0
+$ git seriate compact --cutoff 2026-04-01 --level 2
+drop 2b3f522a ('Snapshot rack-b'): every change it makes is made again later
+drop ce9a19df ('Snapshot rack-a'): every change it makes is made again later
+drop 0912a3bc ('Snapshot rack-e'): changes nothing; the only record of "rack-e" goes with it
+delete branch rack-a: its snapshot's last commit is dropped
+delete branch rack-b: its snapshot's last commit is dropped
+delete branch rack-e: its snapshot's last commit is dropped
+compacted main: dropped 3, reduced 0, converted 0; previous tip saved as main-2
 $ git log --format='%cs %s'
 2026-04-15 Snapshot rack-d
 2026-11-22 Explain where the files come from
 2026-03-09 Snapshot rack-c
-2026-02-03 Snapshot rack-a
-2026-02-10 Snapshot rack-b
 ```
 
-Three levels, each including the ones below:
-
-1. drop the commits that change nothing (lossless; the default);
-2. also drop those whose every change is made again later;
-3. also remove from snapshot commits the files changed again later.
-
-The tree at the cutoff, and every commit after it, stay the same: the
-files you have checked out don't change.
+rack-c rewrites both files before the cutoff, so rack-b's and rack-a's
+versions never reach it. The tree at the cutoff, and every commit after
+it, stay the same: the files you have checked out don't change. The
+snapshot branches of what was dropped go too; left, the next `settle`
+would take them for new snapshots and put them back. The previous tip,
+`main-2`, keeps everything until you delete it.
 
 ## 5. Snapshot branches, and other repositories
 
@@ -238,11 +263,8 @@ branch from its commit when it needs it. So the branches can go:
 
 ```console
 $ git seriate drop
-deleted rack-a
-deleted rack-b
 deleted rack-c
 deleted rack-d
-deleted rack-e
 ```
 
 `drop --glob 'rack-*'` deletes only those matching. `git seriate import

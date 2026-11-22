@@ -276,14 +276,15 @@ fn a_manual_files_age_survives_a_rewrite() {
     };
     let before = age(&r);
     assert_eq!(before, T0 + 5 * DAY);
-    // compact drops a2's empty commit, rewriting the manual one above it.
+    // compact --level 2 drops a2's empty commit, its only record, rewriting
+    // the manual one above it.
     env();
     let report = git_seriate::compact::compact(
         &r,
         &git_seriate::compact::Options {
             into: Some("main".into()),
             cutoff: T0 + 3 * DAY,
-            level: 1,
+            level: 2,
             dry_run: false,
         },
         None,
