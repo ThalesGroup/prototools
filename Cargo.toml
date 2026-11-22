@@ -34,6 +34,7 @@ members = [
     "protoscan",
     "protoback",
     "seriation",
+    "git-seriate",
     "workspace-hack",
 ]
 

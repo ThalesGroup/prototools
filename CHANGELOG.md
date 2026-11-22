@@ -10,6 +10,12 @@ SPDX-License-Identifier: MIT
 
 ### Added
 
+- git-seriate: a new crate and binary, `git seriate`, storing snapshots of
+  files as git branches, each a single commit holding the files and a
+  `format: 1` block saying where they come from. `add DIR`, `list`,
+  `drop` and `import`; the store refuses paths git or a checkout can't
+  hold, renames clashing ones `~N`, and checks every tree before writing
+  it. `settle`, which rebuilds the history, follows (spec 0452).
 - seriation: a new crate, the sort that orders undated snapshots of files
   by their build times, their order hints and how the files in them
   evolve, as a library with no git and no file format. A caller passes

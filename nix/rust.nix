@@ -188,6 +188,9 @@ let
   rustTests = crane.cargoTest (protocArgs // {
     src            = workspaceSrc;
     pname          = "prototools-tests";
+    # git-seriate's end-to-end tests check every tree they make with
+    # `git fsck --strict` (spec 0452 G5).
+    nativeBuildInputs = protocArgs.nativeBuildInputs ++ [ pkgs.gitMinimal ];
     CARGO_PROFILE  = "quick";
     cargoArtifacts = depsCacheTests;
     cargoExtraArgs = workspaceArgs;

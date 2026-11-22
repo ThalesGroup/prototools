@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+#
+# SPDX-License-Identifier: MIT
+
+[package]
+name        = "git-seriate"
+version.workspace    = true
+edition     = "2021"
+description = "Store undated snapshots of files in git, and rebuild one linear history from them"
+license     = "MIT"
+repository.workspace = true
+keywords    = ["git", "snapshots", "history", "seriation"]
+categories  = ["command-line-utilities", "development-tools"]
+
+[dependencies]
+clap           = { version = "4", features = ["derive"] }
+gix            = { version = "0.76", default-features = false, features = ["tree-editor"] }
+seriation      = { workspace = true }
+serde_yaml     = "0.9"
+workspace-hack = { version = "0.1", path = "../workspace-hack" }
+
+[dev-dependencies]
+tempfile = "3"
