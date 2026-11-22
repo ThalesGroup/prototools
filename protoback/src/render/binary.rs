@@ -21,6 +21,8 @@ use super::sci::Location;
 use super::{text, Def};
 use crate::graph::Kind;
 
+use super::export::VISIBILITY_EXPORT;
+
 /// A copy of node `i`'s definition, to change.
 fn copy(ctx: &Ctx<'_, '_>, i: usize) -> Option<DynamicMessage> {
     let m = match ctx.shared.def(i)? {
@@ -194,6 +196,10 @@ fn message(ctx: &Ctx<'_, '_>, msg: usize) -> Option<Vec<u8>> {
     let mut out = copy(ctx, msg)?;
     {
         let mut w = DescriptorProtoMut(out.as_mut());
+        // --export-used: the text's `export` (spec 0458 S4).
+        if super::file::exported(ctx, msg).is_some_and(|(_, e)| e.exportable) {
+            w.set_visibility(VISIBILITY_EXPORT).ok()?;
+        }
         if !ctx.editions_target() {
             w.clear_visibility();
             if m.has_options() {
@@ -350,6 +356,10 @@ fn enumeration(ctx: &Ctx<'_, '_>, en: usize) -> Option<Vec<u8>> {
     let mut out = copy(ctx, en)?;
     let editions = ctx.editions_target();
     let mut w = EnumDescriptorProtoMut(out.as_mut());
+    // --export-used: the text's `export` (spec 0458 S4).
+    if super::file::exported(ctx, en).is_some_and(|(_, e)| e.exportable) {
+        w.set_visibility(VISIBILITY_EXPORT).ok()?;
+    }
     if !editions {
         w.clear_visibility();
     }

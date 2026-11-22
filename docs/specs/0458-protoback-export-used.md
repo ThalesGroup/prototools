@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0458 — protoback --export-used: export what other files use
 
-Status: draft
+Status: implemented
+Implemented in: 2026-11-22
 App: protoback
 Refs: docs/specs/0434-type-names-as-protoc-resolves-them.md (the symbols a
         file sees, which this reads),
@@ -132,8 +133,20 @@ would compile and decode wrongly.
    `export`, one W31.
 4. `export_used_binary_follows_the_text` — with `--emit-binary`, the
    symbol's descriptor has `visibility: VISIBILITY_EXPORT`.
-5. The self-check (without the option): no change.
+5. The self-check (without the option): no change from this spec.
 
 ## Measured outcome
 
-Filled in at implementation.
+The four tests pass (`protoback/tests/export.rs`). On the Background's
+shape (an edition 2024 file, a nested message and enum another file
+uses), protoc 34.1 refuses the user file without the option and compiles
+it with. The self-check against HEAD: no change from this spec (the two
+cases that change are 0459's).
+
+`default_symbol_visibility` is source-retained, so descriptors don't
+carry it at file level: the default is in practice the edition's, from
+the input's `descriptor.proto`. An input without one gets protoback's
+built-in copy, which predates edition 2026: its files' default reads as
+2024's `EXPORT_TOP_LEVEL`. The downstream inputs carry their own.
+
+Not measured here: the downstream repository's 168 files.

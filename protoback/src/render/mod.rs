@@ -8,6 +8,7 @@
 
 mod binary;
 mod comments;
+mod export;
 mod file;
 mod message;
 pub mod names;
@@ -51,6 +52,9 @@ pub struct Shared<'a> {
     pub edition_defaults: &'a EditionDefaults,
     /// The input's `Edition` names, for the edition line (spec 0457 S2).
     pub edition_names: &'a crate::phase2::EditionNames,
+    /// `--export-used`: the symbols to write `export`, and those it can't
+    /// (spec 0458).
+    pub exports: Option<&'a export::Exports>,
     /// The `*Options` a proto3 file may extend (`options_fqns`).
     pub options_fqns: BTreeSet<String>,
     /// `--keep-descriptor-path`.
@@ -529,6 +533,8 @@ fn on_pool<T: Send>(jobs: usize, f: impl FnOnce() -> T + Send) -> T {
         Err(_) => f(),
     }
 }
+
+pub use export::exports;
 
 /// File `i`'s descriptor (a WKT dependency of the schema database);
 /// `None` when its render fails.

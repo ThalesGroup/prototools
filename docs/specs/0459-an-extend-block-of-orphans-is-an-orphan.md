@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0459 — reproto, protoback: an extend block of orphans is an orphan
 
-Status: draft
+Status: implemented
+Implemented in: 2026-11-22
 App: reproto | protoback
 Refs: docs/specs/0429-protoback-rendering.md (the rendering both tools
         share, compared by the differential harness)
@@ -76,4 +77,7 @@ readable, as for every other orphan.
 
 ## Measured outcome
 
-Filled in at implementation.
+Both tests pass. The self-check against HEAD: 2 of 1 669 cases change,
+`alone/ext_no_options_extender` and `alone/ext_with_options_extender`,
+both an extension of `Config` from a missing file, now commented out
+whole; reproto writes the same text on both. The graph dumps: no change.

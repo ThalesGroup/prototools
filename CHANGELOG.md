@@ -90,6 +90,12 @@ SPDX-License-Identifier: MIT
   applying `advise`'s `fixups.yaml` checks it this way rather than with
   protoback's `--fail-on W24`. `advise::Options` has a new field,
   `strict` (spec 0455).
+- protoback: `--export-used`, off by default: a message or enum local to
+  its file (edition 2024 and later) that another written file uses is
+  written `export`, so that protoc compiles the output, each one with a
+  comment and a W31 in the report; a nested one under edition 2026's
+  `STRICT`, which can't be exported, is reported as W32. The descriptor
+  written beside the text follows it (spec 0458).
 
 ### Changed
 
@@ -146,6 +152,11 @@ SPDX-License-Identifier: MIT
   ignored.
 
 ### Fixed
+
+- reproto, protoback: an `extend` block whose every field is commented
+  out (its extendee or type in no file) was written with its `extend`
+  line and brace as code, an empty block protoc refuses before naming the
+  missing import; the block is now commented out whole (spec 0459).
 
 - protoback: an editions file of an edition its own table didn't name,
   edition 2026 among them, was left unwritten with no warning, nothing in

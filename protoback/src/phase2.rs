@@ -156,6 +156,10 @@ pub fn run(r: &mut Run, topo: &mut Topology) -> Result<(), DescriptorProtoError>
         r.db.file_by_name(&descriptor)
             .map(|f| edition_names(&FileDescriptorProto(f.as_ref())))
             .unwrap_or_default();
+    r.visibility_defaults =
+        r.db.file_by_name(&descriptor)
+            .map(|f| visibility_defaults(&FileDescriptorProto(f.as_ref())))
+            .unwrap_or_default();
     Ok(())
 }
 
@@ -638,6 +642,40 @@ fn edition_names(descriptor: &FileDescriptorProto<'_>) -> EditionNames {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// `FeatureSet.default_symbol_visibility`'s defaults in the input's
+/// descriptor.proto: (edition, `DefaultSymbolVisibility` number), sorted
+/// by edition (spec 0458 S2). Apart from [`EditionDefaults`], which holds
+/// the six features reproto resolves, and is dumped as reproto dumps it.
+pub type VisibilityDefaults = Vec<(i32, i32)>;
+
+fn visibility_defaults(descriptor: &FileDescriptorProto<'_>) -> VisibilityDefaults {
+    let Some(feature_set) = descriptor
+        .message_type()
+        .into_iter()
+        .find(|m| m.name() == b"FeatureSet")
+    else {
+        return Vec::new();
+    };
+    let numbers: BTreeMap<String, i32> = feature_set
+        .nested_type()
+        .into_iter()
+        .filter(|m| m.name() == b"VisibilityFeature")
+        .flat_map(|m| m.enum_type())
+        .flat_map(|e| e.value())
+        .map(|v| (text(v.name()), v.number()))
+        .collect();
+    let mut out: VisibilityDefaults = feature_set
+        .field()
+        .into_iter()
+        .filter(|f| f.name() == b"default_symbol_visibility")
+        .filter_map(|f| f.options())
+        .flat_map(|o| o.edition_defaults())
+        .filter_map(|d| Some((d.edition(), *numbers.get(&text(d.value()))?)))
+        .collect();
+    out.sort_by_key(|(edition, _)| *edition);
+    out
 }
 
 const RESOLVED_FIELDS: &[&str] = &[

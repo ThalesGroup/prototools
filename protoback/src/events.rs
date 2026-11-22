@@ -97,6 +97,14 @@ pub const CODES: &[(&str, &str)] = &[
         "an edition 2024 file written with enforce_naming_style = STYLE_LEGACY (target portable)",
     ),
     (
+        "W31",
+        "a symbol local to its file written export: another file uses it (--export-used)",
+    ),
+    (
+        "W32",
+        "a nested symbol another file uses, which STRICT visibility can't export (--export-used)",
+    ),
+    (
         "T1",
         "text: a field by number declared nowhere, read as length-delimited",
     ),
@@ -119,7 +127,8 @@ pub fn is_code(code: &str) -> bool {
 /// The squashed codes, in the order their summary lines are printed: the
 /// most actionable first (spec 0041), then by code.
 const SQUASHED_ORDER: &[&str] = &[
-    "W5", "W4", "W6", "W19", "W20", "W21", "W22", "W28", "W30", "T1", "T2", "T3", "T4",
+    "W5", "W4", "W6", "W19", "W20", "W21", "W22", "W28", "W30", "W31", "W32", "T1", "T2", "T3",
+    "T4",
 ];
 
 #[derive(Debug, Default)]

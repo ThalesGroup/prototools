@@ -210,6 +210,12 @@ pub struct Cli {
     )]
     pub editions: Editions,
     #[arg(
+        long = "export-used",
+        help = "Write export each message or enum its file leaves local and another written file uses (spec 0458), so that protoc compiles them: each commented, and reported (W31).",
+        help_heading = "Rendering"
+    )]
+    pub export_used: bool,
+    #[arg(
         long = "no-builtin",
         help = "Do not fill in, from built-in copies, the well-known files and the descriptor.proto the input lacks.",
         help_heading = "Variant / Schema"

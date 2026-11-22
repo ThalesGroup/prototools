@@ -130,7 +130,10 @@ def _render_extend_blocks(
                         (ext_sci_path, blk[0], closing_line(blk))
                     )
             block.extend(blk)
-        bracket_type = ORPHAN if (track_orphans and is_orphan) else CODE
+        # A block with no code line left is an orphan whole: protoc refuses
+        # an empty extend block (spec 0459 S1).
+        no_code = not any(line.type == CODE and line.text for line in block.lines)
+        bracket_type = ORPHAN if (track_orphans and is_orphan) or no_code else CODE
         block.insert(0, BlockLine(f'extend {ref} {{', depth, type=bracket_type))
         block.append(BlockLine('}', level=depth, type=bracket_type))
         out.extend(block)

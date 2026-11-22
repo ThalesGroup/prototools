@@ -155,11 +155,85 @@ impl Ctx<'_, '_> {
 /// editions file written as editions only: `option features.x = V;`
 /// standalone, `features.x = V,` inline; the six runtime features, in
 /// that order, their values named by the edition defaults' tables.
+/// [`visibility_keyword`] for symbol `node`, under `--export-used` (spec
+/// 0458 S4, S5): `export ` for a local symbol another file uses, W31; a
+/// nested one under `STRICT` unchanged, W32. [`export_comment`] is the
+/// line said before it.
+pub fn symbol_visibility(
+    ctx: &Ctx<'_, '_>,
+    node: usize,
+    set: bool,
+    visibility: i32,
+) -> &'static str {
+    let Some((symbol, e)) = exported(ctx, node) else {
+        return visibility_keyword(ctx, set, visibility);
+    };
+    let file = ctx.file_name();
+    let n = e.users.len();
+    let count = if n == 1 {
+        "1 file".to_string()
+    } else {
+        format!("{n} files")
+    };
+    let fields = serde_json::json!({ "file": file, "symbol": symbol, "users": e.users });
+    let (code, message) = if e.exportable {
+        (
+            "W31",
+            format!("'{file}': {symbol} written export: used by {count} (--export-used)"),
+        )
+    } else {
+        (
+            "W32",
+            format!(
+                "'{file}': {symbol} is used by {count}, but STRICT visibility can't export \
+                 a nested symbol (--export-used)"
+            ),
+        )
+    };
+    ctx.events
+        .borrow_mut()
+        .push(RenderEvent::Squash(code, message, fields));
+    if e.exportable {
+        "export "
+    } else {
+        visibility_keyword(ctx, set, visibility)
+    }
+}
+
+/// The comment before a symbol `--export-used` writes `export` (spec 0458
+/// S4); inserted after the symbol's SourceCodeInfo is marked, so that its
+/// span starts at the symbol, as protoc's does.
+pub fn export_comment(ctx: &Ctx<'_, '_>, node: usize, depth: usize) -> Option<Line> {
+    let (_, e) = exported(ctx, node).filter(|(_, e)| e.exportable)?;
+    let first = e.users.first()?;
+    let more = match e.users.len() {
+        1 => String::new(),
+        n => format!(" (and {} more)", n - 1),
+    };
+    Some(anomaly(
+        "WARNING",
+        "export-used",
+        &format!("exported: used by '{first}'{more}; local in the source"),
+        depth,
+    ))
+}
+
+/// Symbol `node`'s entry under `--export-used`, in a file written as
+/// editions: its full name, and who uses it.
+pub(super) fn exported<'s>(
+    ctx: &Ctx<'s, '_>,
+    node: usize,
+) -> Option<(&'s str, &'s super::export::Export)> {
+    let symbol = ctx.shared.graph.nodes[node].prefix.trim_start_matches('.');
+    let e = ctx.shared.exports?.get(symbol)?;
+    ctx.editions_target().then_some((symbol, e))
+}
+
 /// reproto's `visibility_prefix`: `local ` or `export ` before a message or
 /// an enum whose visibility (edition 2024) is set, whatever the file's
 /// default, so that it roundtrips; nothing in a file written as proto2 or
 /// proto3, which has no visibility.
-pub fn visibility_prefix(ctx: &Ctx<'_, '_>, set: bool, visibility: i32) -> &'static str {
+fn visibility_keyword(ctx: &Ctx<'_, '_>, set: bool, visibility: i32) -> &'static str {
     // descriptor.proto's SymbolVisibility.
     const LOCAL: i32 = 1;
     const EXPORT: i32 = 2;
@@ -467,7 +541,13 @@ pub fn extend_blocks(
             }
             block.extend(blk);
         }
-        let kind = if redact || (track_orphans && is_orphan) {
+        // A block with no code line left is an orphan whole: protoc refuses
+        // an empty extend block (spec 0459 S1).
+        let no_code = !block
+            .lines
+            .iter()
+            .any(|l| l.kind == LineType::Code && !l.text.is_empty());
+        let kind = if redact || (track_orphans && is_orphan) || no_code {
             LineType::Orphan
         } else {
             LineType::Code
@@ -486,7 +566,7 @@ pub fn extend_blocks(
 /// a closed enum: a value the vendored descriptor.proto doesn't declare is
 /// decoded as an unknown field, and `edition` reads unset; the encoding
 /// keeps it, so it is read back from there, the last one winning.
-fn file_edition(f: &prototext_upb::descriptor_access::FileDescriptorProto<'_>) -> i32 {
+pub(super) fn file_edition(f: &prototext_upb::descriptor_access::FileDescriptorProto<'_>) -> i32 {
     if f.has_edition() {
         return f.edition();
     }
@@ -837,6 +917,9 @@ fn render_body(
         if let (Some(sci), Some(path)) = (&ctx.sci, path) {
             sci.mark(&mut lines, path);
         }
+        if let Some(c) = export_comment(ctx, en, depth) {
+            lines.insert(0, c);
+        }
         sci_enum += 1;
         out.extend(lines);
     }
@@ -858,7 +941,7 @@ fn render_body(
             Line::code(
                 format!(
                     "{}message {} {{",
-                    visibility_prefix(ctx, m.has_visibility(), m.visibility()),
+                    symbol_visibility(ctx, msg, m.has_visibility(), m.visibility()),
                     text(m.name())
                 ),
                 depth,
@@ -868,6 +951,9 @@ fn render_body(
         if let (Some(sci), Some(path)) = (&ctx.sci, path) {
             sci.mark(&mut lines, path);
             sci_msg += 1;
+        }
+        if let Some(c) = export_comment(ctx, msg, depth) {
+            lines.insert(0, c);
         }
         lines.div_maybe(depth);
         if !node.is_summoned {

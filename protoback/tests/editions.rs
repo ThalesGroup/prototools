@@ -3,9 +3,10 @@
 // SPDX-License-Identifier: MIT
 
 //! Spec 0457: an edition named from the input's descriptor.proto, and no
-//! file left unwritten without a warning. The inputs are binary: the text
-//! reader parses against the vendored descriptor.proto, whose `Edition`
-//! enum is closed, so it can't hold an edition that enum lacks.
+//! file left unwritten without a warning. The inputs are binary: a text
+//! input is parsed against the input's descriptor.proto, here the built-in
+//! variant's, which predates edition 2026; its `Edition` enum is closed, so
+//! the text can't hold an edition that enum lacks.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

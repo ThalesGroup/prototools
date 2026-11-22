@@ -776,7 +776,8 @@ def run(work: Path, reference: list[str], candidate: list[str], jobs: int,
 # but these.
 HELP_OWN = {"--help", "--version", "--jobs", "--fdp-plugin-cmd",
             "--move",         # spec 0445, protoback only
-            "--report-out"}   # spec 0446, protoback only
+            "--report-out",   # spec 0446, protoback only
+            "--export-used"}  # spec 0458, protoback only
 # Click's built-ins, which clap words otherwise.
 HELP_BUILTIN = {"--help", "--version"}
 

@@ -942,7 +942,7 @@ pub fn message(
             Line::code(
                 format!(
                     "{}message {} {{",
-                    super::file::visibility_prefix(ctx, n.has_visibility(), n.visibility()),
+                    super::file::symbol_visibility(ctx, nested, n.has_visibility(), n.visibility()),
                     text(n.name())
                 ),
                 depth + 1,
@@ -950,6 +950,9 @@ pub fn message(
         );
         collapse_empty(&mut lines);
         mark(ctx, &mut lines, path);
+        if let Some(c) = super::file::export_comment(ctx, nested, depth + 1) {
+            lines.insert(0, c);
+        }
         if !nn.is_summoned {
             lines.abandon();
         }
@@ -962,6 +965,9 @@ pub fn message(
             let path = child_path(ctx, sci_path, 4, e_idx);
             let mut lines = enumeration(ctx, en, depth + 1, path.as_deref());
             mark(ctx, &mut lines, path);
+            if let Some(c) = super::file::export_comment(ctx, en, depth + 1) {
+                lines.insert(0, c);
+            }
             out.extend(lines);
         }
     }
@@ -1145,7 +1151,7 @@ pub fn enumeration(ctx: &Ctx<'_, '_>, en: usize, depth: usize, sci_path: Option<
         Line::code(
             format!(
                 "{}enum {} {{",
-                super::file::visibility_prefix(ctx, e.has_visibility(), e.visibility()),
+                super::file::symbol_visibility(ctx, en, e.has_visibility(), e.visibility()),
                 text(e.name())
             ),
             depth,

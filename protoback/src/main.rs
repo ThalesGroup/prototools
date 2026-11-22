@@ -606,6 +606,7 @@ fn protoback(mut cli: Cli, explicit: &std::collections::HashSet<&'static str>) -
         graph: graph::Graph::default(),
         edition_defaults: Default::default(),
         edition_names: Default::default(),
+        visibility_defaults: Default::default(),
         seed_nodes: BTreeSet::new(),
         schema_db_extra_nodes: Vec::new(),
         plugin,
@@ -780,6 +781,7 @@ fn protoback(mut cli: Cli, explicit: &std::collections::HashSet<&'static str>) -
         variant: &run.variant,
         edition_defaults: &run.edition_defaults,
         edition_names: &run.edition_names,
+        exports: None,
         options_fqns: render::options_fqns(&run.db, &run.variant),
         keep_variant_descriptor: cli.keep_descriptor_path,
         emit_binary: cli.emit_binary,
@@ -797,6 +799,15 @@ fn protoback(mut cli: Cli, explicit: &std::collections::HashSet<&'static str>) -
         schema_db: schema_db.is_some(),
         debug: cli.debug,
         names: &names,
+    };
+    // --export-used (spec 0458): what to export, read from the files to
+    // render.
+    let exports = cli
+        .export_used
+        .then(|| render::exports(&shared, &run.visibility_defaults));
+    let shared = render::Shared {
+        exports: exports.as_ref(),
+        ..shared
     };
     let output = render::Output {
         out_repo,

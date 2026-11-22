@@ -13,7 +13,7 @@ use crate::db::Database;
 use crate::events::Events;
 use crate::graph::Graph;
 use crate::pathmatch::PathPatterns;
-use crate::phase2::{EditionDefaults, EditionNames};
+use crate::phase2::{EditionDefaults, EditionNames, VisibilityDefaults};
 use crate::variant::Variant;
 
 pub struct Run {
@@ -63,6 +63,8 @@ pub struct Run {
     pub edition_defaults: EditionDefaults,
     /// The names of its `Edition` enum (spec 0457 S1).
     pub edition_names: EditionNames,
+    /// Its `default_symbol_visibility` defaults (spec 0458 S2).
+    pub visibility_defaults: VisibilityDefaults,
     /// Phase 3's nodes, which phases 4 to 6 mark.
     pub graph: Graph,
     /// Phase 5's seeds.

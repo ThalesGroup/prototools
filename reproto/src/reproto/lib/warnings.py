@@ -45,6 +45,8 @@ CODES: dict[str, str] = {
     "W28": "an option the target's reader cannot represent, redacted",
     "W29": "a profile folder's file replacing an input's copy that defines something it lacks",
     "W30": "an edition 2024 file written with enforce_naming_style = STYLE_LEGACY (target portable)",
+    "W31": "a symbol local to its file written export: another file uses it (--export-used)",
+    "W32": "a nested symbol another file uses, which STRICT visibility can't export (--export-used)",
     "T1": "text: a field by number declared nowhere, read as length-delimited",
     "T2": "text: a string protoc printed as a message, rebuilt",
     "T3": "text: an [extension] declared nowhere, skipped",
@@ -93,7 +95,7 @@ def _occ(count: int) -> str:
 
 # The squashed codes, in the order their summary lines are printed: the
 # most actionable first (spec 0041 §2, §7, §8), then by code.
-_SQUASHED_ORDER = ("W5", "W4", "W6", "W19", "W20", "W21", "W22", "W28", "W30", "T1", "T2", "T3", "T4")
+_SQUASHED_ORDER = ("W5", "W4", "W6", "W19", "W20", "W21", "W22", "W28", "W30", "W31", "W32", "T1", "T2", "T3", "T4")
 
 
 class WarningCollector:

@@ -297,8 +297,10 @@ def test_A5_proto2_options_extendee_not_omitted(tmp_path: Path) -> None:
         "A5 must NOT fire for .proto2.MethodOptions extendee — "
         f"it is a valid proto3 custom-option target.\nContent:\n{content}"
     )
-    # The extend block must actually appear in the output
-    assert any(ln.startswith("extend ") for ln in content.splitlines()), (
+    # The extend block must actually appear in the output, not be omitted.
+    # Its extendee is in no file, so its field is an orphan, and so is the
+    # block around it (spec 0459): `///extend proto2.MethodOptions {`.
+    assert any(ln.lstrip("/").startswith("extend ") for ln in content.splitlines()), (
         f"extend block must be rendered.\nContent:\n{content}"
     )
 

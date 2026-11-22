@@ -116,6 +116,8 @@ last fallback.
 The three tests pass. `scripts/protoback-selfcheck` against HEAD
 (`326e09c1`), both modes: 1 669 cases and 1 655 graph dumps, 0 differ.
 
-A text input can't hold an edition the vendored `descriptor.proto` lacks:
-the text reader parses against it and refuses the value (W15), as before.
-The downstream inputs are binary.
+A text input (`.textpb` and the like) is parsed against the input's
+`descriptor.proto` (spec 0426), and an input without one gets the
+built-in variant's, which predates edition 2026: `edition: 1002` in text
+is refused there (W15), as before. Binary inputs aren't parsed against
+it, and the downstream inputs are binary.
