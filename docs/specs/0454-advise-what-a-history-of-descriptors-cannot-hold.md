@@ -6,8 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0454 — advise: what a history of descriptors can't hold, and which sources could fix it
 
-Status: draft (S1–S8 implemented 2026-11-22; S9 awaits the downstream
-        front end)
+Status: implemented
+Implemented in: 2026-11-22
 App: git-seriate-fdp | protoback
 Refs: docs/specs/0450-git-seriate-a-history-from-snapshots.md (S5 step 4),
       docs/specs/0453-git-seriate-fdp-descriptors-from-executables.md (the
@@ -271,4 +271,18 @@ On toys (test plan 1, 4–8): a rename moved forward, with its stamp and
 manual file's age through a `compact`; a front end's wording, the JSON
 unchanged by it.
 
-S9 and test 2 wait for the downstream front end.
+**S9 holds,** as measured by the downstream maintainers through their
+front end on `cli::run`, on their largest repository: the same 83
+`prune:` and `move:` entries, the same problems by kind and text, and the
+same first candidate as their own `advise`. The lines that differed were
+outside S9 and are fixed: a manual commit's subject cut at its last
+"commit " (now a field of the problem, `subject`), and the order hint
+missing from the sources (now in the JSON and in `STATUS.md`). Manual
+files dated by author date, where theirs uses the committer date, differ
+by design.
+
+Test 2, by hand, on the tutorial's toy (a message moved to a new file
+between two builds): its `fixups.yaml` applied by protoback with
+`--fail-on W24 --fail-on W26` exits 0 with no warning, where the same
+build without it prunes the newer file (W3). The downstream maintainers
+have not reported applying theirs.

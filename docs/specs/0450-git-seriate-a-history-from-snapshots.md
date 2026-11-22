@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0450 — git-seriate: a history rebuilt from undated snapshots
 
-Status: draft
+Status: implemented
+Implemented in: 2026-11-22
 App: seriation | git-seriate | git-seriate-fdp
 Refs: docs/specs/0448-fdp-scan-undeclared-fields-and-rejections.md (the
         scanner the protobuf extractor wraps, and its refusal reasons),
@@ -267,4 +268,22 @@ committed with their generator, as `fdp-scan`'s are.
 
 ## Measured outcome
 
-Filled in at implementation.
+The four steps of S5 are implemented, each in its own spec: 0451
+(`seriation`), 0452 (`git-seriate`), 0453 (`git-seriate-fdp`) and 0454
+(`advise`). A tutorial walks through both binaries:
+[`docs/git-seriate/tutorial.md`](../git-seriate/tutorial.md).
+
+**G6 holds.** The order: on the generator's corpora, the downstream sort
+run on the same inputs gives the same order (0451). The history: on the
+corpora, in this workspace's tests (0452 S9); and on the downstream
+repository, measured by its maintainers through their front end on
+`cli::run`, with its legacy reader and no canonicalization: the same
+1,118 `(identity, tree)` pairs, in the same order, as their current sort,
+in 1 min 53 s against their 2 min 9 s (release builds). `extract` on
+their three local archives gives the same 1,129 snapshot branches, trees
+and blocks as their current extraction.
+
+Found by that front end and fixed: `list`, `drop` and `import` ignored
+the legacy reader; a history holding one snapshot twice is refused with
+the way out named (`compact --level 1`); `compact` warned about anchors
+that still resolved.

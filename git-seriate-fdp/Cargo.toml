@@ -9,6 +9,7 @@ edition     = "2021"
 description = "git-seriate for the protobuf descriptors embedded in executables"
 license     = "MIT"
 repository.workspace = true
+readme      = "../README.md"
 keywords    = ["git", "protobuf", "descriptor", "snapshots", "history"]
 categories  = ["command-line-utilities", "development-tools"]
 

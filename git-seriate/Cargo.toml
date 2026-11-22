@@ -9,6 +9,7 @@ edition     = "2021"
 description = "Store undated snapshots of files in git, and rebuild one linear history from them"
 license     = "MIT"
 repository.workspace = true
+readme      = "../README.md"
 keywords    = ["git", "snapshots", "history", "seriation"]
 categories  = ["command-line-utilities", "development-tools"]
 

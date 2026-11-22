@@ -360,3 +360,78 @@ fn commits_are_signed_when_git_is_configured_to() {
     );
     git(&repo, &["verify-commit", "main"]);
 }
+
+/// Runs the `git ...` command a checked-out note names, in `repo`.
+fn run_note(repo: &Path, err: &str) -> String {
+    let command = err
+        .split('\'')
+        .nth(1)
+        .unwrap_or_else(|| panic!("no command in: {err}"));
+    let words: Vec<&str> = command.split_whitespace().collect();
+    assert_eq!(words[0], "git", "{command}");
+    git(repo, &words[1..]);
+    command.to_string()
+}
+
+/// Settling the checked-out branch leaves the index and work tree alone;
+/// the command the note names brings them to the new tip, keeping local
+/// changes, whether the branch was unborn or had a tip.
+#[test]
+fn the_checked_out_note_names_a_command_that_works() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("work");
+    git(
+        tmp.path(),
+        &["init", "-q", "-b", "main", repo.to_str().unwrap()],
+    );
+    std::fs::write(repo.join("local.txt"), "mine\n").unwrap();
+    small(&repo);
+
+    // Unborn: no previous tip.
+    let (ok, _, err) = git_seriate(&repo, &["settle"]);
+    assert!(ok, "{err}");
+    assert_eq!(run_note(&repo, &err), "git read-tree -m -u main");
+    assert_eq!(git(&repo, &["status", "--porcelain"]), "?? local.txt\n");
+    assert_eq!(
+        std::fs::read_to_string(repo.join("f.txt")).unwrap(),
+        "a\nb\nc\n"
+    );
+
+    // A previous tip, and an uncommitted edit to a file settle doesn't touch.
+    git(&repo, &["config", "seriate.itemPattern", "f.txt"]);
+    std::fs::write(repo.join("notes.md"), "notes\n").unwrap();
+    git(&repo, &["add", "notes.md"]);
+    git(&repo, &["commit", "-q", "-m", "Add notes"]);
+    std::fs::write(repo.join("notes.md"), "notes, edited\n").unwrap();
+    let r = gix::open(&repo).unwrap();
+    store::add(
+        &r,
+        NewSnapshot {
+            source: Source {
+                identity: "s3".into(),
+                build_time: 1_700_000_000 + 3 * 86_400,
+                order_hint: None,
+                group: None,
+                metadata: Vec::new(),
+            },
+            items: vec![Item {
+                path: "f.txt".into(),
+                bytes: b"a\nb\nc\nd\n".to_vec(),
+            }],
+            rejected: Vec::new(),
+            record: Vec::new(),
+        },
+    )
+    .unwrap();
+    let (ok, _, err) = git_seriate(&repo, &["settle"]);
+    assert!(ok, "{err}");
+    assert_eq!(run_note(&repo, &err), "git read-tree -m -u main-1 main");
+    assert_eq!(
+        git(&repo, &["status", "--porcelain"]),
+        " M notes.md\n?? local.txt\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(repo.join("f.txt")).unwrap(),
+        "a\nb\nc\nd\n"
+    );
+}

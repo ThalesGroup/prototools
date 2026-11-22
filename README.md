@@ -58,14 +58,31 @@ protoscan --proto-out extracted/ some_binary
 reproto --builtin descriptor -O src/ -I extracted/ extracted/*.pb
 ```
 
+### `git seriate` and `git seriate-fdp`
+
+Stores undated copies of the same files as snapshots, and rebuilds one
+linear git history from them, ordered by how the files evolve rather than
+by their dates. `git seriate-fdp` does the same for the protobuf
+descriptors embedded in executables, and says what such a history can't
+hold in one schema database, as a filter file for `protoback`.
+
+```
+git seriate add found/rack-a        # one snapshot per copy
+git seriate settle                  # the history, in sorted order
+```
+
+→ See the [tutorial](docs/git-seriate/tutorial.md)
+
 ## Installation
 
-### Rust CLIs (`prototext`, `protoscan`, `protolens`)
+### Rust CLIs (`prototext`, `protoscan`, `protolens`, `git seriate`)
 
 ```shell
 cargo install prototext
 cargo install protoscan
 cargo install prototext-lens    # installs the protolens program
+cargo install git-seriate       # git seriate
+cargo install git-seriate-fdp   # git seriate-fdp
 ```
 
 `protolens` is published as `prototext-lens`: the `protolens` crate on

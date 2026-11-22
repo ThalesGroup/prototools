@@ -26,8 +26,11 @@ enum Fdp {
         /// Seconds since the epoch; the file's modification time by default.
         #[arg(long)]
         build_time: Option<i64>,
+        /// A revision number that grows with time, when the source has
+        /// one: recorded and shown, not used to sort.
         #[arg(long)]
         order_hint: Option<u64>,
+        /// What to extract again to refresh this snapshot.
         #[arg(long)]
         group: Option<String>,
         /// KEY=VALUE, shown, never interpreted; repeatable.
@@ -37,6 +40,7 @@ enum Fdp {
         /// 0449): for inputs known to come from protoc.
         #[arg(long)]
         increasing_field_numbers: bool,
+        /// The executables, libraries or other files to scan.
         #[arg(required = true)]
         files: Vec<PathBuf>,
     },

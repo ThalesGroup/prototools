@@ -10,6 +10,8 @@ SPDX-License-Identifier: MIT
 
 ### Added
 
+- Docs: a tutorial for `git seriate` and `git seriate-fdp`
+  (`docs/git-seriate/tutorial.md`), and their entry in the README.
 - Nix: `git-seriate` and `git-seriate-fdp` packages, with shell
   completions (bash, zsh, fish) and man pages, one per command, named so
   that `git help seriate` finds them; both in `ci` and in the `prototools`

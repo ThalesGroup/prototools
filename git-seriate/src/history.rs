@@ -318,8 +318,15 @@ pub fn settle(repo: &gix::Repository, options: &Options) -> Result<Report, Error
     store::set_ref(repo, &ref_name, expected, new_tip)?;
     report.moved = true;
     if checked_out(repo, &ref_name)? {
+        // HEAD already names the new tip, so `git reset --keep` would see
+        // nothing to do: the merge goes from the previous tip, saved.
+        let command = match &report.backup {
+            Some(backup) => format!("git read-tree -m -u {backup} {branch}"),
+            None => format!("git read-tree -m -u {branch}"),
+        };
         report.notes.push(format!(
-            "{branch} is checked out: run 'git reset --keep' to bring the index and work tree to it"
+            "{branch} is checked out: run '{command}' to bring the index and work tree \
+             to it, keeping local changes"
         ));
     }
     Ok(report)

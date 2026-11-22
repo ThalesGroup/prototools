@@ -46,10 +46,13 @@ pub fn render(a: &Analysis, input: &Input, problems: &[Problem], command: &str) 
             .collect();
         let _ = writeln!(
             o,
-            "| {} | {} | `{}` | `{}` | {} | {} |",
+            "| {} | {} | {} | `{}` | {} | {} |",
             date(s.build_time),
             s.order_hint.map(|h| h.to_string()).unwrap_or_default(),
-            s.group.as_deref().unwrap_or(""),
+            s.group
+                .as_deref()
+                .map(|g| format!("`{g}`"))
+                .unwrap_or_default(),
             s.identity,
             meta.join(", "),
             s.paths.len()
@@ -81,7 +84,7 @@ pub fn render(a: &Analysis, input: &Input, problems: &[Problem], command: &str) 
 
     o.push_str("\n## Problems\n\n");
     if problems.is_empty() {
-        o.push_str("None.\n");
+        o.push_str("None.\n\n");
     }
     let kinds = [
         ProblemKind::StaleImporter,
@@ -123,4 +126,38 @@ pub fn render(a: &Analysis, input: &Input, problems: &[Problem], command: &str) 
     o.push_str(&stamp(&input.sources));
     o.push_str("```\n");
     o
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::advise::Source;
+
+    #[test]
+    fn sources_table_and_section_breaks() {
+        let src = |id: &str, group: Option<&str>, hint: Option<u64>| Source {
+            identity: id.into(),
+            build_time: 0,
+            order_hint: hint,
+            group: group.map(str::to_string),
+            paths: Default::default(),
+            metadata: vec![],
+        };
+        let input = Input {
+            files: vec![],
+            sources: vec![src("a", None, None), src("b", Some("g"), Some(7))],
+        };
+        let text = render(&Analysis::default(), &input, &[], "git seriate-fdp advise");
+        // No group: an empty cell, not an empty code span.
+        assert!(
+            text.contains("| 1970-01-01 |  |  | `a` |  | 0 |\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("| 1970-01-01 | 7 | `g` | `b` |  | 0 |\n"),
+            "{text}"
+        );
+        // A blank line before the next heading.
+        assert!(text.contains("None.\n\n## Extraction order"), "{text}");
+    }
 }

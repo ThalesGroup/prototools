@@ -69,6 +69,8 @@ enum Command<E: Subcommand> {
         /// default.
         #[arg(long)]
         build_time: Option<i64>,
+        /// A revision number that grows with time, when the source has
+        /// one: recorded and shown, not used to sort.
         #[arg(long)]
         order_hint: Option<u64>,
         /// What to extract again to refresh this snapshot.
@@ -77,6 +79,7 @@ enum Command<E: Subcommand> {
         /// KEY=VALUE, shown, never interpreted; repeatable.
         #[arg(long = "meta", value_name = "KEY=VALUE")]
         metadata: Vec<String>,
+        /// The directory whose files, at any depth, are the snapshot.
         dir: PathBuf,
     },
     /// Rebuild the recent history in sorted order.
@@ -134,6 +137,7 @@ enum Command<E: Subcommand> {
     },
     /// Copy the snapshot branches of other repositories.
     Import {
+        /// The repositories to copy them from.
         #[arg(required = true)]
         repos: Vec<PathBuf>,
     },

@@ -264,9 +264,12 @@ legacy reader, the commit is a manual commit.
 7. **The ref.** If the new tip differs from the old: the old saved as
    `NAME-N`, the lowest `N` free, then `NAME` moved. If `NAME` is checked
    out, the index and the work tree are left alone, with a note to run
-   `git reset --keep`: rewriting an index behind its user's back can lose
-   staged work, which `git reset --keep` refuses to. `--dry-run` writes nothing and prints the plan, warnings
-   included.
+   `git read-tree -m -u NAME-N NAME` (`git read-tree -m -u NAME` when
+   there was no previous tip): rewriting an index behind its user's back
+   can lose staged work, which this merge from the previous tip refuses
+   to, keeping local changes. `git reset --keep` would not do: `HEAD`
+   already names the new tip, so it sees nothing to bring over.
+   `--dry-run` writes nothing and prints the plan, warnings included.
 
 Empty snapshots (whose items change nothing) are written like any other:
 they date their files (0450 G2's history), and `compact` is the way to
