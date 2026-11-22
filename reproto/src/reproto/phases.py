@@ -2273,6 +2273,10 @@ def _scoring_yaml_doc(ctx: 'Context', entries: list[str], messages: dict) -> dic
     return doc
 
 
+# 2**29 - 1, the largest field number a tag can carry (spec 0238 S3).
+_MAX_FIELD_NUMBER = 536_870_911
+
+
 def _canonical_extension_ranges(desc: Any) -> 'list[list[int]]':
     """Return `desc`'s extension ranges in canonical form (spec 0238 S3).
 
@@ -2293,10 +2297,19 @@ def _canonical_extension_ranges(desc: Any) -> 'list[list[int]]':
       canonicalize to the single `[1000, 10000]` that one
       `extensions 1000 to 10000` clause would have given.
 
-    `max` needs no handling here: protoc has already materialized it as the
-    concrete 536870912 by the time reproto sees the descriptor.
+    protoc has already materialized `max` as a concrete number by the time
+    reproto sees the descriptor: 536870912, or 2147483647 on a message set,
+    whose extensions travel as `type_id` values rather than as tags (protobuf's
+    `AdjustExtensionRangesWithMaxEndNumber`).  Ends are clamped to the largest
+    field number a tag can carry, `_MAX_FIELD_NUMBER`: the scoring walk never
+    looks a larger number up in a range, and a message set's `4 to max` must
+    intern as the same set as any other message's.
     """
-    spans = sorted((s, e - 1) for s, e in desc.extension_ranges if e > s)
+    spans = sorted(
+        (s, min(e - 1, _MAX_FIELD_NUMBER))
+        for s, e in desc.extension_ranges
+        if e > s and s <= _MAX_FIELD_NUMBER
+    )
     merged: list[list[int]] = []
     for start, end in spans:
         if merged and start <= merged[-1][1] + 1:

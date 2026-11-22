@@ -233,13 +233,25 @@ fn field(c: &Collect<'_>, f: &Field) -> FieldSpec {
 }
 
 /// `_canonical_extension_ranges` (spec 0238 S3): the half-open ranges as
-/// inclusive, sorted, with overlapping and adjacent ones merged.
+/// inclusive, sorted, with overlapping and adjacent ones merged, and clamped
+/// to the largest field number a tag can carry: a message set's `max` is
+/// `i32::MAX` (its extensions travel as `type_id` values, not as tags), and
+/// the walk never looks a number past `MAX_FIELD_NUMBER` up in a range.
+/// 2²⁹−1, the largest field number a tag can carry.
+const MAX_FIELD_NUMBER: i64 = 536_870_911;
+
 fn canonical_extension_ranges(m: &Message) -> Vec<(u32, u32)> {
     let mut spans: Vec<(i64, i64)> = m
         .extension_ranges()
         .iter()
         .filter(|r| r.end > r.start)
-        .map(|r| (i64::from(r.start), i64::from(r.end) - 1))
+        .map(|r| {
+            (
+                i64::from(r.start),
+                (i64::from(r.end) - 1).min(MAX_FIELD_NUMBER),
+            )
+        })
+        .filter(|&(start, end)| start <= end)
         .collect();
     spans.sort_unstable();
     let mut merged: Vec<(i64, i64)> = Vec::new();

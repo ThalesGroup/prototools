@@ -142,6 +142,18 @@ def test_to_max_is_materialized_not_symbolic(tmp_path: Path) -> None:
     assert messages["extranges.Unbounded"]["ext_ranges"] == [[1000, MAX_FIELD_NUMBER]]
 
 
+def test_a_message_sets_max_is_clamped(tmp_path: Path) -> None:
+    """A message set's `max` arrives as 2147483647 and leaves as 2**29 - 1.
+
+    Its extensions travel as `type_id` values, not tags, so protoc lets them
+    reach int32's maximum; no tag can carry a number past 2**29 - 1, so the
+    rest of the range can never be read. Unclamped, the graph refused to
+    build; clamped, `4 to max` is one set whatever the message's options.
+    """
+    messages = _messages(tmp_path, ["--emit-extension-ranges"])
+    assert messages["extranges.Set"]["ext_ranges"] == [[4, MAX_FIELD_NUMBER]]
+
+
 # ---------------------------------------------------------------------------
 # The canonicalizer itself, on inputs protoc cannot produce
 # ---------------------------------------------------------------------------
@@ -177,3 +189,10 @@ def test_disjoint_non_adjacent_ranges_survive_separately() -> None:
 
 def test_no_ranges_is_the_empty_list() -> None:
     assert _canonical_extension_ranges(_FakeDescriptor([])) == []
+
+
+def test_a_range_past_the_largest_field_number_is_dropped() -> None:
+    """A message set may declare extensions no tag can carry at all."""
+    assert _canonical_extension_ranges(
+        _FakeDescriptor([(4, 1000), (600_000_000, 2_147_483_647)])
+    ) == [[4, 999]]

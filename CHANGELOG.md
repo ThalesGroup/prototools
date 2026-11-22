@@ -56,6 +56,12 @@ SPDX-License-Identifier: MIT
 
 ### Fixed
 
+- reproto, protoback: `--emit-extension-ranges` no longer refuses a
+  schema holding a message set (`option message_set_wire_format`), whose
+  `extensions 4 to max` protoc writes up to 2^31 − 1: the scoring graph
+  clamps extension ranges to the largest field number, 2^29 − 1, which is
+  all a tag can carry. The descriptor set keeps the range as protoc wrote
+  it (spec 0238 S3).
 - reproto reads a directory input, or a directory under `-I`, in sorted
   path order, not in the order the filesystem lists it: which of two
   files holding the same descriptor is kept (W7), and the order files are

@@ -249,6 +249,20 @@ game.
   `1000 to max` and `1000 to 536870911` are the same set and must not
   intern as two.
 
+  *Amended 2026-11-22.* On a message set (`message_set_wire_format`)
+  protoc materializes `max` as `2147483647` instead (protobuf's
+  `AdjustExtensionRangesWithMaxEndNumber`): its extensions travel as the
+  `type_id` value of its `Item` group, not as tags, so int32's maximum
+  applies. A fifth step therefore clamps each end to 2²⁹−1 and drops a
+  range that starts past it. Without it, the loader refused the graph
+  of any schema holding a message set (`exceeds the maximum field
+  number`). Nothing is lost: no tag can carry a number past 2²⁹−1, and
+  the walk flags such a tag as out of range before any range lookup. And
+  it keeps uniqueness: a message set's `4 to max` and any other
+  message's admit the same tag numbers, so they are one set. The
+  descriptor set keeps protoc's range as it is; only the scoring graph
+  is clamped.
+
 - **S4.** `load.rs` gains `ext_ranges: Option<Vec<(u32, u32)>>` on
   `YamlMessage` and on the merged message representation. `MessageDef`'s
   equality (`load.rs:224`), which today compares number and label, must

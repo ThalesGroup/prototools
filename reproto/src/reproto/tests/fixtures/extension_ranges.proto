@@ -38,3 +38,9 @@ message Unbounded {
 message Closed {
   optional string name = 1;
 }
+
+// A message set: protoc writes its `max` as 2147483647, not 536870912.
+message Set {
+  option message_set_wire_format = true;
+  extensions 4 to max;
+}
