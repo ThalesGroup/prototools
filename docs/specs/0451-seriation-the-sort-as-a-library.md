@@ -6,8 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0451 — seriation: the sort, as a library
 
-Status: draft (S1–S5 implemented 2026-11-22; S6 awaits the expected
-        orders)
+Status: implemented
+Implemented in: 2026-11-22
 App: seriation
 Refs: docs/specs/0450-git-seriate-a-history-from-snapshots.md (the engine
         this crate is the first piece of; S1 its place, S2 the
@@ -218,4 +218,8 @@ against the sort's:
 | `noisy` (build times ±10 days, 40% of hints missing) | 80 | 312 | 52 |
 | `builds` (10 snapshots per build) | 100 | 100 | 66 |
 
-S6 is open until the expected orders come.
+**G2 holds on all three:** the order is the existing implementation's,
+identity for identity (`NAME.expected.txt`, its `merge-snapshots` with the
+default settings, the corpora imported as its snapshot branches).
+Perturbing one line of an expected order fails the test, so the check is
+live.
