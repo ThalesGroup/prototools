@@ -2611,6 +2611,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "seriation"
+version = "0.3.6"
+dependencies = [
+ "memchr",
+ "workspace-hack",
+]
+
+[[package]]
 name = "sha2"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"

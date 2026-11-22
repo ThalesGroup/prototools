@@ -10,6 +10,14 @@ SPDX-License-Identifier: MIT
 
 ### Added
 
+- seriation: a new crate, the sort that orders undated snapshots of files
+  by their build times, their order hints and how the files in them
+  evolve, as a library with no git and no file format. A caller passes
+  each snapshot's files as version keys, a way to fetch a version's bytes
+  and a comparator (`LinesChars`, line and character containment, is
+  provided); `sort` returns the order and a report per phase.
+  `seriation-gen` writes synthetic corpora with known true orders. The
+  algorithm is described in `docs/seriation/` (spec 0451).
 - fdp-scan: `scan_explained`, which returns what `scan` finds and the
   candidates it refused, each with its reason (an implausible name, a
   name-only record that does not stand alone, a defect); and

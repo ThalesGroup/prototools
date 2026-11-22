@@ -138,6 +138,11 @@ let
         # which only fdpScanCorpusCheck runs.
         (pkgs.lib.fileset.fileFilter (f: f.hasExt "bin" || f.hasExt "json")
           ./fdp-scan/tests/corpus)
+        # seriation's corpora (spec 0451 S5, S6): the generator's parameters
+        # and the expected orders, which `seriation/tests/corpora.rs` reads;
+        # the corpora themselves it regenerates.
+        (pkgs.lib.fileset.fileFilter (f: f.hasExt "args" || f.hasExt "txt")
+          ./seriation/tests/corpora)
         # prototext-core/fixtures is taken wholesale rather than through
         # fixtureFilter: `benches/codec.rs` include_bytes! the .txtpb protoc
         # rendering, an extension fixtureFilter deliberately drops.  The

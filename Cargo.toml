@@ -33,6 +33,7 @@ members = [
     "fdp-scan",
     "protoscan",
     "protoback",
+    "seriation",
     "workspace-hack",
 ]
 
@@ -67,6 +68,7 @@ prototext-upb       = { path = "prototext-upb", version = "0.3.6" }
 prototools-complete = { path = "prototools-complete", version = "0.3.6" }
 prototools-affinity = { path = "prototools-affinity", version = "0.3.6" }
 fdp-scan            = { path = "fdp-scan", version = "0.3.6" }
+seriation           = { path = "seriation", version = "0.3.6" }
 tree-sitter-textproto = { path = "reproto/tree-sitter-textproto", version = "0.3.6" }
 
 [profile.release]

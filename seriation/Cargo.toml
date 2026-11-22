@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+#
+# SPDX-License-Identifier: MIT
+
+[package]
+name        = "seriation"
+version.workspace    = true
+edition     = "2021"
+description = "Order undated snapshots of files by how the files in them evolve"
+license     = "MIT"
+repository.workspace = true
+keywords    = ["seriation", "snapshots", "history", "ordering"]
+categories  = ["algorithms"]
+
+[dependencies]
+memchr         = "2"
+workspace-hack = { version = "0.1", path = "../workspace-hack" }

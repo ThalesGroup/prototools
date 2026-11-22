@@ -1,0 +1,5 @@
+--seed=3
+--revisions=30
+--snapshots=100
+--per-build=10
+--build-noise-seconds=86400

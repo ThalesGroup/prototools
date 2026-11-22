@@ -1,0 +1,6 @@
+--seed=2
+--revisions=60
+--snapshots=80
+--build-noise-seconds=864000
+--hint-missing-percent=40
+--hint-shared-percent=10
