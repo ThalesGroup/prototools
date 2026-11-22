@@ -354,7 +354,12 @@ What it can't settle on its own, it lists, with the sources that could:
 a newer build to extract, or files no source lists. `--json` gives the
 same as JSON; `--check` exits 1 when the files in `--out` are no longer
 current, after a new extraction; `--report FILE` takes in what a
-protoback build said of them.
+protoback build said of them (`protoback --report-out FILE`), each
+finding under the problem it explains, and with `--strict` exits 1 if
+the build found something `advise` didn't foresee. A build that applies
+`advise`'s `fixups.yaml` checks it with `--strict`, not with protoback's
+`--fail-on W24`: a forward move `advise` decided, and reported, costs an
+importer types by design.
 
 **To extract with another schema** than the stock `descriptor.proto`, one
 with custom options for instance, point the repository at a schema

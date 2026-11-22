@@ -63,6 +63,11 @@ enum Fdp {
         /// A protoback report of a build with the current fixups.yaml.
         #[arg(long, value_name = "FILE")]
         report: Option<PathBuf>,
+        /// With --report: exit 1 if the build found what advise didn't
+        /// foresee (a finding attached to no problem, an idle directive),
+        /// listed under "Not foreseen:".
+        #[arg(long, requires = "report")]
+        strict: bool,
     },
 }
 
@@ -79,6 +84,7 @@ fn main() -> ExitCode {
                         json,
                         check,
                         report,
+                        strict,
                     } => {
                         let options = advise::Options {
                             into,
@@ -86,6 +92,7 @@ fn main() -> ExitCode {
                             json,
                             check,
                             report,
+                            strict,
                         };
                         let mut text = String::new();
                         let status = advise::run(repo, kit, &advise::Generic, &options, &mut text)?;

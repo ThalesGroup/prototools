@@ -192,6 +192,20 @@ fn the_options_decoy_is_a_dangling_dependency() {
     assert_eq!(refused, vec![fdp_scan::Reason::DanglingDependency; 2]);
 }
 
+/// Spec 0456 S3. A `.proto` string followed by `0x70 0x02` is refused as an
+/// implausible edition, alone and between random bytes.
+#[test]
+fn the_edition_decoy_is_an_implausible_edition() {
+    let refused: Vec<_> = score("decoys")
+        .explained
+        .rejected
+        .into_iter()
+        .filter(|r| r.name == "com.example.crawl.proto")
+        .map(|r| r.reason)
+        .collect();
+    assert_eq!(refused, vec![fdp_scan::Reason::ImplausibleEdition; 2]);
+}
+
 /// Spec 0449 S9. The random-neighbor layouts with the order option: every
 /// record it ends early is reported in `order_cuts`, and the fates stay
 /// within the measured bounds.

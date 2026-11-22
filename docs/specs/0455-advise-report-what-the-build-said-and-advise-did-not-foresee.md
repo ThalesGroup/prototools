@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0455 — advise --report: what the build said, and what advise didn't foresee
 
-Status: draft
+Status: implemented
+Implemented in: 2026-11-22
 App: git-seriate-fdp
 Refs: docs/specs/0454-advise-what-a-history-of-descriptors-cannot-hold.md
         (S4's problems and `--report`, which this extends),
@@ -135,4 +136,13 @@ be one more value to handle, for a distinction the output makes.
 
 ## Measured outcome
 
-Filled in at implementation.
+The tests of the test plan, on toy histories: `w24_attaches_to_its_move`
+and `knock_on_refusals_fold_under_the_root` (`advise/report.rs`),
+`strict_names_what_was_not_foreseen` (`tests/advise.rs`). A root refusal
+attaches to its file's `refused` problem where there is one, rather than
+to the file's first problem. Two W24s on one definition through two
+moves are two findings.
+
+Not measured here: the downstream repository whose report motivated this
+(27 findings standing alone, two W24s unread). Its maintainers run
+`advise --report … --strict` on it.

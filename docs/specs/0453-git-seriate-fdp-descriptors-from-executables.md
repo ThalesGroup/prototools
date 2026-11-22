@@ -101,7 +101,8 @@ the one items were extracted with would render every one of them anew.
   (0448 S5) run first; the store's path rules (0452 S3) then, on what they
   let through.
 - **Refusals,** in the block's `rejected`, with the scanner's reasons as
-  codes: `implausible-name`, `name-only`, `defect`, `dangling-dependency`;
+  codes: `implausible-name`, `name-only`, `defect`, `dangling-dependency`,
+  `implausible-edition` (0456);
   then the store's (`dotgit`, `under-file`, …).
 - **Order cuts** (with `--increasing-field-numbers`, 0449 S7): in the
   block's `record`, one entry per record the option shortened,

@@ -393,3 +393,79 @@ fn a_front_end_words_the_candidates() {
         "{status_md}"
     );
 }
+
+#[test]
+fn strict_names_what_was_not_foreseen() {
+    let tmp = tempfile::tempdir().unwrap();
+    let r = gix::init_bare(tmp.path().join("repo.git")).unwrap();
+    let kit = kit(&r).unwrap();
+    add(&r, &kit, "a1", 0, &[("old.pb", OLD)]);
+    add(&r, &kit, "a2", 1, &[("new.pb", NEW)]);
+    settle(&r, &kit, &[]);
+    let out_dir = tmp.path().join("out");
+    let (status, _) = advise_text(
+        &r,
+        &kit,
+        &advise::Options {
+            out: Some(out_dir.clone()),
+            ..into_main()
+        },
+    );
+    assert_eq!(status, 0);
+
+    // A report of a build with that fixups.yaml: `warnings`, `idle`.
+    let strict = |warnings: serde_json::Value, idle: serde_json::Value| {
+        let path = tmp.path().join("report.json");
+        let report = serde_json::json!({
+            "run": { "argv": ["protoback", "-C", "fixups.yaml", "."], "cwd": out_dir },
+            "warnings": warnings,
+            "idle_directives": idle,
+        });
+        std::fs::write(&path, report.to_string()).unwrap();
+        advise_text(
+            &r,
+            &kit,
+            &advise::Options {
+                report: Some(path),
+                strict: true,
+                ..into_main()
+            },
+        )
+    };
+    // Nothing the analysis didn't foresee.
+    let (status, text) = strict(serde_json::json!([]), serde_json::json!([]));
+    assert_eq!(status, 0, "{text}");
+    assert!(!text.contains("Not foreseen:"), "{text}");
+    // A refusal attached to no problem.
+    let (status, text) = strict(
+        serde_json::json!([{ "code": "W19",
+            "message": "'other.proto' : the descriptor pool refused it: bad",
+            "fields": { "file": "other.proto", "reason": "bad" } }]),
+        serde_json::json!([]),
+    );
+    assert_eq!(status, 1, "{text}");
+    let tail = text.split("Not foreseen:").nth(1).expect(&text);
+    assert!(tail.contains("other.proto"), "{text}");
+    // An idle directive.
+    let (status, text) = strict(
+        serde_json::json!([]),
+        serde_json::json!([{ "code": "W25", "directive": "old.proto: new.proto",
+            "reason": "nothing imports it" }]),
+    );
+    assert_eq!(status, 1, "{text}");
+    assert!(text.contains("Not foreseen:"), "{text}");
+
+    // --strict without --report: refused.
+    let mut out = String::new();
+    let refused = advise::run(
+        &r,
+        &kit,
+        &Generic,
+        &advise::Options {
+            strict: true,
+            ..into_main()
+        },
+        &mut out,
+    );
+    assert!(refused.is_err());
+}

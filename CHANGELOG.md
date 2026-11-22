@@ -84,8 +84,27 @@ SPDX-License-Identifier: MIT
   `EntryScore::order_break` and `Ending::OutOfOrder`, the walk's side of
   it. A struct literal of `EntryScore` must now name `order_break`, and a
   `match` on `Ending` the new variant.
+- git-seriate-fdp: `advise --report FILE --strict` exits 1 when the
+  build found something the analysis didn't foresee (a finding attached
+  to no problem, an idle directive), listed under `Not foreseen:`; a build
+  applying `advise`'s `fixups.yaml` checks it this way rather than with
+  protoback's `--fail-on W24`. `advise::Options` has a new field,
+  `strict` (spec 0455).
 
 ### Changed
+
+- git-seriate-fdp: `advise --report` reads W24, each attached to the
+  `stale-importer` problem of its importer and move; and a file refused
+  because its import was, with what is said of it, is attached under the
+  root refusal instead of standing alone as a `build` problem (spec
+  0455).
+- fdp-scan, protoscan: a descriptor ends before an `edition` no writer
+  sets (one without `syntax: "editions"`, or outside `EDITION_2023` to
+  `EDITION_UNSTABLE`); one left with its name only is refused, with the
+  new reason `ImplausibleEdition` (`implausible-edition` in `git
+  seriate-fdp extract`'s records). A `match` on `Reason` must name it.
+  Bytes after a descriptor that read as such a field (a `p` and a small
+  byte) are no longer taken for its own (spec 0456).
 
 - fdp-scan, protoscan: a field the stock `descriptor.proto` does not
   declare, nested in one it does (an option it lacks), no longer cuts the
@@ -127,6 +146,13 @@ SPDX-License-Identifier: MIT
   ignored.
 
 ### Fixed
+
+- protoback: an editions file of an edition its own table didn't name,
+  edition 2026 among them, was left unwritten with no warning, nothing in
+  the report and exit status 0. The edition is now named from the input's
+  `descriptor.proto`, then the vendored one; an edition none names is a
+  W6 with its reason, and a file not written always has a warning (spec
+  0457).
 
 - git-seriate: `list`, `drop` and `import` now read snapshot branches in
   an older format through the front end's legacy reader, as `settle` and

@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0457 — protoback: edition names from the input, and no file lost without a warning
 
-Status: draft
+Status: implemented
+Implemented in: 2026-11-22
 App: protoback
 Refs: docs/specs/0429-protoback-rendering.md (S16: a render failure is a W6),
       docs/specs/0446-build-report.md (W6's fields),
@@ -58,9 +59,21 @@ edition 2026 file renders as a 2024 one does, but for its edition line.
   of the input's `descriptor.proto` (the variant's): each value's number
   and name.
 
+  The file's edition is read from its bytes. Descriptors are decoded
+  against the vendored `descriptor.proto`, where `Edition` is a closed
+  enum: a value it doesn't declare is kept as an unknown field, and
+  `edition` reads unset (0, `UNKNOWN`). The encoding keeps the unknown
+  field, so the value is read back from it (field 14, the last one
+  winning) when `edition` is unset.
+
 - **S2.** The edition line names the file's edition from S1, without the
   `EDITION_` prefix; failing that, from the vendored `descriptor.proto`'s
   `Edition` enum; failing that, from `edition_name`'s table.
+
+  An edition the vendored `descriptor.proto` lacks is also one the
+  descriptor pool can't load: the file is refused (W19) and rendered as
+  any refused file is, its file options as an anomaly, with the edition
+  line the input names.
 
 - **S3.** An edition none of them names fails the file: W6, with the
   reason `edition N has no name in its descriptor.proto`, in the report
@@ -76,6 +89,12 @@ edition 2026 file renders as a 2024 one does, but for its edition line.
 protoc refuses it, but the file looks written; a W6 says what happened
 where the build is read.
 
+**Refreshing the vendored `descriptor.proto` instead.** It is already
+the latest release's (v36.2), which declares `EDITION_2026`: that is why
+the pool accepts these files. The drop was protoback's own table. Each
+new edition reaches inputs before a refresh does; S1 covers the gap, and
+S3 says what it can't.
+
 **Adding `1002 => "2026"` to the table only.** It fixes this edition and
 leaves the next one to drop files the same way; S2 keeps the table as the
 last fallback.
@@ -87,10 +106,16 @@ last fallback.
    declaring `EDITION_2026`: written, with `edition = "2026";`.
 2. `edition_unnamed_is_a_w6` — `edition: 1003`, declared nowhere: W6 with
    S3's reason, in the report with `file`; exit status 0, the file not
-   written.
-3. `every_summoned_file_written_or_warned` — on the fixtures of test 2,
-   each summoned file is written or has a W6.
+   written, the other input file written (S4).
+3. `edition_named_by_the_inputs_descriptor` — `edition: 1003`, and an
+   input `descriptor.proto` whose `Edition` declares `EDITION_2027 =
+   1003`: written, with `edition = "2027";`.
 
 ## Measured outcome
 
-Filled in at implementation.
+The three tests pass. `scripts/protoback-selfcheck` against HEAD
+(`326e09c1`), both modes: 1 669 cases and 1 655 graph dumps, 0 differ.
+
+A text input can't hold an edition the vendored `descriptor.proto` lacks:
+the text reader parses against it and refuses the value (W15), as before.
+The downstream inputs are binary.

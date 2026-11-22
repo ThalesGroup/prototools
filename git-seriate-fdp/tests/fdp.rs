@@ -353,6 +353,7 @@ fn the_corpus_records_are_items_and_its_decoys_refusals() {
         .collect();
     assert!(reasons.contains(&"implausible-name"), "{reasons:?}");
     assert!(reasons.contains(&"dangling-dependency"), "{reasons:?}");
+    assert!(reasons.contains(&"implausible-edition"), "{reasons:?}");
     assert_eq!(outcomes.len(), 2);
 }
 

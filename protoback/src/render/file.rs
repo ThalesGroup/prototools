@@ -34,6 +34,9 @@ pub struct Ctx<'s, 'a> {
     /// A render step failed that reproto does not catch below the file:
     /// the file is not written.
     pub failed: std::cell::Cell<bool>,
+    /// Why, when the step that failed says (spec 0457 S3); else phase 7's
+    /// W6 says the pool's reason, or internal error.
+    pub failure: std::cell::RefCell<Option<String>>,
     /// The SourceCodeInfo markers, when a descriptor is written with its
     /// source info (`ctx.out_sci`).
     pub sci: Option<super::sci::Sci>,
@@ -479,6 +482,76 @@ pub fn extend_blocks(
     out
 }
 
+/// The file's edition, as its bytes hold it (spec 0457 S1). `Edition` is
+/// a closed enum: a value the vendored descriptor.proto doesn't declare is
+/// decoded as an unknown field, and `edition` reads unset; the encoding
+/// keeps it, so it is read back from there, the last one winning.
+fn file_edition(f: &prototext_upb::descriptor_access::FileDescriptorProto<'_>) -> i32 {
+    if f.has_edition() {
+        return f.edition();
+    }
+    f.0.encode()
+        .ok()
+        .and_then(|bytes| last_varint_field(&bytes, 14))
+        .map_or(f.edition(), |v| v as i32)
+}
+
+/// The value of the last top-level varint field `number` of `bytes`, a
+/// message's encoding; `None` when there is none, or the bytes don't
+/// parse.
+fn last_varint_field(bytes: &[u8], number: u64) -> Option<u64> {
+    fn varint(b: &[u8], pos: &mut usize) -> Option<u64> {
+        let mut v = 0u64;
+        for shift in (0..64).step_by(7) {
+            let byte = *b.get(*pos)?;
+            *pos += 1;
+            v |= u64::from(byte & 0x7f) << shift;
+            if byte < 0x80 {
+                return Some(v);
+            }
+        }
+        None
+    }
+    let (mut pos, mut found) = (0, None);
+    while pos < bytes.len() {
+        let tag = varint(bytes, &mut pos)?;
+        match tag & 7 {
+            0 => {
+                let v = varint(bytes, &mut pos)?;
+                if tag >> 3 == number {
+                    found = Some(v);
+                }
+            }
+            1 => pos += 8,
+            2 => pos += usize::try_from(varint(bytes, &mut pos)?).ok()?,
+            5 => pos += 4,
+            _ => return None,
+        }
+    }
+    (pos == bytes.len()).then_some(found).flatten()
+}
+
+/// The edition line's name for `edition` (spec 0457 S2): from the input's
+/// descriptor.proto, else the vendored one, else Python protobuf's names;
+/// without the `EDITION_` prefix.
+fn edition_label(input: &crate::phase2::EditionNames, edition: i32) -> Option<String> {
+    let strip = |n: &str| n.strip_prefix("EDITION_").unwrap_or(n).to_string();
+    if let Some(n) = input.get(&edition) {
+        return Some(strip(n));
+    }
+    if let Some(n) = prototext_upb::Pool::vendored()
+        .get_enum_by_name("google.protobuf.Edition")
+        .and_then(|e| {
+            e.values()
+                .find(|v| v.number() == edition)
+                .map(|v| strip(v.name()))
+        })
+    {
+        return Some(n);
+    }
+    edition_name(edition).map(str::to_string)
+}
+
 /// `ReFileDescriptorProto.render`, stage 1: the header, syntax, package,
 /// imports, then services, enums, messages and extensions.
 /// A file rendered (spec 0433 S3): its text and descriptor, `None` when
@@ -488,14 +561,18 @@ pub struct FileRender {
     pub output: Option<(Block, Option<Vec<u8>>)>,
     pub events: Vec<RenderEvent>,
     pub failed: bool,
+    /// The failed step's reason, when it gave one.
+    pub reason: Option<String>,
 }
 
 pub fn render(shared: &Shared<'_>, file: usize) -> FileRender {
     let Some(f) = shared.file_def(file) else {
+        // No output always reports (spec 0457 S4).
         return FileRender {
             output: None,
             events: Vec::new(),
-            failed: false,
+            failed: true,
+            reason: None,
         };
     };
     let syntax = {
@@ -524,6 +601,7 @@ pub fn render(shared: &Shared<'_>, file: usize) -> FileRender {
         target,
         refused: shared.loads.refused.contains_key(&text(f.name())),
         failed: std::cell::Cell::new(false),
+        failure: std::cell::RefCell::new(None),
         sci: (shared.wants_descriptor() && shared.source_info).then(super::sci::Sci::default),
         events: std::cell::RefCell::new(Vec::new()),
         visible: shared.names.visible(&text(f.name())),
@@ -537,7 +615,9 @@ pub fn render(shared: &Shared<'_>, file: usize) -> FileRender {
     }
     let output = render_body(&ctx, &f);
     FileRender {
-        failed: ctx.failed.get(),
+        // A render with no output always reports (spec 0457 S4).
+        failed: ctx.failed.get() || output.is_none(),
+        reason: ctx.failure.take(),
         events: ctx.events.take(),
         output,
     }
@@ -566,7 +646,14 @@ fn render_body(
     }
 
     if ctx.editions_target() {
-        let e = edition_name(f.edition())?;
+        let edition = file_edition(f);
+        let Some(e) = edition_label(ctx.shared.edition_names, edition) else {
+            ctx.failed.set(true);
+            *ctx.failure.borrow_mut() = Some(format!(
+                "edition {edition} has no name in its descriptor.proto"
+            ));
+            return None;
+        };
         out.push(Line::code(format!("edition = \"{e}\";"), depth));
     } else if ctx.syntax != ctx.target {
         // A1: an editions file; A2: any other syntax. Neither is printed:

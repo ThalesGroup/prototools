@@ -155,6 +155,7 @@ def decoys() -> list[bytes]:
     options = descriptor_pb2.FileOptions(
         java_package="com.example.decoy.proto", java_multiple_files=True
     ).SerializeToString()
+    edition = _field(1, b"com.example.crawl.proto") + b"\x70\x02"
     rng = random.Random(4)
     return [
         # A Java codegen template, as in libprotoc: field 1, length 36, a
@@ -169,6 +170,11 @@ def decoys() -> list[bytes]:
         # between random bytes.
         options,
         rng.randbytes(32) + options + rng.randbytes(32),
+        # A Java package, then 0x70 0x02: a name and an `edition: 2` with
+        # no `syntax: "editions"` (spec 0456 S3). Alone, and between random
+        # bytes.
+        edition,
+        rng.randbytes(32) + edition + rng.randbytes(32),
     ]
 
 

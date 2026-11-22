@@ -14,11 +14,21 @@ use prototext_graph::score::load::LoadedGraph;
 use prototext_graph::score::{score_one, Ending, Policy, ScoringOpts};
 
 /// `FileDescriptorProto`'s field numbers that [`dangling_dependency_cut`]
-/// reads. The stock ones, whatever schema the walk scored against: every
-/// `descriptor.proto` in use keeps them (spec 0449 S1).
+/// and [`implausible_edition_cut`] read. The stock ones, whatever schema
+/// the walk scored against: every `descriptor.proto` in use keeps them
+/// (specs 0449 S1, 0456 S1).
 const FDP_DEPENDENCY: u64 = 3;
 const FDP_PUBLIC_DEPENDENCY: u64 = 10;
 const FDP_WEAK_DEPENDENCY: u64 = 11;
+const FDP_SYNTAX: u64 = 12;
+const FDP_EDITION: u64 = 14;
+
+/// The editions a writer sets in `edition`: `EDITION_2023` to
+/// `EDITION_UNSTABLE` (spec 0456 S1). Below are the legacy markers
+/// (`EDITION_PROTO2`, `EDITION_PROTO3`, `EDITION_LEGACY`) and two test-only
+/// values; above, three test-only values and `EDITION_MAX`. A range, not
+/// the schema's names, so that a later edition is accepted unchanged.
+const WRITTEN_EDITIONS: std::ops::RangeInclusive<u64> = 1000..=9999;
 
 /// The only root a candidate is scored against (spec 0239 G3).
 ///
@@ -114,6 +124,9 @@ pub enum Reason {
     /// matching `dependency`, which protoc's descriptor builder rejects, the
     /// record holds its name only (spec 0449 S1).
     DanglingDependency,
+    /// Cut before an `edition` no writer sets, the record holds its name
+    /// only (spec 0456 S1).
+    ImplausibleEdition,
 }
 
 /// [`scan`], with the candidates it refused and why. `scan` is this function's
@@ -316,6 +329,14 @@ fn score_candidate_with(
         }
         Some(cut) => start + cut,
     };
+    let end = match implausible_edition_cut(&data[start..end]) {
+        None => end,
+        // As above: a name at most, which doesn't stand alone.
+        Some(cut) if !declares_more_than_a_name(&data[start..start + cut]) => {
+            return Err(Reason::ImplausibleEdition);
+        }
+        Some(cut) => start + cut,
+    };
     // The order rule ends many records exactly where they would have ended
     // anyway, at random bytes that happen to read as a lower field. Only a
     // record the option made *shorter* lost anything, so only that one is
@@ -443,29 +464,99 @@ fn declares_more_than_a_name(record: &[u8]) -> bool {
 /// anything this cannot decode means the caller passed something else, and
 /// `None`, cutting nothing, is the safe answer to that.
 fn dangling_dependency_cut(record: &[u8]) -> Option<usize> {
-    /// One top-level field: where it starts, whether it is a `dependency`,
-    /// and the largest index it holds, if it is an index field.
-    struct Field {
-        start: usize,
-        dependency: bool,
-        max_index: Option<u64>,
+    let fields = top_level_fields(record)?;
+    // The largest index each field holds, if it is an index field.
+    let mut max_index: Vec<Option<u64>> = Vec::with_capacity(fields.len());
+    for f in &fields {
+        let mut max = None;
+        if f.number == FDP_PUBLIC_DEPENDENCY || f.number == FDP_WEAK_DEPENDENCY {
+            match f.wire {
+                0 => max = f.varint,
+                2 => {
+                    let payload = &record[f.payload.clone()];
+                    let mut p = 0;
+                    while p < payload.len() {
+                        let (value, len) = decode_varint(&payload[p..])?;
+                        max = max.max(Some(value));
+                        p += len;
+                    }
+                }
+                _ => {}
+            }
+        }
+        max_index.push(max);
     }
-    let mut fields: Vec<Field> = Vec::new();
+
+    let mut kept = fields.len();
+    loop {
+        let dependencies = fields[..kept]
+            .iter()
+            .filter(|f| f.number == FDP_DEPENDENCY && f.wire == 2)
+            .count() as u64;
+        let Some(first) = max_index[..kept]
+            .iter()
+            .position(|m| m.is_some_and(|i| i >= dependencies))
+        else {
+            break;
+        };
+        kept = first;
+    }
+    (kept < fields.len()).then(|| fields[kept].start)
+}
+
+/// Where `record` must end so that its `edition` is one a writer sets, or
+/// `None` if it is (spec 0456 S1).
+///
+/// A descriptor sets `edition` only in an editions file, beside `syntax:
+/// "editions"`, and only to a released edition ([`WRITTEN_EDITIONS`]); the
+/// descriptor pool refuses anything else (`Setting edition requires that
+/// syntax="editions"`). Field 14's tag is `0x70`, a `p`, common after a
+/// record by chance, so this cuts rather than refuses, as
+/// [`dangling_dependency_cut`] does: before the first implausible
+/// `edition`. What else sets one is a string ending in `.proto` (a Java
+/// package) followed by `p` and a small byte: the cut leaves its name
+/// alone, and the caller refuses that.
+fn implausible_edition_cut(record: &[u8]) -> Option<usize> {
+    let fields = top_level_fields(record)?;
+    let editions_syntax = fields.iter().any(|f| {
+        f.number == FDP_SYNTAX && f.wire == 2 && record[f.payload.clone()] == *b"editions"
+    });
+    fields
+        .iter()
+        .find(|f| {
+            f.number == FDP_EDITION
+                && f.wire == 0
+                && !(editions_syntax && f.varint.is_some_and(|v| WRITTEN_EDITIONS.contains(&v)))
+        })
+        .map(|f| f.start)
+}
+
+/// One top-level field of a record: where it starts, its number and wire
+/// type, its value if a varint, its payload's range if length-delimited.
+struct TopField {
+    start: usize,
+    number: u64,
+    wire: u64,
+    varint: Option<u64>,
+    payload: std::ops::Range<usize>,
+}
+
+/// The top-level fields of `record`, `None` if it doesn't parse: the record
+/// is known to parse, so that means the caller passed something else, and
+/// the cuts then cut nothing.
+fn top_level_fields(record: &[u8]) -> Option<Vec<TopField>> {
+    let mut fields = Vec::new();
     let mut pos = 0;
     while pos < record.len() {
         let start = pos;
         let (tag, tag_len) = decode_varint(&record[pos..])?;
         pos += tag_len;
-        let number = tag >> 3;
-        let is_index = number == FDP_PUBLIC_DEPENDENCY || number == FDP_WEAK_DEPENDENCY;
-        let mut max_index = None;
+        let (mut varint, mut payload) = (None, pos..pos);
         match tag & 7 {
             0 => {
                 let (value, len) = decode_varint(&record[pos..])?;
                 pos += len;
-                if is_index {
-                    max_index = Some(value);
-                }
+                varint = Some(value);
             }
             1 => pos += 8,
             5 => pos += 4,
@@ -474,37 +565,20 @@ fn dangling_dependency_cut(record: &[u8]) -> Option<usize> {
                 let end = (pos + len_len)
                     .checked_add(len as usize)
                     .filter(|&end| end <= record.len())?;
-                if is_index {
-                    let mut p = pos + len_len;
-                    while p < end {
-                        let (value, len) = decode_varint(&record[p..end])?;
-                        max_index = max_index.max(Some(value));
-                        p += len;
-                    }
-                }
+                payload = pos + len_len..end;
                 pos = end;
             }
             _ => return None,
         }
-        fields.push(Field {
+        fields.push(TopField {
             start,
-            dependency: number == FDP_DEPENDENCY && tag & 7 == 2,
-            max_index,
+            number: tag >> 3,
+            wire: tag & 7,
+            varint,
+            payload,
         });
     }
-
-    let mut kept = fields.len();
-    loop {
-        let dependencies = fields[..kept].iter().filter(|f| f.dependency).count() as u64;
-        let Some(first) = fields[..kept]
-            .iter()
-            .position(|f| f.max_index.is_some_and(|i| i >= dependencies))
-        else {
-            break;
-        };
-        kept = first;
-    }
-    (kept < fields.len()).then(|| fields[kept].start)
+    (pos == record.len()).then_some(fields)
 }
 
 fn decode_varint(data: &[u8]) -> Option<(u64, usize)> {
@@ -1092,6 +1166,39 @@ mod tests {
             assert_eq!(explained.rejected[0].start, before.len());
             assert_eq!(explained.rejected[0].reason, Reason::DanglingDependency);
         }
+    }
+
+    /// Spec 0456 S1. A `.proto` string, then `0x70 0x02`: a name and an
+    /// `edition: 2`, refused alone and between random bytes. An editions
+    /// record is kept whole, and cut before the same bytes after it; an
+    /// `edition` without `syntax: "editions"` is cut.
+    #[test]
+    fn test_scan_cuts_an_implausible_edition() {
+        let mut found = name_field("com.example.crawl.proto");
+        found.extend(varint_field(14, 2));
+        for (before, after) in [(&b""[..], &b""[..]), (&b"\x91\x07"[..], &b"\x77\x13"[..])] {
+            let mut buf = before.to_vec();
+            buf.extend_from_slice(&found);
+            buf.extend_from_slice(after);
+            let explained = scan_explained(&buf);
+            assert!(explained.found.is_empty(), "{explained:?}");
+            assert_eq!(explained.rejected.len(), 1);
+            assert_eq!(explained.rejected[0].start, before.len());
+            assert_eq!(explained.rejected[0].reason, Reason::ImplausibleEdition);
+        }
+
+        let mut editions = make_fdp("a.proto");
+        editions.extend(framed(12, b"editions"));
+        editions.extend(varint_field(14, 1001));
+        assert_eq!(scan(&editions), vec![(0, editions.len())]);
+        let mut trailed = editions.clone();
+        trailed.extend(varint_field(14, 2));
+        assert_eq!(scan(&trailed), vec![(0, editions.len())]);
+
+        let mut no_syntax = make_fdp("a.proto");
+        let cut = no_syntax.len();
+        no_syntax.extend(varint_field(14, 1000));
+        assert_eq!(scan(&no_syntax), vec![(0, cut)]);
     }
 
     /// Spec 0449 S1. The same index with its import is a real descriptor.

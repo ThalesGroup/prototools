@@ -152,6 +152,10 @@ pub fn run(r: &mut Run, topo: &mut Topology) -> Result<(), DescriptorProtoError>
         r.db.file_by_name(&descriptor)
             .map(|f| edition_defaults(&FileDescriptorProto(f.as_ref())))
             .unwrap_or_default();
+    r.edition_names =
+        r.db.file_by_name(&descriptor)
+            .map(|f| edition_names(&FileDescriptorProto(f.as_ref())))
+            .unwrap_or_default();
     Ok(())
 }
 
@@ -616,6 +620,24 @@ pub enum EditionDefault {
     Defaults(Vec<(i32, String)>),
     /// value name → number.
     Numbers(BTreeMap<String, i32>),
+}
+
+/// The `Edition` enum of the input's descriptor.proto: each value's
+/// number and name (spec 0457 S1).
+pub type EditionNames = BTreeMap<i32, String>;
+
+fn edition_names(descriptor: &FileDescriptorProto<'_>) -> EditionNames {
+    descriptor
+        .enum_type()
+        .into_iter()
+        .find(|e| e.name() == b"Edition")
+        .map(|e| {
+            e.value()
+                .iter()
+                .map(|v| (v.number(), text(v.name())))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 const RESOLVED_FIELDS: &[&str] = &[

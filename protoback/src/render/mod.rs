@@ -49,6 +49,8 @@ pub struct Shared<'a> {
     pub topo: &'a Topology,
     pub variant: &'a Variant,
     pub edition_defaults: &'a EditionDefaults,
+    /// The input's `Edition` names, for the edition line (spec 0457 S2).
+    pub edition_names: &'a crate::phase2::EditionNames,
     /// The `*Options` a proto3 file may extend (`options_fqns`).
     pub options_fqns: BTreeSet<String>,
     /// `--keep-descriptor-path`.
@@ -602,8 +604,13 @@ fn write_files(
         replay(events, r.reports);
         phase.advance(1);
         if r.failed {
-            // reproto's phase 7 catches the failure: W6, internal error.
-            events.w6("W6", &p.name, "", &failure_reason(shared.loads, &p.name));
+            // reproto's phase 7 catches the failure: W6, with the render's
+            // own reason when it has one (spec 0457 S4), else the pool's or
+            // internal error.
+            let reason = r
+                .reason
+                .unwrap_or_else(|| failure_reason(shared.loads, &p.name));
+            events.w6("W6", &p.name, "", &reason);
         }
         if let Err(Written::File(e)) = r.written {
             return Err(e);
@@ -632,6 +639,8 @@ struct Rendered {
     descriptor: Option<Vec<u8>>,
     reports: Vec<file::RenderEvent>,
     failed: bool,
+    /// Why, when the render said (spec 0457 S3).
+    reason: Option<String>,
     written: Result<(), Written>,
     /// Its `.proto` text was written.
     wrote: bool,
@@ -645,8 +654,8 @@ enum Written {
 }
 
 /// File `p`'s outputs written, in reproto's order: its directory (made
-/// even for a file that fails to render: an edition Python protobuf does
-/// not name), its descriptor (`with_suffix(".pb")`), its text.
+/// even for a file that fails to render: an edition no descriptor.proto
+/// names), its descriptor (`with_suffix(".pb")`), its text.
 fn write_rendered(
     shared: &Shared<'_>,
     p: &Planned,
@@ -688,6 +697,7 @@ fn render_all(shared: &Shared<'_>, plan: &[Planned]) -> Vec<Rendered> {
                 descriptor: output.and_then(|(_, descriptor)| descriptor),
                 reports: r.events,
                 failed: r.failed,
+                reason: r.reason,
                 written,
                 wrote,
             }

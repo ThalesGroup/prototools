@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0456 — fdp-scan: an edition no writer sets
 
-Status: draft
+Status: implemented
+Implemented in: 2026-11-22
 App: fdp-scan
 Refs: docs/specs/0448-fdp-scan-undeclared-fields-and-rejections.md (the
         accept rule, `NameOnly`, `Reason`),
@@ -58,8 +59,9 @@ walk reads as an `edition` of its own.
   `EDITION_2023` (1000) to `EDITION_UNSTABLE` (9999). The record ends
   before the first implausible `edition`.
 
-  `implausible_edition_cut`, beside `dangling_dependency_cut`; the field
-  numbers are the stock ones, also under `scan_explained_with`.
+  `implausible_edition_cut`, beside `dangling_dependency_cut`; both read
+  the record's top-level fields through one walk, `top_level_fields`. The
+  field numbers are the stock ones, also under `scan_explained_with`.
 
 - **S2.** A cut, not a refusal (0449 S2's argument): the field may be the
   next bytes' rather than the record's. A record left with its name only
@@ -69,8 +71,9 @@ walk reads as an `edition` of its own.
 
 - **S3.** The corpus: `generate.py`'s decoys gain the found record's
   shape, a `.proto` string in field 1 followed by `0x70 0x02`, alone and
-  between random bytes. Both are refused as `ImplausibleEdition`. A
-  genuine editions record followed by `0x70 0x02` is found exact.
+  between random bytes. Both are refused as `ImplausibleEdition`. The
+  corpus has no editions record (its records are the well-known types);
+  a genuine one followed by `0x70 0x02`, found exact, is a unit test.
 
 ## Alternatives considered
 
@@ -97,4 +100,21 @@ already excludes every value writers don't set.
 
 ## Measured outcome
 
-Filled in at implementation.
+2026-11-22, the scanner at HEAD (`326e09c1`) against this change, default
+options, on 0449's inputs.
+
+| Input | Records | Changed |
+|---|---|---|
+| googleapis | 7 771 | none |
+| 24 public executables | 1 219 | 3 `buf` records (`field_mask.proto`, in three binaries) end 2 bytes earlier, before `pa` of Go's string data: now exact |
+| Python protobuf 7.34.1's 110 `.pyc` | 24 | none |
+| private corpus, clean layouts | | none |
+| private corpus, noise layouts | 60 432 in all | 35 records end 2 to 5 bytes earlier, every one now exact: long 13–14 per layout → 1–3 |
+
+No refusal was added or removed on any of them: the `ImplausibleEdition`
+refusals are the corpus decoys'. Of the long records 0449 left (13–14
+per noise layout, each framing declared fields), most were a random `p`
+read as `edition`.
+
+Speed not measured: the cut walks the top-level fields of each record
+accepted, once, as the dependency cut does.

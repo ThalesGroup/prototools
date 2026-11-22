@@ -88,7 +88,7 @@ git seriate-fdp advise [--into NAME] [--out DIR] [--json] [--check] [--report FI
 - `--json`: the actions (S7) as JSON instead of text;
 - `--check`: only checks the generated files present (S8);
 - `--report FILE`: a protoback report (0446) of a build with the current
-  `fixups.yaml`, read back (S4);
+  `fixups.yaml`, read back (S4); `--strict` with it (0455 S6);
 - exit status 0 with the actions printed; 1 if a decision couldn't be
   made (a tie) or an out-of-order source is found, the files still written
   for everything else; with `--check`, 1 if a file is out of date.
@@ -161,7 +161,8 @@ A file refused because an import was refused is reported once, under the
 import. With `--report FILE`, protoback's findings (refused files, types
 it couldn't resolve, idle directives) are attached to the problem found
 for the same file, or reported as they are; a report written against
-another `fixups.yaml` (S8's stamp) is refused.
+another `fixups.yaml` (S8's stamp) is refused. What a move cost an
+importer (W24), the knock-on refusals, and `--strict`: 0455.
 
 ### S5 — `fixups.yaml`
 

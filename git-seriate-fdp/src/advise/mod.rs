@@ -124,10 +124,14 @@ pub struct Options {
     pub check: bool,
     /// A protoback build report (spec 0446), read back.
     pub report: Option<PathBuf>,
+    /// With `report`: exit 1 if the build found what the analysis didn't
+    /// foresee (spec 0455 S6).
+    pub strict: bool,
 }
 
 /// Run `advise` (spec 0454 S1): its output on `out`, its exit status
-/// returned, 0 or 1.
+/// returned, 0 or 1 (1 also, under `strict`, for what wasn't foreseen:
+/// spec 0455 S6).
 pub fn run(
     repo: &gix::Repository,
     kit: &Kit,
@@ -175,6 +179,9 @@ pub fn run(
         }
         return Ok(u8::from(stale));
     }
+    if options.strict && options.report.is_none() {
+        return Err(Error::Refused("--strict needs --report".into()));
+    }
     let report = match &options.report {
         Some(p) => Some(
             serde_json::from_slice::<Value>(&std::fs::read(p)?)
@@ -196,14 +203,27 @@ pub fn run(
         )?;
     }
     if options.json {
-        let actions = serde_json::json!({
+        let mut actions = serde_json::json!({
             "candidates": result["candidates"],
             "no_source": result["no_source"],
         });
+        if options.strict {
+            actions["not_foreseen"] = Value::Array(not_foreseen(&result));
+        }
         out.push_str(&serde_json::to_string_pretty(&actions).unwrap());
         out.push('\n');
     } else {
         out.push_str(&actions_text(&result, wording));
+        if options.strict {
+            let unforeseen = not_foreseen(&result);
+            if !unforeseen.is_empty() {
+                out.push_str("\nNot foreseen:\n");
+                for p in &unforeseen {
+                    out.push_str(&problem_line(p));
+                    out.push('\n');
+                }
+            }
+        }
     }
     let undecided = result["no_source"]
         .as_array()
@@ -211,7 +231,20 @@ pub fn run(
         .flatten()
         .chain(result["problems"].as_array().into_iter().flatten())
         .any(|p| matches!(p["kind"].as_str(), Some("tie") | Some("out-of-order")));
-    Ok(u8::from(undecided))
+    let unforeseen = options.strict && !not_foreseen(&result).is_empty();
+    Ok(u8::from(undecided || unforeseen))
+}
+
+/// What the build found that the analysis didn't foresee (spec 0455 S6):
+/// a finding attached to no problem, and an idle directive.
+fn not_foreseen(result: &Value) -> Vec<Value> {
+    result["problems"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|p| matches!(p["kind"].as_str(), Some("build") | Some("stale-entry")))
+        .cloned()
+        .collect()
 }
 
 fn problem_line(p: &Value) -> String {
