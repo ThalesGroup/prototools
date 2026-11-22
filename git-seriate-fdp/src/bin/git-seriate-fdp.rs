@@ -13,6 +13,7 @@ use clap::Subcommand;
 
 use git_seriate::store::Added;
 use git_seriate::Error;
+use git_seriate_fdp::advise;
 use git_seriate_fdp::extract::{extract_files, Options};
 
 #[derive(Subcommand)]
@@ -39,6 +40,26 @@ enum Fdp {
         #[arg(required = true)]
         files: Vec<PathBuf>,
     },
+    /// What the history can't hold in one schema database, and which
+    /// sources could fix it.
+    Advise {
+        /// The history branch; the current one by default.
+        #[arg(long)]
+        into: Option<String>,
+        /// Write fixups.yaml and STATUS.md into DIR.
+        #[arg(long, value_name = "DIR")]
+        out: Option<PathBuf>,
+        /// The actions as JSON.
+        #[arg(long)]
+        json: bool,
+        /// Only check whether the generated files in --out (or .) are
+        /// current.
+        #[arg(long)]
+        check: bool,
+        /// A protoback report of a build with the current fixups.yaml.
+        #[arg(long, value_name = "FILE")]
+        report: Option<PathBuf>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -46,15 +67,48 @@ fn main() -> ExitCode {
         "git seriate-fdp",
         git_seriate_fdp::kit,
         |command, repo, kit| {
-            let Fdp::Extract {
-                id,
-                build_time,
-                order_hint,
-                group,
-                metadata,
-                increasing_field_numbers,
-                files,
-            } = command;
+            let (id, build_time, order_hint, group, metadata, increasing_field_numbers, files) =
+                match command {
+                    Fdp::Advise {
+                        into,
+                        out,
+                        json,
+                        check,
+                        report,
+                    } => {
+                        let options = advise::Options {
+                            into,
+                            out,
+                            json,
+                            check,
+                            report,
+                        };
+                        let mut text = String::new();
+                        let status = advise::run(repo, kit, &advise::Generic, &options, &mut text)?;
+                        print!("{text}");
+                        if status != 0 {
+                            std::process::exit(i32::from(status));
+                        }
+                        return Ok(());
+                    }
+                    Fdp::Extract {
+                        id,
+                        build_time,
+                        order_hint,
+                        group,
+                        metadata,
+                        increasing_field_numbers,
+                        files,
+                    } => (
+                        id,
+                        build_time,
+                        order_hint,
+                        group,
+                        metadata,
+                        increasing_field_numbers,
+                        files,
+                    ),
+                };
             let metadata = metadata
                 .into_iter()
                 .map(|kv| match kv.split_once('=') {

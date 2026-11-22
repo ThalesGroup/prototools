@@ -1,0 +1,349 @@
+// SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+//
+// SPDX-License-Identifier: MIT
+
+//! `advise`, end to end (spec 0454 test plan): toy histories built with
+//! the store and `settle`, then advised.
+
+use std::process::Command;
+
+use git_seriate::cli::Kit;
+use git_seriate::format::Source;
+use git_seriate::history::{self, Cutoff, Options, Plugins};
+use git_seriate::plugins::Pattern;
+use git_seriate::store::{self, Item, NewSnapshot};
+use git_seriate_fdp::advise::{self, Generic, Wording};
+use git_seriate_fdp::kit;
+use prototext_upb::text_format::parse_descriptor;
+
+const T0: i64 = 1_700_000_000;
+const DAY: i64 = 86_400;
+
+fn env() {
+    std::env::set_var("GIT_COMMITTER_NAME", "Tester");
+    std::env::set_var("GIT_COMMITTER_EMAIL", "tester@example.com");
+}
+
+/// A source holding `files`, each `(path, FileDescriptorProto as text)`.
+fn add(repo: &gix::Repository, kit: &Kit, id: &str, day: i64, files: &[(&str, &str)]) {
+    let items = files
+        .iter()
+        .map(|(path, text)| {
+            let fdp = parse_descriptor(text, false).expect("a descriptor");
+            Item {
+                path: path.to_string(),
+                bytes: kit.renderer.render(path, &fdp).unwrap(),
+            }
+        })
+        .collect();
+    store::add(
+        repo,
+        NewSnapshot {
+            source: Source {
+                identity: id.into(),
+                build_time: T0 + day * DAY,
+                order_hint: None,
+                group: Some(format!("group-{}", id.trim_end_matches(char::is_numeric))),
+                metadata: vec![("version".into(), format!("v{day}"))],
+            },
+            items,
+            rejected: Vec::new(),
+            record: Vec::new(),
+        },
+    )
+    .unwrap();
+}
+
+fn settle(repo: &gix::Repository, kit: &Kit, branches: &[&str]) {
+    env();
+    let pattern = Pattern(kit.item_pattern.clone());
+    history::settle(
+        repo,
+        &Options {
+            into: Some("main".into()),
+            cutoff: Cutoff::Off,
+            settling_days: 60,
+            dry_run: false,
+            branches: branches.iter().map(|b| b.to_string()).collect(),
+            sort: seriation::Settings::default(),
+            plugins: Plugins {
+                renderer: kit.renderer.as_ref(),
+                canonicalizer: kit.canonicalizer.as_ref(),
+                item_paths: &pattern,
+                comparator: kit.comparator.as_ref(),
+                legacy: None,
+            },
+        },
+    )
+    .unwrap();
+}
+
+fn advise_text(repo: &gix::Repository, kit: &Kit, options: &advise::Options) -> (u8, String) {
+    let mut out = String::new();
+    let status = advise::run(repo, kit, &Generic, options, &mut out).unwrap();
+    (status, out)
+}
+
+fn into_main() -> advise::Options {
+    advise::Options {
+        into: Some("main".into()),
+        ..advise::Options::default()
+    }
+}
+
+const OLD: &str = r#"name: "old.proto" package: "p" message_type { name: "M" field { name: "x" number: 1 label: LABEL_OPTIONAL type: TYPE_INT32 } }"#;
+const NEW: &str = r#"name: "new.proto" package: "p" message_type { name: "M" field { name: "x" number: 1 label: LABEL_OPTIONAL type: TYPE_INT32 } field { name: "y" number: 2 label: LABEL_OPTIONAL type: TYPE_INT32 } }"#;
+
+#[test]
+fn a_rename_is_moved_forward_into_fixups() {
+    let tmp = tempfile::tempdir().unwrap();
+    let r = gix::init_bare(tmp.path().join("repo.git")).unwrap();
+    let kit = kit(&r).unwrap();
+    add(&r, &kit, "a1", 0, &[("old.pb", OLD)]);
+    add(&r, &kit, "a2", 1, &[("new.pb", NEW)]);
+    settle(&r, &kit, &[]);
+
+    let out_dir = tmp.path().join("out");
+    let (status, text) = advise_text(
+        &r,
+        &kit,
+        &advise::Options {
+            out: Some(out_dir.clone()),
+            ..into_main()
+        },
+    );
+    assert_eq!(status, 0, "{text}");
+    let fixups = std::fs::read_to_string(out_dir.join("fixups.yaml")).unwrap();
+    assert!(fixups.contains("move:"), "{fixups}");
+    assert!(fixups.contains("old.proto"), "{fixups}");
+    assert!(fixups.contains("# computed from:"), "the stamp: {fixups}");
+    let status_md = std::fs::read_to_string(out_dir.join("STATUS.md")).unwrap();
+    assert!(
+        status_md.contains("a1") && status_md.contains("a2"),
+        "{status_md}"
+    );
+
+    // --check: current; then a new source makes them stale.
+    let check = advise::Options {
+        out: Some(out_dir.clone()),
+        check: true,
+        ..into_main()
+    };
+    let (status, text) = advise_text(&r, &kit, &check);
+    assert_eq!(status, 0, "{text}");
+    add(
+        &r,
+        &kit,
+        "b1",
+        2,
+        &[("other.pb", r#"name: "other.proto" package: "o""#)],
+    );
+    settle(&r, &kit, &[]);
+    let (status, text) = advise_text(&r, &kit, &check);
+    assert_eq!(status, 1, "{text}");
+    assert!(text.contains("b1"), "{text}");
+}
+
+#[test]
+fn copies_after_canonicalization_are_one_content_two_paths() {
+    let tmp = tempfile::tempdir().unwrap();
+    let r = gix::init_bare(tmp.path().join("repo.git")).unwrap();
+    let kit = kit(&r).unwrap();
+    let plain = r#"name: "a.proto" package: "p" message_type { name: "M" field { name: "foo_bar" number: 1 label: LABEL_OPTIONAL type: TYPE_INT32 } }"#;
+    let json = r#"name: "a.proto" package: "p" message_type { name: "M" field { name: "foo_bar" number: 1 label: LABEL_OPTIONAL type: TYPE_INT32 json_name: "fooBar" } }"#;
+    // One source embedding the file twice: the store keeps a.pb and a~2.pb.
+    add(&r, &kit, "s1", 0, &[("a.pb", plain), ("a.pb", json)]);
+    settle(&r, &kit, &[]);
+    let out_dir = tmp.path().join("out");
+    advise_text(
+        &r,
+        &kit,
+        &advise::Options {
+            out: Some(out_dir.clone()),
+            ..into_main()
+        },
+    );
+    let fixups = std::fs::read_to_string(out_dir.join("fixups.yaml")).unwrap();
+    assert!(
+        fixups.contains("a~2.pb"),
+        "the ~N copy pruned by path: {fixups}"
+    );
+}
+
+#[test]
+fn settled_in_one_go_or_incrementally_the_advice_is_the_same() {
+    let run = |incremental: bool| {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = gix::init_bare(tmp.path().join("repo.git")).unwrap();
+        let kit = kit(&r).unwrap();
+        add(&r, &kit, "a1", 0, &[("old.pb", OLD)]);
+        add(&r, &kit, "a2", 1, &[("new.pb", NEW)]);
+        if incremental {
+            settle(&r, &kit, &["a2"]);
+        }
+        settle(&r, &kit, &[]);
+        let out_dir = tmp.path().join("out");
+        let (_, text) = advise_text(
+            &r,
+            &kit,
+            &advise::Options {
+                out: Some(out_dir.clone()),
+                ..into_main()
+            },
+        );
+        (
+            text,
+            std::fs::read_to_string(out_dir.join("fixups.yaml")).unwrap(),
+        )
+    };
+    assert_eq!(run(false), run(true));
+}
+
+/// A manual file, written by hand on the history: dated by its commit's
+/// author date, which a rewrite by `compact` keeps.
+#[test]
+fn a_manual_files_age_survives_a_rewrite() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("repo.git");
+    let r = gix::init_bare(&path).unwrap();
+    let kit = kit(&r).unwrap();
+    add(&r, &kit, "a1", 0, &[("old.pb", OLD)]);
+    add(&r, &kit, "a2", 1, &[("old.pb", OLD)]); // changes nothing
+    settle(&r, &kit, &[]);
+    // The manual commit: a .pb no source lists, authored at a known time.
+    let manual = parse_descriptor(r#"name: "m.proto" package: "q""#, false).unwrap();
+    let text = kit.renderer.render("m.pb", &manual).unwrap();
+    let wt = tmp.path().join("wt");
+    std::fs::create_dir_all(&wt).unwrap();
+    std::fs::write(wt.join("m.pb"), &text).unwrap();
+    let git = |args: &[&str]| {
+        let out = Command::new("git")
+            .arg("--git-dir")
+            .arg(&path)
+            .arg("--work-tree")
+            .arg(&wt)
+            .args(args)
+            .env("GIT_INDEX_FILE", tmp.path().join("index"))
+            .env("GIT_AUTHOR_NAME", "A")
+            .env("GIT_AUTHOR_EMAIL", "a@x")
+            .env("GIT_AUTHOR_DATE", format!("@{} +0000", T0 + 5 * DAY))
+            .env("GIT_COMMITTER_NAME", "A")
+            .env("GIT_COMMITTER_EMAIL", "a@x")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("HOME", tmp.path())
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    git(&["read-tree", "main"]);
+    git(&["add", "m.pb"]);
+    let tree = git(&["write-tree"]);
+    let parent = git(&["rev-parse", "main"]);
+    let commit = git(&["commit-tree", &tree, "-p", &parent, "-m", "Add m by hand"]);
+    git(&["update-ref", "refs/heads/main", &commit]);
+
+    let age = |r: &gix::Repository| {
+        let input = advise::read(r, &kit, Some("main")).unwrap();
+        input
+            .files
+            .iter()
+            .find(|f| f.path == "m.pb")
+            .unwrap()
+            .written_at
+    };
+    let before = age(&r);
+    assert_eq!(before, T0 + 5 * DAY);
+    // compact drops a2's empty commit, rewriting the manual one above it.
+    env();
+    let report = git_seriate::compact::compact(
+        &r,
+        &git_seriate::compact::Options {
+            into: Some("main".into()),
+            cutoff: T0 + 3 * DAY,
+            level: 1,
+            dry_run: false,
+        },
+        None,
+    )
+    .unwrap();
+    assert_eq!(report.dropped, 1, "{report:?}");
+    assert_eq!(age(&r), before);
+    let (_, text) = advise_text(&r, &kit, &into_main());
+    assert!(text.contains("manual"), "{text}");
+    assert!(text.contains("Add m by hand"), "{text}");
+}
+
+struct Builds;
+
+impl Wording for Builds {
+    fn candidates_heading(&self) -> String {
+        "Packages to extract again:".into()
+    }
+    fn newest(&self, source: &serde_json::Value) -> String {
+        format!(
+            "newest build: {} ({})",
+            source["metadata"]["version"].as_str().unwrap_or("?"),
+            advise::date(&source["build_time"])
+        )
+    }
+}
+
+#[test]
+fn a_front_end_words_the_candidates() {
+    let tmp = tempfile::tempdir().unwrap();
+    let r = gix::init_bare(tmp.path().join("repo.git")).unwrap();
+    let kit = kit(&r).unwrap();
+    // A file importing a symbol its import no longer has: refused, and the
+    // importer's source a candidate.
+    add(
+        &r,
+        &kit,
+        "u1",
+        0,
+        &[
+            (
+                "dep.pb",
+                r#"name: "dep.proto" package: "d" message_type { name: "Gone" }"#,
+            ),
+            (
+                "user.pb",
+                r#"name: "user.proto" package: "u" dependency: "dep.proto" message_type { name: "U" field { name: "g" number: 1 label: LABEL_OPTIONAL type: TYPE_MESSAGE type_name: ".d.Gone" } }"#,
+            ),
+        ],
+    );
+    add(
+        &r,
+        &kit,
+        "d1",
+        1,
+        &[(
+            "dep.pb",
+            r#"name: "dep.proto" package: "d" message_type { name: "Other" }"#,
+        )],
+    );
+    settle(&r, &kit, &[]);
+
+    let mut generic = String::new();
+    advise::run(&r, &kit, &Generic, &into_main(), &mut generic).unwrap();
+    assert!(generic.contains("newest source: u1"), "{generic}");
+    let mut worded = String::new();
+    advise::run(&r, &kit, &Builds, &into_main(), &mut worded).unwrap();
+    assert!(worded.contains("Packages to extract again:"), "{worded}");
+    assert!(worded.contains("newest build: v0"), "{worded}");
+    assert!(worded.contains("refused"), "{worded}");
+
+    // The JSON doesn't depend on the wording.
+    let json = advise::Options {
+        json: true,
+        ..into_main()
+    };
+    let (mut a, mut b) = (String::new(), String::new());
+    advise::run(&r, &kit, &Generic, &json, &mut a).unwrap();
+    advise::run(&r, &kit, &Builds, &json, &mut b).unwrap();
+    assert_eq!(a, b);
+}

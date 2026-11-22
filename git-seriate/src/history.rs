@@ -99,9 +99,9 @@ struct ManualCommit {
 /// A path whose entry differs between two trees: its new entry, or `None`
 /// when removed.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Change {
-    pub(crate) path: String,
-    pub(crate) new: Option<(EntryKind, ObjectId)>,
+pub struct Change {
+    pub path: String,
+    pub new: Option<(EntryKind, ObjectId)>,
 }
 
 /// Settle a history branch (spec 0452 S5).
@@ -827,7 +827,7 @@ fn plan(
 
 // ── Trees and commits ─────────────────────────────────────────────────────────
 
-pub(crate) fn commit_tree(repo: &gix::Repository, id: ObjectId) -> Result<ObjectId, Error> {
+pub fn commit_tree(repo: &gix::Repository, id: ObjectId) -> Result<ObjectId, Error> {
     let commit = repo.find_commit(id).map_err(Error::git)?;
     let tree = commit.decode().map_err(Error::git)?.tree();
     Ok(tree)
@@ -900,7 +900,7 @@ fn files(
 }
 
 /// The paths whose entries differ between trees `a` and `b`.
-pub(crate) fn diff(repo: &gix::Repository, a: ObjectId, b: ObjectId) -> Result<Vec<Change>, Error> {
+pub fn diff(repo: &gix::Repository, a: ObjectId, b: ObjectId) -> Result<Vec<Change>, Error> {
     let mut out = Vec::new();
     diff_into(repo, Some(a), Some(b), "", &mut out)?;
     Ok(out)

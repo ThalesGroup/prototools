@@ -984,6 +984,7 @@ dependencies = [
 name = "git-seriate-fdp"
 version = "0.3.6"
 dependencies = [
+ "chrono",
  "clap",
  "fdp-scan",
  "git-seriate",
@@ -991,6 +992,9 @@ dependencies = [
  "prototext",
  "prototext-core",
  "prototext-graph",
+ "prototext-upb",
+ "serde_json",
+ "serde_yaml",
  "seriation",
  "tempfile",
  "workspace-hack",

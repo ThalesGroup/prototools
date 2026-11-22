@@ -20,8 +20,13 @@ gix             = { version = "0.76", default-features = false, features = ["tre
 prototext       = { workspace = true }
 prototext-core  = { workspace = true }
 prototext-graph = { workspace = true }
+prototext-upb   = { workspace = true }
+chrono          = { version = "0.4", default-features = false, features = ["std", "clock"] }
+serde_json      = "1"
 seriation       = { workspace = true }
 workspace-hack  = { version = "0.1", path = "../workspace-hack" }
 
 [dev-dependencies]
+serde_json = "1"
+serde_yaml = "0.9"
 tempfile = "3"

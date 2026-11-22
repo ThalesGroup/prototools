@@ -6,6 +6,7 @@
 //! (spec 0453): `fdp-scan` as the extractor, prototext's lossless text as
 //! the stored form, and the rule set `fdp` as the canonicalizer.
 
+pub mod advise;
 pub mod extract;
 pub mod rules;
 

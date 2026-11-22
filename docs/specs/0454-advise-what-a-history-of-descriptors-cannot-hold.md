@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0454 — advise: what a history of descriptors can't hold, and which sources could fix it
 
-Status: draft
+Status: draft (S1–S8 implemented 2026-11-22; S9 awaits the downstream
+        front end)
 App: git-seriate-fdp | protoback
 Refs: docs/specs/0450-git-seriate-a-history-from-snapshots.md (S5 step 4),
       docs/specs/0453-git-seriate-fdp-descriptors-from-executables.md (the
@@ -234,14 +235,17 @@ not when its source was built; `settle` rewrites commits.
    `manual`, `out-of-order`): decisions, entries and comments, problems,
    candidates and their order.
 2. Each toy's `fixups.yaml` applied by protoback: exit 0 with
-   `--fail-on W24 --fail-on W26`, and no W3.
+   `--fail-on W24 --fail-on W26`, and no W3. *Moved to S9: protoback is a
+   binary, which this crate's tests can't call; the downstream acceptance
+   applies the real `fixups.yaml`.*
 3. `--report`: a toy build's report read back; an idle directive reported
    as stale; a report from another `fixups.yaml` refused.
 4. `--check`: passes on a fresh output; fails after a new extraction,
    naming the source.
 5. The same snapshots settled in one go and incrementally: the same output.
-6. A manual file's age the same before and after a `settle` that moves
-   its commit.
+6. A manual file's age the same before and after a `compact` that
+   rewrites its commit. (Not `settle`: a manual commit adding a `.pb` stops
+   its walk, so `settle` never moves one.)
 7. Copies differing only by `json_name`, settled with `fdp` v1: two paths,
    one canonical content, one `copies` conflict pruning the `~N` file.
 8. A test `Wording`: its nouns, heading and candidate line in the text
@@ -249,4 +253,17 @@ not when its source was built; `settle` rewrites commits.
 
 ## Measured outcome
 
-Filled in at implementation.
+The analysis is the downstream implementation's, ported: its modules
+(decisions, problems, `fixups.yaml`, `STATUS.md`, actions, `--check`,
+`--report`) and their unit tests pass unchanged against this workspace's
+`prototext-upb`. New: the input, read from the history's blocks; manual
+files dated by author date; the text of the actions, in Rust, through
+`Wording`.
+
+On toys (test plan 1, 4–8): a rename moved forward, with its stamp and
+`--check`; copies after canonicalization, two paths of one content, the
+`~N` one pruned; the same advice settled in one go or incrementally; a
+manual file's age through a `compact`; a front end's wording, the JSON
+unchanged by it.
+
+S9 and test 2 wait for the downstream front end.

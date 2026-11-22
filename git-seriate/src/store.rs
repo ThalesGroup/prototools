@@ -362,10 +362,8 @@ fn commit_id(repo: &gix::Repository, commit: &gix::objs::Commit) -> Result<Objec
     gix::objs::compute_hash(repo.object_hash(), gix::object::Kind::Commit, &buf).map_err(Error::git)
 }
 
-pub(crate) fn tip(
-    repo: &gix::Repository,
-    name: &gix::refs::FullName,
-) -> Result<Option<ObjectId>, Error> {
+/// Where `name` points, if it exists.
+pub fn tip(repo: &gix::Repository, name: &gix::refs::FullName) -> Result<Option<ObjectId>, Error> {
     match repo.try_find_reference(name.as_ref()).map_err(Error::git)? {
         None => Ok(None),
         Some(mut r) => Ok(Some(r.peel_to_id().map_err(Error::git)?.detach())),

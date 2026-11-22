@@ -19,6 +19,14 @@ SPDX-License-Identifier: MIT
   number, so that one file written by different code generators is one
   version. The descriptor schema is a repository setting,
   `seriate.fdpSchema` (spec 0453).
+- git-seriate-fdp: `advise`, which reads a history of descriptors and
+  writes a `fixups.yaml` for protoback settling its conflicts (copies,
+  versions, moves, reused extension numbers), a `STATUS.md`, the problems
+  left (version skew a descriptor pool refuses, stale importers, missing
+  imports, manual files, ties, out-of-order sources), and the groups whose
+  sources are candidates to fix them; `--check` tells whether the files
+  are current, `--report` reads a protoback report back; a front end words
+  the candidates through `advise::Wording` (spec 0454).
 - git-seriate: `cli::run`, the command line as a library entry point for
   front ends with their own plugins and commands; `plugins::Composed`,
   rule sets applied in order.
