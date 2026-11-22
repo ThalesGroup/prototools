@@ -12,6 +12,7 @@
 //! [`plugins`].
 
 pub mod format;
+pub mod history;
 pub mod plugins;
 pub mod store;
 

@@ -143,6 +143,10 @@ let
         # the corpora themselves it regenerates.
         (pkgs.lib.fileset.fileFilter (f: f.hasExt "args" || f.hasExt "txt")
           ./seriation/tests/corpora)
+        # The existing implementation's histories of those corpora, which
+        # `git-seriate/tests/settle.rs` compares its own with (spec 0452 S9).
+        (pkgs.lib.fileset.fileFilter (f: f.hasExt "tsv")
+          ./git-seriate/tests/histories)
         # prototext-core/fixtures is taken wholesale rather than through
         # fixtureFilter: `benches/codec.rs` include_bytes! the .txtpb protoc
         # rendering, an extension fixtureFilter deliberately drops.  The

@@ -259,8 +259,9 @@ legacy reader, the commit is a manual commit.
    is true and `gpg.format` is `ssh`, refused when the key fails.
 7. **The ref.** If the new tip differs from the old: the old saved as
    `NAME-N`, the lowest `N` free, then `NAME` moved. If `NAME` is checked
-   out, the index is updated to the new tip, with a note to restore the
-   working tree. `--dry-run` writes nothing and prints the plan, warnings
+   out, the index and the work tree are left alone, with a note to run
+   `git reset --keep`: rewriting an index behind its user's back can lose
+   staged work, which `git reset --keep` refuses to. `--dry-run` writes nothing and prints the plan, warnings
    included.
 
 Empty snapshots (whose items change nothing) are written like any other:
@@ -354,8 +355,8 @@ on repositories in temporary directories:
    changed rule set ends the prefix at the first commit it affects. The
    tail: a commit built before the cutoff above a deeper one built after
    it is re-sorted; `--no-cutoff` re-sorts the whole walk.
-5. Backups, committer identity, SSH signing (with a test key), the index
-   of a checked-out branch, `--dry-run` writing nothing.
+5. Backups, committer identity, SSH signing (with a test key, checked by
+   `git verify-commit`), `--dry-run` writing nothing.
 6. `compact`: each level, the listing, `reduced: true`, the tree at the
    cutoff unchanged.
 7. S9's agreement, against the existing implementation's histories on the
