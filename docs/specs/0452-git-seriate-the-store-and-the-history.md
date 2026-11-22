@@ -52,7 +52,7 @@ known to be wrong.
   A snapshot is a partial view: a source that doesn't hold a file says
   nothing about it.
 - **N4.** Signing formats other than SSH.
-- **N5.** The protobuf plugins (`protosets`, 0450 S5 step 3).
+- **N5.** The protobuf plugins (`git-seriate-fdp`, 0450 S5 step 3).
 
 ## Specification
 

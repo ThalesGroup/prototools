@@ -7,7 +7,7 @@ SPDX-License-Identifier: MIT
 # 0450 — git-seriate: a history rebuilt from undated snapshots
 
 Status: draft
-App: seriation | git-seriate | protosets
+App: seriation | git-seriate | git-seriate-fdp
 Refs: docs/specs/0448-fdp-scan-undeclared-fields-and-rejections.md (the
         scanner the protobuf extractor wraps, and its refusal reasons),
       docs/specs/0449-fdp-scan-dependency-indices-and-field-order.md (one
@@ -96,16 +96,19 @@ should be in oss-prototools; the downstream tool is then rebuilt on it.
 |---|---|---|
 | `seriation` | the sort: its phases, scores, greedy search and self-test | nothing of git or protobuf |
 | `git-seriate` | the snapshot store, the history (`settle`), the plugin points, the binary | `seriation`, `gix` |
-| `protosets` | the protobuf plugins: extractor (`fdp-scan`), renderer (prototext), canonicalizer; `advise`; its binary | `git-seriate`, `fdp-scan`, `prototext-core`, `prototext-upb` |
+| `git-seriate-fdp` | the protobuf plugins: extractor (`fdp-scan`), renderer (prototext), canonicalizer; `advise`; its binary | `git-seriate`, `fdp-scan`, `prototext-core`, `prototext-upb` |
 
 - `seriation` takes snapshots (build time, order hint), the version key
   of each of their items, and a comparator. It never reads a repository
   or a byte of content itself: the comparator gets contents through the
   caller.
 - Settings are passed in one struct per run, never through globals.
-- Only `protosets` pulls in upb.
+- Only `git-seriate-fdp` pulls in upb.
 - Names checked on crates.io (2026-11-22): `git-seriate`, `seriation`
-  and `protosets` are free; `seriate` is taken by an unrelated project.
+  and `git-seriate-fdp` are free; `seriate` is taken by an unrelated
+  project. *Amended 2026-11-22: the third crate was `protosets`, the name
+  of the downstream tool that will build on it; renamed so that the two
+  never collide on a path, in a dependency, or in a spec.*
 
 ### S2 — Plugin points
 
@@ -214,7 +217,7 @@ the tree at the cutoff (S2). Run once with the cutoff at the newest commit
 of an older format, it converts a repository, after which the legacy
 reader is no longer needed. What canonicalization cannot fix in an old
 item stays until a new snapshot brings that path again; a path no new
-source carries keeps its old bytes. `protosets` is the same
+source carries keeps its old bytes. `git-seriate-fdp` is the same
 binary with the protobuf plugins composed in, plus `extract` (sources
 are executables, items their descriptors) and `advise`.
 
@@ -231,11 +234,11 @@ are executables, items their descriptors) and `advise`.
    item is refused and reported); `settle` keeps in place the set-aside
    commits whose anchor is in the unchanged part of the history, instead
    of rewriting the whole window. Acceptance: G6's history.
-3. **`protosets`:** the extractor, the renderer, the canonicalizer's
+3. **`git-seriate-fdp`:** the extractor, the renderer, the canonicalizer's
    generic descriptor rules (`json_name` equal to its default dropped;
    fields re-encoded in field-number order, recursively), the descriptor
    comparator later.
-4. **`advise`** in `protosets`.
+4. **`advise`** in `git-seriate-fdp`.
 
 ## Alternatives considered
 
