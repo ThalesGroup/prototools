@@ -42,6 +42,14 @@ pub trait ItemPaths {
     }
 }
 
+/// Reads a commit block of an older format (spec 0452 S2), so that a
+/// repository written by another tool can be settled and compacted;
+/// `compact` writes what it reads in `format: 1`.
+pub trait LegacyReader {
+    /// The block `message` carries, or `None` if it carries none.
+    fn read(&self, message: &str) -> Option<crate::format::Block>;
+}
+
 /// Stores items as they are.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AsIs;

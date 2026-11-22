@@ -156,6 +156,18 @@ impl Block {
         m
     }
 
+    /// [`Block::read`], then, for a message with no block of this format,
+    /// the legacy reader's.
+    pub fn read_with(
+        message: &str,
+        legacy: Option<&dyn crate::plugins::LegacyReader>,
+    ) -> Result<Option<Block>, ReadError> {
+        match Block::read(message)? {
+            Some(block) => Ok(Some(block)),
+            None => Ok(legacy.and_then(|l| l.read(message))),
+        }
+    }
+
     /// Read a commit message. `Ok(None)` when it has no block of this
     /// family: no `---` line, or a block without `format` (an older format,
     /// for the legacy reader).

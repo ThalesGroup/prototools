@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0452 — git-seriate: the snapshot store and the history
 
-Status: draft
+Status: implemented
+Implemented in: 2026-11-22
 App: git-seriate
 Refs: docs/specs/0450-git-seriate-a-history-from-snapshots.md (the
         engine: S2 its plugin points, S3 the commit format, S4 the
@@ -270,11 +271,26 @@ drop them.
 
 ### S6 — `compact`
 
-As 0450 S4 gives it: `--cutoff DATE` explicit, the commits and items
-dropped listed before anything is written, the three levels (empty
-commits; commits whose removal leaves the tree at the cutoff unchanged;
-items removed from old commits, `reduced: true`), commits written in
-`format: 1`, the backup branch of S5 step 7 before the ref moves.
+`compact --cutoff DATE [--level N] [--dry-run]`: the history before
+`DATE`, which is explicit, garbage-collected. "Before" is below the
+deepest commit built at or after `DATE`, as for `settle`'s tail. Three
+levels, each including those below it, the first by default:
+
+1. commits that change nothing in their own tree are dropped: lossless;
+2. commits whose every change a later commit before the cutoff makes
+   again are dropped: what is lost is when a version appeared and where
+   it was ordered, never the tree;
+3. from the snapshot commits kept, the items a later commit changes again
+   are removed, and the block says so: `reduced: true`, `contents` what
+   is left. Manual commits are never reduced: they have no block to say
+   so.
+
+Every commit dropped or reduced is listed, with why. The rebuilt tree at
+the cutoff must equal the old one, or nothing is written. Commits at and
+after the cutoff keep their trees, on the new parents. The previous tip is
+saved as `NAME-N`, as by `settle`; commits are written with the committer
+and signing of S5 step 6. A manual commit whose trailer anchors it to a
+dropped snapshot is warned about: `settle` will look for that anchor.
 
 ### S7 — Settings
 
@@ -292,7 +308,7 @@ git seriate settle [--into NAME] [--cutoff DATE | --no-cutoff] [--settling-days 
 git seriate list [--record-only]
 git seriate drop [--glob GLOB] [--record-only]
 git seriate import REPO…
-git seriate compact --cutoff DATE [--into NAME]
+git seriate compact --cutoff DATE [--into NAME] [--level 1|2|3] [--dry-run]
 ```
 
 `add DIR` takes every file under `DIR` as an item, path relative to `DIR`,
@@ -364,4 +380,17 @@ on repositories in temporary directories:
 
 ## Measured outcome
 
-Filled in at implementation.
+**S9 holds:** on the three `seriation` corpora, settled in one go and in
+two halves (the newer half by build time first), the history is the
+existing implementation's, `(identity, tree)` for `(identity, tree)`
+(`git-seriate/tests/histories/`, its `merge-snapshots --into`, defaults).
+
+**Signing** runs `ssh-keygen` once per commit written, as git does:
+about 55 ms each, so a settle of 100 snapshots with signing on takes
+about 5 s, nearly all of it there; without signing, well under a second.
+Signing in-process, through the SSH agent's socket, is the remedy if that
+matters; not done.
+
+The legacy reader is a plugin point the generic binary leaves empty; its
+test reads a toy older format, settles new snapshots onto it, and has
+`compact` convert what is left.

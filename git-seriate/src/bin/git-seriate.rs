@@ -68,6 +68,24 @@ enum Command {
         /// The snapshot branches to settle; every new one by default.
         branches: Vec<String>,
     },
+    /// Garbage-collect the history before a cutoff.
+    Compact {
+        /// The history branch; the current one by default.
+        #[arg(long)]
+        into: Option<String>,
+        /// Compact what was built before this date (YYYY-MM-DD, or seconds
+        /// since the epoch).
+        #[arg(long)]
+        cutoff: String,
+        /// 1: drop commits that change nothing (lossless). 2: also those
+        /// whose every change is made again later. 3: also remove from
+        /// snapshot commits the items changed again later.
+        #[arg(long, default_value_t = 1)]
+        level: u8,
+        /// List what would be dropped, and write nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// List the snapshot branches.
     List {
         /// The record-only branches instead.
@@ -182,6 +200,7 @@ fn run(cli: Cli) -> Result<(), Error> {
                     canonicalizer: &NoRules,
                     item_paths: &item_paths,
                     comparator: &seriation::LinesChars,
+                    legacy: None,
                 },
             };
             let report = history::settle(&repo, &options)?;
@@ -201,6 +220,42 @@ fn run(cli: Cli) -> Result<(), Error> {
                 report.kept,
                 report.written.len(),
                 report.replayed.len(),
+                report
+                    .backup
+                    .as_ref()
+                    .map_or(String::new(), |b| format!("; previous tip saved as {b}"))
+            );
+        }
+        Command::Compact {
+            into,
+            cutoff,
+            level,
+            dry_run,
+        } => {
+            let options = git_seriate::compact::Options {
+                into,
+                cutoff: parse_date(&cutoff)?,
+                level,
+                dry_run,
+            };
+            let report = git_seriate::compact::compact(&repo, &options, None)?;
+            for a in &report.actions {
+                println!("{a}");
+            }
+            for w in &report.warnings {
+                eprintln!("warning: {w}");
+            }
+            let verb = if dry_run {
+                "would compact"
+            } else {
+                "compacted"
+            };
+            println!(
+                "{verb} {}: dropped {}, reduced {}, converted {}{}",
+                report.branch,
+                report.dropped,
+                report.reduced,
+                report.converted,
                 report
                     .backup
                     .as_ref()

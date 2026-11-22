@@ -21,7 +21,13 @@ SPDX-License-Identifier: MIT
   manual commits that change no item path replayed after the snapshot
   they followed (recorded in a `Snapshot-Anchor:` trailer), the previous
   tip saved as `NAME-N`, commits signed with SSH when git is configured
-  to; `--dry-run` writes nothing (spec 0452).
+  to; `--dry-run` writes nothing. `compact --cutoff DATE` garbage-collects
+  the history before a date: commits that change nothing (`--level 1`, the
+  default, lossless), then those whose changes are all made again later
+  (`2`), then the items of snapshot commits changed again later (`3`,
+  marked `reduced: true`), the tree at the cutoff always unchanged. A
+  `LegacyReader` plugin reads blocks of an older format, for `settle` and
+  `compact`, which writes them in `format: 1` (spec 0452).
 - seriation: a new crate, the sort that orders undated snapshots of files
   by their build times, their order hints and how the files in them
   evolve, as a library with no git and no file format. A caller passes

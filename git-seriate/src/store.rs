@@ -121,6 +121,14 @@ pub fn add(repo: &gix::Repository, snapshot: NewSnapshot) -> Result<Added, Error
 /// Every snapshot and record-only branch, by name (spec 0452 S3): a
 /// parentless tip with a block, named as the block's identity.
 pub fn list(repo: &gix::Repository) -> Result<Vec<Listed>, Error> {
+    list_with(repo, None)
+}
+
+/// [`list`], reading older blocks with `legacy`.
+pub fn list_with(
+    repo: &gix::Repository,
+    legacy: Option<&dyn crate::plugins::LegacyReader>,
+) -> Result<Vec<Listed>, Error> {
     let mut out = Vec::new();
     let refs = repo.references().map_err(Error::git)?;
     for r in refs.local_branches().map_err(Error::git)? {
@@ -133,7 +141,7 @@ pub fn list(repo: &gix::Repository) -> Result<Vec<Listed>, Error> {
             continue;
         }
         let message = decoded.message.to_str_lossy();
-        let Ok(Some(block)) = Block::read(&message) else {
+        let Ok(Some(block)) = Block::read_with(&message, legacy) else {
             continue;
         };
         if block.source.identity == name {
@@ -331,7 +339,8 @@ fn check_tree(repo: &gix::Repository, tree: ObjectId) -> Result<(), Error> {
 
 // ── Git helpers ───────────────────────────────────────────────────────────────
 
-pub(crate) fn branch_ref(branch: &str) -> Result<gix::refs::FullName, Error> {
+/// `refs/heads/<branch>`, refused when git would refuse the name.
+pub fn branch_ref(branch: &str) -> Result<gix::refs::FullName, Error> {
     format!("refs/heads/{branch}")
         .try_into()
         .map_err(|e| Error::Refused(format!("{branch:?} is not a valid branch name: {e}")))
@@ -363,7 +372,9 @@ pub(crate) fn tip(
     }
 }
 
-pub(crate) fn set_ref(
+/// Point `name` at `id`, if its current value is `expected`; the reflog
+/// entry is written as git-seriate, so that no user identity is needed.
+pub fn set_ref(
     repo: &gix::Repository,
     name: &gix::refs::FullName,
     expected: PreviousValue,

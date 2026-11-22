@@ -36,6 +36,8 @@ pub struct Plugins<'a> {
     pub canonicalizer: &'a dyn Canonicalizer,
     pub item_paths: &'a dyn ItemPaths,
     pub comparator: &'a dyn seriation::Comparator,
+    /// Reads older blocks; `None` for none.
+    pub legacy: Option<&'a dyn crate::plugins::LegacyReader>,
 }
 
 /// What to settle, and how.
@@ -97,9 +99,9 @@ struct ManualCommit {
 /// A path whose entry differs between two trees: its new entry, or `None`
 /// when removed.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Change {
-    path: String,
-    new: Option<(EntryKind, ObjectId)>,
+pub(crate) struct Change {
+    pub(crate) path: String,
+    pub(crate) new: Option<(EntryKind, ObjectId)>,
 }
 
 /// Settle a history branch (spec 0452 S5).
@@ -120,10 +122,11 @@ pub fn settle(repo: &gix::Repository, options: &Options) -> Result<Report, Error
     };
 
     // Every snapshot identity the history holds, for the candidates.
-    let in_history = history_identities(repo, old_tip)?;
+    let legacy = options.plugins.legacy;
+    let in_history = history_identities(repo, old_tip, legacy)?;
 
     // 1. The candidates.
-    let listed = store::list(repo)?;
+    let listed = store::list_with(repo, legacy)?;
     let by_branch: HashMap<&str, &store::Listed> =
         listed.iter().map(|l| (l.branch.as_str(), l)).collect();
     let mut candidates: Vec<&store::Listed> = Vec::new();
@@ -167,6 +170,7 @@ pub fn settle(repo: &gix::Repository, options: &Options) -> Result<Report, Error
         cutoff,
         settling,
         options.plugins.item_paths,
+        legacy,
         &mut report,
     )?;
     let region = &walk.entries[..walk.region_len];
@@ -338,6 +342,7 @@ fn walk(
     cutoff: Option<i64>,
     settling: i64,
     item_paths: &dyn ItemPaths,
+    legacy: Option<&dyn crate::plugins::LegacyReader>,
     report: &mut Report,
 ) -> Result<Walk, Error> {
     let mut entries: Vec<Entry> = Vec::new();
@@ -350,7 +355,7 @@ fn walk(
         let tree = decoded.tree();
         let parent = decoded.parents().next();
         let message = decoded.message.to_str_lossy().into_owned();
-        match Block::read(&message) {
+        match Block::read_with(&message, legacy) {
             Err(e) => return Err(Error::Refused(format!("commit {id}: {e}"))),
             Ok(Some(block)) => {
                 for i in pending.drain(..) {
@@ -418,7 +423,7 @@ fn walk(
                 None => None,
             },
         };
-        let identity = nearest_identity(repo, below)?;
+        let identity = nearest_identity(repo, below, legacy)?;
         for i in pending {
             if let Entry::Manual(m) = &mut entries[i] {
                 m.below = identity.clone();
@@ -458,7 +463,7 @@ fn walk(
     };
     let mut below_identities = HashSet::new();
     if let Some(b) = base {
-        below_identities = history_identities(repo, Some(b))?;
+        below_identities = history_identities(repo, Some(b), legacy)?;
     }
     Ok(Walk {
         entries,
@@ -822,13 +827,16 @@ fn plan(
 
 // ── Trees and commits ─────────────────────────────────────────────────────────
 
-fn commit_tree(repo: &gix::Repository, id: ObjectId) -> Result<ObjectId, Error> {
+pub(crate) fn commit_tree(repo: &gix::Repository, id: ObjectId) -> Result<ObjectId, Error> {
     let commit = repo.find_commit(id).map_err(Error::git)?;
     let tree = commit.decode().map_err(Error::git)?.tree();
     Ok(tree)
 }
 
-fn first_parent(repo: &gix::Repository, id: ObjectId) -> Result<Option<ObjectId>, Error> {
+pub(crate) fn first_parent(
+    repo: &gix::Repository,
+    id: ObjectId,
+) -> Result<Option<ObjectId>, Error> {
     let commit = repo.find_commit(id).map_err(Error::git)?;
     let parent = commit.decode().map_err(Error::git)?.parents().next();
     Ok(parent)
@@ -838,12 +846,13 @@ fn first_parent(repo: &gix::Repository, id: ObjectId) -> Result<Option<ObjectId>
 fn nearest_identity(
     repo: &gix::Repository,
     from: Option<ObjectId>,
+    legacy: Option<&dyn crate::plugins::LegacyReader>,
 ) -> Result<Option<String>, Error> {
     let mut current = from;
     while let Some(id) = current {
         let commit = repo.find_commit(id).map_err(Error::git)?;
         let decoded = commit.decode().map_err(Error::git)?;
-        if let Ok(Some(block)) = Block::read(&decoded.message.to_str_lossy()) {
+        if let Ok(Some(block)) = Block::read_with(&decoded.message.to_str_lossy(), legacy) {
             return Ok(Some(block.source.identity));
         }
         current = decoded.parents().next();
@@ -855,13 +864,14 @@ fn nearest_identity(
 fn history_identities(
     repo: &gix::Repository,
     from: Option<ObjectId>,
+    legacy: Option<&dyn crate::plugins::LegacyReader>,
 ) -> Result<HashSet<String>, Error> {
     let mut out = HashSet::new();
     let mut current = from;
     while let Some(id) = current {
         let commit = repo.find_commit(id).map_err(Error::git)?;
         let decoded = commit.decode().map_err(Error::git)?;
-        if let Ok(Some(block)) = Block::read(&decoded.message.to_str_lossy()) {
+        if let Ok(Some(block)) = Block::read_with(&decoded.message.to_str_lossy(), legacy) {
             out.insert(block.source.identity);
         }
         current = decoded.parents().next();
@@ -890,7 +900,7 @@ fn files(
 }
 
 /// The paths whose entries differ between trees `a` and `b`.
-fn diff(repo: &gix::Repository, a: ObjectId, b: ObjectId) -> Result<Vec<Change>, Error> {
+pub(crate) fn diff(repo: &gix::Repository, a: ObjectId, b: ObjectId) -> Result<Vec<Change>, Error> {
     let mut out = Vec::new();
     diff_into(repo, Some(a), Some(b), "", &mut out)?;
     Ok(out)
@@ -958,7 +968,11 @@ fn overlay(
 }
 
 /// `base` with `changes` applied.
-fn apply(repo: &gix::Repository, base: ObjectId, changes: &[Change]) -> Result<ObjectId, Error> {
+pub(crate) fn apply(
+    repo: &gix::Repository,
+    base: ObjectId,
+    changes: &[Change],
+) -> Result<ObjectId, Error> {
     let mut editor = repo.edit_tree(base).map_err(Error::git)?;
     for change in changes {
         match change.new {
@@ -977,7 +991,10 @@ fn apply(repo: &gix::Repository, base: ObjectId, changes: &[Change]) -> Result<O
 
 /// The user running `settle` (spec 0452 S5 step 6): `GIT_COMMITTER_NAME`
 /// and `GIT_COMMITTER_EMAIL`, else `user.name` and `user.email`.
-fn committer(repo: &gix::Repository, dry_run: bool) -> Result<gix::actor::Signature, Error> {
+pub(crate) fn committer(
+    repo: &gix::Repository,
+    dry_run: bool,
+) -> Result<gix::actor::Signature, Error> {
     let config = repo.config_snapshot();
     let get = |env: &str, key: &str| -> Option<String> {
         std::env::var(env)
@@ -1008,14 +1025,17 @@ fn committer(repo: &gix::Repository, dry_run: bool) -> Result<gix::actor::Signat
     }
 }
 
-fn with_time(sig: &gix::actor::Signature, seconds: i64) -> gix::actor::Signature {
+pub(crate) fn with_time(sig: &gix::actor::Signature, seconds: i64) -> gix::actor::Signature {
     gix::actor::Signature {
         time: gix::date::Time::new(seconds, 0),
         ..sig.clone()
     }
 }
 
-fn checked_out(repo: &gix::Repository, name: &gix::refs::FullName) -> Result<bool, Error> {
+pub(crate) fn checked_out(
+    repo: &gix::Repository,
+    name: &gix::refs::FullName,
+) -> Result<bool, Error> {
     if repo.is_bare() {
         return Ok(false);
     }
@@ -1023,12 +1043,12 @@ fn checked_out(repo: &gix::Repository, name: &gix::refs::FullName) -> Result<boo
 }
 
 /// Signs commits with SSH when git is configured to (spec 0452 S5 step 6).
-struct Signer {
+pub(crate) struct Signer {
     key: Option<std::path::PathBuf>,
 }
 
 impl Signer {
-    fn from_config(repo: &gix::Repository) -> Result<Self, Error> {
+    pub(crate) fn from_config(repo: &gix::Repository) -> Result<Self, Error> {
         let config = repo.config_snapshot();
         let sign = config.boolean("commit.gpgSign").unwrap_or(false);
         let ssh = config
@@ -1050,7 +1070,7 @@ impl Signer {
         Ok(Signer { key: Some(key) })
     }
 
-    fn sign(&self, mut commit: gix::objs::Commit) -> Result<gix::objs::Commit, Error> {
+    pub(crate) fn sign(&self, mut commit: gix::objs::Commit) -> Result<gix::objs::Commit, Error> {
         use gix::objs::WriteTo;
         use std::io::Write;
         let Some(key) = &self.key else {
