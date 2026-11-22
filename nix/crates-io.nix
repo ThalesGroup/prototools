@@ -7,7 +7,7 @@
 # Produces $out/ with one tarball per publishable workspace crate:
 #   tree-sitter-textproto, prototext-upb, prototext-core, prototext-graph, prototext-schema,
 #   prototools-complete, prototools-affinity, prototext, fdp-scan, protoscan,
-#   prototext-lens
+#   prototext-lens, seriation, git-seriate, git-seriate-fdp
 # (that is also their dependency order: the list scripts/publishable-crates
 # gives the release scripts, which this one must match — spec 0412 S3).
 #
@@ -75,6 +75,8 @@ prototools-complete = { path = "$PWD/prototools-complete" }
 prototools-affinity = { path = "$PWD/prototools-affinity" }
 prototext        = { path = "$PWD/prototext" }
 fdp-scan         = { path = "$PWD/fdp-scan" }
+seriation        = { path = "$PWD/seriation" }
+git-seriate      = { path = "$PWD/git-seriate" }
 workspace-hack   = { path = "$PWD/workspace-hack" }
 EOF
   '';
@@ -92,6 +94,9 @@ EOF
     cargo package -p fdp-scan         --no-verify
     cargo package -p protoscan        --no-verify
     cargo package -p prototext-lens   --no-verify
+    cargo package -p seriation        --no-verify
+    cargo package -p git-seriate      --no-verify
+    cargo package -p git-seriate-fdp  --no-verify
   '';
 
   installPhase = ''
@@ -107,6 +112,9 @@ EOF
     cp target/package/fdp-scan-*.crate         $out/
     cp target/package/protoscan-*.crate        $out/
     cp target/package/prototext-lens-*.crate   $out/
+    cp target/package/seriation-*.crate        $out/
+    cp target/package/git-seriate-[0-9]*.crate $out/
+    cp target/package/git-seriate-fdp-*.crate  $out/
   '';
 
   # No tests to run — cargo package --no-verify handles validation.

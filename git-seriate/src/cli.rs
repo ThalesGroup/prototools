@@ -148,7 +148,28 @@ pub fn run<E: Subcommand>(
     kit: impl FnOnce(&gix::Repository) -> Result<Kit, Error>,
     extra: impl FnOnce(E, &gix::Repository, &Kit) -> Result<(), Error>,
 ) -> ExitCode {
-    let matches = Cli::<E>::command().name(name).bin_name(name).get_matches();
+    let command = || Cli::<E>::command().name(name).bin_name(name);
+    // `<NAME>_COMPLETE=<shell>` prints a completion script and exits;
+    // `<NAME>_GEN_MAN=<dir>` writes the man pages and exits, before any
+    // argument is parsed (as protoscan does, spec 0407 S4).
+    let env = env_prefix(name);
+    // Completions register against the executable, `git-seriate`: the
+    // name a shell sees, and the one `git seriate` runs.
+    let exe = leak(name.replace(' ', "-"));
+    clap_complete::CompleteEnv::with_factory(move || Cli::<E>::command().name(exe).bin_name(exe))
+        .var(leak(format!("{env}_COMPLETE")))
+        .shells(prototools_complete::shells())
+        .complete();
+    if let Some(dir) = std::env::var_os(format!("{env}_GEN_MAN")) {
+        match write_man(command(), name, &PathBuf::from(dir)) {
+            Ok(()) => std::process::exit(0),
+            Err(e) => {
+                eprintln!("{name}: writing the man pages: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+    let matches = command().get_matches();
     let cli = match Cli::<E>::from_arg_matches(&matches) {
         Ok(cli) => cli,
         Err(e) => e.exit(),
@@ -160,6 +181,54 @@ pub fn run<E: Subcommand>(
             ExitCode::FAILURE
         }
     }
+}
+
+/// A name clap keeps for the process's life; made once per run.
+fn leak(s: String) -> &'static str {
+    Box::leak(s.into_boxed_str())
+}
+
+/// `GIT_SERIATE` for `git seriate`, `GIT_SERIATE_FDP` for `git seriate-fdp`.
+fn env_prefix(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+/// `git-seriate.1`, and `git-seriate-<command>.1` for each command, in
+/// `dir`: the names `git help seriate` and `man git-seriate-settle` look
+/// for.
+fn write_man(command: clap::Command, name: &str, dir: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let page = name.replace(' ', "-");
+    let render = |cmd: clap::Command, file: &str, title: &str| -> std::io::Result<()> {
+        let man = clap_mangen::Man::new(cmd)
+            .title(title.to_uppercase())
+            .section("1")
+            .source(page.clone())
+            .manual("User Commands");
+        let mut buf = Vec::new();
+        man.render(&mut buf)?;
+        std::fs::write(dir.join(format!("{file}.1")), buf)
+    };
+    for sub in command.get_subcommands() {
+        if sub.get_name() == "help" {
+            continue;
+        }
+        let sub_page = format!("{page}-{}", sub.get_name());
+        let sub = sub
+            .clone()
+            .name(leak(sub_page.clone()))
+            .bin_name(format!("{name} {}", sub.get_name()));
+        render(sub, &sub_page, &sub_page)?;
+    }
+    render(command, &page, &page)
 }
 
 fn dispatch<E: Subcommand>(

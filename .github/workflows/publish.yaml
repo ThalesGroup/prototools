@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: MIT
 
-# Publish a release: seven crates to crates.io, five Python packages to PyPI
+# Publish a release: the crates scripts/publishable-crates lists to crates.io, five Python packages to PyPI
 # (spec 0412).
 #
 # A pushed tag v* starts it, in douzebis/prototools only (the ThalesGroup

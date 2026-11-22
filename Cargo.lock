@@ -973,7 +973,10 @@ name = "git-seriate"
 version = "0.3.6"
 dependencies = [
  "clap",
+ "clap_complete",
+ "clap_mangen",
  "gix",
+ "prototools-complete",
  "serde_yaml",
  "seriation",
  "tempfile",

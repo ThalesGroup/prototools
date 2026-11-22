@@ -588,7 +588,8 @@ let
   '';
 
   # ---------------------------------------------------------------------------
-  # Convenience bundle: prototext + protolens + reproto + protoscan
+  # Convenience bundle: prototext + protolens + reproto + protoscan, and
+  # git-seriate and git-seriate-fdp
   #
   # wktDb contributes no binary — it is here for its setup-hook, which
   # exports PROTOTEXT_DESCRIPTOR_SET (spec 0228 S4). It is the only path
@@ -596,7 +597,8 @@ let
   # ---------------------------------------------------------------------------
   prototools = pkgs.symlinkJoin {
     name   = "prototools";
-    paths  = [ rust.prototext rust.protolens python.reproto rust.protoscan wktDb ];
+    paths  = [ rust.prototext rust.protolens python.reproto rust.protoscan
+               rust.gitSeriate rust.gitSeriateFdp wktDb ];
   };
 
   # Fails when a store path whose name contains one of `deny` enters the
@@ -680,7 +682,7 @@ let
     rust.rustFmt rust.rustClippy rust.rustTests rust.descriptorAccessCheck
     rust.prototext rust.protolens
     rust.prototextCodec rust.fdpScanLib rust.prototextGraphLib
-    rust.protoscan python.reproto
+    rust.protoscan rust.gitSeriate rust.gitSeriateFdp python.reproto
     python.reprotoTests python.reprotoTestsViaText python.reprotoTestsOnProtoback
     python.fdpScanTests python.prototextCodecTests
     python.pythonLint python.pythonRuff
@@ -701,7 +703,7 @@ let
     rust.rustFmt rust.rustTests rust.descriptorAccessCheck
     rust.prototext rust.protolens
     rust.prototextCodec rust.fdpScanLib rust.prototextGraphLib
-    rust.protoscan python.reproto
+    rust.protoscan rust.gitSeriate rust.gitSeriateFdp python.reproto
     python.reprotoTests python.reprotoTestsViaText python.reprotoTestsOnProtoback
     python.fdpScanTests python.prototextCodecTests
     python.pythonLint python.pythonRuff
@@ -930,6 +932,8 @@ in
   prototext-fixtures-check = prototextFixturesCheck;
   protoscan            = rust.protoscan;
   protoback            = rust.protoback;
+  git-seriate          = rust.gitSeriate;
+  git-seriate-fdp      = rust.gitSeriateFdp;
   fdp-scan-lib         = rust.fdpScanLib;
   prototext-graph-lib  = rust.prototextGraphLib;
   crates-io            = cratesIo;

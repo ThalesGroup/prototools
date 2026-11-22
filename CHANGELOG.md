@@ -10,6 +10,11 @@ SPDX-License-Identifier: MIT
 
 ### Added
 
+- Nix: `git-seriate` and `git-seriate-fdp` packages, with shell
+  completions (bash, zsh, fish) and man pages, one per command, named so
+  that `git help seriate` finds them; both in `ci` and in the `prototools`
+  bundle. crates.io: `seriation`, `git-seriate` and `git-seriate-fdp` are
+  publishable crates, released by the publish workflow like the others.
 - git-seriate-fdp: a new crate and binary, `git seriate-fdp`, git-seriate
   for the protobuf descriptors embedded in executables. `extract FILE…`
   adds each executable's descriptors as a snapshot (fdp-scan's refusals

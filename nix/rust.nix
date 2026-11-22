@@ -362,7 +362,8 @@ let
       mkdir -p $out/bin $out/wheels
       cp ${profileDir}/prototext \
          ${profileDir}/protolens ${profileDir}/protoscan \
-         ${profileDir}/protoback $out/bin/
+         ${profileDir}/protoback ${profileDir}/git-seriate \
+         ${profileDir}/git-seriate-fdp $out/bin/
     '' + pkgs.lib.concatMapStrings (e:
       let
         committed = "${e.crateDir}/${e.libName}/${e.libName}.pyi";
@@ -424,6 +425,44 @@ let
     PROTOBACK_GEN_MAN=$out/share/man/man1 $out/bin/protoback
     $out/bin/protoback --version | grep -qF ${workspaceVersion}
   '');
+
+  # ---------------------------------------------------------------------------
+  # git-seriate and git-seriate-fdp — undated snapshots of files stored in
+  # git, and one linear history rebuilt from them (specs 0450, 0452, 0453).
+  # git runs each as `git seriate` and `git seriate-fdp`; their completions
+  # register against the executables, and their man pages are named so that
+  # `git help seriate` finds them. Not published on crates.io yet.
+  # ---------------------------------------------------------------------------
+  mkGitSeriate = { exe, env, description }:
+    pkgs.runCommand "${exe}-${workspaceVersion}" {
+      nativeBuildInputs = [ pkgs.installShellFiles ];
+      meta = metaCommon // {
+        inherit description;
+        mainProgram = exe;
+      };
+    } (''
+      mkdir -p $out/bin
+      cp ${workspaceBuild}/bin/${exe} $out/bin/
+    '' + whenRunnable ''
+      installShellCompletion --cmd ${exe} \
+        --bash <(${env}_COMPLETE=bash $out/bin/${exe}) \
+        --zsh  <(${env}_COMPLETE=zsh  $out/bin/${exe}) \
+        --fish <(${env}_COMPLETE=fish $out/bin/${exe})
+      ${env}_GEN_MAN=$out/share/man/man1 $out/bin/${exe}
+      $out/bin/${exe} --version | grep -qF ${workspaceVersion}
+    '');
+
+  gitSeriate = mkGitSeriate {
+    exe = "git-seriate";
+    env = "GIT_SERIATE";
+    description = "Store undated snapshots of files in git, and rebuild one linear history from them";
+  };
+
+  gitSeriateFdp = mkGitSeriate {
+    exe = "git-seriate-fdp";
+    env = "GIT_SERIATE_FDP";
+    description = "git-seriate for the protobuf descriptors embedded in executables";
+  };
 
   # ---------------------------------------------------------------------------
   # protoscan — find the protobuf descriptors embedded in a binary (spec 0407).
@@ -559,6 +598,8 @@ in {
     prototext
     protoscan
     protoback
+    gitSeriate
+    gitSeriateFdp
     protolens
     neovimLean
     bufLean

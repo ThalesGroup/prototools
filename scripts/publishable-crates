@@ -17,4 +17,7 @@ crates=(
     fdp-scan
     protoscan
     prototext-lens
+    seriation
+    git-seriate
+    git-seriate-fdp
 )
