@@ -35,6 +35,7 @@ members = [
     "protoback",
     "seriation",
     "git-seriate",
+    "git-seriate-fdp",
     "workspace-hack",
 ]
 
@@ -70,6 +71,7 @@ prototools-complete = { path = "prototools-complete", version = "0.3.6" }
 prototools-affinity = { path = "prototools-affinity", version = "0.3.6" }
 fdp-scan            = { path = "fdp-scan", version = "0.3.6" }
 seriation           = { path = "seriation", version = "0.3.6" }
+git-seriate         = { path = "git-seriate", version = "0.3.6" }
 tree-sitter-textproto = { path = "reproto/tree-sitter-textproto", version = "0.3.6" }
 
 [profile.release]

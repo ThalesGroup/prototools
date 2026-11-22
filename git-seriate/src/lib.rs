@@ -11,6 +11,7 @@
 //! them. What is specific to a kind of file comes through the traits of
 //! [`plugins`].
 
+pub mod cli;
 pub mod compact;
 pub mod format;
 pub mod history;

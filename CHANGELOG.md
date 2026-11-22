@@ -10,6 +10,20 @@ SPDX-License-Identifier: MIT
 
 ### Added
 
+- git-seriate-fdp: a new crate and binary, `git seriate-fdp`, git-seriate
+  for the protobuf descriptors embedded in executables. `extract FILE…`
+  adds each executable's descriptors as a snapshot (fdp-scan's refusals
+  recorded with their codes); they are stored as prototext's annotated
+  text, every rendering read back before it is kept; the rule set `fdp`
+  drops a `json_name` equal to protoc's default and orders fields by
+  number, so that one file written by different code generators is one
+  version. The descriptor schema is a repository setting,
+  `seriate.fdpSchema` (spec 0453).
+- git-seriate: `cli::run`, the command line as a library entry point for
+  front ends with their own plugins and commands; `plugins::Composed`,
+  rule sets applied in order.
+- prototext-core: `helpers::json_name`, protoc's default JSON name, which
+  protoback now uses too.
 - git-seriate: a new crate and binary, `git seriate`, storing snapshots of
   files as git branches, each a single commit holding the files and a
   `format: 1` block saying where they come from. `add DIR`, `list`,

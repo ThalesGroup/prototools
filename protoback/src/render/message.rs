@@ -84,23 +84,6 @@ fn own_options(
     super::options::options(&ctx.scope(scope), kind, &msg, composite, depth, exclude)
 }
 
-/// `_camel_case`: protoc's default JSON name.
-fn camel_case(name: &str) -> String {
-    let mut out = String::new();
-    let mut up = false;
-    for c in name.chars() {
-        if c == '_' {
-            up = true;
-        } else if up {
-            out.extend(c.to_uppercase());
-            up = false;
-        } else {
-            out.push(c);
-        }
-    }
-    out
-}
-
 /// `_render_default_value`: `default = v,` for a field with a default;
 /// `Err` where Python's reading of it raises (a bytes default it cannot
 /// unescape, a number it cannot parse).
@@ -632,7 +615,7 @@ fn field_options(
         ));
     }
     let json_name = text(f.json_name());
-    if !json_name.is_empty() && json_name != camel_case(&text(f.name())) {
+    if !json_name.is_empty() && json_name != prototext_core::helpers::json_name(&text(f.name())) {
         opt_block.push(Line::code(
             format!("json_name = \"{json_name}\","),
             depth + 1,

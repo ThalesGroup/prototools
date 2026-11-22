@@ -5,11 +5,13 @@
 
 mod bounds;
 mod codecs;
+mod json_name;
 mod varint;
 mod wire;
 
 pub use bounds::*;
 pub use codecs::*;
+pub use json_name::json_name;
 pub use varint::*;
 pub use wire::*;
 

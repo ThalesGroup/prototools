@@ -981,6 +981,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "git-seriate-fdp"
+version = "0.3.6"
+dependencies = [
+ "clap",
+ "fdp-scan",
+ "git-seriate",
+ "gix",
+ "prototext",
+ "prototext-core",
+ "prototext-graph",
+ "seriation",
+ "tempfile",
+ "workspace-hack",
+]
+
+[[package]]
 name = "gix"
 version = "0.76.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

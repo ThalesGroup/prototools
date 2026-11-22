@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0453 — git-seriate-fdp: git-seriate for descriptors embedded in executables
 
-Status: draft
+Status: implemented
+Implemented in: 2026-11-22
 App: git-seriate-fdp | git-seriate | fdp-scan | prototext-core | protoback
 Refs: docs/specs/0450-git-seriate-a-history-from-snapshots.md (S1 this
         crate's place, S2 the canonicalizer's contract, S5 step 3),
@@ -79,13 +80,24 @@ and the `extract` command. One parser and one set of messages for both.
 
 ### S2 — The extractor
 
-`FdpExtractor { schema: Schema, options: fdp_scan::ScanOptions }`, where
-`Schema` is the stock graph (`scan_explained_options`) or a caller's
-graph and root (`scan_explained_with_options`), loaded from a schema
-database written with `--emit-extension-ranges` (0448 S4).
+`FdpExtractor { schema: &Schema, options: fdp_scan::ScanOptions }`, where
+`Schema` is the stock one (`scan_explained_options`) or a caller's graph
+and root (`scan_explained_with_options`), loaded from a schema database
+written with `protoback --schema-db-out DB.desc --emit-extension-ranges`
+(0448 S4): its descriptor set `DB.desc`, and its graph
+`DB/hopcroft.rkyv`.
+
+**The schema is a repository setting,** `git config seriate.fdpSchema
+DB.desc` (relative to the work tree, or the git directory of a bare
+repository) and `seriate.fdpRoot` (`google.protobuf.FileDescriptorProto`
+by default), read by every command, not a flag of `extract`: `settle`
+renders canonical forms with the renderer of S3, and a schema other than
+the one items were extracted with would render every one of them anew.
 
 - **Items:** each record found, at the path its `name` gives with `.proto`
-  replaced by `.pb`; bytes the record. The scanner's plausibility rules
+  replaced by `.pb`; bytes the record. A record is found by its `name`,
+  field 1 (0448): a writer that put another field before it would lose
+  that field to the scan; none measured does. The scanner's plausibility rules
   (0448 S5) run first; the store's path rules (0452 S3) then, on what they
   let through.
 - **Refusals,** in the block's `rejected`, with the scanner's reasons as
@@ -143,15 +155,16 @@ own (N4).
 ### S5 — The binary
 
 ```
-git-seriate-fdp extract [--id ID] [--build-time T] [--order-hint N] [--group G]
-                  [--meta KEY=VALUE]… [--schema DB --root NAME]
-                  [--increasing-field-numbers] FILE…
-git-seriate-fdp add | list | drop | import | settle | compact   (as git seriate)
+git seriate-fdp extract [--id ID] [--build-time T] [--order-hint N] [--group G]
+                        [--meta KEY=VALUE]… [--increasing-field-numbers] FILE…
+git seriate-fdp add | list | drop | import | settle | compact   (as git seriate)
 ```
 
 `extract` makes one snapshot per `FILE`. Its identity, by default, is the
 file's path relative to the current directory, made a valid branch name
-(components kept, a leading `/` dropped); `--id` names it when one file
+(a root, `.` and `..` dropped; in each component a leading `.`, a `.lock`
+ending, `..`, `@{`, spaces, control characters and `~^:?*[\` replaced by
+`_`); `--id` names it when one file
 is given. The same file extracted from another directory then gets
 another identity, and is another snapshot: extract from one place, or
 name it. Its build time defaults to the file's modification time, which
@@ -207,10 +220,19 @@ numbers are what protoc orders by, and what every version agrees on.
    the same whichever is extracted first; protoback reads the history
    (`--schema-db-out`) without a warning. And with `Composed`: a third
    flavor that only a test rule set (removing one field) collapses, one
-   version with the composition, two without it.
+   version with the composition, two without it. (Reading the history
+   with protoback is left to the downstream tool's acceptance, which
+   builds its schema database from such a history.)
 7. `extract`'s warnings: a modification time of 1, and one shared by every
    file.
 
 ## Measured outcome
 
-Filled in at implementation.
+- **Three flavors of one file,** protoc's C++ form, another writer's
+  (fields out of order, every `json_name` set) and a Python build's (one
+  field more), extracted in either order: one version in the history with
+  `fdp` composed with a test rule set for the third, two with `fdp` alone.
+- **The renderer** reads back every file of the stock descriptor set; R1
+  keeps exactly the `json_name` protoc's own output sets explicitly.
+- **protoback,** on the shared `json_name`: its self-check (1 669 cases,
+  1 655 graph dumps) finds no difference.

@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: 2026 Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)
+#
+# SPDX-License-Identifier: MIT
+
+[package]
+name        = "git-seriate-fdp"
+version.workspace    = true
+edition     = "2021"
+description = "git-seriate for the protobuf descriptors embedded in executables"
+license     = "MIT"
+repository.workspace = true
+keywords    = ["git", "protobuf", "descriptor", "snapshots", "history"]
+categories  = ["command-line-utilities", "development-tools"]
+
+[dependencies]
+clap            = { version = "4", features = ["derive"] }
+fdp-scan        = { workspace = true }
+git-seriate     = { workspace = true }
+gix             = { version = "0.76", default-features = false, features = ["tree-editor"] }
+prototext       = { workspace = true }
+prototext-core  = { workspace = true }
+prototext-graph = { workspace = true }
+seriation       = { workspace = true }
+workspace-hack  = { version = "0.1", path = "../workspace-hack" }
+
+[dev-dependencies]
+tempfile = "3"

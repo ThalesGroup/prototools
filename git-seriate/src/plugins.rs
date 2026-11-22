@@ -17,6 +17,8 @@ pub trait Extractor {
 pub struct Extracted {
     pub items: Vec<Item>,
     pub rejected: Vec<Rejection>,
+    /// What the extractor wants kept beside them, shown, never interpreted.
+    pub record: Vec<(String, String)>,
 }
 
 /// How an item is stored in the tree, and back.
@@ -73,6 +75,23 @@ impl Canonicalizer for NoRules {
     }
     fn canon(&self, _: &str, item: &[u8]) -> Vec<u8> {
         item.to_vec()
+    }
+}
+
+/// Canonicalizers applied in order, their rule sets recorded together
+/// (spec 0453 S4): a tool composes the rule sets it ships with its own.
+pub struct Composed(pub Vec<Box<dyn Canonicalizer>>);
+
+impl Canonicalizer for Composed {
+    fn rule_sets(&self) -> Vec<(String, u32)> {
+        self.0.iter().flat_map(|c| c.rule_sets()).collect()
+    }
+    fn canon(&self, path: &str, item: &[u8]) -> Vec<u8> {
+        let mut out = item.to_vec();
+        for c in &self.0 {
+            out = c.canon(path, &out);
+        }
+        out
     }
 }
 
