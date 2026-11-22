@@ -152,6 +152,10 @@ def mutations(records: list[Record]) -> list[Record]:
 
 def decoys() -> list[bytes]:
     """Bytes that aren't FDPs but start like one."""
+    options = descriptor_pb2.FileOptions(
+        java_package="com.example.decoy.proto", java_multiple_files=True
+    ).SerializeToString()
+    rng = random.Random(4)
     return [
         # A Java codegen template, as in libprotoc: field 1, length 36, a
         # "name" ending in .proto once cut at 36 bytes.
@@ -159,6 +163,12 @@ def decoys() -> list[bytes]:
         b"$builder_type_parameters$>\n    internalGet$capitalized_name$() {\n",
         # A java_package option on its own: field 1 of FileOptions.
         _field(1, b"com.example.widgets.proto") + b"\x42\x05Proto",
+        # A Python module's separately serialized FileOptions, as a .pyc
+        # holds it: java_package and java_multiple_files read as a name and
+        # a public_dependency with no import (spec 0449 S8). Alone, and
+        # between random bytes.
+        options,
+        rng.randbytes(32) + options + rng.randbytes(32),
     ]
 
 

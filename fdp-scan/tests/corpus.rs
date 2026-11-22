@@ -69,16 +69,22 @@ fn frames_declared_fields(extra: &[u8]) -> bool {
 struct Scored {
     fates: Vec<(String, Fate)>,
     spurious: Vec<(usize, usize)>,
+    explained: fdp_scan::Explained,
 }
 
 fn score(layout: &str) -> Scored {
+    score_with(layout, &fdp_scan::ScanOptions::default())
+}
+
+fn score_with(layout: &str, options: &fdp_scan::ScanOptions) -> Scored {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/corpus");
     let data = std::fs::read(dir.join(format!("{layout}.bin"))).expect("layout");
     let truth: Vec<(String, usize, usize)> = serde_json::from_slice(
         &std::fs::read(dir.join(format!("{layout}.truth.json"))).expect("truth"),
     )
     .expect("truth is [name, start, end] triples");
-    let found = fdp_scan::scan(&data);
+    let explained = fdp_scan::scan_explained_options(&data, options);
+    let found = explained.found.clone();
     let end_at: std::collections::HashMap<usize, usize> = found.iter().copied().collect();
     let fates = truth
         .iter()
@@ -99,7 +105,11 @@ fn score(layout: &str) -> Scored {
         .into_iter()
         .filter(|r| !starts.contains(&r.0))
         .collect();
-    Scored { fates, spurious }
+    Scored {
+        fates,
+        spurious,
+        explained,
+    }
 }
 
 /// Where a `#top-level-171` record must end: before its last field, the
@@ -166,4 +176,68 @@ fn the_corpus_is_complete() {
         "the mutations are there"
     );
     assert!(score("decoys").fates.is_empty());
+}
+
+/// Spec 0449 S8. The options decoy is refused as a dangling dependency,
+/// alone and between random bytes.
+#[test]
+fn the_options_decoy_is_a_dangling_dependency() {
+    let refused: Vec<_> = score("decoys")
+        .explained
+        .rejected
+        .into_iter()
+        .filter(|r| r.name == "com.example.decoy.proto")
+        .map(|r| r.reason)
+        .collect();
+    assert_eq!(refused, vec![fdp_scan::Reason::DanglingDependency; 2]);
+}
+
+/// Spec 0449 S9. The random-neighbor layouts with the order option: every
+/// record it ends early is reported in `order_cuts`, and the fates stay
+/// within the measured bounds.
+#[test]
+fn the_order_option_on_random_neighbors() {
+    let on = fdp_scan::ScanOptions {
+        increasing_field_numbers: true,
+    };
+    for layout in ["noise-0", "noise-1", "noise-2"] {
+        let off = score(layout);
+        let scored = score_with(layout, &on);
+        let cut: std::collections::HashMap<usize, usize> = scored
+            .explained
+            .order_cuts
+            .iter()
+            .map(|c| (c.start, c.end))
+            .collect();
+        let before: std::collections::HashMap<usize, usize> =
+            off.explained.found.iter().copied().collect();
+        for &(start, end) in &scored.explained.found {
+            if before.get(&start).is_some_and(|&was| end < was) {
+                assert_eq!(
+                    cut.get(&start),
+                    Some(&end),
+                    "{layout}: {start} cut unreported"
+                );
+            }
+        }
+        // Measured 2026-11-22: no record ambiguous, merged or spurious any
+        // more; the name-only record missed, as without the option; and the
+        // `file-option-5` mutations short. Those are the generator's: Python
+        // re-serializes an unknown option after the known ones, where protoc,
+        // which knows it, would write it in order. Each is reported above.
+        for (name, fate) in &scored.fates {
+            let ok = match fate {
+                Fate::Exact => true,
+                Fate::Short(_) => name.contains("file-option-5"),
+                Fate::Missed => name.ends_with("#name-only"),
+                Fate::Ambiguous | Fate::Long | Fate::Merged => false,
+            };
+            assert!(ok, "{layout}: {name}: {fate:?}");
+        }
+        assert!(
+            scored.spurious.is_empty(),
+            "{layout}: {:?}",
+            scored.spurious
+        );
+    }
 }

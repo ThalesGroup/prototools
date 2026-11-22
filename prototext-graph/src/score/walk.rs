@@ -115,6 +115,14 @@ pub struct EntryScore<'g> {
     /// [`Ending::EndOfBuffer`] under [`Policy::Score`], which reads to the
     /// end. Meaningless on a vetoed or truncated entry, like `termination`.
     pub ending: Ending,
+    /// Under [`ScoringOpts::increasing_field_numbers`] only: the offset, from
+    /// the start of `pb`, of the out-of-order tag that ended the record
+    /// (spec 0449 S6). At depth 0 it equals `termination` and `ending` is
+    /// [`Ending::OutOfOrder`]; nested, it lies past `termination`, inside the
+    /// top-level field the record lost, and `ending` is
+    /// [`Ending::Abandoned`], which alone could not say why. `None` when the
+    /// order rule did not end the record.
+    pub order_break: Option<usize>,
 }
 
 /// Why a [`Policy::Scan`] record ended where `termination` says.
@@ -135,6 +143,9 @@ pub enum Ending {
     /// The walk met an anomaly and the record is its last clean boundary
     /// (spec 0313 S3): what follows did not read as a field of this type.
     Abandoned,
+    /// A top-level field numbered lower than the one before it, under
+    /// [`ScoringOpts::increasing_field_numbers`] (spec 0449 S4).
+    OutOfOrder,
 }
 
 impl EntryScore<'_> {
@@ -373,6 +384,17 @@ struct WalkState<'a, 'g> {
     /// and nothing else. The allocation is 16 bytes per root, paid only by
     /// the scanner — which walks one root.
     snapshots: Vec<Snapshot>,
+    /// [`ScoringOpts::increasing_field_numbers`], already gated on
+    /// [`Policy::Scan`] (spec 0449 S3).
+    increasing: bool,
+    /// The address of `pb`'s first byte, so that a nested frame, which walks
+    /// a subslice of `pb`, can report an offset from the start of `pb`
+    /// ([`WalkState::offset_in_pb`]). Every buffer the walk recurses into is
+    /// such a subslice: LEN payloads, groups and `Any` values are all cut
+    /// from it, never copied.
+    pb_addr: usize,
+    /// `pb.len()`, to check that claim in debug builds.
+    pb_len: usize,
 }
 
 impl<'a, 'g> WalkState<'a, 'g> {
@@ -380,6 +402,7 @@ impl<'a, 'g> WalkState<'a, 'g> {
         graph: &'a ArchivedCompiledGraph,
         scores: &'a mut Vec<EntryScore<'g>>,
         opts: &ScoringOpts,
+        pb: &[u8],
         cancel: Option<&'a AtomicBool>,
     ) -> Self {
         let n = scores.len();
@@ -402,7 +425,21 @@ impl<'a, 'g> WalkState<'a, 'g> {
             } else {
                 Vec::new()
             },
+            increasing: opts.increasing_field_numbers && opts.policy == Policy::Scan,
+            pb_addr: pb.as_ptr() as usize,
+            pb_len: pb.len(),
         }
+    }
+
+    /// The offset from the start of `pb` of `buf[pos]`, `buf` being `pb` or
+    /// a subslice of it (see `pb_addr`).
+    fn offset_in_pb(&self, buf: &[u8], pos: usize) -> usize {
+        let base = (buf.as_ptr() as usize).wrapping_sub(self.pb_addr);
+        debug_assert!(
+            base + buf.len() <= self.pb_len,
+            "the walk recursed into a buffer that is not a subslice of pb"
+        );
+        base + pos
     }
 
     /// The root state an `Any`'s `type_url` names, or `None` if the graph has
@@ -561,6 +598,13 @@ pub struct ScoringOpts {
     /// whose writers do not follow the declaration; the walk then behaves
     /// exactly as before spec 0371.
     pub packing_penalty: bool,
+    /// Require every message's fields in non-decreasing number order (spec
+    /// 0449 S3), as protoc's C++ writer emits them. A lower number than the
+    /// previous field's ends the record at depth 0
+    /// ([`Ending::OutOfOrder`]), and abandons it to its last clean boundary
+    /// when nested. Off by default: Go's writers do not keep this order, and
+    /// their records would be cut short. Ignored under [`Policy::Score`].
+    pub increasing_field_numbers: bool,
 }
 
 impl Default for ScoringOpts {
@@ -570,6 +614,7 @@ impl Default for ScoringOpts {
             policy: Policy::default(),
             end_undeclared: false,
             packing_penalty: true,
+            increasing_field_numbers: false,
         }
     }
 }
@@ -670,6 +715,7 @@ pub fn score_subset<'g>(
             // the value a root keeps by not stopping.
             termination: pb.len(),
             ending: Ending::EndOfBuffer,
+            order_break: None,
         })
         .collect();
 
@@ -684,7 +730,7 @@ pub fn score_subset<'g>(
             .map(|(local, &r)| (graph.roots[r as usize].state_id.to_native(), local as u32)),
     );
 
-    let mut ws = WalkState::new(graph, &mut scores, opts, cancel);
+    let mut ws = WalkState::new(graph, &mut scores, opts, pb, cancel);
     score_message_multi(pb, 0, initial_active, None, &mut ws, 0, opts.end_undeclared);
 
     scores
@@ -1477,6 +1523,23 @@ fn scan_terminates(
     }
 }
 
+/// The record `ae`'s entries were reading ends at `at`, before the tag there,
+/// for `ending`'s reason (spec 0238 S12-S13, spec 0449 S4). The caller clears
+/// `ae.entries` once it has recorded anything else about them.
+///
+/// The cardinality pass runs here, at the termination point, not at EOF: a
+/// `required` field that would have appeared after the boundary is genuinely
+/// absent from the record that ended, and deferring this pass would instead
+/// judge it against occurrences polluted by the record that follows.
+fn end_record(ae: &mut ActiveEntry, ws: &mut WalkState, at: usize, ending: Ending) {
+    flush_pending(ae, ws.scores);
+    apply_cardinality_multi(ws.graph, ae, ws.scores, true);
+    for &e in &ae.entries {
+        ws.scores[e as usize].termination = at;
+        ws.scores[e as usize].ending = ending;
+    }
+}
+
 // ── Any expansion helpers (spec 0089 §8) ──────────────────────────────────────
 
 /// Block ID 0 is permanently reserved for `google.protobuf.Any` (spec 0089 §9).
@@ -1626,6 +1689,9 @@ fn score_message_multi_inner(
 ) -> usize {
     let buflen = buf.len();
     let mut pos = start;
+    // The last field number this frame read, for the order rule (spec 0449
+    // S3). Per frame: a nested message's numbers are its own.
+    let mut prev_field: u64 = 0;
 
     // Hard cap on this function's genuine recursion, shared with
     // `prototext-core`'s renderer so both wire walkers refuse the same inputs
@@ -1772,26 +1838,53 @@ fn score_message_multi_inner(
         // truncate every other root's score. One pass, N independent offsets.
         if ws.policy == Policy::Scan && depth == 0 {
             for ae in active.iter_mut() {
-                let Some(ending) = scan_terminates(ws.graph, ae, &tag) else {
-                    continue;
-                };
-                // At the termination point, not at EOF: a `required` field
-                // that would have appeared after the boundary is genuinely
-                // absent from the record that ended, and deferring this pass
-                // would instead judge it against occurrences polluted by the
-                // record that follows.
-                flush_pending(ae, ws.scores);
-                apply_cardinality_multi(ws.graph, ae, ws.scores, true);
-                for &e in &ae.entries {
-                    ws.scores[e as usize].termination = tag_start;
-                    ws.scores[e as usize].ending = ending;
+                if let Some(ending) = scan_terminates(ws.graph, ae, &tag) {
+                    end_record(ae, ws, tag_start, ending);
+                    ae.entries.clear();
                 }
-                ae.entries.clear();
             }
             active.retain(|ae| !ae.entries.is_empty());
             if active.is_empty() {
                 return tag_start;
             }
+        }
+
+        // ── Field order (spec 0449 S3-S5) ─────────────────────────────────────
+        //
+        // After S12, so that a tag both rules would end on keeps S12's reason:
+        // a repeated singular `name` is the next record, which is the more
+        // useful thing to know about it (spec 0448 S6 reads it). An end-group
+        // tag repeats its group's number and closes the frame rather than
+        // adding a field to it, and an out-of-range number has no place in any
+        // order, so neither takes part.
+        if ws.increasing && wire_type != WT_END_GROUP && !tag.out_of_range {
+            if field_number < prev_field {
+                let at = ws.offset_in_pb(buf, tag_start);
+                if depth == 0 {
+                    for ae in active.iter_mut() {
+                        end_record(ae, ws, tag_start, Ending::OutOfOrder);
+                        for &e in &ae.entries {
+                            ws.scores[e as usize].order_break = Some(at);
+                        }
+                        ae.entries.clear();
+                    }
+                    active.clear();
+                    return tag_start;
+                }
+                // Nested, the parent's length bounds this message, so the
+                // record cannot end here: it falls back to its last clean
+                // boundary, before the top-level field holding this one.
+                for ae in active.iter() {
+                    for &e in &ae.entries {
+                        if !ws.is_vetoed(e) {
+                            ws.scores[e as usize].order_break = Some(at);
+                        }
+                    }
+                }
+                veto_all(active, ws, "field out of order");
+                return buflen;
+            }
+            prev_field = field_number;
         }
 
         // ── Wire-level non-canonical penalties (all active entries) ───────────
@@ -2462,6 +2555,9 @@ mod set_vetoed_tests {
             elem_verdicts: Vec::new(),
             any_index: None,
             snapshots: Vec::new(),
+            increasing: false,
+            pb_addr: 0,
+            pb_len: 0,
         }
     }
 
@@ -2513,6 +2609,7 @@ mod set_vetoed_tests {
             truncated: 0,
             termination: 0,
             ending: Ending::EndOfBuffer,
+            order_break: None,
         }
     }
 
@@ -2578,7 +2675,7 @@ mod set_vetoed_tests {
         let graph = tiny_graph();
         let mut scores = vec![entry("pkg.Msg"), entry("pkg.Other")];
 
-        let scored = WalkState::new(&graph, &mut scores, &ScoringOpts::default(), None);
+        let scored = WalkState::new(&graph, &mut scores, &ScoringOpts::default(), &[], None);
         assert!(scored.snapshots.is_empty(), "no snapshots under `Score`");
         drop(scored);
 
@@ -2586,7 +2683,7 @@ mod set_vetoed_tests {
             policy: Policy::Scan,
             ..Default::default()
         };
-        let scanned = WalkState::new(&graph, &mut scores, &opts, None);
+        let scanned = WalkState::new(&graph, &mut scores, &opts, &[], None);
         assert_eq!(scanned.snapshots.len(), 2, "one per entry under `Scan`");
     }
 

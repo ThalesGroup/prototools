@@ -220,6 +220,7 @@ fn score_coefficients_rank_by_suspicion() {
             truncated: 0,
             termination: 0,
             ending: walk::Ending::EndOfBuffer,
+            order_break: None,
         };
         f(&mut s);
         s.score()
@@ -2657,6 +2658,135 @@ fn test_scan_reports_how_a_record_ended() {
         score_entry(&pb, &g, "Rec").ending,
         walk::Ending::EndOfBuffer
     );
+}
+
+/// Spec 0449's graph: `Rec { 1: uint32, 2: Opts, 3: repeated uint32,
+/// 4: uint32 }`, `Opts { 1: uint32, 2: uint32 }`.
+fn order_graph() -> score_load::LoadedGraph {
+    let mut states = crate::hash::HashMap::default();
+    states.insert(
+        "Rec".to_string(),
+        vec![
+            uint32(1, FieldLabel::Optional),
+            ScoringField {
+                number: 2,
+                kind: ScoringKind::Node,
+                child: Some("Opts".to_string()),
+                range: None,
+                label: FieldLabel::Optional,
+                packed: false,
+            },
+            uint32(3, FieldLabel::Repeated),
+            uint32(4, FieldLabel::Optional),
+        ],
+    );
+    states.insert(
+        "Opts".to_string(),
+        vec![
+            uint32(1, FieldLabel::Optional),
+            uint32(2, FieldLabel::Optional),
+        ],
+    );
+    compile_and_load(&Merged {
+        states,
+        node_kinds: crate::hash::HashMap::default(),
+        roots: vec!["Rec".to_string()],
+        ext_ranges: crate::hash::HashMap::default(),
+        has_extension_ranges: true,
+    })
+}
+
+fn order_opts() -> walk::ScoringOpts {
+    walk::ScoringOpts {
+        increasing_field_numbers: true,
+        ..scan_opts()
+    }
+}
+
+/// Spec 0449 S4, S6. At depth 0 a lower field number ends the record before
+/// it, and says so; without the option the same bytes read as one record.
+#[test]
+fn test_increasing_field_numbers_ends_a_record_before_a_lower_field() {
+    let g = order_graph();
+    let mut pb = field_varint(1, 1); // 0..2
+    pb.extend(field_varint(3, 1)); // 2..4
+    let cut = pb.len();
+    pb.extend(field_len(2, &field_varint(1, 1))); // lower than 3
+
+    let r = score_entry_opts(&pb, &g, "Rec", &order_opts());
+    assert_eq!(
+        (r.termination, r.ending, r.order_break),
+        (cut, walk::Ending::OutOfOrder, Some(cut))
+    );
+
+    let r = score_entry_opts(&pb, &g, "Rec", &scan_opts());
+    assert_eq!(
+        (r.termination, r.ending, r.order_break),
+        (pb.len(), walk::Ending::EndOfBuffer, None)
+    );
+}
+
+/// Spec 0449 S5, S6. Nested, the parent's length bounds the message, so the
+/// record falls back to its last clean boundary, before the top-level field
+/// holding the out-of-order one; `order_break` points at that tag.
+#[test]
+fn test_increasing_field_numbers_abandons_at_a_nested_lower_field() {
+    let g = order_graph();
+    let mut opts = field_varint(2, 1); // 0..2 of the payload
+    opts.extend(field_varint(1, 1)); // lower than 2
+    let mut pb = field_varint(1, 1); // 0..2
+    pb.extend(field_len(2, &opts)); // tag and length 2..4, payload 4..8
+
+    let r = score_entry_opts(&pb, &g, "Rec", &order_opts());
+    assert!(!r.vetoed);
+    assert_eq!(
+        (r.termination, r.ending, r.order_break),
+        (2, walk::Ending::Abandoned, Some(6))
+    );
+    assert_eq!(&pb[6..7], &tag(1, 0)[..], "the break is the nested tag");
+
+    let r = score_entry_opts(&pb, &g, "Rec", &scan_opts());
+    assert_eq!((r.termination, r.order_break), (pb.len(), None));
+}
+
+/// Spec 0449 S3. A repeated field's elements repeat their number, which is
+/// in order; a repeated field split around another is not.
+#[test]
+fn test_increasing_field_numbers_allows_repeated_numbers() {
+    let g = order_graph();
+    let mut pb = field_varint(1, 1);
+    pb.extend(field_varint(3, 1));
+    pb.extend(field_varint(3, 2));
+    pb.extend(field_varint(4, 1));
+    let r = score_entry_opts(&pb, &g, "Rec", &order_opts());
+    assert_eq!(
+        (r.termination, r.ending, r.order_break),
+        (pb.len(), walk::Ending::EndOfBuffer, None)
+    );
+
+    let cut = pb.len();
+    pb.extend(field_varint(3, 3)); // 3, 3, 4, 3
+    let r = score_entry_opts(&pb, &g, "Rec", &order_opts());
+    assert_eq!((r.termination, r.ending), (cut, walk::Ending::OutOfOrder));
+}
+
+/// Spec 0449 S3. The option is a `Scan` rule: under `Score` every root
+/// still reads the whole buffer, in any order.
+#[test]
+fn test_order_option_is_ignored_under_score() {
+    let g = order_graph();
+    let mut pb = field_varint(4, 1);
+    pb.extend(field_varint(1, 1));
+    let opts = walk::ScoringOpts {
+        increasing_field_numbers: true,
+        ..Default::default()
+    };
+    let r = score_entry_opts(&pb, &g, "Rec", &opts);
+    assert_eq!(
+        (r.termination, r.ending, r.order_break),
+        (pb.len(), walk::Ending::EndOfBuffer, None)
+    );
+    assert_eq!(r.matches, score_entry(&pb, &g, "Rec").matches);
 }
 
 /// Test 10 (S13). The offset is the first byte of the terminating tag. A

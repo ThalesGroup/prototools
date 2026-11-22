@@ -13,6 +13,13 @@ use std::sync::OnceLock;
 use prototext_graph::score::load::LoadedGraph;
 use prototext_graph::score::{score_one, Ending, Policy, ScoringOpts};
 
+/// `FileDescriptorProto`'s field numbers that [`dangling_dependency_cut`]
+/// reads. The stock ones, whatever schema the walk scored against: every
+/// `descriptor.proto` in use keeps them (spec 0449 S1).
+const FDP_DEPENDENCY: u64 = 3;
+const FDP_PUBLIC_DEPENDENCY: u64 = 10;
+const FDP_WEAK_DEPENDENCY: u64 = 11;
+
 /// The only root a candidate is scored against (spec 0239 G3).
 ///
 /// One root, not two. `SCAN` against `FileDescriptorProto` alone already
@@ -50,6 +57,36 @@ pub struct Explained {
     /// ends in `.proto` are listed: every `0x0A` byte is an anchor, and
     /// listing the others would bury the ones worth reading.
     pub rejected: Vec<Rejected>,
+    /// The records in `found` that the order check ended earlier than the
+    /// scan without it ends them (spec 0449 S7), in order. Always empty unless
+    /// [`ScanOptions::increasing_field_numbers`] is set.
+    pub order_cuts: Vec<OrderCut>,
+}
+
+/// A record [`ScanOptions::increasing_field_numbers`] ended early. It is in
+/// [`Explained::found`] all the same: whether to keep a record cut short is
+/// the caller's decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OrderCut {
+    /// Where the record starts, as in `found`.
+    pub start: usize,
+    /// Where it now ends, as in `found`.
+    pub end: usize,
+    /// The offset of the out-of-order tag: `end` when it was a top-level
+    /// field, past `end` when it was nested in the top-level field the record
+    /// lost.
+    pub at: usize,
+}
+
+/// How to scan. `Default` is what [`scan_explained`] and
+/// [`scan_explained_with`] use.
+#[derive(Debug, Clone, Default)]
+pub struct ScanOptions {
+    /// Require every message's fields in increasing number order, as
+    /// protoc's C++ writer emits them (spec 0449 S3). Fewer ambiguous and
+    /// merged records on such inputs; on others, such as Go's, records cut
+    /// short, each reported in [`Explained::order_cuts`].
+    pub increasing_field_numbers: bool,
 }
 
 /// One refused candidate.
@@ -73,6 +110,10 @@ pub enum Reason {
     /// The walk refused it: a veto, an unknown field, or a missing
     /// `required` field (spec 0239 S4).
     Defect,
+    /// Cut before a `public_dependency` or `weak_dependency` index with no
+    /// matching `dependency`, which protoc's descriptor builder rejects, the
+    /// record holds its name only (spec 0449 S1).
+    DanglingDependency,
 }
 
 /// [`scan`], with the candidates it refused and why. `scan` is this function's
@@ -91,7 +132,22 @@ pub fn scan_explained(data: &[u8]) -> Explained {
 /// and contents instead of reading them as opaque bytes, and an extra
 /// top-level field no longer ends the record (spec 0448 S4).
 pub fn scan_explained_with(data: &[u8], graph: &LoadedGraph, root: &str) -> Explained {
-    walk_candidates(data, graph, root)
+    scan_explained_with_options(data, graph, root, &ScanOptions::default())
+}
+
+/// [`scan_explained`], with options (spec 0449 S7).
+pub fn scan_explained_options(data: &[u8], options: &ScanOptions) -> Explained {
+    scan_explained_with_options(data, wkt_graph(), FDP, options)
+}
+
+/// [`scan_explained_with`], with options (spec 0449 S7).
+pub fn scan_explained_with_options(
+    data: &[u8],
+    graph: &LoadedGraph,
+    root: &str,
+    options: &ScanOptions,
+) -> Explained {
+    walk_candidates(data, graph, root, options)
 }
 
 // ============================================================================
@@ -126,7 +182,12 @@ fn is_plausible_path(name: &str) -> bool {
         })
 }
 
-fn walk_candidates(data: &[u8], graph: &LoadedGraph, root: &str) -> Explained {
+fn walk_candidates(
+    data: &[u8],
+    graph: &LoadedGraph,
+    root: &str,
+    options: &ScanOptions,
+) -> Explained {
     let mut result = Explained::default();
     let data_len = data.len();
     let mut offset = 0;
@@ -151,13 +212,23 @@ fn walk_candidates(data: &[u8], graph: &LoadedGraph, root: &str) -> Explained {
                 if let Ok(name_str) = std::str::from_utf8(&data[name_start..name_end]) {
                     if name_str.ends_with(".proto") {
                         let verdict = if is_plausible_path(name_str) {
-                            score_candidate_with(data, offset, graph, root)
+                            score_candidate_with(data, offset, graph, root, options)
                         } else {
                             Err(Reason::ImplausibleName)
                         };
                         match verdict {
-                            Ok(fdp_end) => {
+                            Ok(Accepted {
+                                end: fdp_end,
+                                order_break,
+                            }) => {
                                 result.found.push((offset, fdp_end));
+                                if let Some(at) = order_break {
+                                    result.order_cuts.push(OrderCut {
+                                        start: offset,
+                                        end: fdp_end,
+                                        at: offset + at,
+                                    });
+                                }
                                 offset = fdp_end;
                                 continue;
                             }
@@ -215,9 +286,11 @@ fn score_candidate_with(
     start: usize,
     graph: &LoadedGraph,
     root: &str,
-) -> Result<usize, Reason> {
+    options: &ScanOptions,
+) -> Result<Accepted, Reason> {
     let opts = ScoringOpts {
         policy: Policy::Scan,
+        increasing_field_numbers: options.increasing_field_numbers,
         ..Default::default()
     };
     let entry = score_one(&data[start..], root, graph.graph(), &opts).ok_or(Reason::Defect)?;
@@ -233,7 +306,39 @@ fn score_candidate_with(
     if !declares_more_than_a_name(&data[start..end]) && !stands_alone(entry.ending) {
         return Err(Reason::NameOnly);
     }
-    Ok(end)
+    let end = match dangling_dependency_cut(&data[start..end]) {
+        None => end,
+        // What is left of a record cut before its dangling index is a name
+        // at most, and does not stand alone: the next byte is not a
+        // record's end.
+        Some(cut) if !declares_more_than_a_name(&data[start..start + cut]) => {
+            return Err(Reason::DanglingDependency);
+        }
+        Some(cut) => start + cut,
+    };
+    // The order rule ends many records exactly where they would have ended
+    // anyway, at random bytes that happen to read as a lower field. Only a
+    // record the option made *shorter* lost anything, so only that one is
+    // reported (spec 0449 S7): the record is scored again without the
+    // option, which costs a second walk on these records alone.
+    let order_break = entry.order_break.filter(|_| {
+        let mut without = options.clone();
+        without.increasing_field_numbers = false;
+        score_candidate_with(data, start, graph, root, &without)
+            .is_ok_and(|unordered| unordered.end > end)
+    });
+    Ok(Accepted { end, order_break })
+}
+
+/// A candidate [`score_candidate_with`] accepts.
+#[derive(Debug, PartialEq, Eq)]
+struct Accepted {
+    /// Where the record ends, as an offset in the whole buffer.
+    end: usize,
+    /// Where the order check ended it, as an offset from the record's start
+    /// (spec 0449 S6), when it ended it earlier than the walk without the
+    /// check does.
+    order_break: Option<usize>,
 }
 
 /// Whether a record that ended this way stands alone (spec 0448 S6): at the
@@ -309,6 +414,99 @@ fn declares_more_than_a_name(record: &[u8]) -> bool {
     false
 }
 
+/// Where `record` must end so that every `public_dependency` and
+/// `weak_dependency` index in it names one of its `dependency` entries, or
+/// `None` if they all do (spec 0449 S1).
+///
+/// protoc's descriptor builder rejects any other index ("Invalid public
+/// dependency index.": protobuf 34.1, `descriptor.cc`, `BuildFileImpl`), so
+/// no genuine descriptor has one, and what a cut removes is never the
+/// record's own. Two things do carry one:
+///
+/// - bytes after a record that happen to frame an index field, which the
+///   walk cannot tell from the record's (spec 0448 N2): a random `0x58` is a
+///   `weak_dependency` tag. Cutting there recovers the record exactly;
+///   refusing it would lose a genuine record to its neighbors;
+/// - a Python `_pb2` module's separately serialized `FileOptions`, read from
+///   a `.pyc`: `java_package` (field 1, a `.proto`-suffixed name) and
+///   `java_multiple_files = true` (field 10, 1) are a `name` and a
+///   `public_dependency: 1` with no import. The cut leaves its name alone,
+///   and the caller refuses that.
+///
+/// The cut is before the first top-level field holding a dangling index,
+/// counting the `dependency` entries before the cut, and is repeated until
+/// none dangles: removing fields can only lower the count. Read after the
+/// walk, from the recovered record, like [`declares_more_than_a_name`]:
+/// knowledge about `FileDescriptorProto`, not about protobuf. Indices are
+/// read packed or not; a negative one is a ten-byte varint, so as an
+/// unsigned value it is past any count. The record is known to parse, so
+/// anything this cannot decode means the caller passed something else, and
+/// `None`, cutting nothing, is the safe answer to that.
+fn dangling_dependency_cut(record: &[u8]) -> Option<usize> {
+    /// One top-level field: where it starts, whether it is a `dependency`,
+    /// and the largest index it holds, if it is an index field.
+    struct Field {
+        start: usize,
+        dependency: bool,
+        max_index: Option<u64>,
+    }
+    let mut fields: Vec<Field> = Vec::new();
+    let mut pos = 0;
+    while pos < record.len() {
+        let start = pos;
+        let (tag, tag_len) = decode_varint(&record[pos..])?;
+        pos += tag_len;
+        let number = tag >> 3;
+        let is_index = number == FDP_PUBLIC_DEPENDENCY || number == FDP_WEAK_DEPENDENCY;
+        let mut max_index = None;
+        match tag & 7 {
+            0 => {
+                let (value, len) = decode_varint(&record[pos..])?;
+                pos += len;
+                if is_index {
+                    max_index = Some(value);
+                }
+            }
+            1 => pos += 8,
+            5 => pos += 4,
+            2 => {
+                let (len, len_len) = decode_varint(&record[pos..])?;
+                let end = (pos + len_len)
+                    .checked_add(len as usize)
+                    .filter(|&end| end <= record.len())?;
+                if is_index {
+                    let mut p = pos + len_len;
+                    while p < end {
+                        let (value, len) = decode_varint(&record[p..end])?;
+                        max_index = max_index.max(Some(value));
+                        p += len;
+                    }
+                }
+                pos = end;
+            }
+            _ => return None,
+        }
+        fields.push(Field {
+            start,
+            dependency: number == FDP_DEPENDENCY && tag & 7 == 2,
+            max_index,
+        });
+    }
+
+    let mut kept = fields.len();
+    loop {
+        let dependencies = fields[..kept].iter().filter(|f| f.dependency).count() as u64;
+        let Some(first) = fields[..kept]
+            .iter()
+            .position(|f| f.max_index.is_some_and(|i| i >= dependencies))
+        else {
+            break;
+        };
+        kept = first;
+    }
+    (kept < fields.len()).then(|| fields[kept].start)
+}
+
 fn decode_varint(data: &[u8]) -> Option<(u64, usize)> {
     let mut result = 0u64;
     let mut shift = 0;
@@ -335,7 +533,8 @@ mod tests {
 
     /// A candidate scored against the embedded schema, as [`scan`] does.
     fn score_candidate(data: &[u8], start: usize) -> Result<usize, Reason> {
-        score_candidate_with(data, start, wkt_graph(), FDP)
+        score_candidate_with(data, start, wkt_graph(), FDP, &ScanOptions::default())
+            .map(|accepted| accepted.end)
     }
 
     /// A message carrying just field 1, `name` — a `FileDescriptorProto` or a
@@ -854,6 +1053,141 @@ mod tests {
         let explained = scan_explained(&fdp);
         assert_eq!(explained.found, vec![], "{explained:?}");
         assert_eq!(explained.rejected[0].reason, Reason::Defect);
+    }
+
+    fn varint(mut v: u64) -> Vec<u8> {
+        let mut buf = Vec::new();
+        loop {
+            let byte = (v & 0x7F) as u8;
+            v >>= 7;
+            if v == 0 {
+                buf.push(byte);
+                return buf;
+            }
+            buf.push(byte | 0x80);
+        }
+    }
+
+    fn varint_field(number: u32, value: u64) -> Vec<u8> {
+        let mut buf = varint(u64::from(number) << 3);
+        buf.extend(varint(value));
+        buf
+    }
+
+    /// Spec 0449 S1. A Python module's `FileOptions`, `java_package` and
+    /// `java_multiple_files = true`, read as a descriptor: a `name` and a
+    /// `public_dependency: 1` with no import. Refused alone and between
+    /// random bytes.
+    #[test]
+    fn test_scan_refuses_a_dangling_public_dependency() {
+        let mut options = name_field("com.example.decoy.proto");
+        options.extend(varint_field(10, 1));
+        for (before, after) in [(&b""[..], &b""[..]), (&b"\x91\x07"[..], &b"\x77\x13"[..])] {
+            let mut buf = before.to_vec();
+            buf.extend_from_slice(&options);
+            buf.extend_from_slice(after);
+            let explained = scan_explained(&buf);
+            assert!(explained.found.is_empty(), "{explained:?}");
+            assert_eq!(explained.rejected.len(), 1);
+            assert_eq!(explained.rejected[0].start, before.len());
+            assert_eq!(explained.rejected[0].reason, Reason::DanglingDependency);
+        }
+    }
+
+    /// Spec 0449 S1. The same index with its import is a real descriptor.
+    #[test]
+    fn test_scan_accepts_a_public_dependency_with_its_import() {
+        let mut fdp = make_fdp("a.proto");
+        fdp.extend(framed(3, b"b.proto"));
+        fdp.extend(varint_field(10, 0));
+        assert_eq!(scan(&fdp), vec![(0, fdp.len())]);
+    }
+
+    /// Spec 0449 S1, for `weak_dependency`, packed and not: a real record
+    /// with a dangling index after its own fields ends before it.
+    #[test]
+    fn test_scan_cuts_a_record_before_a_dangling_weak_dependency() {
+        let mut one_import = make_fdp("a.proto");
+        one_import.extend(framed(3, b"b.proto"));
+
+        for index in [varint_field(11, 1), framed(11, &[0x00, 0x01])] {
+            let mut buf = one_import.clone();
+            buf.extend(index);
+            let explained = scan_explained(&buf);
+            assert_eq!(explained.found, vec![(0, one_import.len())]);
+            assert!(explained.rejected.is_empty());
+        }
+
+        let mut resolved = one_import.clone();
+        resolved.extend(framed(11, &[0x00]));
+        assert_eq!(scan(&resolved), vec![(0, resolved.len())]);
+    }
+
+    /// Spec 0449 S1. Random bytes after a record that happen to frame an
+    /// index field (`0x58`, `weak_dependency`, then a varint) are cut off:
+    /// the record comes back exact rather than refused.
+    #[test]
+    fn test_scan_cuts_a_junk_index_after_a_record() {
+        let fdp = make_fdp("a.proto");
+        let mut buf = fdp.clone();
+        buf.extend_from_slice(&[0x58, 0xd8, 0x27, 0x9a]);
+        assert_eq!(scan(&buf), vec![(0, fdp.len())]);
+    }
+
+    /// Spec 0449 S7. A record whose top-level fields are out of order, as Go
+    /// writes some: with the option it ends before the lower field and is
+    /// reported in `order_cuts`; without, it is found whole and nothing is
+    /// reported.
+    #[test]
+    fn test_scan_reports_a_record_the_order_check_cut() {
+        let mut fdp = make_fdp("go.proto");
+        fdp.extend(framed(8, &framed(1, b"example.com/go"))); // options
+        let cut = fdp.len();
+        fdp.extend(framed(4, &framed(1, b"M"))); // message_type, lower than 8
+
+        let on = ScanOptions {
+            increasing_field_numbers: true,
+        };
+        let explained = scan_explained_with_options(&fdp, wkt_graph(), FDP, &on);
+        assert_eq!(explained.found, vec![(0, cut)]);
+        assert_eq!(
+            explained.order_cuts,
+            vec![OrderCut {
+                start: 0,
+                end: cut,
+                at: cut
+            }]
+        );
+
+        let explained = scan_explained_with(&fdp, wkt_graph(), FDP);
+        assert_eq!(explained.found, vec![(0, fdp.len())]);
+        assert!(explained.order_cuts.is_empty());
+    }
+
+    /// Spec 0449 S7. Nested, the cut lies inside the field the record lost.
+    #[test]
+    fn test_scan_reports_a_nested_order_cut_past_the_end() {
+        let mut fdp = make_fdp("go.proto");
+        let cut = fdp.len();
+        let mut options = framed(8, b"Outer"); // java_outer_classname
+        let nested = options.len();
+        options.extend(framed(1, b"example.com/go")); // java_package, lower
+        let at = cut + framed(8, &options).len() - options.len() + nested;
+        fdp.extend(framed(8, &options));
+
+        let on = ScanOptions {
+            increasing_field_numbers: true,
+        };
+        let explained = scan_explained_with_options(&fdp, wkt_graph(), FDP, &on);
+        assert_eq!(explained.found, vec![(0, cut)]);
+        assert_eq!(
+            explained.order_cuts,
+            vec![OrderCut {
+                start: 0,
+                end: cut,
+                at
+            }]
+        );
     }
 
     #[test]

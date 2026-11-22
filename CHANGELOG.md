@@ -19,6 +19,16 @@ SPDX-License-Identifier: MIT
 - prototext-graph: `EntryScore::undeclared`, counting the undeclared
   fields a scan read, and `EntryScore::ending`, saying how a scanned
   record ended. A struct literal of `EntryScore` must now name both.
+- fdp-scan: `ScanOptions`, `scan_explained_options` and
+  `scan_explained_with_options`. The one option,
+  `increasing_field_numbers`, requires fields in number order, as protoc's
+  C++ writer emits them, and reports in `Explained::order_cuts` each record
+  it ends earlier than the scan without it. Off by default: Go's writers
+  don't keep that order (spec 0449).
+- prototext-graph: `ScoringOpts::increasing_field_numbers`,
+  `EntryScore::order_break` and `Ending::OutOfOrder`, the walk's side of
+  it. A struct literal of `EntryScore` must now name `order_break`, and a
+  `match` on `Ending` the new variant.
 
 ### Changed
 
@@ -28,6 +38,13 @@ SPDX-License-Identifier: MIT
   built against a fuller `descriptor.proto` lost a third of their
   descriptors' contents this way. An undeclared top-level field still
   ends the descriptor (spec 0448).
+- fdp-scan, protoscan: a descriptor ends before a `public_dependency` or
+  `weak_dependency` index with no matching `dependency`, which protoc
+  never writes; one left with its name only is refused, with the new
+  reason `DanglingDependency`. Bytes after a descriptor that happen to
+  read as such a field (Go's string data, random neighbors) are no longer
+  taken for its own, and a Python module's options string in a `.pyc` is
+  no longer reported as a descriptor (spec 0449).
 - fdp-scan, protoscan: a `.proto` name is plausible only if each path
   component is made of `A-Z a-z 0-9 _ . + -`, which drops the Java
   codegen templates every `libprotoc` used to yield as five descriptors.
