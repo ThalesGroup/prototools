@@ -96,6 +96,7 @@ mod tests {
         Source {
             identity: id.into(),
             build_time: time,
+            order_hint: None,
             group: Some(group.into()),
             paths: paths.iter().map(|p| p.to_string()).collect(),
             metadata: vec![],
@@ -107,6 +108,7 @@ mod tests {
             kind,
             files: vec![file.into()],
             detail: String::new(),
+            subject: None,
             build: Vec::new(),
         }
     }

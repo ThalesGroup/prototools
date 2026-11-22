@@ -175,6 +175,7 @@ pub fn settle(repo: &gix::Repository, options: &Options) -> Result<Report, Error
     )?;
     let region = &walk.entries[..walk.region_len];
     let old_chain: Vec<&Entry> = region.iter().rev().collect();
+    refuse_repeated(repo, &old_chain)?;
 
     // 4. The sort.
     let target = if options.dry_run {
@@ -480,6 +481,40 @@ struct SortInput {
     block: Block,
     items: Vec<(String, ObjectId)>,
     author: gix::actor::Signature,
+}
+
+/// The sort places each snapshot once, so a history that holds one twice
+/// is refused. When the later copy changes nothing, as a snapshot stored
+/// again right after itself does, the refusal names the way out:
+/// `compact --level 1` drops such a commit.
+fn refuse_repeated(repo: &gix::Repository, chain: &[&Entry]) -> Result<(), Error> {
+    let mut seen: HashMap<&str, ObjectId> = HashMap::new();
+    for entry in chain {
+        let Entry::Snapshot(s) = entry else {
+            continue;
+        };
+        let identity = s.block.source.identity.as_str();
+        let Some(first) = seen.insert(identity, s.id) else {
+            continue;
+        };
+        let parent_tree = match first_parent(repo, s.id)? {
+            Some(p) => Some(commit_tree(repo, p)?),
+            None => None,
+        };
+        let mut message = format!(
+            "the history holds {identity:?} twice, at {} and {}",
+            first.to_hex_with_len(8),
+            s.id.to_hex_with_len(8)
+        );
+        if parent_tree == Some(s.tree) {
+            message.push_str(
+                "; the second copy changes nothing, and `compact --level 1` drops it: \
+                 run it first",
+            );
+        }
+        return Err(Error::Refused(message));
+    }
+    Ok(())
 }
 
 fn sort_input_from_branch(repo: &gix::Repository, l: &store::Listed) -> Result<SortInput, Error> {

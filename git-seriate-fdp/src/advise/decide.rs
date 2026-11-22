@@ -354,6 +354,7 @@ mod tests {
         Source {
             identity: id.into(),
             build_time: time,
+            order_hint: None,
             group: None,
             paths: paths.iter().map(|p| p.to_string()).collect(),
             metadata: vec![],

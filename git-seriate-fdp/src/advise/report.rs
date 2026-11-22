@@ -81,6 +81,7 @@ pub fn apply(
                 kind: ProblemKind::Build,
                 files: vec![path],
                 detail: note,
+                subject: None,
                 build: Vec::new(),
             }),
         }
@@ -94,6 +95,7 @@ pub fn apply(
             kind: ProblemKind::StaleEntry,
             files: vec![directive.to_string()],
             detail: format!("{code}: {reason}"),
+            subject: None,
             build: Vec::new(),
         });
     }
@@ -155,6 +157,7 @@ mod tests {
             sources: vec![Source {
                 identity: "s".into(),
                 build_time: 1,
+                order_hint: None,
                 group: None,
                 paths: ["a.pb".to_string()].into_iter().collect(),
                 metadata: vec![],

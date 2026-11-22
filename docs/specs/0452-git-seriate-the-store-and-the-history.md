@@ -236,7 +236,10 @@ legacy reader, the commit is a manual commit.
    forms: each item's bytes are parsed, canonicalized and rendered, and
    two instances are one version when the results are equal. A tail
    snapshot whose branch is gone is rebuilt from its history commit: its
-   `contents` paths, read from that commit's tree.
+   `contents` paths, read from that commit's tree. The sort places each
+   snapshot once, so a tail holding one identity twice is refused,
+   naming both commits; when the later copy changes nothing, the refusal
+   says so and names `compact --level 1`, which drops it.
 5. **The plan.** Below the first position where the sorted order differs
    from the tail's, nothing changes: those commits are kept, as they are,
    with the manual commits anchored to them. The prefix also ends at the
@@ -290,7 +293,9 @@ the cutoff must equal the old one, or nothing is written. Commits at and
 after the cutoff keep their trees, on the new parents. The previous tip is
 saved as `NAME-N`, as by `settle`; commits are written with the committer
 and signing of S5 step 6. A manual commit whose trailer anchors it to a
-dropped snapshot is warned about: `settle` will look for that anchor.
+snapshot no kept commit holds is warned about: `settle` will look for
+that anchor. A dropped copy of a snapshot another kept commit holds
+leaves its anchors resolving, and is not warned about.
 
 ### S7 — Settings
 
@@ -374,7 +379,10 @@ on repositories in temporary directories:
 5. Backups, committer identity, SSH signing (with a test key, checked by
    `git verify-commit`), `--dry-run` writing nothing.
 6. `compact`: each level, the listing, `reduced: true`, the tree at the
-   cutoff unchanged.
+   cutoff unchanged; an anchor on a snapshot no longer held warned about,
+   one on a snapshot whose other copy stays not; a history holding one
+   snapshot twice refused by `settle`, naming `compact --level 1`, and
+   settled after it.
 7. S9's agreement, against the existing implementation's histories on the
    `seriation` corpora.
 

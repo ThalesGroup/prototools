@@ -13,7 +13,8 @@ use super::{fixups, status, Input, Source};
 /// Everything, with `report` (a protoback build report) read back into the
 /// problems when given. Refused if the report isn't from the current
 /// fixups.
-pub fn advise(input: &Input, report: Option<&Value>) -> Result<Value, String> {
+/// `command` is how the generated files name the command (S7's wording).
+pub fn advise(input: &Input, report: Option<&Value>, command: &str) -> Result<Value, String> {
     let a = analyze(input);
     let mut ps = problems(&a, input);
     if let Some(r) = report {
@@ -21,8 +22,8 @@ pub fn advise(input: &Input, report: Option<&Value>) -> Result<Value, String> {
     }
     let (candidates, no_source) = actions(&ps, &input.sources);
     Ok(json!({
-        "fixups": fixups::render(&a, &input.sources),
-        "status": status::render(&a, input, &ps),
+        "fixups": fixups::render(&a, &input.sources, command),
+        "status": status::render(&a, input, &ps, command),
         "files": a.files.len(),
         "sources": input.sources.len(),
         "decisions": a.decisions.len(),
@@ -54,13 +55,19 @@ pub fn check(sources: &[Source], files: &[(String, String)]) -> Value {
 }
 
 fn problem(p: &Problem) -> Value {
-    json!({ "kind": p.kind.name(), "files": p.files, "detail": p.detail, "build": p.build })
+    let mut v =
+        json!({ "kind": p.kind.name(), "files": p.files, "detail": p.detail, "build": p.build });
+    if let Some(subject) = &p.subject {
+        v["subject"] = json!(subject);
+    }
+    v
 }
 
 fn source(s: &Source) -> Value {
     json!({
         "identity": s.identity,
         "build_time": s.build_time,
+        "order_hint": s.order_hint,
         "group": s.group,
         "metadata": s.metadata.iter()
             .map(|(k, v)| (k.clone(), Value::String(v.clone())))

@@ -52,6 +52,8 @@ pub struct Problem {
     /// The files involved, by path (for `out-of-order`, the sources).
     pub files: Vec<String>,
     pub detail: String,
+    /// For `manual`, the subject of the commit that wrote the files.
+    pub subject: Option<String>,
     /// What a protoback build said of the same files (`--report`).
     pub build: Vec<String>,
 }
@@ -100,6 +102,7 @@ pub fn problems(a: &Analysis, input: &Input) -> Vec<Problem> {
                     kind: ProblemKind::MissingImport,
                     files: vec![path.to_string()],
                     detail: format!("{name} imports {dep}, which no file of the snapshot has"),
+                    subject: None,
                     build: Vec::new(),
                 });
                 continue;
@@ -108,6 +111,7 @@ pub fn problems(a: &Analysis, input: &Input) -> Vec<Problem> {
                 kind: ProblemKind::StaleImporter,
                 files: vec![path.to_string()],
                 detail,
+                subject: None,
                 build: Vec::new(),
             });
         }
@@ -120,6 +124,7 @@ pub fn problems(a: &Analysis, input: &Input) -> Vec<Problem> {
             kind: ProblemKind::Refused,
             files: vec![path.to_string()],
             detail: reason,
+            subject: None,
             build: Vec::new(),
         });
     }
@@ -141,6 +146,7 @@ pub fn problems(a: &Analysis, input: &Input) -> Vec<Problem> {
         out.push(Problem {
             kind: ProblemKind::Manual,
             detail: format!("{} files, from the commit \"{subject}\"", files.len()),
+            subject: Some(subject.to_string()),
             files,
             build: Vec::new(),
         });
@@ -151,6 +157,7 @@ pub fn problems(a: &Analysis, input: &Input) -> Vec<Problem> {
             kind: ProblemKind::Tie,
             files: t.clone(),
             detail: format!("equally new: {}", a.files[&t[0]].age.describe()),
+            subject: None,
             build: Vec::new(),
         });
     }
@@ -276,6 +283,7 @@ fn out_of_order(sources: &[Source]) -> Vec<Problem> {
                             "{} applied after {}, built later: {shared} shared files",
                             s.identity, earlier.identity
                         ),
+                        subject: None,
                         build: Vec::new(),
                     });
                 }
@@ -308,6 +316,7 @@ mod tests {
         Source {
             identity: id.into(),
             build_time: time,
+            order_hint: None,
             group: None,
             paths: paths.iter().map(|p| p.to_string()).collect(),
             metadata: vec![],

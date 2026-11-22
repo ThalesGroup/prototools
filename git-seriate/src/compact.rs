@@ -195,12 +195,20 @@ pub fn compact(
     report.dropped = before.len() - kept.len();
     report.reduced = kept.iter().filter(|k| k.reduced).count();
 
-    // Anchors on dropped snapshots: settle will look for them.
-    let dropped_identities: Vec<&str> = before
+    // Anchors on snapshots no kept commit holds any more: settle will look
+    // for them. A dropped copy of a snapshot another commit still holds
+    // leaves its anchors resolving.
+    let kept_identities: std::collections::HashSet<&str> = kept
+        .iter()
+        .filter_map(|k| k.commit.block.as_ref().map(|b| b.source.identity.as_str()))
+        .collect();
+    let mut dropped_identities: Vec<&str> = before
         .iter()
         .filter(|c| !kept.iter().any(|k| k.commit.id == c.id))
         .filter_map(|c| c.block.as_ref().map(|b| b.source.identity.as_str()))
+        .filter(|id| !kept_identities.contains(id))
         .collect();
+    dropped_identities.dedup();
     for c in &chain {
         if c.block.is_some() {
             continue;

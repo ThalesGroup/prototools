@@ -172,7 +172,8 @@ files' ages; the stamp of S8; no `variants:`.
 
 ### S6 — `STATUS.md`
 
-The sources (identity, group, build time, metadata), the conflicts by kind
+The sources (build time, order hint, group, identity, metadata, the
+number of files), the conflicts by kind
 with counts, every decision with its reason, the problems by kind, the
 order check; the stamp of S8.
 
@@ -188,11 +189,15 @@ source is oldest first. Text by default, the same as JSON with `--json`.
 
 **The wording** is a parameter of `advise`'s entry point,
 `advise::run(repo, &kit, &dyn Wording, &options)`, with generic defaults:
-the noun for a group (`group`) and for a source (`source`), the heading
-for the problems no group can address (`No known source`), and a
+the command's name, as `fixups.yaml` and `STATUS.md` say what generated
+them (`git seriate-fdp advise`), the noun for a group (`group`) and for a
+source (`source`), the heading for the problems no group can address
+(`No known source`), and a
 candidate's line from its newest source (by default its identity and
 build date; a front end shows the `metadata` keys it knows, such as a
-version and an order hint). Not a field of `git-seriate`'s `Kit`, which
+version, and the source's `order_hint`). A `manual` problem carries the
+commit's subject as a field of its own, `subject`, which the actions
+show whole. Not a field of `git-seriate`'s `Kit`, which
 knows nothing of `advise`: a front end declares its own `advise` command
 and calls the entry point with its wording, one printer for both.
 

@@ -55,6 +55,8 @@ pub struct Source {
     pub identity: String,
     /// Seconds since the epoch.
     pub build_time: i64,
+    /// The block's order hint (spec 0450), shown with the source.
+    pub order_hint: Option<u64>,
     /// What to extract again to refresh it.
     pub group: Option<String>,
     /// The tree paths it holds.
@@ -71,6 +73,11 @@ pub struct Input {
 
 /// How a front end words the candidates (spec 0454 S7).
 pub trait Wording {
+    /// The command, as `fixups.yaml` and `STATUS.md` name what generated
+    /// them.
+    fn command(&self) -> String {
+        "git seriate-fdp advise".into()
+    }
     fn candidates_heading(&self) -> String {
         "Candidates (a newer source may refresh these files; an educated guess):".into()
     }
@@ -175,7 +182,8 @@ pub fn run(
         ),
         None => None,
     };
-    let result = output::advise(&input, report.as_ref()).map_err(Error::Refused)?;
+    let result =
+        output::advise(&input, report.as_ref(), &wording.command()).map_err(Error::Refused)?;
     if let Some(dir) = &options.out {
         std::fs::create_dir_all(dir)?;
         std::fs::write(
@@ -277,12 +285,7 @@ pub fn actions_text(result: &Value, wording: &dyn Wording) -> String {
             let commits: Vec<String> = by_commit
                 .iter()
                 .map(|p| {
-                    let detail = p["detail"].as_str().unwrap_or("");
-                    let subject = detail
-                        .rsplit("commit ")
-                        .next()
-                        .unwrap_or(detail)
-                        .trim_matches('"');
+                    let subject = p["subject"].as_str().unwrap_or("");
                     format!(
                         "\"{subject}\" ({})",
                         p["files"].as_array().map_or(0, Vec::len)
@@ -364,6 +367,7 @@ pub fn read(repo: &gix::Repository, kit: &Kit, into: Option<&str>) -> Result<Inp
                     sources.push(Source {
                         identity: block.source.identity,
                         build_time: block.source.build_time,
+                        order_hint: block.source.order_hint,
                         group: block.source.group,
                         paths: contents.into_iter().collect(),
                         metadata: block.source.metadata,

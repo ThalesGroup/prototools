@@ -41,6 +41,7 @@ mod tests {
         Source {
             identity: id.into(),
             build_time: 0,
+            order_hint: None,
             group: None,
             paths: Default::default(),
             metadata: vec![],
