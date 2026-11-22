@@ -99,6 +99,11 @@ enum Command<E: Subcommand> {
         /// Show what would be done, and write nothing.
         #[arg(long)]
         dry_run: bool,
+        /// Print, on standard error, what each phase of the sort did, and
+        /// every move of the greedy phases: which snapshot, from where to
+        /// where (positions among the snapshots sorted, 0 the oldest).
+        #[arg(long)]
+        stats: bool,
         /// The snapshot branches to settle; every new one by default.
         branches: Vec<String>,
     },
@@ -190,6 +195,75 @@ pub fn run<E: Subcommand>(
 /// A name clap keeps for the process's life; made once per run.
 fn leak(s: String) -> &'static str {
     Box::leak(s.into_boxed_str())
+}
+
+/// `settle --stats`: a line per phase of the sort, and one per move of the
+/// greedy phases, its snapshot named with its group and its neighbors.
+fn sort_stats(report: &crate::history::Report) -> String {
+    use seriation::Phase;
+    use std::fmt::Write as _;
+    let name = |i: usize| {
+        let (id, group) = &report.sorted[i];
+        match group {
+            Some(g) => format!("{id} [{g}]"),
+            None => id.clone(),
+        }
+    };
+    let mut out = String::new();
+    if report.phases.is_empty() {
+        out.push_str("sort: nothing sorted\n");
+        return out;
+    }
+    let _ = writeln!(out, "sort: {} snapshot(s)", report.sorted.len());
+    for p in &report.phases {
+        let phase = match p.phase {
+            Phase::Load => continue,
+            Phase::BuildTime => "1 build time",
+            Phase::OrderHints => "2 order hints",
+            Phase::Containment => "3 containment",
+            Phase::Interleaving => "4 interleaving",
+        };
+        if p.skipped {
+            let _ = writeln!(out, "phase {phase}: skipped");
+            continue;
+        }
+        let mut line = if p.phase == Phase::BuildTime {
+            format!("phase {phase}: {} position(s) changed", p.moves)
+        } else {
+            format!("phase {phase}: {} move(s)", p.moves)
+        };
+        if p.phase == Phase::Containment {
+            let _ = write!(
+                line,
+                ", {} comparison(s), {} ordered",
+                p.comparisons, p.signals
+            );
+        }
+        if let Some(s) = p.edge_score {
+            let _ = write!(line, "; edge score {s}");
+        }
+        if let Some(s) = p.interleaving_score {
+            let _ = write!(line, "; interleaving score {s}");
+        }
+        let _ = writeln!(out, "{line}");
+        for m in &p.moved {
+            let _ = write!(
+                out,
+                "  move {}: {} -> {}, +{}",
+                name(m.snapshot),
+                m.from,
+                m.to,
+                m.gain
+            );
+            let _ = match (m.after, m.before) {
+                (Some(a), Some(b)) => writeln!(out, "; now between {} and {}", name(a), name(b)),
+                (Some(a), None) => writeln!(out, "; now last, after {}", name(a)),
+                (None, Some(b)) => writeln!(out, "; now first, before {}", name(b)),
+                (None, None) => writeln!(out),
+            };
+        }
+    }
+    out
 }
 
 /// `GIT_SERIATE` for `git seriate`, `GIT_SERIATE_FDP` for `git seriate-fdp`.
@@ -298,6 +372,7 @@ fn dispatch<E: Subcommand>(
             no_cutoff,
             settling_days,
             dry_run,
+            stats,
             branches,
         } => {
             let cutoff = match (cutoff, no_cutoff) {
@@ -335,6 +410,9 @@ fn dispatch<E: Subcommand>(
             }
             for r in &report.replayed {
                 println!("replay {r}");
+            }
+            if stats {
+                eprint!("{}", sort_stats(&report));
             }
             let verb = if dry_run { "would settle" } else { "settled" };
             println!(

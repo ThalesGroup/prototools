@@ -435,3 +435,59 @@ fn the_checked_out_note_names_a_command_that_works() {
         "a\nb\nc\nd\n"
     );
 }
+
+/// `--stats` names each move of the sort: here s1, dated before s0 though
+/// its file grew from s0's, moved by phase 3 between s0 and s2.
+#[test]
+fn stats_name_each_move_of_the_sort() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = new_repo(tmp.path());
+    let r = gix::open(&repo).unwrap();
+    for (id, day, text, group) in [
+        ("s0", 1, "a\n", None),
+        ("s1", 0, "a\nb\n", Some("g")),
+        ("s2", 2, "a\nb\nc\n", None),
+    ] {
+        store::add(
+            &r,
+            NewSnapshot {
+                source: Source {
+                    identity: id.into(),
+                    build_time: 1_700_000_000 + day * 86_400,
+                    order_hint: None,
+                    group: group.map(str::to_string),
+                    metadata: Vec::new(),
+                },
+                items: vec![Item {
+                    path: "f.txt".into(),
+                    bytes: text.as_bytes().to_vec(),
+                }],
+                rejected: Vec::new(),
+                record: Vec::new(),
+            },
+        )
+        .unwrap();
+    }
+    let (ok, out, err) = git_seriate(&repo, &["settle", "--into", "main", "--dry-run", "--stats"]);
+    assert!(ok, "{err}");
+    assert!(out.contains("would settle main: kept 0, wrote 3"), "{out}");
+    assert!(err.contains("sort: 3 snapshot(s)\n"), "{err}");
+    assert!(
+        err.contains("phase 1 build time: 2 position(s) changed\n"),
+        "{err}"
+    );
+    assert!(err.contains("phase 2 order hints: skipped\n"), "{err}");
+    assert!(
+        err.contains("phase 3 containment: 1 move(s), 3 comparison(s)"),
+        "{err}"
+    );
+    assert!(
+        err.contains("  move s1 [g]: 0 -> 1, +1; now between s0 and s2\n"),
+        "{err}"
+    );
+    assert!(err.contains("phase 4 interleaving: 0 move(s)"), "{err}");
+    // Without --stats, none of it.
+    let (ok, _, err) = git_seriate(&repo, &["settle", "--into", "main", "--dry-run"]);
+    assert!(ok);
+    assert!(!err.contains("phase"), "{err}");
+}

@@ -83,7 +83,11 @@ pub struct Sorted { pub order: Vec<usize>, pub phases: Vec<PhaseReport> }
 - `PhaseReport`, one per phase, skipped ones included: the moves, phase
   3's comparisons and signals, and every score known after the phase (the
   edge score once the graph exists, the interleaving score after phases 3
-  and 4, tau always).
+  and 4, tau always). *Amended 2026-11-22:* phases 3 and 4 also list
+  their moves, in the order made (`moved: Vec<Move>`): the snapshot
+  moved, its position before and after, the score it gained, and its
+  neighbors right after the move, so that a caller can tell what the
+  search did without replaying it. The order is unchanged.
 - `LinesChars` is the text comparator of design.md.
 - The crate prints and logs nothing.
 - Refused with an `Error`, never a panic: contradictory settings, two

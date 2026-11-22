@@ -26,8 +26,16 @@ pub(crate) trait Search {
     fn commit(&mut self, from: u32, to: u32);
 }
 
+/// One move the search made: the snapshot at `from` moved to `to`, raising
+/// the score by `gain`.
+pub(crate) struct Step {
+    pub from: u32,
+    pub to: u32,
+    pub gain: i64,
+}
+
 /// Move snapshots one at a time while a move improves the score. Returns
-/// the number of moves.
+/// the moves, in the order made.
 ///
 /// Which move is made decides the order, so every rule here is the
 /// existing implementation's: candidates by rank, highest first, ties by
@@ -35,10 +43,10 @@ pub(crate) trait Search {
 /// `from + 1`, each direction stopping at a barrier; the first improving
 /// move kept unless a later one is strictly better; and the stopping rule
 /// below.
-pub(crate) fn search(s: &mut dyn Search, settings: &Settings) -> usize {
+pub(crate) fn search(s: &mut dyn Search, settings: &Settings) -> Vec<Step> {
     let n = s.n() as u32;
     let mut score = s.score();
-    let mut moves = 0;
+    let mut moves = Vec::new();
     loop {
         debug_assert_eq!(score, s.score(), "the incremental score drifted");
         let rank = s.rank();
@@ -85,8 +93,12 @@ pub(crate) fn search(s: &mut dyn Search, settings: &Settings) -> usize {
             None => return moves,
             Some((from, to, new_score)) => {
                 s.commit(from, to);
+                moves.push(Step {
+                    from,
+                    to,
+                    gain: new_score - score,
+                });
                 score = new_score;
-                moves += 1;
             }
         }
     }

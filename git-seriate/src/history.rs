@@ -69,6 +69,11 @@ pub struct Report {
     pub backup: Option<String>,
     pub notes: Vec<String>,
     pub warnings: Vec<String>,
+    /// What each phase of the sort did; its moves' snapshots index
+    /// `sorted`. Empty when nothing was sorted.
+    pub phases: Vec<seriation::PhaseReport>,
+    /// The snapshots the sort was given: identity and group.
+    pub sorted: Vec<(String, Option<String>)>,
 }
 
 // ── The walk ──────────────────────────────────────────────────────────────────
@@ -210,6 +215,16 @@ pub fn settle(repo: &gix::Repository, options: &Options) -> Result<Report, Error
         &options.sort,
     )
     .map_err(|e| Error::Refused(format!("sorting: {e}")))?;
+    report.phases = sorted.phases.clone();
+    report.sorted = inputs
+        .iter()
+        .map(|i| {
+            (
+                i.block.source.identity.clone(),
+                i.block.source.group.clone(),
+            )
+        })
+        .collect();
 
     // 5. The plan.
     let rules = options.plugins.canonicalizer.rule_sets();

@@ -82,6 +82,7 @@ fn the_corpora_sort_closer_to_the_truth_than_their_build_times() {
         .collect();
     names.sort();
     assert!(names.len() >= 3, "{names:?}");
+    let mut moves_seen = 0;
     for name in names {
         let args = std::fs::read_to_string(dir.join(format!("{name}.args"))).unwrap();
         let params = Params::from_args(args.lines().map(str::to_string)).unwrap();
@@ -102,6 +103,24 @@ fn the_corpora_sort_closer_to_the_truth_than_their_build_times() {
         );
         assert!(after <= before, "{name}: {after} > {before}");
 
+        // The moves reported, replayed from the order phase 3 starts from
+        // (phase 1's, with no order hints), give the order: each names the
+        // snapshot at its `from`.
+        let mut replayed = by_build_time.clone();
+        for phase in &sorted.phases[3..] {
+            assert_eq!(phase.moved.len(), phase.moves, "{name}: {:?}", phase.phase);
+            for m in &phase.moved {
+                assert_eq!(replayed[m.from], m.snapshot, "{name}: {m:?}");
+                assert!(m.gain > 0, "{name}: {m:?}");
+                let moved = replayed.remove(m.from);
+                replayed.insert(m.to, moved);
+                assert_eq!(m.after, m.to.checked_sub(1).map(|i| replayed[i]));
+                assert_eq!(m.before, replayed.get(m.to + 1).copied());
+            }
+        }
+        assert_eq!(replayed, sorted.order, "{name}: the moves replayed");
+        moves_seen += sorted.phases[3].moved.len();
+
         let expected = dir.join(format!("{name}.expected.txt"));
         if let Ok(text) = std::fs::read_to_string(&expected) {
             let got: Vec<&str> = sorted
@@ -113,4 +132,5 @@ fn the_corpora_sort_closer_to_the_truth_than_their_build_times() {
             assert_eq!(got, want, "{name}: the existing implementation's order");
         }
     }
+    assert!(moves_seen > 0, "no corpus makes a phase 3 move");
 }

@@ -151,6 +151,45 @@ pub struct PhaseReport {
     /// Kendall's tau against the true order hints, hidden ones included:
     /// the negated number of pairs in the opposite order to their hints.
     pub tau: i64,
+    /// Phases 3 and 4: each move, in the order made.
+    pub moved: Vec<Move>,
+}
+
+/// One move of the greedy search (phases 3 and 4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Move {
+    /// The snapshot moved: an index into the snapshots passed to [`sort`].
+    pub snapshot: usize,
+    /// Its position before and after the move, 0 the oldest.
+    pub from: usize,
+    pub to: usize,
+    /// How much the move raised the phase's score.
+    pub gain: i64,
+    /// Its neighbors right after the move, older and newer: indices into
+    /// the snapshots passed to [`sort`].
+    pub after: Option<usize>,
+    pub before: Option<usize>,
+}
+
+/// The steps of a search, each naming its snapshot, replayed from `order`,
+/// the order (caller indices by position) the search started from.
+fn named(mut order: Vec<usize>, steps: Vec<greedy::Step>) -> Vec<Move> {
+    steps
+        .into_iter()
+        .map(|step| {
+            let (from, to) = (step.from as usize, step.to as usize);
+            let snapshot = order.remove(from);
+            order.insert(to, snapshot);
+            Move {
+                snapshot,
+                from,
+                to,
+                gain: step.gain,
+                after: to.checked_sub(1).map(|i| order[i]),
+                before: order.get(to + 1).copied(),
+            }
+        })
+        .collect()
 }
 
 /// The result of [`sort`].
@@ -223,8 +262,11 @@ pub fn sort(
         phases.push(state.report(Phase::Containment, true, 0));
     } else {
         let (comparisons, signals) = state.build_edges(contents, comparator, settings.window)?;
-        let moves = greedy::search(&mut state::EdgeSearch::new(&mut state), settings);
-        let mut report = state.report(Phase::Containment, false, moves);
+        let start = state.order();
+        let steps = greedy::search(&mut state::EdgeSearch::new(&mut state), settings);
+        let moved = named(start, steps);
+        let mut report = state.report(Phase::Containment, false, moved.len());
+        report.moved = moved;
         report.comparisons = comparisons;
         report.signals = signals;
         report.interleaving_score = Some(interleaving::Untangle::new(&state).score());
@@ -235,11 +277,14 @@ pub fn sort(
     if settings.skip.interleaving {
         phases.push(state.report(Phase::Interleaving, true, 0));
     } else {
+        let start = state.order();
         let mut untangle = interleaving::Untangle::new(&state);
-        let moves = greedy::search(&mut untangle, settings);
+        let steps = greedy::search(&mut untangle, settings);
         let score = untangle.score();
         state.adopt_order(untangle.order());
-        let mut report = state.report(Phase::Interleaving, false, moves);
+        let moved = named(start, steps);
+        let mut report = state.report(Phase::Interleaving, false, moved.len());
+        report.moved = moved;
         report.interleaving_score = Some(score);
         phases.push(report);
     }

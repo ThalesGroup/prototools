@@ -171,7 +171,31 @@ fn shuffling_the_input_changes_nothing() {
         identities(&snapshots, &sorted.order),
         identities(&shuffled, &again.order)
     );
-    assert_eq!(sorted.phases, again.phases);
+    // The same reports, a move's snapshots named by identity: their
+    // indices are into the input, which the shuffle changes.
+    type Named = Vec<(PhaseReport, Vec<[Option<String>; 3]>)>;
+    let named = |s: &[Snapshot], phases: &[PhaseReport]| -> Named {
+        let id = |i: Option<usize>| i.map(|i| s[i].identity.clone());
+        phases
+            .iter()
+            .map(|p| {
+                let ids = p
+                    .moved
+                    .iter()
+                    .map(|m| [id(Some(m.snapshot)), id(m.after), id(m.before)])
+                    .collect();
+                let mut p = p.clone();
+                for m in &mut p.moved {
+                    (m.snapshot, m.after, m.before) = (0, None, None);
+                }
+                (p, ids)
+            })
+            .collect()
+    };
+    assert_eq!(
+        named(&snapshots, &sorted.phases),
+        named(&shuffled, &again.phases)
+    );
 }
 
 #[test]

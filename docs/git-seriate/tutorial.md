@@ -104,7 +104,24 @@ $ git log --format='%cs %s'
 ```
 
 rack-a comes after rack-b, though its date is older: its files grew from
-rack-b's, and rack-c's from rack-a's. Each commit's diff is what changed
+rack-b's, and rack-c's from rack-a's. `--stats` shows the sort's work,
+phase by phase. Given to that first `settle` (here with `--dry-run`), it
+shows one move, rack-a's, past rack-b:
+
+```console
+$ git seriate settle --dry-run --stats
+sort: 4 snapshot(s)
+phase 1 build time: 2 position(s) changed
+phase 2 order hints: skipped
+phase 3 containment: 1 move(s), 6 comparison(s), 2 ordered; edge score -4; interleaving score 0
+  move rack-a: 0 -> 1, +1; now between rack-b and rack-e
+phase 4 interleaving: 0 move(s); edge score -4; interleaving score 0
+would settle main: kept 0, wrote 4 snapshot(s), replayed 0 commit(s)
+```
+
+Phase 1 orders the snapshots by build time; phase 3 moves those whose
+files say otherwise. [`docs/seriation/`](../seriation/design.md) explains
+the phases and their scores. Each commit's diff is what changed
 from one copy to the next:
 
 ```console

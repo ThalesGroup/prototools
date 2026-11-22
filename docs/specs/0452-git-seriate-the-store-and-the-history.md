@@ -202,7 +202,7 @@ legacy reader, the commit is a manual commit.
 
 ### S5 — `settle`
 
-`settle [--into NAME] [--cutoff DATE | --no-cutoff] [--settling-days N] [--dry-run]`:
+`settle [--into NAME] [--cutoff DATE | --no-cutoff] [--settling-days N] [--dry-run] [--stats]`:
 
 1. **The candidates.** Snapshot branches not yet in `NAME`, or the ones
    given.
@@ -270,6 +270,13 @@ legacy reader, the commit is a manual commit.
    to, keeping local changes. `git reset --keep` would not do: `HEAD`
    already names the new tip, so it sees nothing to bring over.
    `--dry-run` writes nothing and prints the plan, warnings included.
+   *Amended 2026-11-22:* `--stats` prints on stderr, with or without
+   `--dry-run`, a line per phase of the sort (its moves, phase 3's
+   comparisons, the scores) and one per move of phases 3 and 4: the
+   snapshot's identity and group, its positions among the snapshots
+   sorted, the score gained, and its neighbors after the move, so that a
+   front end can check the moves against what it expects (no snapshot
+   moved across another build, say).
 
 Empty snapshots (whose items change nothing) are written like any other:
 they date their files (0450 G2's history), and `compact` is the way to
@@ -312,7 +319,7 @@ history: the history depends on the snapshots and on these, and
 
 ```
 git seriate add [--id ID] [--build-time T] [--order-hint N] [--group G] DIR
-git seriate settle [--into NAME] [--cutoff DATE | --no-cutoff] [--settling-days N] [--dry-run] [BRANCH…]
+git seriate settle [--into NAME] [--cutoff DATE | --no-cutoff] [--settling-days N] [--dry-run] [--stats] [BRANCH…]
 git seriate list [--record-only]
 git seriate drop [--glob GLOB] [--record-only]
 git seriate import REPO…
@@ -380,7 +387,8 @@ on repositories in temporary directories:
    tail: a commit built before the cutoff above a deeper one built after
    it is re-sorted; `--no-cutoff` re-sorts the whole walk.
 5. Backups, committer identity, SSH signing (with a test key, checked by
-   `git verify-commit`), `--dry-run` writing nothing.
+   `git verify-commit`), `--dry-run` writing nothing; `--stats` naming a
+   misdated snapshot's phase 3 move and its new neighbors.
 6. `compact`: each level, the listing, `reduced: true`, the tree at the
    cutoff unchanged; an anchor on a snapshot no longer held warned about,
    one on a snapshot whose other copy stays not; a history holding one

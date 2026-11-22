@@ -271,6 +271,7 @@ impl SortState {
             edge_score: self.edge_score(),
             interleaving_score: None,
             tau: kendall::tau(self),
+            moved: Vec::new(),
         }
     }
 }
