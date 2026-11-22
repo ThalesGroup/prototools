@@ -437,3 +437,25 @@ matters; not done.
 The legacy reader is a plugin point the generic binary leaves empty; its
 test reads a toy older format, settles new snapshots onto it, and has
 `compact` convert what is left.
+
+**On the downstream repositories,** measured by their maintainers through
+their front end on `cli::run`, with their legacy reader:
+
+- `compact --level 1` on a copy of the largest, cutoff after its newest
+  build: the 8 second copies of snapshots stored twice dropped, each named
+  with its first; the 4 snapshots that change nothing but are their
+  sources' only records kept; nothing else dropped. Every snapshot block
+  left converted to `format: 1`, the tip tree unchanged, no anchor
+  warning. `advise` afterwards gives the same `fixups.yaml` and actions,
+  and finds its outputs current; `settle --no-cutoff` has nothing to do.
+- `settle --stats` on a repository of 1,118 snapshots from 3 builds: in
+  phase 3, without their rule set, 109 moves, 92 of them carrying a
+  one-item snapshot 900 or more positions within its build (similarity
+  between flavors of one file that differ only by a build-specific
+  field); with it (`Composed([fdp, theirs])`), 135 moves, 11 such, each a
+  file whose flavors differ in custom options they keep apart on
+  purpose. No move, with or without the rules, puts a snapshot among
+  another build's. Phase 4: 57 moves become 3.
+- `settle` with their rules on those 1,118 snapshots: 1 min 13 s
+  elapsed, 14 s of CPU; the rest is signing, at about 55 ms a commit, as
+  above.
