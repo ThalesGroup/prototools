@@ -162,9 +162,10 @@ pub fn drop(
     repo: &gix::Repository,
     glob: Option<&str>,
     record_only: bool,
+    legacy: Option<&dyn crate::plugins::LegacyReader>,
 ) -> Result<Vec<String>, Error> {
     let mut deleted = Vec::new();
-    for listed in list(repo)? {
+    for listed in list_with(repo, legacy)? {
         if listed.block.contents.is_none() != record_only {
             continue;
         }
@@ -199,9 +200,13 @@ pub struct Imported {
 /// Copy the snapshot and record-only branches of the repository at `from`
 /// (spec 0452 S3). A branch here with another commit is refused, before
 /// anything is copied.
-pub fn import(repo: &gix::Repository, from: &Path) -> Result<Imported, Error> {
+pub fn import(
+    repo: &gix::Repository,
+    from: &Path,
+    legacy: Option<&dyn crate::plugins::LegacyReader>,
+) -> Result<Imported, Error> {
     let source = gix::open(from).map_err(Error::git)?;
-    let theirs = list(&source)?;
+    let theirs = list_with(&source, legacy)?;
     let mut report = Imported::default();
     let mut todo = Vec::new();
     for listed in theirs {

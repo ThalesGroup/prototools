@@ -121,6 +121,11 @@ SPDX-License-Identifier: MIT
 
 ### Fixed
 
+- git-seriate: `list`, `drop` and `import` now read snapshot branches in
+  an older format through the front end's legacy reader, as `settle` and
+  `compact` do; they used to see none of them, so `drop` couldn't delete
+  what `settle` had merged, and `import` copied nothing (reported by the
+  downstream implementation).
 - reproto, protoback: `--emit-extension-ranges` no longer refuses a
   schema holding a message set (`option message_set_wire_format`), whose
   `extensions 4 to max` protoc writes up to 2^31 − 1: the scoring graph

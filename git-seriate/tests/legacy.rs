@@ -185,3 +185,57 @@ fn an_old_history_is_settled_and_converted() {
         assert!(Block::read(&m).unwrap().is_some(), "not converted: {m}");
     }
 }
+
+/// A snapshot branch whose commit carries the old format: parentless,
+/// named as its identity.
+fn old_branch(repo: &gix::Repository, id: &str) -> ObjectId {
+    let blob = repo.write_blob(id.as_bytes()).unwrap().detach();
+    let mut editor = repo
+        .edit_tree(ObjectId::empty_tree(repo.object_hash()))
+        .unwrap();
+    editor.upsert("f.txt", EntryKind::Blob, blob).unwrap();
+    let tree = editor.write().unwrap().detach();
+    let commit = gix::objs::Commit {
+        tree,
+        parents: Default::default(),
+        author: signature(1_700_000_000),
+        committer: signature(1_700_000_000),
+        encoding: None,
+        message: format!("Old snapshot\n\nid: {id}\ntime: 1700000000\npaths: f.txt\n").into(),
+        extra_headers: Vec::new(),
+    };
+    let commit_id = repo.write_object(&commit).unwrap().detach();
+    store::set_ref(
+        repo,
+        &store::branch_ref(id).unwrap(),
+        gix::refs::transaction::PreviousValue::MustNotExist,
+        commit_id,
+    )
+    .unwrap();
+    commit_id
+}
+
+#[test]
+fn old_snapshot_branches_are_listed_imported_and_dropped() {
+    let tmp = tempfile::tempdir().unwrap();
+    let theirs = gix::init_bare(tmp.path().join("theirs.git")).unwrap();
+    let commit = old_branch(&theirs, "pkg/v1/0/bin");
+
+    // Without the reader, not a snapshot branch; with it, one.
+    assert!(store::list(&theirs).unwrap().is_empty());
+    let listed = store::list_with(&theirs, Some(&Old)).unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].branch, "pkg/v1/0/bin");
+
+    let ours = gix::init_bare(tmp.path().join("ours.git")).unwrap();
+    let imported = store::import(&ours, &tmp.path().join("theirs.git"), Some(&Old)).unwrap();
+    assert_eq!(imported.copied, ["pkg/v1/0/bin"]);
+    assert_eq!(
+        store::tip(&ours, &store::branch_ref("pkg/v1/0/bin").unwrap()).unwrap(),
+        Some(commit)
+    );
+
+    let deleted = store::drop(&ours, None, false, Some(&Old)).unwrap();
+    assert_eq!(deleted, ["pkg/v1/0/bin"]);
+    assert!(store::list_with(&ours, Some(&Old)).unwrap().is_empty());
+}

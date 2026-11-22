@@ -313,20 +313,20 @@ fn dispatch<E: Subcommand>(
             );
         }
         Command::List { record_only } => {
-            for listed in store::list(&repo)? {
+            for listed in store::list_with(&repo, kit.legacy.as_deref())? {
                 if listed.block.contents.is_none() == record_only {
                     println!("{}", listed.branch);
                 }
             }
         }
         Command::Drop { glob, record_only } => {
-            for branch in store::drop(&repo, glob.as_deref(), record_only)? {
+            for branch in store::drop(&repo, glob.as_deref(), record_only, kit.legacy.as_deref())? {
                 println!("deleted {branch}");
             }
         }
         Command::Import { repos } => {
             for from in repos {
-                let report = store::import(&repo, &from)?;
+                let report = store::import(&repo, &from, kit.legacy.as_deref())?;
                 println!(
                     "{}: copied {}, already here {}",
                     from.display(),
