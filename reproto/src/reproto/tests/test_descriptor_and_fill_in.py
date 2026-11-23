@@ -15,7 +15,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from .conftest import REPROTO_CMD, vendor_descriptor
+from .conftest import REPROTO_CMD, needs_release_protobuf, vendor_descriptor
 
 USER = '''name: "b.proto" package: "b" dependency: "google/protobuf/timestamp.proto"
 message_type { name: "B" field { name: "t" number: 1 label: LABEL_OPTIONAL
@@ -42,6 +42,7 @@ def _run(tmp_path: Path, files: dict[str, str], *flags: str) -> subprocess.Compl
                           capture_output=True, text=True, env=env)
 
 
+@needs_release_protobuf
 def test_a_stock_input_needs_no_option(tmp_path: Path) -> None:
     r = _run(tmp_path, {"b.textpb": USER})
     assert r.returncode == 0, r.stderr

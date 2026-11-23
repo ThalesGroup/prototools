@@ -19,6 +19,22 @@ FIXTURES_DIR = Path(__file__).parent / "fixtures"
 # The command the CLI tests run (spec 0424 S2): this tree's reproto by
 # default; `REPROTO="protoback"` or any other command line runs the same
 # tests against it.
+# The Python protobuf imported knows every edition of reproto's built-in
+# descriptor.proto, as reproto's own release does (spec 0460). An older one
+# is legitimate where reproto runs on a distribution's protobuf (nixpkgs'
+# stable release, protobuf 34): W37 is then said at startup (spec 0467 S2),
+# and a file of a newer edition can't be read. The tests that need either
+# not to happen are skipped there.
+def _protobuf_is_releases() -> bool:
+    from reproto.protobuf_check import missing_editions
+    return not missing_editions()
+
+
+needs_release_protobuf = pytest.mark.skipif(
+    not _protobuf_is_releases(),
+    reason="the Python protobuf imported is older than reproto's descriptor.proto")
+
+
 REPROTO_CMD: list[str] = (
     shlex.split(os.environ["REPROTO"]) if os.environ.get("REPROTO")
     else [sys.executable, "-m", "reproto.cli"]

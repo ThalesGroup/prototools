@@ -61,11 +61,13 @@ def test_an_unnamed_edition_is_a_w6(tmp_path: Path) -> None:
 def test_an_older_protobuf_is_said(monkeypatch: pytest.MonkeyPatch,
                                    caplog: pytest.LogCaptureFixture) -> None:
     from reproto import protobuf_check
-    assert protobuf_check.missing_editions() == [], "this protobuf is reproto's own"
+    # Whatever the protobuf imported lacks already (none with reproto's own
+    # release; EDITION_2026 with protobuf 34), plus one it can't know.
+    before = protobuf_check.missing_editions()
     builtin = protobuf_check._builtin_editions()
     monkeypatch.setattr(protobuf_check, "_builtin_editions",
                         lambda: {**builtin, "EDITION_2027": 1003})
-    assert protobuf_check.missing_editions() == ["EDITION_2027"]
+    assert protobuf_check.missing_editions() == sorted([*before, "EDITION_2027"])
     protobuf_check.check()
     said = caplog.text
     assert "[W37]" in said and "EDITION_2027" in said and "PYTHONPATH" in said, said

@@ -11,13 +11,14 @@ import os
 import subprocess
 from pathlib import Path
 
-from .conftest import REPROTO_CMD
+from .conftest import REPROTO_CMD, needs_release_protobuf
 
 INPUT = """name: "a/b.proto" package: "a" syntax: "editions" edition: EDITION_2026
 message_type { name: "M" field { name: "x" number: 1 type: TYPE_INT32 json_name: "x" } }
 """
 
 
+@needs_release_protobuf
 def test_an_edition_2026_file_renders(tmp_path: Path) -> None:
     inp = tmp_path / "in"
     inp.mkdir()
