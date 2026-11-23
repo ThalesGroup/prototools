@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0461 — the protobuf release, exported for downstream builds
 
-Status: draft
+Status: implemented
+Implemented in: 2026-11-23
 App: nix
 Refs: docs/specs/0460-one-protobuf-release-for-every-descriptor-copy.md
         (the release, `nix/protobuf.nix`, and the checks it holds the
@@ -84,4 +85,16 @@ as `edition = "UNKNOWN"`, a wrong output, not a style issue.
 
 ## Measured outcome
 
-Filled in at implementation.
+2026-11-23, the three items of the test plan:
+
+1. `release`, `protoc.version`, `pythonPkgs.protobuf.version`:
+   `"36.2"`, `"36.2"`, `"7.36.2"`.
+2. `ci` evaluates to the derivation that passed before this change
+   (`iqismmmq…-ci.drv`): nothing it builds changed.
+3. With the main pin's `python313Packages` (Python protobuf 7.34.1),
+   evaluation fails with S3's message; with
+   `protobufRelease.pythonPkgs` it evaluates, to that same `ci`.
+
+S2 is done by reading the argument through `@args`: a `let` binding named
+`pythonPkgs` replaces the argument for the rest of `default.nix`, which
+needed no other change.

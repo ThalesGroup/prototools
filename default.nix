@@ -18,12 +18,10 @@
     url    = "https://github.com/NixOS/nixpkgs/archive/7c8764b7c7b09b34f632464276218ef9090eaa11.tar.gz";
     sha256 = "01ybz131ld1aq6n302jq4wqpjd7d57wz9pxnjw4ly53dy6sn8s1i";
   }) {})
-, # The Python package set: the main pin's, with spec 0460's Python
-  # protobuf (nix/protobuf.nix).
-  pythonPkgs ? (import ./nix/protobuf.nix {
-    inherit pkgs;
-    unstablePkgs = import unstable { };
-  }).pythonPkgs
+, # The Python package set. Left out, `pkgs`' Python with spec 0460's
+  # Python protobuf (protobufRelease.pythonPkgs, below); passed in, it
+  # must have that protobuf (spec 0461 S3).
+  pythonPkgs ? null
 # buf from the main pin (spec 0402 S2): 26.05's is 1.73.0, past the two
 # fixes protolens's Neovim integration needs (spec 0145/0146) — v1.60.0's
 # `buf lsp serve` --timeout default of 0, and v1.61.0's fix for the
@@ -43,13 +41,26 @@
       url = "https://github.com/NixOS/nixpkgs/archive/${pin.rev}.tar.gz";
       inherit (pin) sha256;
     })
-}:
+}@args:
 
 let
   # The one protobuf release (spec 0460): protoc, and the version every
-  # copy of descriptor.proto is checked against.
+  # copy of descriptor.proto is checked against. Exported, for downstream
+  # builds (spec 0461 S1).
   protobufRelease = import ./nix/protobuf.nix { inherit pkgs unstablePkgs; };
   protoc = protobufRelease.protoc;
+
+  # Spec 0461 S2, S3: the argument, if passed, with the release's Python
+  # protobuf; else the release's own set.
+  pythonPkgs =
+    let
+      given = args.pythonPkgs or null;
+      want = "7.${protobufRelease.release}";
+    in
+    if given == null then protobufRelease.pythonPkgs
+    else assert pkgs.lib.assertMsg (given.protobuf.version == want)
+      "pythonPkgs has Python protobuf ${given.protobuf.version}; this build needs ${want} (spec 0460): pass (import <this repository> { inherit pkgs; }).protobufRelease.pythonPkgs, or leave pythonPkgs out";
+      given;
 
   # Fetched at evaluation time, not built (spec 0402 S1): a `fetchgit`
   # derivation imported by `callPackage` is import-from-derivation, which
@@ -931,6 +942,8 @@ let
 in
 {
   default              = ci;
+  # Spec 0461: the protobuf release, for downstream builds.
+  inherit protobufRelease;
   prototools           = prototools;
   prototext            = rust.prototext;
   workspace-build      = rust.workspaceBuild;

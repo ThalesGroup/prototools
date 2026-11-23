@@ -10,6 +10,12 @@ SPDX-License-Identifier: MIT
 
 ### Added
 
+- Nix: `default.nix` exports `protobufRelease` (`release`, `protoc`,
+  `python`, `pythonPkgs`), the release of spec 0460, for a downstream
+  build to take rather than re-derive. A `pythonPkgs` passed in whose
+  Python protobuf is not that release's now fails evaluation, saying what
+  to pass; left out, it is `protobufRelease.pythonPkgs`, as before
+  (spec 0461).
 - Docs: a tutorial for `git seriate` and `git seriate-fdp`
   (`docs/git-seriate/tutorial.md`), and their entry in the README.
 - Nix: `git-seriate` and `git-seriate-fdp` packages, with shell
