@@ -1,0 +1,5 @@
+{
+  "comment": "nixos-26.05 @ 2026-10-09, the main pin: default.nix's pkgs (spec 0478; downstream may read rev and sha256)",
+  "rev": "7c8764b7c7b09b34f632464276218ef9090eaa11",
+  "sha256": "01ybz131ld1aq6n302jq4wqpjd7d57wz9pxnjw4ly53dy6sn8s1i"
+}

@@ -144,6 +144,11 @@ SPDX-License-Identifier: MIT
 
 ### Changed
 
+- nix: the main nixpkgs pin is in `nix/nixpkgs.json`, read by
+  `default.nix`, as the unstable pin is in `nix/unstable.json`; nothing
+  rebuilds. Downstream may read its `rev` and `sha256`: they are kept, or
+  a change is said here first (spec 0478).
+
 - prototext-pyo3, fdp-scan-pyo3, prototext-graph-pyo3: each extension's
   library is an rlib only, maturin adding the cdylib (`bindings = "pyo3"`
   declared); `cargo build` no longer writes the Python module (`cargo

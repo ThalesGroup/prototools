@@ -13,11 +13,13 @@
 #   4. Assembles the ci and full-tests targets.
 #   5. Exposes all public attributes.
 
-{ pkgs ? (import (fetchTarball {
-    # nixos-26.05 @ 2026-10-09 (git rev 7c8764b7c7b09b34f632464276218ef9090eaa11)
-    url    = "https://github.com/NixOS/nixpkgs/archive/7c8764b7c7b09b34f632464276218ef9090eaa11.tar.gz";
-    sha256 = "01ybz131ld1aq6n302jq4wqpjd7d57wz9pxnjw4ly53dy6sn8s1i";
-  }) {})
+{ # The main pin, nixos-26.05, in nix/nixpkgs.json (spec 0478): a file, so
+  # that downstream can read it (its rev and sha256) with builtins alone.
+  pkgs ? (let pin = builtins.fromJSON (builtins.readFile ./nix/nixpkgs.json); in
+    import (fetchTarball {
+      url    = "https://github.com/NixOS/nixpkgs/archive/${pin.rev}.tar.gz";
+      inherit (pin) sha256;
+    }) {})
 , # The Python package set. Left out, `pkgs`' Python with spec 0460's
   # Python protobuf (protobufRelease.pythonPkgs, below); passed in, it
   # must have that protobuf (spec 0461 S3).

@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0478 — the main nixpkgs pin in a file downstream can read
 
-Status: draft
+Status: implemented
+Implemented in: 2026-11-23
 App: nix
 Refs: docs/specs/0423-nothing-uploaded-before-nixpkgs-builds.md (S4, the
         nixos-unstable pin in `nix/unstable.json`)
@@ -75,4 +76,8 @@ The nixos-unstable pin is already in a file, `nix/unstable.json`, which
 
 ## Measured outcome
 
-Filled in at implementation.
+2026-11-23. `nix-instantiate` of `ci`, `nixpkgs-staging`,
+`nixpkgs-staging-unstable` and `dev-shell`, before and after: the same
+`.drv` paths, so nothing rebuilds (G2). `builtins.fromJSON
+(builtins.readFile ./nix/nixpkgs.json)` gives `rev` and `sha256`. The
+revision is written out only in `nix/nixpkgs.json` (and specs).
