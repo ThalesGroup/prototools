@@ -29,6 +29,11 @@ def _with_edition(f: descriptor_pb2.FileDescriptorProto, edition: int) -> bytes:
     return bytes(out)
 
 
+@pytest.mark.skipif(
+    "reproto.tests.via_text" in REPROTO_CMD,
+    reason="the text format cannot hold an edition the closed Edition enum lacks: "
+           "read back, it is refused (W15), not a W6",
+)
 def test_an_unnamed_edition_is_a_w6(tmp_path: Path) -> None:
     named = descriptor_pb2.FileDescriptorProto(name="a/ok.proto", package="a",
                                                syntax="editions",
