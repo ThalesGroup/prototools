@@ -8,9 +8,14 @@ name    = "fdp_scan_lib"
 version.workspace    = true
 edition = "2021"
 
+# An rlib only: maturin adds the cdylib itself when it builds the wheel
+# (spec 0477 S1). Then the stub generator, which links the rlib, and
+# maturin compile the dependencies alike under the release profile's thin
+# LTO, and maturin compiles none of them again. `cargo build` writes no
+# module; `cargo rustc --lib --crate-type cdylib` does.
 [lib]
 name       = "fdp_scan_lib"
-crate-type = ["cdylib", "rlib"]
+crate-type = ["rlib"]
 
 [dependencies]
 # The scanner (spec 0407 S1); this crate is its Python binding.

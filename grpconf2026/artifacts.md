@@ -646,6 +646,8 @@ working-tree binaries reject. Shim the freshly built cdylib in front of
 it rather than waiting on `nix-build`:
 
 ```sh
+# The extension is an rlib only (spec 0477): build its module explicitly.
+cargo rustc --release -p prototext_graph_lib --lib --crate-type cdylib
 SHIM=/tmp/gshim/prototext_graph_lib && mkdir -p "$SHIM"
 cp target/release/libprototext_graph_lib.so "$SHIM/prototext_graph_lib.so"
 # __init__.py re-exports build_fds_index and build_graph

@@ -106,6 +106,17 @@ let
   prototextVersion = workspaceVersion;
   protolensVersion = workspaceVersion;
 
+  # maturin's PYO3_ENVIRONMENT_SIGNATURE, which it sets when it runs Cargo:
+  # <implementation>-<major>.<minor>-<pointer width>bit, for the Python and
+  # the platform the extension runs on. Set for every Cargo run that
+  # compiles pyo3 (commonArgs, the dev-shell), or pyo3-build-config's build
+  # script, which depends on it, reruns in maturin's step and pyo3's crates
+  # recompile (spec 0477 S3). workspaceBuild fails if maturin compiles
+  # any crate but the extension's (S5).
+  pyo3EnvironmentSignature =
+    "${pythonPkgs.python.implementation}-${pythonPkgs.python.pythonVersion}-"
+    + "${toString pkgs.stdenv.hostPlatform.parsed.cpu.bits}bit";
+
   # commonArgs omits src — each derivation sets its own focused src.
   # The crane derivations build the whole workspace, prototext's release.
   commonArgs = {
@@ -118,6 +129,7 @@ let
     nativeBuildInputs = [ pkgs.cargo pkgs.rustc pythonBin ];
     buildInputs       = [ pythonBin ];
     env.PYO3_PYTHON   = pythonExecutable;
+    env.PYO3_ENVIRONMENT_SIGNATURE = pyo3EnvironmentSignature;
   };
 
   # protoc for prototext's roundtrip tests, which compare with it. The
@@ -336,21 +348,21 @@ let
   # scoped -p invocation computes different unit hashes for the external
   # deps and recompiles them — see constant-rebuilds in the Crane FAQ; the
   # former per-extension builds paid that, about a minute each.) It builds
-  # every binary and every cdylib, the stub generators included, so
-  # everything that ships is copied out of it:
+  # every binary and every extension's rlib, the stub generators included,
+  # and maturin each wheel's module from them, so everything that ships is
+  # copied out of it:
   #
   #   $out/bin/{prototext,protolens,protoscan}
   #   $out/wheels/<dist>-<version>-cp313-cp313-<platform>.whl
   #
   # The wheels are maturin's (spec 0409 S3), built from each extension's
   # pyproject.toml as nixpkgs's maturinBuildHook builds them, on this
-  # build's target directory. The first wheel still recompiles every
-  # dependency (about 130 crates, 50 s): under thin LTO, Cargo compiles a
-  # dependency as bitcode only for maturin's cdylib-only build, and as
-  # machine code too for the build phase, where each extension is a cdylib
-  # and an rlib (its stub generator links it). --bins doesn't change that;
-  # an rlib-only crate type would, but it is what the nixpkgs recipes build
-  # from (tabled 2026-11-23).
+  # build's target directory. Each maturin run compiles only its
+  # extension's crate, as the module (spec 0477): the extensions are rlibs
+  # only, so the build phase compiles their dependencies as maturin does
+  # under thin LTO (a cdylib and an rlib made it compile them once more, as
+  # bitcode only, about 130 crates); and PYO3_ENVIRONMENT_SIGNATURE is
+  # set for both (commonArgs).
   # - Linux: maturin checks the extension against manylinux_2_34, the
   #   newest glibc it needs (Rust's std links symbols up to GLIBC_2.34),
   #   and fails if it needs more. Tagged 2_28 until 2026-10-10, which let
@@ -378,6 +390,20 @@ let
     # Cross: maturin cannot run the host's interpreter; it knows CPython's
     # configuration per target.
     else "-i python${pythonPkgs.python.pythonVersion} --target ${pkgs.stdenv.hostPlatform.rust.rustcTarget}";
+  # What maturin may compile beside the extension's own crate (spec 0477
+  # S5, S8): tree-sitter-highlight (protolens) is a staticlib too, so the
+  # workspace build compiles regex's tree as machine code, which maturin's
+  # one extension, without it, compiles as LTO bitcode again; and the crates
+  # above them. The first wheel compiles them, the others reuse them.
+  maturinResidual = [
+    "aho-corasick" "bstr" "fdp-scan" "globset" "memchr" "prototext"
+    "prototext-core" "prototext-graph" "prototext-schema" "prototext-upb"
+    "prototools-complete" "pyo3-stub-gen" "regex" "regex-automata"
+    "regex-syntax" "rustpython-ast" "rustpython-parser"
+    "rustpython-parser-core" "rustpython-parser-vendored" "serde_json"
+    "winnow" "workspace-hack"
+  ];
+
   manylinuxArgs = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux
     "--compatibility manylinux_2_34";
 
@@ -413,8 +439,28 @@ let
         exit 1
       fi
     '' + ''
+      set -o pipefail
       env -u _PYTHON_HOST_PLATFORM maturin build --release --offline \
-        -m ${e.crateDir}/Cargo.toml ${maturinArgs} ${manylinuxArgs} --out $out/wheels
+        -m ${e.crateDir}/Cargo.toml ${maturinArgs} ${manylinuxArgs} --out $out/wheels \
+        2>&1 | tee "$TMPDIR/maturin-${e.libName}.log"
+      # maturin compiles the extension's crate and maturinResidual alone
+      # (spec 0477 S5): any other crate compiled again means the build
+      # phase and maturin no longer build it alike (a maturin that changed
+      # its PYO3_ENVIRONMENT_SIGNATURE convention, a cdylib declared again,
+      # a feature workspace-hack no longer unifies).
+      again=$(grep -E '^ *Compiling ' "$TMPDIR/maturin-${e.libName}.log" \
+        | grep -vE '^ *Compiling (${pkgs.lib.concatStringsSep "|"
+            ([ e.crateName ] ++ maturinResidual)}) ' || true)
+      if [ -n "$again" ]; then
+        echo "maturin compiled these again for ${e.crateDir} (spec 0477 S5):" >&2
+        echo "$again" >&2
+        echo "Why: rebuild with CARGO_LOG=cargo::core::compiler::fingerprint=info." \
+             "PYO3_ENVIRONMENT_SIGNATURE is '$PYO3_ENVIRONMENT_SIGNATURE' here," \
+             "maturin's is ${pyo3EnvironmentSignature} by our reckoning." \
+             "A dependency change that legitimately moves the residual:" \
+             "update maturinResidual (nix/rust.nix)." >&2
+        exit 1
+      fi
     '') (builtins.attrValues pyo3Extensions);
   });
 
@@ -621,6 +667,7 @@ in {
     pyprojectVersion
     workspaceVersion
     commonArgs
+    pyo3EnvironmentSignature
     depsCache
     rustFmt
     rustClippy

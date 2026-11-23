@@ -8,9 +8,14 @@ name    = "prototext_graph_lib"
 version.workspace    = true
 edition = "2021"
 
+# An rlib only: maturin adds the cdylib itself when it builds the wheel
+# (spec 0477 S1). Then the stub generator, which links the rlib, and
+# maturin compile the dependencies alike under the release profile's thin
+# LTO, and maturin compiles none of them again. `cargo build` writes no
+# module; `cargo rustc --lib --crate-type cdylib` does.
 [lib]
 name       = "prototext_graph_lib"
-crate-type = ["cdylib", "rlib"]
+crate-type = ["rlib"]
 
 [dependencies]
 prototext-graph      = { workspace = true }

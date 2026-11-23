@@ -144,6 +144,16 @@ SPDX-License-Identifier: MIT
 
 ### Changed
 
+- prototext-pyo3, fdp-scan-pyo3, prototext-graph-pyo3: each extension's
+  library is an rlib only, maturin adding the cdylib (`bindings = "pyo3"`
+  declared); `cargo build` no longer writes the Python module (`cargo
+  rustc --lib --crate-type cdylib` does). The Nix build sets
+  `PYO3_ENVIRONMENT_SIGNATURE` as maturin does, and `workspace-hack`
+  unifies libc's features on the platforms nixpkgs builds: the first
+  wheel's maturin step compiles 22 crates beside its own, where it
+  compiled about 130, and the build fails if it compiles any other
+  (spec 0477).
+
 - reproto, protoback: a file the descriptor pool refuses is said once on
   stderr: no W20 repeating its W19, and the files refused only through
   an import counted on their root's line, `(and N files importing it)`;

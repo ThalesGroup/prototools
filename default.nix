@@ -602,7 +602,7 @@ let
     inherit pkgs pythonPkgs pythonBin pythonExecutable buf protoc;
     inherit (rust) prototext protolens;
     inherit (python) reprotoSrc reprotoTestDeps reproto lintSettings;
-    inherit (rust) protoscan;
+    inherit (rust) protoscan pyo3EnvironmentSignature;
     inherit wktDb;
     # The demos' inputs — the googleapis database, the grpconf stage, the
     # life binaries — are not passed: each demo has its own shell

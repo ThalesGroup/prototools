@@ -15,7 +15,8 @@
 #             order, each printing a one-line recap:
 #
 #               _hook_env        — exports NIXSHELL_REPO, PROTOTEXT_DESCRIPTOR_SET,
-#                                  PROTOTEXT_WKT_SET, PYO3_PYTHON, PATH, PYTHONPATH
+#                                  PROTOTEXT_WKT_SET, PYO3_PYTHON,
+#                                  PYO3_ENVIRONMENT_SIGNATURE, PATH, PYTHONPATH
 #               _hook_python     — writes python.env, pyrightconfig.json, ruff.toml
 #               _hook_rust       — writes rust-toolchain.toml; rustup toolchain
 #                                  install
@@ -32,6 +33,7 @@
 , pythonPkgs
 , pythonBin
 , pythonExecutable
+, pyo3EnvironmentSignature  # nix/rust.nix: maturin's (spec 0477 S3)
 , repoRoot          # toString ./.  — used for NIXSHELL_REPO and PATH
 , rustcVersion      # pkgs.rustc.unwrapped.version
 , prototext
@@ -180,7 +182,7 @@ in
       # ── Named hook functions ───────────────────────────────────────────────
 
       _hook_env() {
-        echo "[hook] env: NIXSHELL_REPO, PROTOTEXT_{DESCRIPTOR,WKT}_SET, PROTOTEXT_ANOMALIES_BLOB, PYO3_PYTHON, PATH, PYTHONPATH, TELEPROMPT_LIBREADLINE"
+        echo "[hook] env: NIXSHELL_REPO, PROTOTEXT_{DESCRIPTOR,WKT}_SET, PROTOTEXT_ANOMALIES_BLOB, PYO3_PYTHON, PYO3_ENVIRONMENT_SIGNATURE, PATH, PYTHONPATH, TELEPROMPT_LIBREADLINE"
         # Detected by ~/.claude/hooks/claude-hook-post-edit-lint to confirm
         # that the active nix-shell belongs to this repo.
         export NIXSHELL_REPO="${repoRoot}"
@@ -221,6 +223,9 @@ in
         export PROTOTEXT_ANOMALIES_BLOB="${repoRoot}/tests/fixtures/anomalies.pb"
 
         export PYO3_PYTHON="${pythonExecutable}"
+        # As maturin sets it, so that a cargo build and maturin share
+        # pyo3's crates (spec 0477 S3).
+        export PYO3_ENVIRONMENT_SIGNATURE="${pyo3EnvironmentSignature}"
         export PATH="${repoRoot}/bin:${pythonBin}/bin:${repoRoot}/target/release:$PATH"
         # `devOnlyPyDeps` is appended rather than folded into
         # reprotoTestDeps: that list is also the dep set of reprotoTests,

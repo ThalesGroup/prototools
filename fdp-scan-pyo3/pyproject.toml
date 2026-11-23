@@ -20,6 +20,10 @@ requires-python = ">=3.8"
 # two (spec 0409 S2).
 
 [tool.maturin]
+# Declared, as the crate declares no cdylib (spec 0477 S2): maturin would
+# otherwise take the crate's one binary, the stub generator, as the
+# project, and ship a wheel with no module.
+bindings = "pyo3"
 # Mixed layout: the compiled module sits inside the Python package that
 # re-exports it, next to its committed stub.
 module-name = "fdp_scan_lib.fdp_scan_lib"
