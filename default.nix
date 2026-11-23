@@ -471,7 +471,7 @@ let
   # ---------------------------------------------------------------------------
 
   rust = import ./nix/rust.nix {
-    inherit pkgs crane pythonPkgs pythonBin pythonExecutable
+    inherit pkgs protoc crane pythonPkgs pythonBin pythonExecutable
             depsSrc workspaceSrc buf;
   };
 
@@ -690,12 +690,12 @@ let
   # The GreHack 2026 game of life and its tap (spec 0375): a separate Cargo
   # project, like bobapp, and not in `ci`; the workshop image's workflow
   # builds it, unit tests included, on both architectures.
-  grehackLife = import ./grehack2026/game/default.nix { inherit pkgs crane; };
+  grehackLife = import ./grehack2026/game/default.nix { inherit pkgs crane protoc; };
 
   # What the GreHack 2026 talk needs beyond the prototools, defined once for
   # the demo shell and the workshop image (spec 0403).
   grehackDemo = import ./nix/grehack2026-demo.nix {
-    inherit pkgs wktDb;
+    inherit pkgs protoc wktDb;
     telepromptSrc = ./bin/teleprompt;
     deckSrc       = ./grehack2026;
     inherit (rust) neovimLean bufLean;
@@ -704,7 +704,7 @@ let
   # The same for the gRPConf 2026 talk, which the image also carries as a
   # stretch goal (spec 0404).
   grpconfTalk = import ./nix/grpconf2026-demo.nix {
-    inherit pkgs wktDb grpconfDemo;
+    inherit pkgs protoc wktDb grpconfDemo;
     inherit (grehackDemo) teleprompt;
     inherit (rust) neovimLean bufLean;
     inherit (python) googleapisDb googleapisPbs;
@@ -739,7 +739,9 @@ let
   # full-tests — ci plus stress tests and slow integration tests.
   #             Use: nix-build -A full-tests
   # ---------------------------------------------------------------------------
-  ci = pkgs.linkFarmFromDrvs "ci" [
+  # ci's members; scripts/protobuf-release-check reads their build
+  # closure (spec 0462 S3).
+  ciMembers = [
     rust.rustFmt rust.rustClippy rust.rustTests rust.descriptorAccessCheck
     rust.prototext rust.protolens
     rust.prototextCodec rust.fdpScanLib rust.prototextGraphLib
@@ -757,6 +759,8 @@ let
     # more full Rust builds would weigh on every CI run. The check stays.
     nixpkgsStagingCheck
   ];
+
+  ci = pkgs.linkFarmFromDrvs "ci" ciMembers;
 
   # ci-no-clippy — same as ci but without rustClippy.
   # Used on platforms where clippy is known to fail (e.g. macos-15-intel).
@@ -865,9 +869,9 @@ let
       reprotoAlone = (withPrototext sp.prototext).reproto;
     };
 
-  # As nixpkgs builds the recipes: its own Python protobuf, not spec
-  # 0460's.
-  staging = mkStaging pkgs pkgs.python313Packages;
+  # As nixpkgs builds the recipes: its default Python, with its own Python
+  # protobuf, not spec 0460's (spec 0462 S2).
+  staging = mkStaging pkgs pkgs.python3Packages;
   stagedRustBuilds   = staging.rustBuilds;
   stagedPythonPkgs   = staging.pythonPkgs;
   stagedReprotoBuild = staging.reproto;

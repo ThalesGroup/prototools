@@ -11,6 +11,7 @@
 #   demoEnv    — environment both set the same way
 #   deck       — the deck's committed material, as the image copies it
 { pkgs
+, protoc          # nix/protobuf.nix: the one protobuf release (spec 0460)
 , telepromptSrc   # ./bin/teleprompt, as a path: imported into the store
 , deckSrc         # ./grehack2026, as a path: filtered below
 , neovimLean      # the image's Neovim (spec 0374 S2)
@@ -93,7 +94,7 @@ in
     pkgs.chafa
     neovimLean
     bufLean
-    pkgs.protobuf
+    protoc
     pkgs.util-linuxMinimal
     pkgs.kitty.terminfo
   ];

@@ -29,6 +29,7 @@
 # tests (S4).
 
 { pkgs
+, protoc            # nix/protobuf.nix: the one protobuf release (spec 0460)
 , crane
 , pythonPkgs
 , pythonBin
@@ -64,7 +65,7 @@ let
   #   the interpreter and the libpython they link per target (spec 0402 S6),
   #   so that a single depsCache covers the whole workspace.
   #
-  # protocArgs: extends commonArgs with pkgs.protobuf.
+  # protocArgs: extends commonArgs with the release's protoc (spec 0462).
   #   Used by ALL derivations including depsCache, so the sandbox environment
   #   is identical everywhere and Cargo fingerprints are stable across the chain.
   #   (buildDepsOnly stubs build.rs so protoc is never actually invoked there.)
@@ -122,12 +123,12 @@ let
   # protoc for prototext's roundtrip tests, which compare with it. The
   # fixtures prototext's build.rs reads are committed (spec 0405 S1).
   protocArgs = commonArgs // {
-    nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ pkgs.protobuf ];
+    nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ protoc ];
   };
 
   # ---------------------------------------------------------------------------
   # Shared dependency cache — built once, reused by all Crane derivations.
-  # Uses protocArgs (includes pkgs.protobuf) so the sandbox environment matches
+  # Uses protocArgs (includes protoc) so the sandbox environment matches
   # all consumers. buildDepsOnly stubs build.rs so protoc is never invoked, but
   # having protobuf present prevents fingerprint mismatches that would force
   # external deps to recompile in every downstream derivation.

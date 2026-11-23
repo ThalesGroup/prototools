@@ -31,7 +31,8 @@ let
   # Python protobuf's version for protobuf `release`: 7.<release>.
   pythonVersion = "7.${release}";
 
-  python = pkgs.python313.override {
+  # nixpkgs' default Python, which moves with the pin (spec 0462 S2).
+  python = pkgs.python3.override {
     self = python;
     packageOverrides = pyfinal: pyprev: {
       protobuf = (pyprev.protobuf.override { protobuf = protoc; }).overridePythonAttrs (_: {

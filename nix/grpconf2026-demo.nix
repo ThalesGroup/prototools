@@ -10,6 +10,7 @@
 #   demoEnv   — environment both set the same way
 #   deck      — the deck's committed material, with bob/ staged in
 { pkgs
+, protoc          # nix/protobuf.nix: the one protobuf release (spec 0460)
 , deckSrc         # ./grpconf2026, as a path: filtered below
 , teleprompt      # the one teleprompt both talks share (grehack2026-demo.nix)
 , neovimLean
@@ -42,7 +43,7 @@ in
 {
   # The deck calls nothing beyond bash, coreutils and these (spec 0404 S4):
   # the teleprompt, nvim and buf for `view`, and protoc.
-  demoTools = [ teleprompt neovimLean bufLean pkgs.protobuf ];
+  demoTools = [ teleprompt neovimLean bufLean protoc ];
 
   # Spec 0404 S1. PROTOTEXT_WKT_SET is what annex C names; the dev-shell
   # exports it too (nix/shells.nix).

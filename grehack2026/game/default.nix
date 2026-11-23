@@ -25,7 +25,9 @@
 #
 # Output: $out/bin/{life-server,life-client,life-tap}
 
-{ pkgs, crane }:
+# protoc: the one protobuf release (default.nix's protobufRelease, specs
+# 0460, 0462).
+{ pkgs, crane, protoc }:
 
 let
   # The source is rooted at the repository, not at life/, so life-server's
@@ -62,8 +64,8 @@ let
     version = "0.1.0";
     strictDeps = true;
     # prost-build runs protoc; PROTOC names it rather than relying on PATH.
-    nativeBuildInputs = [ pkgs.protobuf pkgs.makeWrapper ];
-    PROTOC = "${pkgs.protobuf}/bin/protoc";
+    nativeBuildInputs = [ protoc pkgs.makeWrapper ];
+    PROTOC = "${protoc}/bin/protoc";
 
     cargoLock  = ./Cargo.lock;
     cargoToml  = ./Cargo.toml;

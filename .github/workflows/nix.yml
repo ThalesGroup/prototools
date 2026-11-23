@@ -48,6 +48,12 @@ jobs:
       - name: Evaluate without import-from-derivation
         run: nix-instantiate -A ${{ matrix.ci-target }} --option allow-import-from-derivation false > /dev/null
 
+      # Spec 0462 S3: no derivation of ours takes another protobuf than the
+      # release. It reads ci's .drv files, outside a derivation: one that
+      # read them would have Nix build or fetch the whole closure first.
+      - name: Check the protobuf release (spec 0462)
+        run: scripts/protobuf-release-check
+
       - name: Check formatting (rustfmt)
         run: nix-build -A rust-fmt
 

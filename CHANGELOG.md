@@ -16,6 +16,13 @@ SPDX-License-Identifier: MIT
   Python protobuf is not that release's now fails evaluation, saying what
   to pass; left out, it is `protobufRelease.pythonPkgs`, as before
   (spec 0461).
+- Nix: `scripts/protobuf-release-check`, a step of CI: no derivation of
+  ours takes another protobuf than spec 0460's release. The Rust
+  workspace, the demos and the game took nixpkgs' protobuf 34.1, so
+  prototext's roundtrip tests compared against protoc 34.1; they take
+  the release's protoc now. The release's Python is nixpkgs' default
+  `python3` (3.13.15 at the pin, unchanged), no longer `python313` by
+  name (spec 0462).
 - Docs: a tutorial for `git seriate` and `git seriate-fdp`
   (`docs/git-seriate/tutorial.md`), and their entry in the README.
 - Nix: `git-seriate` and `git-seriate-fdp` packages, with shell

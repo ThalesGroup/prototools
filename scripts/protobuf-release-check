@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# No derivation of ours takes another protobuf than nix/protobuf.nix's
+# release (spec 0462 S3): ci's build closure, read from its .drv files.
+# Nothing is built or fetched; it takes about a second.
+#
+# Usage: scripts/protobuf-release-check
+set -euo pipefail
+repo=$(cd "$(dirname "$0")/.." && pwd)
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+drv=$(nix-instantiate --quiet "$repo" -A ci 2>/dev/null)
+release=$(nix-instantiate --quiet --eval "$repo" -A protobufRelease.release | tr -d '"')
+nix-store --query --graph "$drv" > "$tmp/graph.dot"
+python3 -I "$repo/scripts/protobuf-release-check.py" "$tmp/graph.dot" "$release"
+echo "protobuf-release-check: no derivation of ci's takes another protobuf than $release"

@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0462 — no other protobuf in our builds, and nixpkgs' default Python
 
-Status: draft
+Status: implemented
+Implemented in: 2026-11-23
 App: nix
 Refs: docs/specs/0460-one-protobuf-release-for-every-descriptor-copy.md
         (the release, and the copy checks this extends to the builds),
@@ -58,19 +59,20 @@ protoc is substituted from the binary cache, and its runtime closure
 
 - **S1.** `nix/rust.nix` takes `protoc` (0460's) and `protocArgs` adds
   it instead of `pkgs.protobuf`; so do the demos and the game (N2).
-  After S1, `pkgs.protobuf` and `pythonPkgs.protobuf` appear nowhere in
-  the repository's Nix files but `nix/protobuf.nix`.
+  After S1, `pkgs.protobuf` appears nowhere in the repository's Nix
+  files (`pythonPkgs.protobuf` is the release's, 0461).
 
 - **S2.** `nix/protobuf.nix` builds on `pkgs.python3`. The nixpkgs
   staging (0423) takes `pkgs.python3Packages`, as nixpkgs builds the
   recipes. At the main pin both are what they were (3.13.15): `ci`
   evaluates to the same derivations but for S1's.
 
-- **S3.** `protobuf-release-check`, in `ci`: over the build closure of
-  `ci`'s other members (`exportReferencesGraph` on their `.drv`), each
-  derivation that references a protobuf (`protobuf-<v>`, or
-  `python3.<m>-protobuf-<v>`) other than the release's must be one of
-  another package, listed with the reason:
+- **S3.** `scripts/protobuf-release-check`, a step of the CI workflow
+  (`nix.yml`) before the build: over `ci`'s build closure, read from its
+  `.drv` files (`nix-store --query --graph`), each derivation that
+  references a protobuf (`protobuf-<v>`, or `python3.<m>-protobuf-<v>`)
+  other than the release's must be one of another package, listed with
+  the reason (in `scripts/protobuf-release-check.py`):
 
   | Derivation | Why |
   |---|---|
@@ -81,6 +83,12 @@ protoc is substituted from the binary cache, and its runtime closure
   list doesn't outlive its entries.
 
 ## Alternatives considered
+
+**The check as a derivation in `ci`.** It would have to read the build
+closure, and `exportReferencesGraph` has Nix realise every path of the
+closure it exports first, `unsafeDiscardOutputDependency` or not: 3 515
+paths to fetch (14.4 GiB) and 134 to build, against one second for
+`nix-store --query --graph`. Tried, and dropped.
 
 **Checking runtime closures only.** The protoc a test runs is a build
 input, not a runtime dependency: the roundtrip tests' 34.1 is in no
@@ -96,7 +104,7 @@ by naming it, and the next pin would leave it behind.
 
 ## Test plan
 
-1. `protobuf-release-check` passes after S1; with `protocArgs` back on
+1. `scripts/protobuf-release-check` passes after S1; with `protocArgs` back on
    `pkgs.protobuf`, it fails naming `prototools-workspace` and
    `protobuf-34.1`.
 2. With `buf` removed from the list, it fails naming `buf`.
@@ -106,4 +114,16 @@ by naming it, and the next pin would leave it behind.
 
 ## Measured outcome
 
-Filled in at implementation.
+2026-11-23.
+
+1. `scripts/protobuf-release-check` passes (about 12 s, evaluation
+   included; the graph query itself under a second). With `protocArgs`
+   back on `pkgs.protobuf` it fails, naming the six workspace
+   derivations (`prototools-workspace`, `prototools-deps`, the tests'
+   dependency cache, the tests, clippy, the descriptor-access check)
+   and `protobuf-34.1`.
+2. With `buf` removed from its list, it fails naming `buf-1.73.0`.
+3. At the main pin `pkgs.python3` and `pkgs.python313` are one
+   derivation (3.13.15), and so are their package sets: S2 changes no
+   Python derivation.
+4. `ci` passes; `rust-tests` references `protobuf-36.2` only.
