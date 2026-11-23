@@ -144,6 +144,14 @@ SPDX-License-Identifier: MIT
 
 ### Changed
 
+- git-seriate: every history commit has an author. A commit whose author
+  email is empty has none (snapshot commits, `git-seriate <>`, keep it so,
+  deterministic); `settle` and `compact` author such a commit with the
+  identity they commit with (`GIT_AUTHOR_*`, then `user.name` /
+  `user.email`, then the committer's), its date kept, and keep any other
+  author, a history commit's own through a re-sort included. Histories
+  settled before are re-authored as they are rewritten (spec 0471).
+
 - git-seriate: `settle` reads a trusted history commit's items by their
   paths, each tree decoded once per command, not by listing its whole
   tree; seriation fetches a version when a comparison first needs it, not

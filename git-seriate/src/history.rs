@@ -276,6 +276,7 @@ pub fn settle(repo: &gix::Repository, options: &Options) -> Result<Report, Error
 
     // 6. The commits.
     let committer = committer(repo, options.dry_run)?;
+    let author_identity = author_identity(repo).unwrap_or_else(|| committer.clone());
     let signer = Signer::from_config(repo)?;
     let mut parent = plan.base;
     let mut parent_tree = match parent {
@@ -294,7 +295,7 @@ pub fn settle(repo: &gix::Repository, options: &Options) -> Result<Report, Error
                 let commit = gix::objs::Commit {
                     tree,
                     parents: parent.into_iter().collect(),
-                    author: input.author.clone(),
+                    author: authored(&input.author, &author_identity),
                     committer: with_time(&committer, block.source.build_time),
                     encoding: None,
                     message: block.message().into(),
@@ -324,7 +325,7 @@ pub fn settle(repo: &gix::Repository, options: &Options) -> Result<Report, Error
                 let commit = gix::objs::Commit {
                     tree,
                     parents: parent.into_iter().collect(),
-                    author,
+                    author: authored(&author, &author_identity),
                     committer: with_time(&committer, time),
                     encoding: None,
                     message: message.into(),
@@ -742,6 +743,16 @@ fn sort_input_from_history(
         if current {
             input.claimed = history_items(target, s, trees)?;
         }
+        // The history commit's author, not the branch's: a rewrite keeps it
+        // (spec 0471 S3).
+        let commit = target.find_commit(s.id).map_err(Error::git)?;
+        input.author = commit
+            .decode()
+            .map_err(Error::git)?
+            .author()
+            .map_err(Error::git)?
+            .to_owned()
+            .map_err(Error::git)?;
         return Ok(input);
     }
     let items = history_items(target, s, trees)?;
@@ -1265,6 +1276,42 @@ pub(crate) fn committer(
              GIT_COMMITTER_EMAIL)"
                 .into(),
         )),
+    }
+}
+
+/// The identity a commit is authored with when it has no author (spec 0471
+/// S2): `GIT_AUTHOR_NAME` and `GIT_AUTHOR_EMAIL`, as git reads them, else
+/// `user.name` and `user.email`. `None` when neither gives both: the caller
+/// then uses the identity it commits with.
+pub(crate) fn author_identity(repo: &gix::Repository) -> Option<gix::actor::Signature> {
+    let config = repo.config_snapshot();
+    let get = |env: &str, key: &str| -> Option<String> {
+        std::env::var(env)
+            .ok()
+            .or_else(|| config.string(key).map(|v| v.to_string()))
+    };
+    let name = get("GIT_AUTHOR_NAME", "user.name")?;
+    let email = get("GIT_AUTHOR_EMAIL", "user.email")?;
+    Some(gix::actor::Signature {
+        name: name.into(),
+        email: email.into(),
+        time: gix::date::Time::new(0, 0),
+    })
+}
+
+/// `author` as a history commit is written with it (spec 0471): kept when
+/// it has an email; else, having none, `identity` at `author`'s date (S1 to
+/// S3).
+pub(crate) fn authored(
+    author: &gix::actor::Signature,
+    identity: &gix::actor::Signature,
+) -> gix::actor::Signature {
+    if !author.email.is_empty() {
+        return author.clone();
+    }
+    gix::actor::Signature {
+        time: author.time,
+        ..identity.clone()
     }
 }
 

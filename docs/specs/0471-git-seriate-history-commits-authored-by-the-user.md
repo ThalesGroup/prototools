@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0471 — git-seriate: history commits authored by the user
 
-Status: draft
+Status: implemented
+Implemented in: 2026-11-23
 App: git-seriate
 Refs: docs/specs/0452-git-seriate-the-store-and-the-history.md (S3: a
         snapshot commit's author, `git-seriate <>`, its date the order
@@ -65,9 +66,10 @@ reads the author's name or email.
   commit with the snapshot commit's author if it has one (S1), else the
   identity it commits and signs with (`GIT_AUTHOR_NAME` and
   `GIT_AUTHOR_EMAIL` first, as git reads them, then `user.name`,
-  `user.email`). The author date is always the snapshot commit's (the order
-  hint, or 0): `advise` dates files by it. A dry run needs no identity:
-  its commits aren't kept, the snapshot's author stands in.
+  `user.email`, then the committer's identity itself: a settle that could
+  commit before 0471 still can). The author date is always the snapshot commit's (the order
+  hint, or 0): `advise` dates files by it. A dry run needs no more
+  identity than before: the committer's stands in.
 
 - **S3. A rewritten commit.** A history commit `settle` replays or
   re-sorts, or `compact` rewrites, keeps its author, unless it has none
@@ -112,4 +114,12 @@ it: a re-sort would make every file look written today.
 
 ## Measured outcome
 
-Filled in at implementation.
+2026-11-23. The four tests of `tests/author.rs` pass, and git-seriate's
+and git-seriate-fdp's suites (92) under `env -i`, `advise`'s dates
+unchanged.
+
+Found implementing it: a history commit re-sorted while its snapshot
+branch exists took its author from the branch (`git-seriate <>`), losing
+an author the history held; it now takes the history commit's (S3). The
+author identity falls back to the committer's, so that a settle that
+could commit before (`GIT_COMMITTER_*` only) still can.

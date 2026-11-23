@@ -29,7 +29,8 @@ use gix::ObjectId;
 
 use crate::format::Block;
 use crate::history::{
-    apply, canonical_form, commit_tree, committer, diff, files, with_time, Change, Signer,
+    apply, author_identity, authored, canonical_form, commit_tree, committer, diff, files,
+    with_time, Change, Signer,
 };
 use crate::plugins::{Canonicalizer, LegacyReader, Renderer};
 use crate::store::{self, branch_ref, tip};
@@ -351,6 +352,7 @@ pub fn compact(
         repo.clone()
     };
     let user = committer(repo, options.dry_run)?;
+    let author_identity = author_identity(repo).unwrap_or_else(|| user.clone());
     let signer = Signer::from_config(repo)?;
     let mut parent: Option<ObjectId> = None;
     let mut tree = ObjectId::empty_tree(repo.object_hash());
@@ -371,7 +373,8 @@ pub fn compact(
         let commit = signer.sign(gix::objs::Commit {
             tree,
             parents: parent.into_iter().collect(),
-            author,
+            // An author it has kept; none, the user's (spec 0471 S3).
+            author: authored(&author, &author_identity),
             committer: with_time(&user, time),
             encoding: None,
             message: message.into(),
