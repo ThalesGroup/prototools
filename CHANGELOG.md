@@ -144,6 +144,11 @@ SPDX-License-Identifier: MIT
 
 ### Changed
 
+- git-seriate: `settle` reads a trusted history commit's items by their
+  paths, each tree decoded once per command, not by listing its whole
+  tree; seriation fetches a version when a comparison first needs it, not
+  every version of a file (spec 0470).
+
 - git-seriate: `settle` takes a history commit written with today's rule
   sets and renderer as canonical, its items as they are: a re-sort no
   longer parses and renders the whole history. History commits record

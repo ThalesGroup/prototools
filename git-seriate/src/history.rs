@@ -205,6 +205,9 @@ pub fn settle(repo: &gix::Repository, options: &Options) -> Result<Report, Error
         repo.clone()
     };
     let mut inputs: Vec<SortInput> = Vec::new();
+    // Each tree decoded once for every history commit's lookups (spec 0470
+    // S1): consecutive commits share nearly all their subtrees.
+    let mut trees = Trees::default();
     for entry in &old_chain {
         if let Entry::Snapshot(s) = entry {
             inputs.push(sort_input_from_history(
@@ -212,6 +215,7 @@ pub fn settle(repo: &gix::Repository, options: &Options) -> Result<Report, Error
                 s,
                 &by_branch,
                 &trust,
+                &mut trees,
                 options.dry_run,
                 &mut report,
             )?);
@@ -643,16 +647,71 @@ fn sort_input_from_branch(repo: &gix::Repository, l: &store::Listed) -> Result<S
     })
 }
 
-/// The items a history commit lists, read from the history's tree at it.
+/// Decoded trees by id, for one command: a tree several history commits
+/// share is decoded once (spec 0470 S1).
+#[derive(Default)]
+pub(crate) struct Trees {
+    /// Each entry: its name, whether it is a tree, its id.
+    decoded: HashMap<ObjectId, Vec<(Vec<u8>, bool, ObjectId)>>,
+}
+
+impl Trees {
+    /// The blob at `path` in the tree `root`, if it has one; looked up
+    /// component by component, no path built (S2).
+    pub(crate) fn lookup(
+        &mut self,
+        repo: &gix::Repository,
+        root: ObjectId,
+        path: &str,
+    ) -> Result<Option<ObjectId>, Error> {
+        let mut tree = root;
+        let mut components = path.split('/').peekable();
+        while let Some(component) = components.next() {
+            let entries = match self.decoded.entry(tree) {
+                std::collections::hash_map::Entry::Occupied(known) => known.into_mut(),
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    let object = repo.find_tree(tree).map_err(Error::git)?;
+                    let entries = object
+                        .decode()
+                        .map_err(Error::git)?
+                        .entries
+                        .iter()
+                        .map(|e| (e.filename.to_vec(), e.mode.is_tree(), e.oid.to_owned()))
+                        .collect();
+                    slot.insert(entries)
+                }
+            };
+            let found = entries
+                .iter()
+                .find(|(name, _, _)| name.as_slice() == component.as_bytes())
+                .map(|&(_, is_tree, oid)| (is_tree, oid));
+            match (found, components.peek().is_some()) {
+                (Some((false, oid)), false) => return Ok(Some(oid)),
+                (Some((true, oid)), true) => tree = oid,
+                _ => return Ok(None),
+            }
+        }
+        Ok(None)
+    }
+
+    /// How many trees were decoded.
+    #[cfg(test)]
+    pub(crate) fn decoded(&self) -> usize {
+        self.decoded.len()
+    }
+}
+
+/// The items a history commit lists, looked up in the history's tree at it
+/// (spec 0470 S1): its snapshot's paths, not the whole tree.
 fn history_items(
     target: &gix::Repository,
     s: &SnapCommit,
+    trees: &mut Trees,
 ) -> Result<Vec<(String, ObjectId)>, Error> {
-    let all: HashMap<String, ObjectId> = files(target, s.tree, "")?.into_iter().collect();
     let paths = s.block.contents.clone().unwrap_or_default();
-    let mut items = Vec::new();
+    let mut items = Vec::with_capacity(paths.len());
     for path in paths {
-        let oid = *all.get(&path).ok_or_else(|| {
+        let oid = trees.lookup(target, s.tree, &path)?.ok_or_else(|| {
             Error::Refused(format!(
                 "history commit {} lists {path}, which its tree lacks",
                 s.id
@@ -671,6 +730,7 @@ fn sort_input_from_history(
     s: &SnapCommit,
     by_branch: &HashMap<&str, &store::Listed>,
     trust: &Trust,
+    trees: &mut Trees,
     dry_run: bool,
     report: &mut Report,
 ) -> Result<SortInput, Error> {
@@ -680,11 +740,11 @@ fn sort_input_from_history(
     if let Some(l) = branch.filter(|_| !current || trust.verify) {
         let mut input = sort_input_from_branch(target, l)?;
         if current {
-            input.claimed = history_items(target, s)?;
+            input.claimed = history_items(target, s, trees)?;
         }
         return Ok(input);
     }
-    let items = history_items(target, s)?;
+    let items = history_items(target, s, trees)?;
     let commit = target.find_commit(s.id).map_err(Error::git)?;
     let decoded = commit.decode().map_err(Error::git)?;
     let author = decoded
@@ -1262,6 +1322,65 @@ fn with_anchor_trailer(message: &str, anchor: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Spec 0470 S1: items looked up by path are what listing the tree
+    /// gave; a missing path is none; a subtree two trees share is decoded
+    /// once.
+    #[test]
+    fn items_by_path_are_the_trees_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = gix::init_bare(tmp.path().join("r.git")).unwrap();
+        let tree_of = |files: &[(&str, &str)], id: &str| {
+            let snapshot = store::NewSnapshot {
+                source: crate::format::Source {
+                    identity: id.into(),
+                    build_time: 1,
+                    order_hint: None,
+                    group: None,
+                    metadata: Vec::new(),
+                },
+                items: files
+                    .iter()
+                    .map(|(p, t)| store::Item {
+                        path: p.to_string(),
+                        bytes: t.as_bytes().to_vec(),
+                    })
+                    .collect(),
+                rejected: Vec::new(),
+                record: Vec::new(),
+            };
+            store::add(&repo, snapshot).unwrap();
+            let commit = repo
+                .find_reference(format!("refs/heads/{id}").as_str())
+                .unwrap()
+                .peel_to_id()
+                .unwrap()
+                .detach();
+            commit_tree(&repo, commit).unwrap()
+        };
+        let shared = [("d/e/f.txt", "f\n"), ("d/g.txt", "g\n")];
+        let one = tree_of(&[shared[0], shared[1], ("a.txt", "1\n")], "one");
+        let two = tree_of(&[shared[0], shared[1], ("a.txt", "2\n")], "two");
+        let mut trees = Trees::default();
+        for root in [one, two] {
+            for (path, oid) in files(&repo, root, "").unwrap() {
+                assert_eq!(
+                    trees.lookup(&repo, root, &path).unwrap(),
+                    Some(oid),
+                    "{path}"
+                );
+            }
+            for missing in ["b.txt", "d/e", "d/e/f.txt/x", "d/x/f.txt"] {
+                assert_eq!(
+                    trees.lookup(&repo, root, missing).unwrap(),
+                    None,
+                    "{missing}"
+                );
+            }
+        }
+        // Two roots, d and d/e shared: four trees, each decoded once.
+        assert_eq!(trees.decoded(), 4);
+    }
 
     #[test]
     fn anchors_are_read_and_written_as_trailers() {

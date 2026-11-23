@@ -344,7 +344,13 @@ let
   #
   # The wheels are maturin's (spec 0409 S3), built from each extension's
   # pyproject.toml as nixpkgs's maturinBuildHook builds them, on this
-  # build's target directory, so maturin recompiles little.
+  # build's target directory. The first wheel still recompiles every
+  # dependency (about 130 crates, 50 s): under thin LTO, Cargo compiles a
+  # dependency as bitcode only for maturin's cdylib-only build, and as
+  # machine code too for the build phase, where each extension is a cdylib
+  # and an rlib (its stub generator links it). --bins doesn't change that;
+  # an rlib-only crate type would, but it is what the nixpkgs recipes build
+  # from (tabled 2026-11-23).
   # - Linux: maturin checks the extension against manylinux_2_34, the
   #   newest glibc it needs (Rust's std links symbols up to GLIBC_2.34),
   #   and fails if it needs more. Tagged 2_28 until 2026-10-10, which let

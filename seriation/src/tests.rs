@@ -293,3 +293,46 @@ fn bad_inputs_are_refused() {
         .collect();
     assert!(matches!(refused(&many, &ok, &mut none), Error::Capacity(_)));
 }
+
+/// Spec 0470 S3: a version is fetched when a comparison first needs it. File
+/// 0 has two versions in snapshots a year apart, beyond the window: neither
+/// is fetched. File 1 has two within it: both are, once each.
+#[test]
+fn versions_out_of_the_window_are_not_fetched() {
+    struct Counting(Texts, HashMap<(FileId, VersionId), usize>);
+    impl Contents for Counting {
+        fn fetch(&mut self, file: FileId, version: VersionId) -> Result<Vec<u8>, BoxError> {
+            *self.1.entry((file, version)).or_default() += 1;
+            self.0.fetch(file, version)
+        }
+    }
+    let text = |s: &str| s.as_bytes().to_vec();
+    let mut texts = Counting(
+        Texts(HashMap::from([
+            ((0, 0), text("a\n")),
+            ((0, 1), text("a\nb\n")),
+            ((1, 0), text("x\n")),
+            ((1, 1), text("x\ny\n")),
+        ])),
+        HashMap::new(),
+    );
+    let day = 86_400;
+    let snapshot = |id: &str, t: i64, items: Vec<(FileId, VersionId)>| Snapshot {
+        identity: id.into(),
+        build_time: t,
+        order_hint: None,
+        items,
+    };
+    let snapshots = [
+        snapshot("a", 0, vec![(0, 0)]),
+        snapshot("b", 365 * day, vec![(0, 1)]),
+        snapshot("c", 400 * day, vec![(1, 0)]),
+        snapshot("d", 401 * day, vec![(1, 1)]),
+    ];
+    let sorted = sort(&snapshots, &mut texts, &LinesChars, &Settings::default()).unwrap();
+    assert_eq!(texts.1.get(&(0, 0)), None, "{:?}", texts.1);
+    assert_eq!(texts.1.get(&(0, 1)), None, "{:?}", texts.1);
+    assert_eq!(texts.1.get(&(1, 0)), Some(&1), "{:?}", texts.1);
+    assert_eq!(texts.1.get(&(1, 1)), Some(&1), "{:?}", texts.1);
+    assert_eq!(sorted.order.len(), 4);
+}

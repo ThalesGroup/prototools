@@ -199,18 +199,10 @@ impl SortState {
             if instances.len() < 2 {
                 continue;
             }
-            // Every distinct version of this file, fetched once, dropped
-            // before the next file.
+            // Each version of this file fetched when a comparison first
+            // needs it, once, dropped before the next file: a version no
+            // pair within the window names is never read (spec 0470 S3).
             let mut bytes: HashMap<VersionId, Vec<u8>> = HashMap::new();
-            for instance in instances {
-                if let Entry::Vacant(slot) = bytes.entry(instance.version) {
-                    slot.insert(
-                        contents
-                            .fetch(self.file_ids[fid], instance.version)
-                            .map_err(Error::Contents)?,
-                    );
-                }
-            }
             for (i, u) in instances.iter().enumerate() {
                 for v in &instances[i + 1..] {
                     let (tu, tv) = (
@@ -224,6 +216,15 @@ impl SortState {
                         edges.push((u.sid, v.sid));
                         edges.push((v.sid, u.sid));
                         continue;
+                    }
+                    for version in [u.version, v.version] {
+                        if let Entry::Vacant(slot) = bytes.entry(version) {
+                            slot.insert(
+                                contents
+                                    .fetch(self.file_ids[fid], version)
+                                    .map_err(Error::Contents)?,
+                            );
+                        }
                     }
                     comparisons += 1;
                     match comparator.compare(&bytes[&u.version], &bytes[&v.version]) {
