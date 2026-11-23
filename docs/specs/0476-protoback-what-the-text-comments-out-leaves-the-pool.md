@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0476 — protoback: what the text comments out leaves the pool
 
-Status: draft
+Status: implemented
+Implemented in: 2026-11-23
 App: protoback
 Refs: docs/specs/0473-protoback-repairs-reach-the-pool-and-the-schema-database.md
         (S2 extended here),
@@ -54,10 +55,15 @@ third is a defect of the input (an edition set with an empty `syntax`).
 ## Specification
 
 - **S1.** Under `--repair-skew`, the descriptor 0473 S2 gives the pool
-  also leaves out every extension the text writes commented out because
-  it isn't summoned, at file level or in a message. The `.pb` written
-  beside the text uses the same predicate (`binary.rs`), so the two can't
-  disagree.
+  also leaves out every extension whose extendee no file of the run
+  defines, at file level or in a message. The text writes such an
+  extension commented out (it isn't summoned). The `.pb` written beside
+  the text uses the same predicate (`Repairs::is_out`), so the two can't
+  disagree: inside a message, the `.pb` kept such an extension until now.
+  Other extensions the text comments out stay in the pool's descriptor:
+  an extension of an options message can be a custom option the options
+  pool needs, and only an extendee that is defined nowhere makes the pool
+  refuse.
 
 - **S2.** A file with such an extension and nothing else to repair gets
   the treatment 0473 S2 gives a repaired file. W19 is said of it only if
@@ -87,4 +93,9 @@ written whole".
 
 ## Measured outcome
 
-Filled in at implementation.
+2026-11-23. `an_extension_of_a_missing_extendee_leaves_the_pool`: under
+`--repair-skew`, both files (extension at file level, and in a message)
+are accepted, have no W19 or W20, and are in the schema database; W5 is
+still said. The `.pb` of the second has no extension left in its
+message, and protoc compiles both written files. Without the option,
+both are refused as before.

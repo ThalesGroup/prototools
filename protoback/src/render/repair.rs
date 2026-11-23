@@ -42,7 +42,7 @@ impl Repairs {
     /// field, method or extension commented out, or a map entry whose map
     /// field is (the text writes no map entry of its own).
     pub fn is_out(&self, shared: &Shared<'_>, node: usize) -> bool {
-        if self.orphans.contains_key(&node) {
+        if self.orphans.contains_key(&node) || extends_nothing(shared, node) {
             return true;
         }
         let n = &shared.graph.nodes[node];
@@ -265,6 +265,24 @@ fn file_name(shared: &Shared<'_>, file: usize) -> String {
         .strip_prefix("file:")
         .unwrap_or_default()
         .to_string()
+}
+
+/// Whether `node` is an extension whose extendee no file of the run
+/// defines (its file a missing dependency): the text writes it commented
+/// out, and the pool would refuse its file for it (spec 0476 S1).
+pub(super) fn extends_nothing(shared: &Shared<'_>, node: usize) -> bool {
+    let Some(super::Def::Field(f)) = shared.def(node) else {
+        return false;
+    };
+    if f.extendee().is_empty() {
+        return false;
+    }
+    let extendee = String::from_utf8_lossy(f.extendee());
+    shared
+        .graph
+        .find(&format!("{}:{extendee}", Kind::Message.prefix()))
+        .and_then(|m| shared.message_def(m))
+        .is_none()
 }
 
 /// The file node `node` is in.

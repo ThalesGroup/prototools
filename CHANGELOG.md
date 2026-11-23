@@ -253,6 +253,11 @@ SPDX-License-Identifier: MIT
   left out of the schema database (W20): the pool now loads the repaired
   descriptors; the `.pb` written beside the text is the repaired one
   (spec 0473).
+- protoback: under `--repair-skew`, a file extending a message that no
+  file of the run defines (its file a missing dependency) was refused by
+  the pool though its text comments the extension out; the pool now loads
+  it without, and the `.pb` leaves such an extension out inside a message
+  too (spec 0476).
 
 - reproto, protoback: a file the descriptor pool refused (W19) was
   written without any file option, its editions features among them

@@ -46,8 +46,14 @@ pub fn repaired_db(shared: &Shared<'_>, repairs: &Repairs, db: &Database) -> Opt
             .imports
             .extend(deps.keys().cloned());
     }
-    // The nodes out: the orphans, and the map entries of map fields out.
+    // The nodes out: the orphans, the extensions of an extendee in no file
+    // (spec 0476), and the map entries of map fields out.
     let mut out_nodes: BTreeSet<usize> = repairs.orphans.keys().copied().collect();
+    out_nodes.extend(
+        (0..shared.graph.nodes.len())
+            .filter(|&n| shared.graph.nodes[n].kind == Kind::Field)
+            .filter(|&n| super::repair::extends_nothing(shared, n)),
+    );
     for &node in repairs.orphans.keys() {
         if let Some(super::Def::Field(f)) = shared.def(node) {
             let entry = String::from_utf8_lossy(f.type_name()).into_owned();

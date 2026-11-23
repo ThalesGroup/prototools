@@ -268,3 +268,46 @@ fn still_refused_is_still_reported() {
     assert_eq!(r.codes("W19").len(), 1, "{}", r.stderr);
     assert_eq!(r.codes("W20").len(), 1, "{}", r.stderr);
 }
+
+#[test]
+fn an_extension_of_a_missing_extendee_leaves_the_pool() {
+    // `c/m.proto`, defining `M`, is missing; each file extends `M`, at
+    // file level and in a message (spec 0476).
+    let x = r#"name: "a/x.proto" dependency: "c/m.proto"
+        message_type { name: "Keep" field { name: "v" number: 1 label: LABEL_OPTIONAL
+          type: TYPE_INT32 json_name: "v" } }
+        extension { name: "n" number: 100 label: LABEL_OPTIONAL type: TYPE_INT32
+          extendee: ".M" json_name: "n" }"#;
+    let y = r#"name: "a/y.proto" package: "y" dependency: "c/m.proto"
+        message_type { name: "Holder"
+          field { name: "v" number: 1 label: LABEL_OPTIONAL type: TYPE_INT32 json_name: "v" }
+          extension { name: "n" number: 101 label: LABEL_OPTIONAL type: TYPE_INT32
+            extendee: ".M" json_name: "n" } }"#;
+    let files = [("x.textpb", x), ("y.textpb", y)];
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("repair-extendee-db.desc");
+    let db = dir.to_str().unwrap();
+    let r = run(
+        "extendee",
+        &files,
+        &["--repair-skew", "--emit-binary", "--schema-db-out", db],
+    );
+    assert!(r.codes("W19").is_empty(), "{}", r.stderr);
+    assert!(r.codes("W20").is_empty(), "{}", r.stderr);
+    assert!(!r.codes("W5").is_empty(), "{}", r.stderr);
+    let names = schema_db_files(&dir);
+    for f in ["a/x.proto", "a/y.proto"] {
+        assert!(names.iter().any(|n| n == f), "{f} not in {names:?}");
+    }
+    // The .pb leaves the one in the message out too, as the text does.
+    let bytes = std::fs::read(r.out.join("a/y.pb")).unwrap();
+    let def = prototext_upb::Pool::vendored()
+        .get_message_by_name("google.protobuf.FileDescriptorProto")
+        .unwrap();
+    let msg = prototext_upb::DynamicMessage::decode(&def, &bytes).unwrap();
+    let f = prototext_upb::descriptor_access::FileDescriptorProto(msg.as_ref());
+    assert!(f.message_type()[0].extension().is_empty());
+
+    // Without the option: refused, as before.
+    let r = run("extendee-none", &files, &[]);
+    assert_eq!(r.codes("W19").len(), 2, "{}", r.stderr);
+}
