@@ -168,3 +168,103 @@ fn repair_skew_binary_follows_the_text() {
     let f = prototext_upb::descriptor_access::FileDescriptorProto(msg.as_ref());
     assert_eq!(f.dependency(), [b"a/row.proto".as_slice()]);
 }
+
+/// `c/top.proto`, importing `b/user.proto`: refused through it unless the
+/// repairs reach the pool (spec 0473).
+const TOP: &str = r#"name: "c/top.proto" package: "c" dependency: "b/user.proto"
+message_type { name: "Top" field { name: "u" number: 1 label: LABEL_OPTIONAL type: TYPE_MESSAGE
+  type_name: ".b.User" json_name: "u" } }"#;
+
+/// The file names a schema database (a `FileDescriptorSet`) holds.
+fn schema_db_files(path: &Path) -> Vec<String> {
+    let bytes = std::fs::read(path).unwrap();
+    let def = prototext_upb::Pool::vendored()
+        .get_message_by_name("google.protobuf.FileDescriptorSet")
+        .unwrap();
+    let set = prototext_upb::DynamicMessage::decode(&def, &bytes).unwrap();
+    let set = prototext_upb::descriptor_access::FileDescriptorSet(set.as_ref());
+    set.file()
+        .iter()
+        .map(|f| String::from_utf8_lossy(f.name()).into_owned())
+        .collect()
+}
+
+#[test]
+fn a_repaired_file_is_not_refused() {
+    let files = [
+        ("row.textpb", ROW),
+        ("user.textpb", USER),
+        ("top.textpb", TOP),
+    ];
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("repair-db.desc");
+    let db = dir.to_str().unwrap();
+    let r = run(
+        "accepted",
+        &files,
+        &["--repair-skew", "--schema-db-out", db],
+    );
+    assert!(r.codes("W19").is_empty(), "{}", r.stderr);
+    assert!(r.codes("W20").is_empty(), "{}", r.stderr);
+    let names = schema_db_files(&dir);
+    for f in ["b/user.proto", "c/top.proto"] {
+        assert!(names.iter().any(|n| n == f), "{f} not in {names:?}");
+    }
+
+    // Without the option: both refused, as before; said once on stderr,
+    // every occurrence in the report (spec 0474 S4).
+    let r = run("refused", &files, &["--schema-db-out", db]);
+    assert_eq!(r.codes("W19").len(), 2, "{}", r.stderr);
+    assert_eq!(r.codes("W20").len(), 2, "{}", r.stderr);
+    assert_eq!(r.stderr.matches("[W19]").count(), 1, "{}", r.stderr);
+    assert!(!r.stderr.contains("[W20]"), "{}", r.stderr);
+    assert!(
+        r.stderr.contains("(and 1 file importing it)"),
+        "{}",
+        r.stderr
+    );
+}
+
+#[test]
+fn a_field_commented_out_leaves_the_pool() {
+    let r = run(
+        "left-out",
+        &[("row.textpb", ROW), ("user.textpb", USER)],
+        &["--repair-skew", "--emit-binary"],
+    );
+    let bytes = std::fs::read(r.out.join("b/user.pb")).unwrap();
+    let def = prototext_upb::Pool::vendored()
+        .get_message_by_name("google.protobuf.FileDescriptorProto")
+        .unwrap();
+    let msg = prototext_upb::DynamicMessage::decode(&def, &bytes).unwrap();
+    let f = prototext_upb::descriptor_access::FileDescriptorProto(msg.as_ref());
+    let names = |it: Vec<&[u8]>| -> Vec<String> {
+        it.iter()
+            .map(|n| String::from_utf8_lossy(n).into_owned())
+            .collect()
+    };
+    let user = &f.message_type()[0];
+    assert_eq!(
+        names(user.field().iter().map(|x| x.name()).collect()),
+        ["row", "ok"]
+    );
+    assert_eq!(
+        names(f.extension().iter().map(|x| x.name()).collect()),
+        ["near"]
+    );
+}
+
+#[test]
+fn still_refused_is_still_reported() {
+    // A field naming a message as an enum: no repair makes it whole.
+    let user = r#"name: "b/user.proto" package: "b" dependency: "a/row.proto"
+        message_type { name: "User" field { name: "row" number: 1 label: LABEL_OPTIONAL
+          type: TYPE_ENUM type_name: ".a.Row" json_name: "row" } }"#;
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("repair-still-db.desc");
+    let r = run(
+        "still",
+        &[("row.textpb", ROW), ("user.textpb", user)],
+        &["--repair-skew", "--schema-db-out", dir.to_str().unwrap()],
+    );
+    assert_eq!(r.codes("W19").len(), 1, "{}", r.stderr);
+    assert_eq!(r.codes("W20").len(), 1, "{}", r.stderr);
+}

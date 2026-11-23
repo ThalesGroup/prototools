@@ -200,6 +200,25 @@ pub fn symbol_visibility(
     }
 }
 
+/// `--repair-skew`: whether `node` is commented out (spec 0469), and so
+/// out of the descriptors written (spec 0473 S4).
+pub fn is_repaired_out(ctx: &Ctx<'_, '_>, node: usize) -> bool {
+    ctx.shared
+        .repairs
+        .is_some_and(|r| r.is_out(ctx.shared, node))
+}
+
+/// `--repair-skew`: whether this file has repairs.
+pub fn has_repairs(ctx: &Ctx<'_, '_>) -> bool {
+    let file = ctx.file_name();
+    ctx.shared.repairs.is_some_and(|r| {
+        r.imports.contains_key(&file)
+            || r.orphans
+                .keys()
+                .any(|&n| super::repair::file_of_node(ctx.shared, n) == Some(ctx.file))
+    })
+}
+
 /// `--repair-skew`: `node` (a field, method or extension) commented out
 /// (spec 0469 S3, S4): its lines orphans, the comment before them, the
 /// warning. Whether it was.
@@ -460,6 +479,13 @@ pub fn extend_blocks(
                 if !summoned {
                     continue;
                 }
+            }
+            // Out of the descriptor, so out of the count (spec 0473 S4).
+            if shared
+                .child(Kind::Field, owner, e.name())
+                .is_some_and(|fd| is_repaired_out(ctx, fd))
+            {
+                continue;
             }
             let mut p = prefix.to_vec();
             p.extend([if is_file { 7 } else { 6 }, counter]);
@@ -1093,6 +1119,36 @@ fn file_options(
     f: &prototext_upb::descriptor_access::FileDescriptorProto<'_>,
     depth: usize,
 ) -> Block {
+    if ctx.refused {
+        let reason = super::failure_reason(ctx.shared.loads, &ctx.file_name());
+        // reproto's `debug_exception`, under --debug.
+        if ctx.shared.debug {
+            crate::console::warning(&format!("'{}': file options: {reason}", ctx.file_name()));
+        }
+        // W19, with the pool's reason (spec 0438 S8); its options rendered
+        // from its descriptor all the same, its features among them (spec
+        // 0475 S1).
+        ctx.events.borrow_mut().push(RenderEvent::W6 {
+            code: "W19",
+            file: ctx.file_name(),
+            field: String::new(),
+            reason: reason.clone(),
+        });
+        let mut out = Block::new();
+        out.push(anomaly("WARNING", "render", &reason, depth));
+        out.extend(rendered_file_options(ctx, f, depth));
+        return out;
+    }
+    rendered_file_options(ctx, f, depth)
+}
+
+/// A file's options rendered: its features, its standard and custom
+/// options; A3 with W6 when they can't be (spec 0475 S2).
+fn rendered_file_options(
+    ctx: &Ctx<'_, '_>,
+    f: &prototext_upb::descriptor_access::FileDescriptorProto<'_>,
+    depth: usize,
+) -> Block {
     use super::options::{options, Options};
     let a3 = |code: &'static str, reason: &str| {
         ctx.events.borrow_mut().push(RenderEvent::W6 {
@@ -1110,15 +1166,6 @@ fn file_options(
         ));
         b
     };
-    if ctx.refused {
-        let reason = super::failure_reason(ctx.shared.loads, &ctx.file_name());
-        // reproto's `debug_exception`, under --debug.
-        if ctx.shared.debug {
-            crate::console::warning(&format!("'{}': file options: {reason}", ctx.file_name()));
-        }
-        // W19, with the pool's reason (spec 0438 S8).
-        return a3("W19", &reason);
-    }
     let mut out = Block::new();
     let Some(o) = f.options() else {
         return out;

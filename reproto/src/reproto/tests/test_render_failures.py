@@ -63,7 +63,8 @@ def test_a_file_the_pool_refuses_says_why(tmp_path: Path) -> None:
     result, out = _reproto(tmp_path, pb, pb.parent)
     text = (out / "ext_no_options_extender.proto").read_text(encoding="utf-8")
     stderr = _words(result.stderr)
-    assert f"// OMITTED[render]: file options could not be rendered ({_REFUSED})" in text
+    # Said in the file, its options rendered all the same (spec 0475).
+    assert f"// WARNING[render]: {_REFUSED}" in text
     assert f"'ext_no_options_extender.proto' : {_REFUSED}" in stderr
     # upb's message, not Python's wrapping of it, nor a type parsed out.
     assert "Couldn't build proto file" not in text + stderr
@@ -86,7 +87,8 @@ _U = ('syntax = "proto2";\npackage q;\nimport "m2.proto";\n'
 def test_a_file_refused_for_its_import_names_it(tmp_path: Path) -> None:
     """m.proto and m2.proto both define p.M; u.proto imports m2.proto. Kept
     both (--keep-duplicates), the pool refuses m2.proto itself, and u.proto
-    for its import: W19 and W20 say which."""
+    for its import: W19 and W20 say which, every occurrence under
+    --detailed-warnings (spec 0474 G2)."""
     src = tmp_path / "src"
     root = tmp_path / "pb"
     src.mkdir()
@@ -101,6 +103,7 @@ def test_a_file_refused_for_its_import_names_it(tmp_path: Path) -> None:
     env.pop("REPROTO_VARIANT", None)
     result = subprocess.run(
         [*REPROTO_CMD, "--use-variant", "descriptor", "--keep-duplicates",
+         "--detailed-warnings",
          f"-I{root}", f"--proto-out={tmp_path / 'out'}",
          f"--schema-db-out={tmp_path / 'db.desc'}"],
         capture_output=True, text=True, env=env,

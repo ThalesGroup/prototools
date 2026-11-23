@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0473 — protoback: --repair-skew's repairs reach the pool and the schema database
 
-Status: draft
+Status: implemented
+Implemented in: 2026-11-23
 App: protoback
 Refs: docs/specs/0469-protoback-repair-skew.md (the repairs, S7 here
         revised),
@@ -50,7 +51,9 @@ reports all of them refused and leaves them out of the schema database.
 - **S2. The repaired descriptor.** A file with repairs is given to the
   pool as: its dependencies with the imports added (W33); without the
   fields, methods and extensions commented out (W34, W35); a oneof left
-  with no field removed with them. Nothing else changes.
+  with no field removed with them, and a map entry whose map field is
+  commented out (the text writes no map entry of its own). Nothing else
+  changes.
 
 - **S3. What follows the pool.** Everything that reads the pool reads the
   repaired descriptor: W19 is said only of a file still refused; the
@@ -92,4 +95,14 @@ holds.
 
 ## Measured outcome
 
-Filled in at implementation.
+2026-11-23. `protoback/tests/repair.rs`: on 0469's shape (an import
+missing, a map field of a type in no file, an extension out of range)
+and a file importing it, neither refused, both in the schema database;
+the `.pb` holds the fields and extensions kept, its SourceCodeInfo paths
+those of protoc's descriptor of the written text; a file no repair makes
+whole still W19 and W20. Without the option, the self-check against the
+previous build changes nothing (its 3 differing cases are 0475's).
+
+Found on the way: a map field commented out left its map entry in the
+descriptor, its value type in no file, and upb refused the file ("out of
+memory", its catch-all); the map entry now goes with its field (S2).

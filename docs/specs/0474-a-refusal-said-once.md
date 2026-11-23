@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0474 — reproto, protoback: a refusal said once
 
-Status: draft
+Status: implemented
+Implemented in: 2026-11-23
 App: reproto | protoback
 Refs: docs/specs/0438-warning-codes-and-fail-on.md (the squashed summary lines),
       docs/specs/0446-build-report.md (the report, every occurrence),
@@ -63,12 +64,17 @@ summary lines are W19 and W20, for 34 files with 6 roots.
 
 1. `a_refusal_is_said_once` — a file refused, two files importing it, one
    importing them: on stderr one W19 line, `(and 3 files importing it)`,
-   no W20; the report holds every W19 and W20; `--detailed-warnings`
-   prints them all.
+   no W20; `--detailed-warnings` prints them all. The report (protoback's
+   alone has one) holds every W19 and W20: `protoback/tests/repair.rs`.
 2. `fail_on_still_fails` — `--fail-on W20` exits as before.
 3. Both tools (the suite runs on reproto and on protoback); the harness,
    both modes.
 
 ## Measured outcome
 
-Filled in at implementation.
+2026-11-23. `test_refusal_said_once.py` passes on reproto, on protoback
+and through text: one W19 line, `(and 3 files importing it)`, no W20;
+four of each under `--detailed-warnings`; `--fail-on W20` fails.
+`protoback/tests/repair.rs`: the report keeps every W19 and W20 while
+stderr says the refusal once. The differential harness: 1 669 cases,
+none differ; graph dumps, 1 655, none differ.

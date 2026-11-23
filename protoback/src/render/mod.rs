@@ -15,6 +15,7 @@ pub mod names;
 mod options;
 pub(crate) mod pyfmt;
 mod repair;
+mod repaired;
 mod sci;
 mod text;
 
@@ -539,6 +540,7 @@ fn on_pool<T: Send>(jobs: usize, f: impl FnOnce() -> T + Send) -> T {
 
 pub use export::exports;
 pub use repair::repairs;
+pub use repaired::repaired_db;
 
 /// File `i`'s descriptor (a WKT dependency of the schema database);
 /// `None` when its render fails.

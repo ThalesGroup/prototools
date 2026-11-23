@@ -824,6 +824,21 @@ pub fn message(
     let oneofs = m.oneof_decl();
     let synthetic = synthetic_oneofs(ctx, msg, &m);
 
+    // A field's index in the descriptor written: the fields commented out
+    // before it aren't there (spec 0473 S4).
+    let out_before: Vec<usize> = fields
+        .iter()
+        .scan(0, |n, f| {
+            let at = *n;
+            if shared
+                .child(Kind::Field, msg, f.name())
+                .is_some_and(|fd| super::file::is_repaired_out(ctx, fd))
+            {
+                *n += 1;
+            }
+            Some(at)
+        })
+        .collect();
     let mut done = vec![false; oneofs.len()];
     for (f_idx, f) in fields.iter().enumerate() {
         let Some(fd) = shared.child(Kind::Field, msg, f.name()) else {
@@ -838,7 +853,11 @@ pub fn message(
                 continue;
             }
             if shared.graph.nodes[fd].is_summoned {
-                mark(ctx, &mut lines, child_path(ctx, sci_path, 2, f_idx));
+                mark(
+                    ctx,
+                    &mut lines,
+                    child_path(ctx, sci_path, 2, f_idx - out_before[f_idx]),
+                );
             }
             if !force && !shared.graph.nodes[fd].is_summoned {
                 lines.abandon();
@@ -865,7 +884,11 @@ pub fn message(
                 continue;
             }
             if shared.graph.nodes[fd2].is_summoned {
-                mark(ctx, &mut lines, child_path(ctx, sci_path, 2, f2_idx));
+                mark(
+                    ctx,
+                    &mut lines,
+                    child_path(ctx, sci_path, 2, f2_idx - out_before[f2_idx]),
+                );
             }
             if shared.graph.nodes[fd2].is_summoned {
                 is_orphan = false;
@@ -927,10 +950,18 @@ pub fn message(
     }
     out.div_maybe(depth);
 
+    // A map entry out with its field isn't in the descriptor written, so
+    // out of the count (spec 0473 S4).
+    let mut nested_out = 0;
     for (n_idx, n) in m.nested_type().iter().enumerate() {
         let Some(nested) = shared.child(Kind::Message, msg, n.name()) else {
             continue;
         };
+        if super::file::is_repaired_out(ctx, nested) {
+            nested_out += 1;
+            continue;
+        }
+        let n_idx = n_idx - nested_out;
         let nn = &shared.graph.nodes[nested];
         let is_map_entry = shared
             .message_def(nested)
@@ -1255,8 +1286,13 @@ pub fn service(ctx: &Ctx<'_, '_>, svc: usize, depth: usize, sci_path: Option<&[i
         if !shared.graph.nodes[meth].is_reachable {
             continue;
         }
-        let path = child_path(ctx, sci_path, 2, sci_method);
-        sci_method += 1;
+        // Out of the descriptor, so out of the count (spec 0473 S4).
+        let path = if super::file::is_repaired_out(ctx, meth) {
+            None
+        } else {
+            sci_method += 1;
+            child_path(ctx, sci_path, 2, sci_method - 1)
+        };
         // The node's own definition, as for every node (the first one,
         // under --keep-duplicates).
         let Some(Def::Method(m)) = shared.def(meth) else {

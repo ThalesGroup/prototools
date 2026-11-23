@@ -140,17 +140,24 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
 
         from .anomalies import (INTERNAL_ERROR, debug_exception, pool_refusal,
                                 refused_itself, report)
+        from .lib.warnings import get_collector
+        from .text import COMMENT, BlockLine
         try:
             f_desc: FileDescriptor = ctx.pool.FindFileByName(self.name)
+            options = f_desc.GetOptions().SerializeToString()
         except (KeyError, ValueError, TypeError, AttributeError) as e:
+            # Refused: W19, and its options rendered from its descriptor all
+            # the same, its features among them (spec 0475 S1).
             debug_exception(ctx.debug, f"'{self.name}': file options", e)
             reason = pool_refusal(ctx, self.name) or refused_itself(str(e))
-            out.append(report("A3", depth, file=self.name, reason=reason))
-            return out
+            get_collector().w6(self.name, '', reason, code="W19")
+            out.append(BlockLine(
+                f' WARNING[render]: {reason}',
+                depth, COMMENT))
+            options = self.this.options.SerializeToString()
 
         try:
-            fio_msg: Message = parse_options(
-                ctx, fio_desc, FiOClass, f_desc.GetOptions().SerializeToString())
+            fio_msg: Message = parse_options(ctx, fio_desc, FiOClass, options)
 
             # Emit file-level features overrides first (editions only; no-op otherwise).
             from .syntax import render_features_block

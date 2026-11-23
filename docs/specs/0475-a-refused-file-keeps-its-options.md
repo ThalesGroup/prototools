@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0475 — reproto, protoback: a refused file keeps its options
 
-Status: draft
+Status: implemented
+Implemented in: 2026-11-23
 App: reproto | protoback
 Refs: docs/specs/0438-warning-codes-and-fail-on.md (A3, W19, W22),
       docs/specs/0473-protoback-repairs-reach-the-pool-and-the-schema-database.md
@@ -54,7 +55,8 @@ available is written as an orphan, by number, with W22, as in any file.
   its descriptor, as for any file: its features, its standard options,
   its custom options resolved against the options pool; an option whose
   extension isn't there, an orphan with W22 (0438). No `OMITTED[render]`
-  for the refusal; W19 still reported, its comment kept where it is.
+  for the refusal: in its place, `// WARNING[render]: ` and the pool's
+  reason; W19 still reported.
 
 - **S2.** An option still impossible to render (the options can't be
   parsed at all) is A3 with W6, as an internal failure is today: never
@@ -78,4 +80,14 @@ available is written as an orphan, by number, with W22, as in any file.
 
 ## Measured outcome
 
-Filled in at implementation.
+2026-11-23. `test_refused_file_options.py` passes on reproto, on
+protoback and through text: a refused editions file keeps
+`features.enum_type = CLOSED` and `java_package`, its custom option an
+orphan with W22; reproto's suite passes in its three modes. The
+self-check against the previous build: 3 of 1 669 cases change, each a
+refused file whose `OMITTED[render]` line became the `WARNING[render]`
+one (none of them has file options); the graph dumps don't.
+
+reproto read the options from the pool's own descriptor, which a refused
+file lacks; it now falls back to the file's descriptor, as protoback reads
+them.

@@ -103,6 +103,57 @@ def _occ(count: int) -> str:
 _SQUASHED_ORDER = ("W5", "W4", "W6", "W19", "W20", "W21", "W22", "W28", "W30", "W31", "W32", "W33", "W34", "W35", "W36", "T1", "T2", "T3", "T4")
 
 
+_KNOCK_ON = "the descriptor pool refused its import '"
+
+
+def said_once(
+    w19: Counter[str], w20: Counter[str],
+    refusals: dict[str, tuple[str, str, str]],
+) -> dict[str, str]:
+    """The W19 and W20 summary messages printed, each to its line (spec
+    0474): a W20 repeating its file's W19 left out (S1); a W19 refused
+    through its imports left out, counted on its root's line (S2)."""
+    # A file's own W19 reason (no field context), when it has one.
+    reasons: dict[str, set[str]] = {}
+    for message in w19:
+        file, ctx, error = refusals[message]
+        if not ctx:
+            reasons.setdefault(file, set()).add(error)
+
+    def root_of(file: str) -> str | None:
+        seen = {file}
+        while len(reasons.get(file, ())) == 1:
+            (error,) = reasons[file]
+            if not (error.startswith(_KNOCK_ON) and error.endswith("'")):
+                return file
+            file = error[len(_KNOCK_ON):-1]
+            if file in seen:
+                return None
+            seen.add(file)
+        return None
+
+    under: Counter[str] = Counter()
+    lines: dict[str, str] = {}
+    for message in w19:
+        file, ctx, error = refusals[message]
+        root = root_of(file) if not ctx and error.startswith(_KNOCK_ON) else None
+        if root is not None and root != file:
+            under[root] += 1
+        else:
+            lines[message] = message
+    for message in list(lines):
+        file, ctx, error = refusals[message]
+        n = under[file] if not ctx and not error.startswith(_KNOCK_ON) else 0
+        if n:
+            noun = "file" if n == 1 else "files"
+            lines[message] = f"{message} (and {n} {noun} importing it)"
+    for message in w20:
+        file, _, error = refusals[message]
+        if error not in reasons.get(file, ()):
+            lines[message] = message
+    return lines
+
+
 class WarningCollector:
     """Every warning counted by code (for --fail-on); the squashed ones
     buffered and summarized at the end, one line per message with its
@@ -119,6 +170,9 @@ class WarningCollector:
         # (code, message) → occurrences, for squashed mode.
         self._squashed: dict[str, Counter[str]] = {c: Counter() for c in _SQUASHED_ORDER}
         self._prost: list[str] = []   # --force-proto2-for-editions patched file names
+        # W19 and W20 summary messages → (file, context, reason), to say a
+        # refusal once (spec 0474).
+        self._refusals: dict[str, tuple[str, str, str]] = {}
         # Names of files pruned by reproto itself — W5 for these is suppressed.
         self._pruned_files: set[str] = set()
         # Names of files that will be satisfied by an embedded fallback —
@@ -196,7 +250,10 @@ class WarningCollector:
         field_ctx:  e.g. "field 'message_set_extension'"
         error:      the raw error string, e.g. "Couldn't find Extension 42"
         """
-        self.squash(code, f"'{proto_file}' {field_ctx}: {error}")
+        message = f"'{proto_file}' {field_ctx}: {error}"
+        if code in ("W19", "W20"):
+            self._refusals[message] = (proto_file, field_ctx, error)
+        self.squash(code, message)
 
     def w3(self, message: str) -> None:
         """A duplicate pruned, symbol or extension number (W3) — always
@@ -229,9 +286,16 @@ class WarningCollector:
         if self._detailed:
             return
         suppressed = False
+        lines = said_once(self._squashed["W19"], self._squashed["W20"], self._refusals)
         for code in _SQUASHED_ORDER:
             for message, count in sorted(self._squashed[code].items()):
-                _line(code, f"{message} {_occ(count)}")
+                if code in ("W19", "W20"):
+                    if message not in lines:
+                        suppressed = True
+                        continue
+                    _line(code, f"{lines[message]} {_occ(count)}")
+                else:
+                    _line(code, f"{message} {_occ(count)}")
                 if count > 1:
                     suppressed = True
         if self._prost:

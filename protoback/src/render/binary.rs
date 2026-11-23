@@ -171,7 +171,7 @@ pub fn file(ctx: &Ctx<'_, '_>, locations: &[Location]) -> Option<Vec<u8>> {
     let mut extensions = Vec::new();
     for e in f.extension() {
         if let Some(fd) = shared.child(Kind::Field, ctx.file, e.name()) {
-            if shared.graph.nodes[fd].is_summoned {
+            if shared.graph.nodes[fd].is_summoned && !super::file::is_repaired_out(ctx, fd) {
                 extensions.extend(field(ctx, fd));
             }
         }
@@ -246,16 +246,19 @@ fn message(ctx: &Ctx<'_, '_>, msg: usize) -> Option<Vec<u8>> {
             }
         }
     }
+    // --repair-skew: what the text comments out isn't here (spec 0473 S4).
     let fields: Vec<Vec<u8>> = m
         .field()
         .iter()
         .filter_map(|f| shared.child(Kind::Field, msg, f.name()))
+        .filter(|&fd| !super::file::is_repaired_out(ctx, fd))
         .filter_map(|fd| field(ctx, fd))
         .collect();
     let nested: Vec<Vec<u8>> = m
         .nested_type()
         .iter()
         .filter_map(|n| shared.child(Kind::Message, msg, n.name()))
+        .filter(|&n| !super::file::is_repaired_out(ctx, n))
         .filter_map(|n| message(ctx, n))
         .collect();
     let enums: Vec<Vec<u8>> = m
@@ -268,6 +271,7 @@ fn message(ctx: &Ctx<'_, '_>, msg: usize) -> Option<Vec<u8>> {
         .extension()
         .iter()
         .filter_map(|f| shared.child(Kind::Field, msg, f.name()))
+        .filter(|&fd| !super::file::is_repaired_out(ctx, fd))
         .filter_map(|fd| field(ctx, fd))
         .collect();
     {
@@ -284,6 +288,10 @@ fn message(ctx: &Ctx<'_, '_>, msg: usize) -> Option<Vec<u8>> {
         for b in &extensions {
             append(w.push_extension().map(|m| m.0), b);
         }
+    }
+    // A oneof the repairs left with no field goes (spec 0473 S2, S4).
+    if super::file::has_repairs(ctx) {
+        super::repaired::drop_empty_oneofs(&mut DescriptorProtoMut(out.as_mut()))?;
     }
     out.encode().ok()
 }
@@ -397,7 +405,7 @@ fn service(ctx: &Ctx<'_, '_>, svc: usize) -> Option<Vec<u8>> {
         let Some(meth) = shared.child(Kind::Method, svc, m.name()) else {
             continue;
         };
-        if !shared.graph.nodes[meth].is_reachable {
+        if !shared.graph.nodes[meth].is_reachable || super::file::is_repaired_out(ctx, meth) {
             continue;
         }
         let Some(Def::Method(md)) = shared.def(meth) else {

@@ -144,6 +144,11 @@ SPDX-License-Identifier: MIT
 
 ### Changed
 
+- reproto, protoback: a file the descriptor pool refuses is said once on
+  stderr: no W20 repeating its W19, and the files refused only through
+  an import counted on their root's line, `(and N files importing it)`;
+  the report, `--detailed-warnings` and `--fail-on` unchanged (spec 0474).
+
 - git-seriate: an unencrypted key file of a type signed in-process
   (Ed25519, ECDSA) is signed from before the SSH agent is asked; the agent
   next (a public key, an encrypted file's key, an RSA file's), then an
@@ -242,6 +247,18 @@ SPDX-License-Identifier: MIT
   ignored.
 
 ### Fixed
+
+- protoback: under `--repair-skew`, a file the repairs make whole was
+  still refused by the descriptor pool (W19), its importers with it, and
+  left out of the schema database (W20): the pool now loads the repaired
+  descriptors; the `.pb` written beside the text is the repaired one
+  (spec 0473).
+
+- reproto, protoback: a file the descriptor pool refused (W19) was
+  written without any file option, its editions features among them
+  (`enum_type = CLOSED` dropped made its enums open), with only an
+  `OMITTED[render]` comment; its options are now rendered, a custom one
+  whose extension isn't available an orphan with W22 (spec 0475).
 
 - reproto: an edition it can't name (unset, or not in the imported
   Python protobuf's enum) was written `edition = "UNKNOWN";`; it is a W6,

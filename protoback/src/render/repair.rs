@@ -38,6 +38,35 @@ pub struct Repairs {
 }
 
 impl Repairs {
+    /// Whether `node` is out of the descriptors written (spec 0473 S2): a
+    /// field, method or extension commented out, or a map entry whose map
+    /// field is (the text writes no map entry of its own).
+    pub fn is_out(&self, shared: &Shared<'_>, node: usize) -> bool {
+        if self.orphans.contains_key(&node) {
+            return true;
+        }
+        let n = &shared.graph.nodes[node];
+        let is_map_entry = n.kind == Kind::Message
+            && shared
+                .message_def(node)
+                .and_then(|d| d.options())
+                .is_some_and(|o| o.map_entry());
+        let Some(parent) = n.parent.filter(|_| is_map_entry) else {
+            return false;
+        };
+        let type_name = &n.prefix;
+        let mut users = shared.message_def(parent).into_iter().flat_map(|m| {
+            m.field()
+                .iter()
+                .filter(|f| f.type_name() == type_name.as_bytes())
+                .filter_map(|f| shared.child(Kind::Field, parent, f.name()))
+                .collect::<Vec<_>>()
+        });
+        let first = users.next();
+        first.is_some_and(|f| self.orphans.contains_key(&f))
+            && users.all(|f| self.orphans.contains_key(&f))
+    }
+
     /// `names` with the imports added, so that type names in a repaired file
     /// resolve as protoc will see them.
     pub fn apply_to(&self, names: &mut super::names::SymbolTable) {
@@ -236,6 +265,11 @@ fn file_name(shared: &Shared<'_>, file: usize) -> String {
         .strip_prefix("file:")
         .unwrap_or_default()
         .to_string()
+}
+
+/// The file node `node` is in.
+pub(super) fn file_of_node(shared: &Shared<'_>, node: usize) -> Option<usize> {
+    file_of(shared, node)
 }
 
 /// The file node `node` is in.

@@ -15,7 +15,7 @@
 //! records each call as made, and each message.
 
 use crate::hash::HashSet;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::console;
 
@@ -151,6 +151,86 @@ const SQUASHED_ORDER: &[&str] = &[
     "W36", "T1", "T2", "T3", "T4",
 ];
 
+const KNOCK_ON: &str = "the descriptor pool refused its import '";
+
+/// The file a knock-on refusal leads to, followed through the imports
+/// refused (spec 0474 S2): one refused for a reason of its own; `None`
+/// when the chain ends nowhere or loops.
+fn root_of<'a>(
+    reasons: &BTreeMap<&'a str, BTreeSet<&'a str>>,
+    mut file: &'a str,
+) -> Option<String> {
+    let mut seen = BTreeSet::from([file]);
+    while let Some(r) = reasons.get(file).filter(|r| r.len() == 1) {
+        let error = *r.iter().next()?;
+        let Some(dep) = error
+            .strip_prefix(KNOCK_ON)
+            .and_then(|x| x.strip_suffix('\''))
+        else {
+            return Some(file.to_string());
+        };
+        if !seen.insert(dep) {
+            return None;
+        }
+        file = dep;
+    }
+    None
+}
+
+/// The W19 and W20 summary messages printed, each to its line (spec
+/// 0474): a W20 repeating its file's W19 left out (S1); a W19 refused
+/// through its imports left out, counted on its root's line (S2).
+fn said_once(
+    w19: &BTreeMap<String, usize>,
+    w20: &BTreeMap<String, usize>,
+    refusals: &BTreeMap<String, (String, String, String)>,
+) -> BTreeMap<String, String> {
+    // A file's own W19 reasons (no field context).
+    let mut reasons: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for message in w19.keys() {
+        let (file, ctx, error) = &refusals[message];
+        if ctx.is_empty() {
+            reasons.entry(file).or_default().insert(error);
+        }
+    }
+    let mut under: BTreeMap<String, usize> = BTreeMap::new();
+    let mut lines = BTreeMap::new();
+    for message in w19.keys() {
+        let (file, ctx, error) = &refusals[message];
+        let root = (ctx.is_empty() && error.starts_with(KNOCK_ON))
+            .then(|| root_of(&reasons, file))
+            .flatten();
+        match root {
+            Some(root) if root != *file => *under.entry(root).or_default() += 1,
+            _ => {
+                lines.insert(message.clone(), message.clone());
+            }
+        }
+    }
+    for (message, line) in lines.iter_mut() {
+        let (file, ctx, error) = &refusals[message];
+        let n = if ctx.is_empty() && !error.starts_with(KNOCK_ON) {
+            under.get(file).copied().unwrap_or(0)
+        } else {
+            0
+        };
+        if n > 0 {
+            let noun = if n == 1 { "file" } else { "files" };
+            *line = format!("{message} (and {n} {noun} importing it)");
+        }
+    }
+    for message in w20.keys() {
+        let (file, _, error) = &refusals[message];
+        if !reasons
+            .get(file.as_str())
+            .is_some_and(|r| r.contains(error.as_str()))
+        {
+            lines.insert(message.clone(), message.clone());
+        }
+    }
+    lines
+}
+
 #[derive(Debug, Default)]
 pub struct Events {
     /// The graph dump's record (spec 0428 S6).
@@ -166,6 +246,9 @@ pub struct Events {
     counts: BTreeMap<String, usize>,
     /// Squashed mode: summary code → message → occurrences.
     squashed: BTreeMap<&'static str, BTreeMap<String, usize>>,
+    /// W19 and W20 summary messages → (file, context, reason), to say a
+    /// refusal once (spec 0474).
+    refusals: BTreeMap<String, (String, String, String)>,
     prost: Vec<String>,
     /// Files reproto pruned itself: no W5 for them.
     pruned_files: HashSet<String>,
@@ -370,12 +453,14 @@ impl Events {
             }
             self.with_fields(f);
         }
-        self.squash(
-            code,
-            &format!("'{proto_file}' {field_ctx}: {error}"),
-            None,
-            None,
-        );
+        let message = format!("'{proto_file}' {field_ctx}: {error}");
+        if code == "W19" || code == "W20" {
+            self.refusals.insert(
+                message.clone(),
+                (proto_file.into(), field_ctx.into(), error.into()),
+            );
+        }
+        self.squash(code, &message, None, None);
     }
 
     /// Two files of one name, under two roots: the first kept (W7).
@@ -431,9 +516,26 @@ impl Events {
         }
         let mut repeated = false;
         let squashed = std::mem::take(&mut self.squashed);
+        let none = BTreeMap::new();
+        let lines = said_once(
+            squashed.get("W19").unwrap_or(&none),
+            squashed.get("W20").unwrap_or(&none),
+            &self.refusals,
+        );
         for code in SQUASHED_ORDER {
             for (message, &count) in squashed.get(code).into_iter().flatten() {
-                self.line(code, &format!("{message} {}", occurrences(count)));
+                let line = if *code == "W19" || *code == "W20" {
+                    match lines.get(message) {
+                        Some(line) => line,
+                        None => {
+                            repeated = true;
+                            continue;
+                        }
+                    }
+                } else {
+                    message
+                };
+                self.line(code, &format!("{line} {}", occurrences(count)));
                 repeated |= count > 1;
             }
         }

@@ -814,10 +814,27 @@ fn protoback(mut cli: Cli, explicit: &std::collections::HashSet<&'static str>) -
         r.apply_to(&mut n);
         n
     });
+    // Spec 0473: the pool and the options pool loaded again from the
+    // repaired descriptors, so that a repaired file is accepted, its
+    // importers with it, and reaches the schema database.
+    let repaired_db = repairs
+        .as_ref()
+        .and_then(|r| render::repaired_db(&shared, r, &run.db));
+    let repaired_pools = repaired_db.as_ref().map(|db| {
+        let loads = render::pool_loads(db, &loaded);
+        let options = render::OptionsPool::new(db, &run.variant, &loads);
+        (loads, options)
+    });
+    let repaired_pools = match repaired_pools {
+        Some((loads, Ok(options))) => Some((loads, options)),
+        Some((_, Err(_))) | None => None,
+    };
     let shared = render::Shared {
         exports: exports.as_ref(),
         repairs: repairs.as_ref(),
         names: repaired_names.as_ref().unwrap_or(&names),
+        loads: repaired_pools.as_ref().map_or(shared.loads, |(l, _)| l),
+        options: repaired_pools.as_ref().map_or(shared.options, |(_, o)| o),
         ..shared
     };
     let output = render::Output {
