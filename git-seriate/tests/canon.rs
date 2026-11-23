@@ -151,7 +151,12 @@ fn git(repo: &gix::Repository, args: &[&str], stdin: Option<&str>) -> String {
         .arg(repo.git_dir())
         .args(args)
         .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env_remove("GIT_CONFIG_GLOBAL")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        // `commit-tree` needs an identity: none in the build sandbox.
+        .env("GIT_AUTHOR_NAME", "Tester")
+        .env("GIT_AUTHOR_EMAIL", "tester@example.com")
+        .env("GIT_COMMITTER_NAME", "Tester")
+        .env("GIT_COMMITTER_EMAIL", "tester@example.com")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .spawn()
