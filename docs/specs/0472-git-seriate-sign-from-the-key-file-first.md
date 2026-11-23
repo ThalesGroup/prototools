@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0472 — git-seriate: sign from the key file first
 
-Status: draft
+Status: implemented
+Implemented in: 2026-11-23
 App: git-seriate
 Refs: docs/specs/0463-git-seriate-signing-in-process.md (S2 to S5: the
         agent, the key file, its passphrase, `ssh-keygen`; the order this
@@ -74,4 +75,14 @@ passphrase.
 
 ## Measured outcome
 
-Filled in at implementation.
+2026-11-23. The tests pass under `env -i`, git-seriate given no `PATH`:
+an unencrypted Ed25519 key file signs with no connection to the socket
+`SSH_AUTH_SOCK` names (a listener counting them: none); an encrypted
+Ed25519 key file and an RSA key file, both held by a test `ssh-agent`, are
+signed through it, the `SSH_ASKPASS` that fails if run never run. 0463's
+tests unchanged. git-seriate and git-seriate-fdp: 94 tests.
+
+Not measured here: our agent is local, its round trip under a
+millisecond (0463's measure: 0.97 s through it, 0.90 s from the file,
+for 1,000 commits). The downstream's forwarded agent is what this is for:
+27.2 s through it, 4.5 s from its file.

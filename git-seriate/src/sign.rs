@@ -111,56 +111,59 @@ fn key_spec(key: &str) -> KeySpec {
     KeySpec::Path(path)
 }
 
-/// S2 to S4: the agent if it holds the key, else the key file, else
-/// `ssh-keygen`.
+/// The order of spec 0472 S1: an unencrypted key file signed in-process;
+/// else the agent if it holds the key; else an encrypted key file, its
+/// passphrase asked once; else `ssh-keygen`.
 fn choose(key: &KeySpec) -> Result<Method, Error> {
     // The public key, and the private key file, if the path is one.
-    let (public, private_path): (Option<PublicKey>, Option<&Path>) = match key {
+    let (public, private): (PublicKey, Option<(&Path, PrivateKey)>) = match key {
         KeySpec::Literal(text) => (
-            Some(PublicKey::from_openssh(text).map_err(|e| {
-                Error::Refused(format!("user.signingKey is not a public key: {e}"))
-            })?),
+            PublicKey::from_openssh(text)
+                .map_err(|e| Error::Refused(format!("user.signingKey is not a public key: {e}")))?,
             None,
         ),
         KeySpec::Path(path) => {
             let text = std::fs::read_to_string(path)
                 .map_err(|e| Error::Refused(format!("reading {}: {e}", path.display())))?;
             match PublicKey::from_openssh(text.trim()) {
-                Ok(public) => (Some(public), None),
+                Ok(public) => (public, None),
                 Err(_) => {
                     let private = PrivateKey::from_openssh(&text).map_err(|e| {
                         Error::Refused(format!("{} is not an SSH key: {e}", path.display()))
                     })?;
-                    (Some(private.public_key().clone()), Some(path.as_path()))
+                    (
+                        private.public_key().clone(),
+                        Some((path.as_path(), private)),
+                    )
                 }
             }
         }
     };
-    if let (Some(public), Some(sock)) = (&public, std::env::var_os("SSH_AUTH_SOCK")) {
+    // 1. A key file readable as it is, of a type signed here: no agent's
+    // round trip (forwarded over SSH, it is the cost).
+    if let Some((_, private)) = &private {
+        if !private.is_encrypted() && in_process(private) {
+            return Ok(Method::Key(Box::new(private.clone())));
+        }
+    }
+    // 2. An agent holding the key: a public key, an encrypted file's (no
+    // passphrase asked), an RSA file's.
+    if let Some(sock) = std::env::var_os("SSH_AUTH_SOCK") {
         if let Ok(mut agent) = agent::Agent::connect(Path::new(&sock)) {
-            if agent.holds(public).unwrap_or(false) {
-                return Ok(Method::Agent(agent, public.clone()));
+            if agent.holds(&public).unwrap_or(false) {
+                return Ok(Method::Agent(agent, public));
             }
         }
     }
-    match (key, private_path) {
-        (_, Some(path)) => {
-            let text = std::fs::read_to_string(path)?;
-            let private = PrivateKey::from_openssh(&text).map_err(refused)?;
-            if !in_process(&private) {
-                return Ok(Method::SshKeygen(path.to_path_buf()));
-            }
-            let private = if private.is_encrypted() {
-                decrypt(&private, path)?
-            } else {
-                private
-            };
-            Ok(Method::Key(Box::new(private)))
+    match (key, private) {
+        // 3. An encrypted key file of a type signed here: its passphrase.
+        (_, Some((path, private))) if in_process(&private) => {
+            Ok(Method::Key(Box::new(decrypt(&private, path)?)))
         }
-        (KeySpec::Path(path), None) => {
-            // A public key no agent holds: ssh-keygen says why, as before.
-            Ok(Method::SshKeygen(path.clone()))
-        }
+        // 4. ssh-keygen: an RSA file no agent holds, a public key no agent
+        // holds (ssh-keygen says why, as before).
+        (_, Some((path, _))) => Ok(Method::SshKeygen(path.to_path_buf())),
+        (KeySpec::Path(path), None) => Ok(Method::SshKeygen(path.clone())),
         (KeySpec::Literal(_), None) => Err(Error::Refused(
             "user.signingKey is a public key, and no agent (SSH_AUTH_SOCK) holds it".into(),
         )),

@@ -509,9 +509,16 @@ impl TestAgent {
     }
 
     fn add(&self, key: &Path) {
+        self.add_with(key, &[]);
+    }
+
+    /// `ssh-add` with `env` (an `SSH_ASKPASS` for an encrypted key).
+    fn add_with(&self, key: &Path, env: &[(&str, &str)]) {
         let out = Command::new("ssh-add")
             .arg(key)
             .envs(self.env())
+            .envs(env.iter().copied())
+            .stdin(std::process::Stdio::null())
             .output()
             .unwrap();
         assert!(
@@ -566,6 +573,91 @@ fn signs_through_the_agent() {
                 );
             }
         }
+    }
+}
+
+/// An executable script at `path`: `body` after `#!/bin/sh`.
+fn script(path: &Path, body: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// Spec 0472 S1, 1: an unencrypted key file is signed from before any agent
+/// is asked. The agent here is a socket that counts its connections and
+/// answers none.
+#[test]
+fn an_unencrypted_key_file_is_used_before_the_agent() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = new_repo(tmp.path());
+    let Some(key) = ssh_key(tmp.path(), "key", "ed25519", "") else {
+        eprintln!("skipped: no ssh-keygen");
+        return;
+    };
+    let sock = tmp.path().join("agent.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+    let asked = Arc::new(AtomicUsize::new(0));
+    let count = asked.clone();
+    std::thread::spawn(move || {
+        for connection in listener.incoming() {
+            count.fetch_add(1, Ordering::SeqCst);
+            drop(connection);
+        }
+    });
+    sign_with(&repo, &key);
+    small(&repo);
+    let env = [("SSH_AUTH_SOCK", sock.to_str().unwrap()), ("PATH", "")];
+    let (ok, _, err) = git_seriate_env(&repo, &["settle", "--into", "main"], &env);
+    assert!(ok, "{err}");
+    assert_eq!(asked.load(Ordering::SeqCst), 0, "the agent was asked");
+    verify_all(&repo, "main", &key.with_extension("pub"));
+}
+
+/// Spec 0472 S1, 2: an encrypted key file the agent holds is signed through
+/// the agent, no passphrase asked; an RSA key file, which isn't signed
+/// in-process, the same.
+#[test]
+fn an_encrypted_or_rsa_key_file_goes_to_the_agent() {
+    for (kind, passphrase) in [("ed25519", "secret words"), ("rsa", "")] {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = new_repo(tmp.path());
+        let Some(key) = ssh_key(tmp.path(), "key", kind, passphrase) else {
+            eprintln!("skipped: no ssh-keygen");
+            return;
+        };
+        let Some(agent) = TestAgent::start(tmp.path()) else {
+            eprintln!("skipped: no ssh-agent");
+            return;
+        };
+        let give = tmp.path().join("give");
+        script(&give, &format!("echo '{passphrase}'"));
+        agent.add_with(
+            &key,
+            &[
+                ("SSH_ASKPASS", give.to_str().unwrap()),
+                ("SSH_ASKPASS_REQUIRE", "force"),
+            ],
+        );
+        // An askpass that says it was run, and fails.
+        let asked = tmp.path().join("asked");
+        let refuse = tmp.path().join("refuse");
+        script(&refuse, &format!("touch '{}'; exit 1", asked.display()));
+        sign_with(&repo, &key);
+        small(&repo);
+        let [sock] = agent.env();
+        let env = [
+            sock,
+            ("SSH_ASKPASS", refuse.to_str().unwrap()),
+            ("SSH_ASKPASS_REQUIRE", "force"),
+            // No ssh-keygen: the agent signs, or nothing does.
+            ("PATH", ""),
+        ];
+        let (ok, _, err) = git_seriate_env(&repo, &["settle", "--into", "main"], &env);
+        assert!(ok, "{kind}: {err}");
+        assert!(!asked.exists(), "{kind}: a passphrase was asked for");
+        verify_all(&repo, "main", &key.with_extension("pub"));
     }
 }
 

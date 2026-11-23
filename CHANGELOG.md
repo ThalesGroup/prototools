@@ -144,6 +144,12 @@ SPDX-License-Identifier: MIT
 
 ### Changed
 
+- git-seriate: an unencrypted key file of a type signed in-process
+  (Ed25519, ECDSA) is signed from before the SSH agent is asked; the agent
+  next (a public key, an encrypted file's key, an RSA file's), then an
+  encrypted file's passphrase, then `ssh-keygen`. A forwarded agent's
+  round trip cost a downstream 20 ms a commit (spec 0472).
+
 - git-seriate: every history commit has an author. A commit whose author
   email is empty has none (snapshot commits, `git-seriate <>`, keep it so,
   deterministic); `settle` and `compact` author such a commit with the
