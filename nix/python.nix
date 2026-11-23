@@ -19,6 +19,7 @@
 # keeps them in step with the pinned protobuf (spec 0409 S4).
 
 { pkgs
+, protoc            # nix/protobuf.nix: the one protobuf release (spec 0460)
 , metaCommon        # nix/rust.nix: homepage, license, maintainers, platforms
 , pyprojectVersion  # nix/rust.nix: a pyproject.toml's version, checked (spec 0405 S5)
 , pythonPkgs
@@ -192,7 +193,7 @@ let
   reprotoTests = pkgs.runCommand "reproto-tests" {
     strictDeps = true;
     nativeBuildInputs = [
-      pkgs.protobuf
+      protoc
       pkgs.buf
       prototext
       (pythonPkgs.python.withPackages (_: reprotoTestDeps))
@@ -212,7 +213,7 @@ let
   in pkgs.runCommand "reproto-tests-via-text" {
     strictDeps = true;
     nativeBuildInputs = [
-      pkgs.protobuf
+      protoc
       pkgs.buf
       prototext
       testPython
@@ -233,7 +234,7 @@ let
   in pkgs.runCommand "reproto-tests-on-protoback" {
     strictDeps = true;
     nativeBuildInputs = [
-      pkgs.protobuf
+      protoc
       pkgs.buf
       prototext
       protoback
@@ -404,7 +405,7 @@ let
   # that changes to reproto/instantiation logic don't force a recompile.
   googleapisPbs = pkgs.runCommand "googleapis-pbs" {
     strictDeps = true;
-    nativeBuildInputs = [ pkgs.protobuf ];
+    nativeBuildInputs = [ protoc ];
   } ''
     set -euo pipefail
     mkdir -p "$out"
@@ -449,7 +450,7 @@ let
   # Pulls in corpusGoogleapis but not googleapisPbs or googleapisDb.
   bobappDescOf = variant: entryPoints: pkgs.runCommand "${variant}-desc" {
     strictDeps = true;
-    nativeBuildInputs = [ pkgs.protobuf ];
+    nativeBuildInputs = [ protoc ];
   } ''
     set -euo pipefail
     mkdir -p "$out"
@@ -597,7 +598,7 @@ print('\n'.join(lines[:$N_EXTRA]))
   customDb = pkgs.runCommand "custom-db" {
     strictDeps = true;
     nativeBuildInputs = [
-      pkgs.protobuf
+      protoc
       reproto
     ];
   } ''
@@ -686,7 +687,7 @@ print('\n'.join(lines[:$N_EXTRA]))
                          checkHelp ? false }:
     pkgs.runCommand name {
       strictDeps = true;
-      nativeBuildInputs = [ pkgs.protobuf reproto protoback pythonPkgs.python ];
+      nativeBuildInputs = [ protoc reproto protoback pythonPkgs.python ];
     } ''
       set -euo pipefail
       harness=${protobackHarnessSrc}/scripts/protoback-harness

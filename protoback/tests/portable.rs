@@ -13,12 +13,12 @@ use std::process::Command;
 
 /// A vendor's descriptor.proto, small: `FieldOptions` has a field protoc's
 /// lacks (`vendor_only`, 90) and its `CType` a value protoc's lacks
-/// (`VENDOR_TYPE`, 7); its `Edition` a value protoc's lacks (1002), which
+/// (`VENDOR_TYPE`, 7); its `Edition` a value protoc's lacks (1003), which
 /// an `edition_defaults` entry can hold.
 const VENDOR: &str = r#"name: "vendor/proto/descriptor.proto" package: "vendor"
 message_type { name: "FileOptions"
   field { name: "java_package" number: 1 label: LABEL_OPTIONAL type: TYPE_STRING }
-  extension_range { start: 990 end: 1000 }
+  extension_range { start: 980 end: 990 }
   extension_range { start: 1000 end: 536870912 } }
 message_type { name: "FieldOptions"
   field { name: "ctype" number: 1 label: LABEL_OPTIONAL type: TYPE_ENUM
@@ -36,7 +36,7 @@ message_type { name: "FieldOptions"
     value { name: "VENDOR_TYPE" number: 7 } }
   extension_range { start: 1000 end: 536870912 } }
 enum_type { name: "Edition" value { name: "EDITION_2023" number: 1000 }
-  value { name: "EDITION_2026" number: 1002 } }"#;
+  value { name: "EDITION_2027" number: 1003 } }"#;
 
 /// A custom option on the vendor's FieldOptions, set; the vendor-only field
 /// and value set; a stock field set. By number: a text is parsed as the
@@ -55,7 +55,7 @@ message_type { name: "M"
   field { name: "i" number: 4 label: LABEL_OPTIONAL type: TYPE_STRING
     options { 1: 1 } }
   field { name: "j" number: 5 label: LABEL_OPTIONAL type: TYPE_STRING
-    options { 20 { 3: 1000 2: "a" } 20 { 3: 1002 2: "b" } } } }"#;
+    options { 20 { 3: 1000 2: "a" } 20 { 3: 1003 2: "b" } } } }"#;
 
 fn setup(test: &str) -> PathBuf {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("portable-{test}"));
@@ -156,7 +156,7 @@ fn portable_redacts_what_protocs_descriptor_lacks() {
     // protoc lacks redacted, the other written.
     assert!(
         r.stderr.contains(
-            "'c.proto': option edition_defaults: value 1002 of field 3 of \
+            "'c.proto': option edition_defaults: value 1003 of field 3 of \
              FieldOptions.EditionDefault (field 20 of FieldOptions) is not in protoc's \
              descriptor: written as an orphan (--target portable)"
         ),
@@ -165,10 +165,10 @@ fn portable_redacts_what_protocs_descriptor_lacks() {
     );
     // The entry is written over lines; the note follows its last.
     assert!(line("value: 'b'").starts_with("//"), "{c}");
-    assert!(line("EDITION_2026").starts_with("//"), "{c}");
+    assert!(line("EDITION_2027").starts_with("//"), "{c}");
     assert!(
-        line("field 20, value 1002")
-            .ends_with("},  // field 20, value 1002 of field 3 of FieldOptions.EditionDefault"),
+        line("field 20, value 1003")
+            .ends_with("},  // field 20, value 1003 of field 3 of FieldOptions.EditionDefault"),
         "{c}"
     );
     assert!(!line("value: 'a'").starts_with("//"), "{c}");
@@ -254,12 +254,12 @@ fn portable_turns_protocs_naming_check_off_in_edition_2024_files() {
     assert!(!r.stderr.contains("W30"), "{}", r.stderr);
 }
 
-/// An extension in the vendor's range `990 to 999`, which protoc's
+/// An extension in the vendor's range `980 to 989`, which protoc's
 /// `FileOptions` does not have, set in its own file; one of protoc's
 /// range beside it.
 const RANGE: &str = r#"name: "x.proto" package: "x" dependency: "vendor/proto/descriptor.proto"
-options { 990: 5 }
-extension { name: "cpp" number: 990 label: LABEL_OPTIONAL type: TYPE_INT32
+options { 985: 5 }
+extension { name: "cpp" number: 985 label: LABEL_OPTIONAL type: TYPE_INT32
   extendee: ".vendor.FileOptions" }
 extension { name: "level" number: 50001 label: LABEL_OPTIONAL type: TYPE_INT32
   extendee: ".vendor.FileOptions" }"#;
@@ -271,9 +271,9 @@ fn portable_redacts_an_extension_protocs_ranges_lack() {
     let r = run(&dir, &["--target", "portable"]);
     assert_eq!(r.status, 0, "{}", r.stderr);
     for expected in [
-        "'x.proto': extension cpp: number 990 of .vendor.FileOptions is not in an extension \
+        "'x.proto': extension cpp: number 985 of .vendor.FileOptions is not in an extension \
          range of protoc's descriptor: written as an orphan (--target portable)",
-        "'x.proto': option (x.cpp): number 990 of .vendor.FileOptions is not in an extension \
+        "'x.proto': option (x.cpp): number 985 of .vendor.FileOptions is not in an extension \
          range of protoc's descriptor: written as an orphan (--target portable)",
     ] {
         assert!(
@@ -292,9 +292,9 @@ fn portable_redacts_an_extension_protocs_ranges_lack() {
     };
     // The declaration, under its own extendee, and the option: orphans.
     assert!(line("extend vendor.FileOptions").starts_with("//"), "{x}");
-    assert!(line("cpp = 990").starts_with("//"), "{x}");
+    assert!(line("cpp = 985").starts_with("//"), "{x}");
     assert!(line("(x.cpp) = 5").starts_with("//"), "{x}");
-    assert!(line("(x.cpp) = 5").ends_with("// extension 990"), "{x}");
+    assert!(line("(x.cpp) = 5").ends_with("// extension 985"), "{x}");
     // One in protoc's range: mapped, written.
     assert!(
         !line("extend google.protobuf.FileOptions").starts_with("//"),

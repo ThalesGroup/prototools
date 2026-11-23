@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0460 — one protobuf release for every copy of descriptor.proto
 
-Status: draft
+Status: implemented
+Implemented in: 2026-11-23
 App: prototext-upb | reproto | protoback | prototext
 Refs: docs/specs/0409-python-extensions-on-maturin-reproto-from-source.md
         (S4: reproto's well-known types, committed and checked),
@@ -96,11 +97,16 @@ recipes are already checked against, has protoc 36.2 and Python protobuf
   `vendor/descriptor.pb` with `source_code_info` cleared. It catches a
   copy refreshed by hand, whichever.
 
-- **S5. All in `ci`,** and `ci-no-clippy`.
+- **S5. In `ci`,** with the other copy checks; not in `ci-no-clippy`,
+  which leaves them out: what they compare doesn't depend on the
+  platform.
 
 - **S6. The move to v36.2:** `update-upb` run for v36.2 (a no-op: it is
   vendored), the variant, prebuilt fixtures and WKT graph refreshed with
-  S1's protoc, Python protobuf 7.36.2.
+  S1's protoc, Python protobuf 7.36.2, and fdp-scan's corpus (0448 S8),
+  which is the well-known types serialized by Python protobuf. The
+  nixpkgs staging (0423) keeps nixpkgs' own Python protobuf: it builds the
+  recipes as nixpkgs will.
 
 - **S7. What changes in the output,** identically in both tools (they
   read the same variant): every rendered `descriptor.proto` (fields,
@@ -145,4 +151,25 @@ dev-shell runs it from the tree.
 
 ## Measured outcome
 
-Filled in at implementation.
+2026-11-23. `ci` passes: the six copy checks, reproto's suite under
+Python protobuf 7.36.2 on both tools, the harness in both modes against
+reproto.
+
+- `upb-release-check` passed unchanged: the vendored upb was v36.2,
+  its `descriptor.proto` byte for byte protoc 36.2's. Of the variant's
+  11 well-known types only `descriptor.pb` changed; prototext's prebuilt
+  `descriptor.pb` and WKT graph, and fdp-scan's whole corpus, were
+  refreshed. Each check fails, with its refresh command, on a copy
+  tampered with (test plan 1, 2).
+- The self-check against the previous build: 129 of 1 669 cases change,
+  all in a rendered `google/protobuf/descriptor.proto` (`.proto`, `.pb`,
+  scoring YAML) or a schema database holding it; 1 503 of 1 655 graph
+  dumps, by `descriptor.proto`'s own nodes (`ProtoLimitsFeature`,
+  `enforce_proto_limits`, and the like).
+- Two `--target portable` tests took protoc's descriptor to lack edition
+  1002 and the `FileOptions` numbers 990 to 998; protobuf 36 has both
+  (`EDITION_2026`; `extensions 990 to 998`, for first-class custom
+  options). Their vendor fixtures now use 1003 and 980 to 989.
+- Python protobuf 7.34.1 read edition 1002 as unset: reproto wrote
+  `edition = "UNKNOWN"` for an edition 2026 file. With 7.36.2 it writes
+  `edition = "2026";`, as protoback does (`test_edition_2026.py`).

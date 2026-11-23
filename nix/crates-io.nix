@@ -29,6 +29,7 @@
 # published by .github/workflows/publish.yaml (spec 0412).
 
 { pkgs
+, protoc            # nix/protobuf.nix: the one protobuf release (spec 0460)
 , crane
 , workspaceSrc
 , commonArgs    # from nix/rust.nix — carries PYO3_PYTHON, etc.
@@ -46,7 +47,7 @@ in pkgs.stdenv.mkDerivation (commonArgs // {
   src     = workspaceSrc;
 
   nativeBuildInputs = commonArgs.nativeBuildInputs ++ [
-    pkgs.protobuf
+    protoc
     crane.configureCargoVendoredDepsHook
   ];
   cargoVendorDir = vendoredDeps;

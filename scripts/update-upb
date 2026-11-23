@@ -14,8 +14,9 @@
 # Environment:
 #   PROTOC  a protoc of that release (default `protoc`), to compile
 #           descriptor.proto into descriptor.pb: an older one may refuse
-#           the newer file. nixos-unstable has it as protobuf_<major>:
-#             nix-build --no-out-link -E '(import <nixpkgs-unstable> {}).protobuf_36'
+#           the newer file. The dev-shell's is nix/protobuf.nix's release
+#           (spec 0460), which default.nix's upb-release-check holds the
+#           vendored files to: move that release first.
 #
 # Writes vendor/upb/upb.{c,h}, vendor/utf8_range/*, vendor/LICENSE,
 # vendor/descriptor.proto, vendor/descriptor.pb and vendor/VERSION (the

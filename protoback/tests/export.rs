@@ -4,9 +4,8 @@
 
 //! Spec 0458: `--export-used` writes `export` each message or enum local to
 //! its file that another written file uses. The inputs are binary,
-//! encoded against the vendored descriptor.proto, which knows edition
-//! 2026; a text input would be parsed against the built-in variant's,
-//! which doesn't.
+//! encoded against the vendored descriptor.proto; the edition defaults
+//! come from the built-in one, of the same release (spec 0460).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -59,26 +58,6 @@ fn user(uses: &[&str]) -> String {
         r#"name: "b/user.proto" package: "b" dependency: "a/outer.proto" syntax: "editions"
         edition: EDITION_2024 message_type {{ name: "User" {fields} }}"#
     )
-}
-
-/// The vendored descriptor.proto (v36.2), which declares edition 2026 and
-/// its `STRICT` default: an input of that edition carries one like it. A
-/// serialized set of that one file: field 1, its length, the file.
-fn vendored_descriptor() -> Vec<u8> {
-    let set = prototext_upb::DESCRIPTOR_SET;
-    let mut pos = 1;
-    let (mut len, mut shift) = (0usize, 0);
-    loop {
-        let b = set[pos];
-        pos += 1;
-        len |= usize::from(b & 0x7f) << shift;
-        shift += 7;
-        if b < 0x80 {
-            break;
-        }
-    }
-    assert_eq!(pos + len, set.len());
-    set[pos..].to_vec()
 }
 
 fn setup(test: &str, files: &[(&str, String)]) -> PathBuf {
@@ -211,7 +190,6 @@ fn export_used_under_strict_reports() {
             ("user.pb", user(&[".a.Outer.Inner", ".a.Top"])),
         ],
     );
-    std::fs::write(dir.join("in/descriptor.pb"), vendored_descriptor()).unwrap();
     let r = run(&dir, &["--export-used"]);
     let text = r.outer();
     assert!(text.contains("\n  message Inner {"), "{text}");

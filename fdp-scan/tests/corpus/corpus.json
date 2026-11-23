@@ -1,5 +1,5 @@
 {
  "source": "public",
- "protobuf": "7.34.1",
+ "protobuf": "7.36.2",
  "well_known_types": "12"
 }

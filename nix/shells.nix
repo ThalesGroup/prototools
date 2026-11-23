@@ -28,6 +28,7 @@
 #               _hook_completions — sources bash completions
 
 { pkgs
+, protoc            # nix/protobuf.nix: the one protobuf release (spec 0460)
 , pythonPkgs
 , pythonBin
 , pythonExecutable
@@ -107,7 +108,8 @@ in
       clippy
       reuse
       gh
-      protobuf
+      # Spec 0460's protoc (nix/protobuf.nix), not the pin's.
+      protoc
       # Google's wire-format inspector — a second, independent opinion on
       # what a blob's bytes say, for cross-checking prototext/protolens.
       protoscope

@@ -3,10 +3,10 @@
 // SPDX-License-Identifier: MIT
 
 //! Spec 0457: an edition named from the input's descriptor.proto, and no
-//! file left unwritten without a warning. The inputs are binary: a text
-//! input is parsed against the input's descriptor.proto, here the built-in
-//! variant's, which predates edition 2026; its `Edition` enum is closed, so
-//! the text can't hold an edition that enum lacks.
+//! file left unwritten without a warning. The inputs are binary but one: a
+//! text input is parsed against the input's descriptor.proto, here the
+//! built-in variant's (spec 0460: v36.2); its `Edition` enum is closed, so
+//! the text can't hold an edition that enum lacks, as 1003.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -162,6 +162,27 @@ fn edition_2026_renders() {
     assert!(text.contains("edition = \"2026\";"), "{text}");
     assert!(text.contains("int32 x = 1;"), "{text}");
     assert!(r.warnings("W6").is_empty(), "{}", r.stderr);
+}
+
+/// Spec 0460: the built-in descriptor.proto declares edition 2026, so a
+/// text input holds it.
+#[test]
+fn edition_2026_in_text_renders() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("editions-2026-text");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("in")).unwrap();
+    std::fs::write(
+        dir.join("in/b.textpb"),
+        r#"name: "a/b.proto" package: "a" syntax: "editions" edition: EDITION_2026
+           message_type { name: "M" field { name: "x" number: 1 type: TYPE_INT32
+             json_name: "x" } }"#,
+    )
+    .unwrap();
+    let r = run(&dir);
+    assert_eq!(r.status, 0, "{}", r.stderr);
+    assert!(!r.stderr.contains("W15"), "{}", r.stderr);
+    let text = r.proto("a/b.proto").expect("a/b.proto written");
+    assert!(text.contains("edition = \"2026\";"), "{text}");
 }
 
 #[test]

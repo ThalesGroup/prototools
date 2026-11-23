@@ -31,7 +31,7 @@ date=$(date -u +%Y-%m-%d)
 
 cat > nix/unstable.json <<EOF
 {
-  "comment": "nixos-unstable @ $date, for the staged nixpkgs recipes only (spec 0423 S4); moved by scripts/update-unstable-pin",
+  "comment": "nixos-unstable @ $date, for the staged nixpkgs recipes (spec 0423 S4) and protoc (spec 0460, nix/protobuf.nix); moved by scripts/update-unstable-pin",
   "rev": "$rev",
   "sha256": "$sha256"
 }

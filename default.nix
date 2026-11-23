@@ -18,7 +18,12 @@
     url    = "https://github.com/NixOS/nixpkgs/archive/7c8764b7c7b09b34f632464276218ef9090eaa11.tar.gz";
     sha256 = "01ybz131ld1aq6n302jq4wqpjd7d57wz9pxnjw4ly53dy6sn8s1i";
   }) {})
-, pythonPkgs ? pkgs.python313Packages
+, # The Python package set: the main pin's, with spec 0460's Python
+  # protobuf (nix/protobuf.nix).
+  pythonPkgs ? (import ./nix/protobuf.nix {
+    inherit pkgs;
+    unstablePkgs = import unstable { };
+  }).pythonPkgs
 # buf from the main pin (spec 0402 S2): 26.05's is 1.73.0, past the two
 # fixes protolens's Neovim integration needs (spec 0145/0146) — v1.60.0's
 # `buf lsp serve` --timeout default of 0, and v1.61.0's fix for the
@@ -41,6 +46,11 @@
 }:
 
 let
+  # The one protobuf release (spec 0460): protoc, and the version every
+  # copy of descriptor.proto is checked against.
+  protobufRelease = import ./nix/protobuf.nix { inherit pkgs unstablePkgs; };
+  protoc = protobufRelease.protoc;
+
   # Fetched at evaluation time, not built (spec 0402 S1): a `fetchgit`
   # derivation imported by `callPackage` is import-from-derivation, which
   # nixpkgs forbids and which stalls evaluation on a build. CI evaluates
@@ -213,7 +223,7 @@ let
   # changes descriptor.pb as it changes the WKT graph).
   prototextFixtures = pkgs.runCommand "prototext-fixtures" {
     strictDeps = true;
-    nativeBuildInputs = [ pkgs.protobuf ];
+    nativeBuildInputs = [ protoc ];
   } ''
     mkdir -p $out
     protoc \
@@ -293,9 +303,9 @@ let
 
   reprotoWktGenerated = pkgs.runCommand "reproto-wkt-generated" {
     strictDeps = true;
-    nativeBuildInputs = [ pkgs.protobuf ];
+    nativeBuildInputs = [ protoc ];
   } ''
-    bash ${./reproto/patch}/patch_reproto.sh ${pkgs.protobuf}/include $out
+    bash ${./reproto/patch}/patch_reproto.sh ${protoc}/include $out
   '';
 
   reprotoWktCheck = pkgs.runCommand "reproto-wkt-check" { } ''
@@ -305,6 +315,46 @@ let
       echo "  cp -r \$(nix-build -A reproto-wkt-generated)/google/. reproto/src/reproto/variants/google-protobuf/google/ && chmod -R u+w reproto/src/reproto/variants/google-protobuf/google" >&2
       exit 1
     fi
+    touch $out
+  '';
+
+  # The vendored upb is of the release (spec 0460 S2): its VERSION's tag,
+  # and its descriptor.proto byte for byte that release's.
+  upbReleaseCheck = pkgs.runCommand "upb-release-check" { } ''
+    version=${./prototext-upb/vendor/VERSION}
+    tag=$(sed -n '1s/^protobuf v\([^ ]*\) .*/\1/p' "$version")
+    if [ "$tag" != "${protobufRelease.release}" ]; then
+      echo "prototext-upb/vendor is protobuf v$tag; the release is ${protobufRelease.release} (nix/protobuf.nix). Refresh it with:" >&2
+      echo "  scripts/update-upb <google-protobuf crate version> v${protobufRelease.release}" >&2
+      exit 1
+    fi
+    if ! cmp ${./prototext-upb/vendor/descriptor.proto} ${protoc}/include/google/protobuf/descriptor.proto >&2; then
+      echo "prototext-upb/vendor/descriptor.proto is not protobuf ${protobufRelease.release}'s. Refresh it with:" >&2
+      echo "  scripts/update-upb <google-protobuf crate version> v${protobufRelease.release}" >&2
+      exit 1
+    fi
+    touch $out
+  '';
+
+  # The copies agree with each other (spec 0460 S4): the variant's
+  # descriptor.pb is the vendored one without its source info.
+  descriptorCopiesCheck = pkgs.runCommand "descriptor-copies-check" {
+    nativeBuildInputs = [ (pythonPkgs.python.withPackages (ps: [ ps.protobuf ])) ];
+  } ''
+    python3 -I - ${./prototext-upb/vendor/descriptor.pb} \
+      ${./reproto/src/reproto/variants/google-protobuf/google/protobuf/descriptor.pb} <<'EOF'
+    import sys
+    from google.protobuf import descriptor_pb2
+    def file(path):
+        s = descriptor_pb2.FileDescriptorSet()
+        s.ParseFromString(open(path, "rb").read())
+        (f,) = [f for f in s.file if f.name == "google/protobuf/descriptor.proto"]
+        f.ClearField("source_code_info")
+        return f.SerializeToString(deterministic=True)
+    if file(sys.argv[1]) != file(sys.argv[2]):
+        sys.exit("the variant's descriptor.pb is not prototext-upb/vendor/descriptor.pb "
+                 "without its source info: refresh both from one release (spec 0460)")
+    EOF
     touch $out
   '';
 
@@ -415,14 +465,14 @@ let
   };
 
   python = import ./nix/python.nix {
-    inherit pkgs pythonPkgs pythonBin;
+    inherit pkgs pythonPkgs pythonBin protoc;
     inherit (rust) metaCommon pyprojectVersion;
     prototext = rust.prototext;
     inherit (rust) prototextCodec fdpScanLib prototextGraphLib protoback;
   };
 
   cratesIo = import ./nix/crates-io.nix {
-    inherit pkgs crane workspaceSrc;
+    inherit pkgs crane workspaceSrc protoc;
     inherit (rust) commonArgs;
   };
 
@@ -442,7 +492,7 @@ let
   wktRkyv = pkgs.runCommand "wkt-rkyv" {
     strictDeps = true;
     nativeBuildInputs = [
-      pkgs.protobuf
+      protoc
       (pythonPkgs.python.withPackages (_: python.wktRkyvDeps))
     ];
   } ''
@@ -532,7 +582,7 @@ let
   '';
 
   shells = import ./nix/shells.nix {
-    inherit pkgs pythonPkgs pythonBin pythonExecutable buf;
+    inherit pkgs pythonPkgs pythonBin pythonExecutable buf protoc;
     inherit (rust) prototext protolens;
     inherit (python) reprotoSrc reprotoTestDeps reproto lintSettings;
     inherit (rust) protoscan;
@@ -687,7 +737,7 @@ let
     python.fdpScanTests python.prototextCodecTests
     python.pythonLint python.pythonRuff
     treeSitterTextprotoHighlightTest treeSitterTextprotoCheck
-    reprotoWktCheck
+    reprotoWktCheck upbReleaseCheck descriptorCopiesCheck
     wktDb wktPrebuiltCheck prototextFixturesCheck fdpScanCorpusCheck
     prototoolsClosureCheck
     completionTests
@@ -804,7 +854,9 @@ let
       reprotoAlone = (withPrototext sp.prototext).reproto;
     };
 
-  staging = mkStaging pkgs pythonPkgs;
+  # As nixpkgs builds the recipes: its own Python protobuf, not spec
+  # 0460's.
+  staging = mkStaging pkgs pkgs.python313Packages;
   stagedRustBuilds   = staging.rustBuilds;
   stagedPythonPkgs   = staging.pythonPkgs;
   stagedReprotoBuild = staging.reproto;
@@ -943,4 +995,6 @@ in
   tree-sitter-textproto-check = treeSitterTextprotoCheck;
   reproto-wkt-generated = reprotoWktGenerated;
   reproto-wkt-check     = reprotoWktCheck;
+  upb-release-check     = upbReleaseCheck;
+  descriptor-copies-check = descriptorCopiesCheck;
 }

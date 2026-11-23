@@ -99,6 +99,18 @@ SPDX-License-Identifier: MIT
 
 ### Changed
 
+- One protobuf release, v36.2, behind every copy of `descriptor.proto`
+  and the other well-known types: the vendored upb, the built-in
+  descriptors reproto and protoback fill in, prototext's prebuilt
+  fixtures and WKT graph, fdp-scan's corpus, the protoc the builds run
+  and Python protobuf (7.36.2), all named once in `nix/protobuf.nix`.
+  `ci` fails when a copy is from another release (`upb-release-check`,
+  `descriptor-copies-check`). Both tools' built-in `descriptor.proto` was
+  protobuf 34.1's: a rendered `google/protobuf/descriptor.proto` now has
+  35.x and 36.x's additions, a text input may hold `EDITION_2026`, and an
+  input without its own `descriptor.proto` gets edition 2026's defaults
+  (spec 0460).
+
 - git-seriate-fdp: `advise --report` reads W24, each attached to the
   `stale-importer` problem of its importer and move; and a file refused
   because its import was, with what is said of it, is attached under the
