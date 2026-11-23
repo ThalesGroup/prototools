@@ -41,9 +41,12 @@
 { pkgs, crane, variant, bobappDesc, extraDesc }:
 
 let
+  # Sources hold tracked files only, in a git checkout (spec 0479).
+  trackedSource = (import ../../nix/tracked.nix { inherit (pkgs) lib; }).toSource;
+
   repoRoot = ../..;
 
-  src = pkgs.lib.fileset.toSource {
+  src = trackedSource {
     root    = repoRoot;
     fileset = pkgs.lib.fileset.unions [
       # bobapp itself

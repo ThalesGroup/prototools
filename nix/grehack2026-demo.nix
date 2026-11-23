@@ -20,6 +20,9 @@
 }:
 
 let
+  # Sources hold tracked files only, in a git checkout (spec 0479).
+  trackedSource = (import ./tracked.nix { inherit lib; }).toSource;
+
   lib = pkgs.lib;
 
   # Neovim config for `view` / `view_textproto` / `view_proto`: desert theme,
@@ -67,7 +70,7 @@ let
   # The deck's committed material (spec 0403 S7). eve/ and bob/ come in with
   # their shell.nix only, which the image ignores; everything the deck
   # generates is gitignored and left out.
-  deck = lib.fileset.toSource {
+  deck = trackedSource {
     root    = deckSrc;
     fileset = lib.fileset.unions [
       (deckSrc + "/grehack2026.sh")

@@ -46,6 +46,9 @@
 }@args:
 
 let
+  # Sources hold tracked files only, in a git checkout (spec 0479).
+  trackedSource = (import ./nix/tracked.nix { inherit (pkgs) lib; }).toSource;
+
   # The one protobuf release (spec 0460): protoc, and the version every
   # copy of descriptor.proto is checked against. Exported, for downstream
   # builds (spec 0461 S1).
@@ -93,7 +96,7 @@ let
   # NOTE: not currently used for depsCache — Crane's cargoArtifacts fingerprint
   # matching requires depsCache to use the same src as consuming derivations
   # (workspaceSrc).  Kept for reference / future experimentation.
-  depsSrc = pkgs.lib.fileset.toSource {
+  depsSrc = trackedSource {
     root   = ./.;
     fileset = crane.fileset.cargoTomlAndLock ./.;
   };
@@ -116,7 +119,7 @@ let
 
   # workspaceSrc — all workspace crate sources + filtered fixture dirs, minus
   # target/ artefact trees.  Used by rustFmt, rustClippy, rustTests.
-  workspaceSrc = pkgs.lib.fileset.toSource {
+  workspaceSrc = trackedSource {
     root   = ./.;
     fileset = pkgs.lib.fileset.difference
       (pkgs.lib.fileset.unions [
@@ -282,7 +285,7 @@ let
   '';
 
   fdpScanCorpusCheck = pkgs.runCommand "fdp-scan-corpus-check" { } ''
-    committed=${pkgs.lib.fileset.toSource {
+    committed=${trackedSource {
       root = ./fdp-scan/tests/corpus;
       fileset = pkgs.lib.fileset.fileFilter (f: f.hasExt "bin" || f.hasExt "json")
         ./fdp-scan/tests/corpus;
@@ -802,7 +805,7 @@ let
     let
       fs = pkgs.lib.fileset;
       noPyc = dir: fs.difference dir (fs.fileFilter (f: f.hasExt "pyc") dir);
-    in fs.toSource {
+    in trackedSource {
       root    = ./.;
       fileset = fs.unions [
         (fs.fromSource workspaceSrc)

@@ -144,6 +144,12 @@ SPDX-License-Identifier: MIT
 
 ### Changed
 
+- nix: the Nix sources hold the files git tracks only (staged ones
+  count), when the repository is a git checkout: untracked files (the
+  dev-shell's `ruff.toml` and `rust-toolchain.toml`, fixtures tests write)
+  no longer enter them, so a build from a checkout is the build of its
+  commit. A new file reaches a Nix build once `git add`ed (spec 0479).
+
 - nix: the main nixpkgs pin is in `nix/nixpkgs.json`, read by
   `default.nix`, as the unstable pin is in `nix/unstable.json`; nothing
   rebuilds. Downstream may read its `rev` and `sha256`: they are kept, or

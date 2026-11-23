@@ -32,6 +32,9 @@
 }:
 
 let
+  # Sources hold tracked files only, in a git checkout (spec 0479).
+  trackedSource = (import ./tracked.nix { inherit (pkgs) lib; }).toSource;
+
   # Spec 0402 S3: versions from the manifests (see nix/rust.nix).
   reprotoVersion   = pyprojectVersion "reproto";
   # Spec 0402 S7: what runs a freshly installed script runs only where the
@@ -53,7 +56,7 @@ let
     let
       fs   = pkgs.lib.fileset;
       root = ../reproto;
-    in fs.toSource {
+    in trackedSource {
       inherit root;
       fileset = fs.difference
         (fs.unions [ (root + "/src") (root + "/pyproject.toml") ])
@@ -71,7 +74,7 @@ let
     meta = metaCommon // {
       description = "The textproto tree-sitter grammar, for the Python tree_sitter library";
     };
-    src = pkgs.lib.fileset.toSource {
+    src = trackedSource {
       root    = ../reproto/tree-sitter-textproto;
       fileset = pkgs.lib.fileset.unions [
         ../reproto/tree-sitter-textproto/pyproject.toml
@@ -528,8 +531,8 @@ let
     # ── Instantiate one .pb per sampled type ──────────────────────────────────
     # Number of types to instantiate (includes potential 0-byte skips).
     N_INSTANCES=400
-    TYPES_YAML=${builtins.path { name = "googleapis-types-yaml"; path = ../tests/stress/googleapis-types.yaml; }}
-    FIXTURES_DIR=${builtins.path { name = "googleapis-fixtures"; path = ../tests/fixtures/instances; }}
+    TYPES_YAML=${trackedSource { root = ../tests/stress; fileset = ../tests/stress/googleapis-types.yaml; }}/googleapis-types.yaml
+    FIXTURES_DIR=${trackedSource { root = ../tests/fixtures/instances; fileset = ../tests/fixtures/instances; }}
 
     # Phase 1: encode hand-crafted fixtures into .pb files.
     # These are committed to git (as annotated textproto with .pb extension)
@@ -686,7 +689,7 @@ print('\n'.join(lines[:$N_EXTRA]))
   # googleapis, and are part of `full-tests`.
   protobackHarnessSrc =
     let fs = pkgs.lib.fileset; in
-    fs.toSource {
+    trackedSource {
       root = ../.;
       fileset = fs.difference
         (fs.unions [

@@ -30,6 +30,9 @@
 { pkgs, crane, protoc }:
 
 let
+  # Sources hold tracked files only, in a git checkout (spec 0479).
+  trackedSource = (import ../../nix/tracked.nix { inherit (pkgs) lib; }).toSource;
+
   # The source is rooted at the repository, not at life/, so life-server's
   # path dependency on prototext-core (spec 0377 S2) is reachable — the
   # workspace-not-at-source-root technique bobapp uses (spec 0241, its
@@ -38,7 +41,7 @@ let
   # "../workspace-hack" naturally.
   repoRoot = ../..;
 
-  src = pkgs.lib.fileset.toSource {
+  src = trackedSource {
     root    = repoRoot;
     fileset = pkgs.lib.fileset.unions [
       (crane.fileset.commonCargoSources (repoRoot + /grehack2026/game))

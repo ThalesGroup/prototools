@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0479 — nix: a local build is the build of its commit
 
-Status: draft
+Status: implemented
+Implemented in: 2026-11-23
 App: nix
 Refs: docs/specs/0478-the-main-nixpkgs-pin-in-a-file.md (the downstream
         that shares the machine and the pin)
@@ -81,4 +82,21 @@ projects build, every crate of ours is compiled twice.
 
 ## Measured outcome
 
-Filled in at implementation.
+2026-11-23. The helper is `nix/tracked.nix` (`trackedSource`, a drop-in for
+`lib.fileset.toSource`); all 11 sources go through it (`default.nix`,
+`nix/python.nix`, the two demo files, bobapp's and the game of life's
+`default.nix`), and the two `builtins.path` copies of `nix/python.nix`
+became tracked sources. `attic/` is left out, unused.
+
+| `workspace-build` evaluated from | `.drv` |
+|---|---|
+| the checkout, the five untracked files present | `4dvs1gfc…` |
+| `builtins.fetchGit` of the commit | `4dvs1gfc…` |
+| a copy without `.git` (`git archive`-like) | `4dvs1gfc…` |
+| a git worktree | `4dvs1gfc…` |
+
+`4dvs1gfc…` is the derivation the downstream got by fetching `d29d318a`.
+An untracked probe file under a crate leaves the derivation unchanged;
+staged, it changes it. The full `ci` passes. The game of life and bobapp,
+which `ci` doesn't build, evaluate; their builds fail on their own
+`Cargo.lock`, stale since `fcf45779`, unrelated to this spec.

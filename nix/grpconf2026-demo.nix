@@ -22,12 +22,15 @@
 }:
 
 let
+  # Sources hold tracked files only, in a git checkout (spec 0479).
+  trackedSource = (import ./tracked.nix { inherit lib; }).toSource;
+
   lib = pkgs.lib;
 
   # The committed material (spec 0404 S1). speech.md, the speaker notes,
   # artifacts.md and the fixture minting are the presenter's, not the
   # audience's (N3).
-  material = lib.fileset.toSource {
+  material = trackedSource {
     root    = deckSrc;
     fileset = lib.fileset.unions [
       (deckSrc + "/grpconf2026.sh")
