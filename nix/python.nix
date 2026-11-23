@@ -336,6 +336,21 @@ let
   # imports statically wherever they sit, so deferring hides nothing
   # from it.
   # ---------------------------------------------------------------------------
+  # A canary (spec 0467): reproto reads a dropped edition from the bytes
+  # (syntax.py, `_dropped_edition`) because types-protobuf has no stub for
+  # google.protobuf.unknown_fields. The bump that brings one fails here,
+  # saying what to undo.
+  unknownFieldsStubCheck = pkgs.runCommand "unknown-fields-stub-check" { } ''
+    stub=${pythonPkgs.types-protobuf}/${pythonPkgs.python.sitePackages}/google-stubs/protobuf/unknown_fields.pyi
+    if [ -e "$stub" ]; then
+      echo "types-protobuf now declares google.protobuf.unknown_fields: replace" >&2
+      echo "_dropped_edition (reproto/src/reproto/syntax.py) with" >&2
+      echo "unknown_fields.UnknownFieldSet, and remove this check (spec 0467)." >&2
+      exit 1
+    fi
+    touch $out
+  '';
+
   pythonLint = pkgs.runCommand "python-lint" {
     strictDeps = true;
     nativeBuildInputs = [
@@ -731,6 +746,7 @@ print('\n'.join(lines[:$N_EXTRA]))
 
 in {
   inherit
+    unknownFieldsStubCheck
     protobackHarness
     protobackHarnessFull
     protobackDumpHarness

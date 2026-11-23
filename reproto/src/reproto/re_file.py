@@ -339,7 +339,7 @@ class ReFileDescriptorProto(NodeBase[FileDescriptorProto]):
         from .anomalies import report
         if ctx.target_syntax == "editions":
             from .syntax import _edition_name
-            edition_name = _edition_name(self.this.edition)
+            edition_name = _edition_name(self.this)
             out.append(BlockLine(f'edition = "{edition_name}";', depth))
         elif ctx.syntax != ctx.target_syntax:
             # A2: normal syntax downconversion (proto3 → proto2 via --force-proto2-output)

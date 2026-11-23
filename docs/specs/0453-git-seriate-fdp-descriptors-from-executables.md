@@ -42,8 +42,9 @@ a generator adds or reorders, and nothing the source can say.
 - **G2.** The extractor is `fdp-scan`, against the stock
   `descriptor.proto` or the caller's; every refused candidate is recorded,
   with its reason.
-- **G3.** Items are stored as prototext text and read back to the same
-  bytes: checked on every write.
+- **G3.** Items are stored as prototext text, which reads back to the
+  same bytes: checked by the tests, and on every write with
+  `seriate.checkRendering` (0465).
 - **G4.** A canonicalizer with two rules, versioned as the rule set
   `fdp`, composable with a caller's own rule sets.
 - **G5.** The history of the generic tests holds for descriptors: the same

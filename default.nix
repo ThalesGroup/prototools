@@ -119,6 +119,8 @@ let
     fileset = pkgs.lib.fileset.difference
       (pkgs.lib.fileset.unions [
         (crane.fileset.commonCargoSources ./.)
+        # cargo-hakari's settings, which rust.hakariCheck reads.
+        ./.config/hakari.toml
         # The textproto grammar's committed parser and highlights query,
         # which its crate compiles and carries for protolens (specs 0408 S5,
         # 0414 S2).
@@ -168,6 +170,10 @@ let
         # `git-seriate/tests/settle.rs` compares its own with (spec 0452 S9).
         (pkgs.lib.fileset.fileFilter (f: f.hasExt "tsv")
           ./git-seriate/tests/histories)
+        # The FDP renderer's text, which `git-seriate-fdp/tests/rendering.rs`
+        # holds its version to (spec 0464 S5).
+        (pkgs.lib.fileset.fileFilter (f: f.hasExt "txt")
+          ./git-seriate-fdp/tests/rendering)
         # prototext-core/fixtures is taken wholesale rather than through
         # fixtureFilter: `benches/codec.rs` include_bytes! the .txtpb protoc
         # rendering, an extension fixtureFilter deliberately drops.  The
@@ -742,13 +748,13 @@ let
   # ci's members; scripts/protobuf-release-check reads their build
   # closure (spec 0462 S3).
   ciMembers = [
-    rust.rustFmt rust.rustClippy rust.rustTests rust.descriptorAccessCheck
+    rust.rustFmt rust.rustClippy rust.rustTests rust.descriptorAccessCheck rust.hakariCheck
     rust.prototext rust.protolens
     rust.prototextCodec rust.fdpScanLib rust.prototextGraphLib
     rust.protoscan rust.gitSeriate rust.gitSeriateFdp python.reproto
     python.reprotoTests python.reprotoTestsViaText python.reprotoTestsOnProtoback
     python.fdpScanTests python.prototextCodecTests
-    python.pythonLint python.pythonRuff
+    python.pythonLint python.pythonRuff python.unknownFieldsStubCheck
     treeSitterTextprotoHighlightTest treeSitterTextprotoCheck
     reprotoWktCheck upbReleaseCheck descriptorCopiesCheck
     wktDb wktPrebuiltCheck prototextFixturesCheck fdpScanCorpusCheck
@@ -765,7 +771,7 @@ let
   # ci-no-clippy — same as ci but without rustClippy.
   # Used on platforms where clippy is known to fail (e.g. macos-15-intel).
   ci-no-clippy = pkgs.linkFarmFromDrvs "ci-no-clippy" [
-    rust.rustFmt rust.rustTests rust.descriptorAccessCheck
+    rust.rustFmt rust.rustTests rust.descriptorAccessCheck rust.hakariCheck
     rust.prototext rust.protolens
     rust.prototextCodec rust.fdpScanLib rust.prototextGraphLib
     rust.protoscan rust.gitSeriate rust.gitSeriateFdp python.reproto
@@ -956,6 +962,8 @@ in
   rust-clippy          = rust.rustClippy;
   rust-tests           = rust.rustTests;
   descriptor-access-check = rust.descriptorAccessCheck;
+  hakari-check         = rust.hakariCheck;
+  unknown-fields-stub-check = python.unknownFieldsStubCheck;
   prototext-codec      = rust.prototextCodec;
   reproto              = python.reproto;
   wkt-rkyv             = wktRkyv;

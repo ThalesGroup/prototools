@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0465 — git-seriate-fdp: no read-back at runtime
 
-Status: draft
+Status: implemented
+Implemented in: 2026-11-23
 App: git-seriate-fdp
 Refs: docs/specs/0453-git-seriate-fdp-descriptors-from-executables.md (G3,
         which this amends)
@@ -45,7 +46,10 @@ The renderer is lossless by design, and prototext's own round-trip tests
 
 - **S3.** A test reads back every item of git-seriate-fdp's corpora (the
   fdp-scan corpus's descriptors, the well-known types), with the stock
-  schema and with a fuller one.
+  schema and with another (prototext's frozen test set).
+
+- **S2b.** The check is git-seriate's `Checked`, wrapping any renderer:
+  every front end has it.
 
 - **S4.** 0453 G3 becomes: "Items are stored as prototext text, which
   reads back to the same bytes: checked by the tests, and on every write
@@ -69,4 +73,7 @@ already stored, or one unchanged). It keeps most of the cost in
 
 ## Measured outcome
 
-Filled in at implementation.
+2026-11-23, same host and method as 0463: `extract` of the 300
+executables of 0464's measure into a repository, 0.60 s before, 0.36 s
+after (−40%). The corpus test (S3) reads back over 100 descriptors with
+each of two schemas.

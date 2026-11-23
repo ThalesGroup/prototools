@@ -26,7 +26,7 @@ from .feature_resolution import (
 )
 
 if TYPE_CHECKING:
-    from google.protobuf.descriptor_pb2 import Edition, FeatureSet
+    from google.protobuf.descriptor_pb2 import FeatureSet
     from .feature_resolution import ResolvedFeatures
     from .text import Block
 
@@ -258,10 +258,65 @@ def should_render_json_name(field: FieldDescriptorProto) -> bool:
     return bool(field.json_name) and field.json_name != _camel_case(field.name)
 
 
-def _edition_name(edition: 'Edition.ValueType') -> str:
-    """Map Edition enum value to the string used in .proto source (e.g. \"2023\")."""
+class UnnamedEditionError(Exception):
+    """An editions file whose edition can't be named (spec 0467 S1): the
+    file is not written, a W6 says why."""
+
+
+def _dropped_edition(data: bytes) -> int | None:
+    """The last `edition` (field 14, a varint) among a serialized
+    FileDescriptorProto's top-level fields: where a value the closed enum
+    lacks is kept, as an unknown field.
+
+    Read from the bytes rather than through `google.protobuf.unknown_fields`,
+    which types-protobuf doesn't declare yet: the lint derivation fails when
+    it does (nix/python.nix, `unknownFieldsStubCheck`), to switch back.
+    """
+    def varint(i: int) -> tuple[int, int]:
+        value, shift = 0, 0
+        while True:
+            b = data[i]
+            value |= (b & 0x7F) << shift
+            i, shift = i + 1, shift + 7
+            if b < 0x80:
+                return value, i
+
+    found, i = None, 0
+    while i < len(data):
+        key, i = varint(i)
+        field, wire = key >> 3, key & 7
+        if wire == 0:
+            value, i = varint(i)
+            if field == 14:
+                found = value
+        elif wire == 2:
+            n, i = varint(i)
+            i += n
+        else:  # 1: 8 bytes, 5: 4; groups never at a descriptor's top level
+            i += 8 if wire == 1 else 4
+    return found
+
+
+def _edition_name(file: Any) -> str:
+    """`file`'s edition as `.proto` source writes it (e.g. \"2023\"); an
+    edition unset, or not in the imported `Edition` enum, refused.
+
+    The enum is closed: a value it lacks is kept among the message's unknown
+    fields (field 14), from which the message names it.
+    """
     from google.protobuf.descriptor_pb2 import Edition
-    name = Edition.Name(edition)   # e.g. "EDITION_2023"
+    from .protobuf_check import describe
+    edition = file.edition if file.HasField('edition') else 0
+    if edition == 0:
+        dropped = _dropped_edition(file.SerializeToString())
+        if dropped is None:
+            raise UnnamedEditionError("the edition is unset")
+        edition = dropped
+    try:
+        name = Edition.Name(Edition.ValueType(edition))   # e.g. "EDITION_2023"
+    except ValueError:
+        raise UnnamedEditionError(
+            f"edition {edition} has no name in this {describe()}") from None
     if name.startswith("EDITION_"):
         return name[len("EDITION_"):]
     return name

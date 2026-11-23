@@ -61,6 +61,16 @@ pub struct Problem {
 /// Every problem, sorted by kind, then files. `input.sources` must be in
 /// history order, newest application first (as the reader returns them).
 pub fn problems(a: &Analysis, input: &Input) -> Vec<Problem> {
+    problems_and_dependents(a, input).0
+}
+
+/// [`problems`], and each file the pool refused only because an import was
+/// refused, by path, with its root's path: the refused file the chain of
+/// imports starts from (spec 0468 S1).
+pub fn problems_and_dependents(
+    a: &Analysis,
+    input: &Input,
+) -> (Vec<Problem>, HashMap<String, String>) {
     let mut out = Vec::new();
 
     // The kept files, by descriptor name (copies pruned, so names are unique).
@@ -118,7 +128,28 @@ pub fn problems(a: &Analysis, input: &Input) -> Vec<Problem> {
     }
 
     // refused: the kept files in a pool, with the moves applied.
-    for (name, reason) in refusals(a, &kept, &moved) {
+    let (refused, skipped) = refusals(a, &kept, &moved);
+    let path_of = |name: &str| kept.get(name).copied().unwrap_or(name).to_string();
+    let mut dependents = HashMap::new();
+    for name in skipped.keys() {
+        // Followed to a file refused on its own; a loop has no root.
+        let mut chain = vec![name.as_str()];
+        let mut next = skipped.get(name);
+        while let Some(import) = next {
+            if chain.contains(&import.as_str()) {
+                break;
+            }
+            if !skipped.contains_key(import) {
+                if refused.iter().any(|(n, _)| n == import) {
+                    dependents.insert(path_of(name), path_of(import));
+                }
+                break;
+            }
+            chain.push(import);
+            next = skipped.get(import);
+        }
+    }
+    for (name, reason) in refused {
         let path = kept.get(name.as_str()).copied().unwrap_or(name.as_str());
         out.push(Problem {
             kind: ProblemKind::Refused,
@@ -164,17 +195,18 @@ pub fn problems(a: &Analysis, input: &Input) -> Vec<Problem> {
 
     out.extend(out_of_order(&input.sources));
     out.sort();
-    out
+    (out, dependents)
 }
 
-/// The kept files the pool refuses, each with its reason. A file refused
-/// only because an import was refused isn't listed: its cause is. A file
-/// with a missing import isn't either: that is `missing-import`.
+/// The kept files the pool refuses, each with its reason; and apart, each
+/// file refused only because an import was refused, with that import: its
+/// cause is the problem. A file with a missing import is neither: that is
+/// `missing-import`.
 fn refusals(
     a: &Analysis,
     kept: &BTreeMap<&str, &str>,
     moved: &HashMap<&str, &str>,
-) -> Vec<(String, String)> {
+) -> (Vec<(String, String)>, HashMap<String, String>) {
     let def = Pool::vendored()
         .get_message_by_name("google.protobuf.FileDescriptorProto")
         .expect("the vendored descriptor.proto declares it");
@@ -201,11 +233,20 @@ fn refusals(
         set.extend_from_slice(&encoded);
     }
     let report = Pool::new().load_set(&set);
-    report
-        .skipped
-        .into_iter()
-        .filter(|(_, reason)| !reason.ends_with("was skipped") && !reason.ends_with("is missing"))
-        .collect()
+    let mut refused = Vec::new();
+    let mut skipped = HashMap::new();
+    for (name, reason) in report.skipped {
+        // `import 'DEP' was skipped`, as prototext-upb words it.
+        if let Some(dep) = reason
+            .strip_prefix("import '")
+            .and_then(|r| r.strip_suffix("' was skipped"))
+        {
+            skipped.insert(name, dep.to_string());
+        } else if !reason.ends_with("is missing") {
+            refused.push((name, reason));
+        }
+    }
+    (refused, skipped)
 }
 
 fn input_bytes<'a>(a: &'a Analysis, path: &str) -> Option<&'a [u8]> {

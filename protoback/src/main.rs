@@ -782,6 +782,7 @@ fn protoback(mut cli: Cli, explicit: &std::collections::HashSet<&'static str>) -
         edition_defaults: &run.edition_defaults,
         edition_names: &run.edition_names,
         exports: None,
+        repairs: None,
         options_fqns: render::options_fqns(&run.db, &run.variant),
         keep_variant_descriptor: cli.keep_descriptor_path,
         emit_binary: cli.emit_binary,
@@ -805,8 +806,18 @@ fn protoback(mut cli: Cli, explicit: &std::collections::HashSet<&'static str>) -
     let exports = cli
         .export_used
         .then(|| render::exports(&shared, &run.visibility_defaults));
+    // --repair-skew (spec 0469): what to repair, read from the files to
+    // render; the imports it adds, in the names they resolve with.
+    let repairs = cli.repair_skew.then(|| render::repairs(&shared));
+    let repaired_names = repairs.as_ref().map(|r| {
+        let mut n = names.clone();
+        r.apply_to(&mut n);
+        n
+    });
     let shared = render::Shared {
         exports: exports.as_ref(),
+        repairs: repairs.as_ref(),
+        names: repaired_names.as_ref().unwrap_or(&names),
         ..shared
     };
     let output = render::Output {

@@ -133,6 +133,26 @@ pub fn extract_files(
     options: &Options,
     warnings: &mut Vec<String>,
 ) -> Result<Vec<Outcome>, Error> {
+    extract_files_into(
+        repo,
+        &mut store::Sink::Repo(repo),
+        kit,
+        files,
+        options,
+        warnings,
+    )
+}
+
+/// [`extract_files`], the snapshots written into `sink`: `repo`'s, or an
+/// archive (spec 0466). `repo` gives the settings (`seriate.fdpSchema`).
+pub fn extract_files_into(
+    repo: &gix::Repository,
+    sink: &mut store::Sink,
+    kit: &Kit,
+    files: &[PathBuf],
+    options: &Options,
+    warnings: &mut Vec<String>,
+) -> Result<Vec<Outcome>, Error> {
     if options.id.is_some() && files.len() != 1 {
         return Err(Error::Refused(
             "--id names one file's snapshot: give one file".into(),
@@ -193,8 +213,8 @@ pub fn extract_files(
             Some(id) => id.clone(),
             None => identity_of(file),
         };
-        let added = store::add(
-            repo,
+        let added = store::add_to(
+            sink,
             NewSnapshot {
                 source: Source {
                     identity,

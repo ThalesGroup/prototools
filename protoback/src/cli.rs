@@ -216,6 +216,12 @@ pub struct Cli {
     )]
     pub export_used: bool,
     #[arg(
+        long = "repair-skew",
+        help = "Make the output compile despite version skew (spec 0469): add the import of the one written file defining a type used, comment out a field or method whose type no written file defines and an extension out of its extendee's ranges; each commented, and reported (W33 to W36).",
+        help_heading = "Rendering"
+    )]
+    pub repair_skew: bool,
+    #[arg(
         long = "no-builtin",
         help = "Do not fill in, from built-in copies, the well-known files and the descriptor.proto the input lacks.",
         help_heading = "Variant / Schema"

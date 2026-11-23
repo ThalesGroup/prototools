@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0464 — git-seriate: a canonical history taken as it is
 
-Status: draft
+Status: implemented
+Implemented in: 2026-11-23
 App: git-seriate
 Refs: docs/specs/0450-git-seriate-a-history-from-snapshots.md (S2: the
         canonical form versions are compared by),
@@ -103,4 +104,29 @@ block.
 
 ## Measured outcome
 
-Filled in at implementation.
+2026-11-23, same host and method as 0463.
+
+- The generic renderer, 1,000 snapshots: a re-sort with nothing new,
+  0.44 s before, 0.31 s after.
+- git-seriate-fdp, 300 generated executables of the well-known types at
+  30 versions (3,300 descriptors, 330 distinct blobs): unchanged within
+  noise (5.5 to 6.8 s both). The profile after shows no parse nor render
+  at all, so trust works; but before, canonicalization was 0.1% of the
+  run: each distinct blob is canonicalized once, and this corpus has few,
+  while the comparator (`lines_inside`) takes 98%. The downstream
+  corpus's 78% could not be reproduced here; its figure is theirs to
+  measure.
+
+Beyond the specification, found while implementing:
+
+- The FDP renderer's text depends on its schema as well
+  (`seriate.fdpSchema`): its version is `prototext` and the schema's
+  fingerprint (FNV-1a of the descriptor set and root), so a schema change
+  is a renderer change. `Renderer::version` returns a list for that.
+- Commits written before this spec have no `renderer`: `settle` keeps
+  them, untrusted, rather than rewriting the whole history; `compact`
+  marks them once it has checked their items (`marked`). `compact` with
+  nothing before its cutoff now still converts and marks.
+- The S5 test renders a frozen descriptor set against itself, so that a
+  move of the protobuf release (0460) doesn't fail it: the schema's
+  fingerprint covers that.

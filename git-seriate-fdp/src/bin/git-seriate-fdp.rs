@@ -14,7 +14,7 @@ use clap::Subcommand;
 use git_seriate::store::Added;
 use git_seriate::Error;
 use git_seriate_fdp::advise;
-use git_seriate_fdp::extract::{extract_files, Options};
+use git_seriate_fdp::extract::{extract_files_into, Options};
 
 #[derive(Subcommand)]
 enum Fdp {
@@ -40,6 +40,11 @@ enum Fdp {
         /// 0449): for inputs known to come from protoc.
         #[arg(long)]
         increasing_field_numbers: bool,
+        /// Write the snapshots as an archive of a bare repository to FILE,
+        /// or to standard output for -, instead of into a repository: none
+        /// is needed (unpack with `mkdir r.git && tar xf FILE -C r.git`).
+        #[arg(long, value_name = "FILE")]
+        tar_out: Option<PathBuf>,
         /// The executables, libraries or other files to scan.
         #[arg(required = true)]
         files: Vec<PathBuf>,
@@ -76,50 +81,60 @@ fn main() -> ExitCode {
         "git seriate-fdp",
         git_seriate_fdp::kit,
         |command, repo, kit| {
-            let (id, build_time, order_hint, group, metadata, increasing_field_numbers, files) =
-                match command {
-                    Fdp::Advise {
+            let (
+                id,
+                build_time,
+                order_hint,
+                group,
+                metadata,
+                increasing_field_numbers,
+                tar_out,
+                files,
+            ) = match command {
+                Fdp::Advise {
+                    into,
+                    out,
+                    json,
+                    check,
+                    report,
+                    strict,
+                } => {
+                    let options = advise::Options {
                         into,
                         out,
                         json,
                         check,
                         report,
                         strict,
-                    } => {
-                        let options = advise::Options {
-                            into,
-                            out,
-                            json,
-                            check,
-                            report,
-                            strict,
-                        };
-                        let mut text = String::new();
-                        let status = advise::run(repo, kit, &advise::Generic, &options, &mut text)?;
-                        print!("{text}");
-                        if status != 0 {
-                            std::process::exit(i32::from(status));
-                        }
-                        return Ok(());
+                    };
+                    let mut text = String::new();
+                    let status = advise::run(repo, kit, &advise::Generic, &options, &mut text)?;
+                    print!("{text}");
+                    if status != 0 {
+                        std::process::exit(i32::from(status));
                     }
-                    Fdp::Extract {
-                        id,
-                        build_time,
-                        order_hint,
-                        group,
-                        metadata,
-                        increasing_field_numbers,
-                        files,
-                    } => (
-                        id,
-                        build_time,
-                        order_hint,
-                        group,
-                        metadata,
-                        increasing_field_numbers,
-                        files,
-                    ),
-                };
+                    return Ok(());
+                }
+                Fdp::Extract {
+                    id,
+                    build_time,
+                    order_hint,
+                    group,
+                    metadata,
+                    increasing_field_numbers,
+                    tar_out,
+                    files,
+                } => (
+                    id,
+                    build_time,
+                    order_hint,
+                    group,
+                    metadata,
+                    increasing_field_numbers,
+                    tar_out,
+                    files,
+                ),
+            };
             let metadata = metadata
                 .into_iter()
                 .map(|kv| match kv.split_once('=') {
@@ -136,20 +151,37 @@ fn main() -> ExitCode {
                 increasing_field_numbers,
             };
             let mut warnings = Vec::new();
-            let outcomes = extract_files(repo, kit, &files, &options, &mut warnings)?;
+            let mut archive = git_seriate::archive::Archive::new();
+            let mut sink = match &tar_out {
+                Some(_) => git_seriate::store::Sink::Archive(&mut archive),
+                None => git_seriate::store::Sink::Repo(repo),
+            };
+            let outcomes =
+                extract_files_into(repo, &mut sink, kit, &files, &options, &mut warnings)?;
+            if let Some(out) = &tar_out {
+                archive.write_to_path(out)?;
+            }
             for w in &warnings {
                 eprintln!("warning: {w}");
             }
+            // Standard output holds the archive with `--tar-out -`.
+            let say = |line: String| {
+                if tar_out.as_deref() == Some(std::path::Path::new("-")) {
+                    eprintln!("{line}");
+                } else {
+                    println!("{line}");
+                }
+            };
             for o in outcomes {
                 match o.added {
                     Added::Written { branch, rejected } => {
                         for r in &rejected {
                             eprintln!("{}: refused {} ({})", o.file.display(), r.name, r.reason);
                         }
-                        println!("added {branch}");
+                        say(format!("added {branch}"));
                     }
-                    Added::Unchanged { branch } => println!("unchanged {branch}"),
-                    Added::Nothing => println!("{}: no descriptor", o.file.display()),
+                    Added::Unchanged { branch } => say(format!("unchanged {branch}")),
+                    Added::Nothing => say(format!("{}: no descriptor", o.file.display())),
                 }
             }
             Ok(())

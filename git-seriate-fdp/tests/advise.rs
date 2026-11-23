@@ -74,6 +74,7 @@ fn settle(repo: &gix::Repository, kit: &Kit, branches: &[&str]) {
                 comparator: kit.comparator.as_ref(),
                 legacy: None,
             },
+            verify_canon: false,
         },
     )
     .unwrap();
@@ -287,7 +288,11 @@ fn a_manual_files_age_survives_a_rewrite() {
             level: 2,
             dry_run: false,
         },
-        None,
+        &git_seriate::compact::Plugins {
+            legacy: None,
+            renderer: kit.renderer.as_ref(),
+            canonicalizer: kit.canonicalizer.as_ref(),
+        },
     )
     .unwrap();
     assert_eq!(report.dropped, 1, "{report:?}");

@@ -283,3 +283,66 @@ fn import_copies_the_branches_once() {
     assert!(!ok);
     assert!(err.contains("exists here"), "{err}");
 }
+
+/// The tree `add` builds is the one git builds of the same files (spec 0466
+/// S1: `add` writes its own trees), git's order included: `d.txt` before
+/// the directory `d`, `d-` before it too.
+#[test]
+fn trees_are_the_ones_git_builds() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = new_repo(tmp.path(), "repo.git");
+    let files = [
+        ("a.txt", "a\n"),
+        ("d.txt", "d\n"),
+        ("d-x", "dash\n"),
+        ("d/e/f.txt", "f\n"),
+        ("d/g.txt", "g\n"),
+        ("z", "z\n"),
+    ];
+    let dir = tmp.path().join("snap");
+    write(&dir, &files);
+    let (ok, _, err) = git_seriate(
+        &repo,
+        &[
+            "add",
+            "--id",
+            "s",
+            "--build-time",
+            "1",
+            dir.to_str().unwrap(),
+        ],
+    );
+    assert!(ok, "{err}");
+    let ours = git(&repo, &["rev-parse", "s^{tree}"]);
+    // git's: the same files through an index.
+    let index = tmp.path().join("index");
+    let with_index = |args: &[&str]| {
+        let out = Command::new("git")
+            .arg("--git-dir")
+            .arg(&repo)
+            .args(args)
+            .env("GIT_INDEX_FILE", &index)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("HOME", &repo)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    for (path, _) in files {
+        let blob = with_index(&["hash-object", "-w", dir.join(path).to_str().unwrap()]);
+        with_index(&[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("100644,{},{path}", blob.trim()),
+        ]);
+    }
+    let gits = with_index(&["write-tree"]);
+    assert_eq!(ours.trim(), gits.trim());
+    fsck(&repo);
+}

@@ -11,11 +11,13 @@
 //! them. What is specific to a kind of file comes through the traits of
 //! [`plugins`].
 
+pub mod archive;
 pub mod cli;
 pub mod compact;
 pub mod format;
 pub mod history;
 pub mod plugins;
+mod sign;
 pub mod store;
 
 use std::fmt;

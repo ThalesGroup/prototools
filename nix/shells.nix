@@ -110,6 +110,8 @@ in
       gh
       # Spec 0460's protoc (nix/protobuf.nix), not the pin's.
       protoc
+      # workspace-hack, refreshed as hakari-check says (cargo hakari generate).
+      cargo-hakari
       # Google's wire-format inspector — a second, independent opinion on
       # what a blob's bytes say, for cross-checking prototext/protolens.
       protoscope

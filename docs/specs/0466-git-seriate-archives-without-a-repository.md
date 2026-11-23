@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0466 — git-seriate: snapshots written as an archive, with no repository
 
-Status: draft
+Status: implemented
+Implemented in: 2026-11-23
 App: git-seriate | git-seriate-fdp
 Refs: docs/specs/0452-git-seriate-the-store-and-the-history.md (`add`,
         the snapshot branches)
@@ -66,11 +67,21 @@ extracting with no repository wants the same.
   modification time 0. This is the layout the downstream front end's
   archives have today, so its consumers see no change.
 
-- **S3. `--tar-out FILE`** on `extract` and `add`: no repository read or
-  needed (`-C`/`GIT_DIR` ignored), the archive written to `FILE`, or to
-  stdout for `-`. The branch names and messages are those the command
-  would write into a repository. Combined with a target repository, it is
-  refused.
+- **S3. `--tar-out FILE`** on `extract` and `add`: the archive written to
+  `FILE`, or to standard output for `-` (the command's messages then on
+  standard error); nothing written into any repository, and none needed.
+  Outside a repository, an empty one stands in for the settings a front
+  end reads (all defaults); inside one, only its configuration is read
+  (`seriate.fdpSchema` and the like). The branch names and messages are
+  those the command would write into a repository.
+
+  Generic: any subcommand, a front end's own too, given an argument whose
+  id is `tar_out` runs with no repository.
+
+- **S4. `store::add_to`,** with a `Sink`: a repository or an archive.
+  `add` writes its own trees (git's order, checked level by level as
+  `git fsck --strict` checks them), the same trees `edit_tree` wrote; so
+  every object reaches the sink once, and nothing is read back.
 
 ## Alternatives considered
 
@@ -104,4 +115,13 @@ pack.
 
 ## Measured outcome
 
-Filled in at implementation.
+2026-11-23, same host and method as 0463: the 300 executables of 0464's
+measure, `extract --tar-out`, 0.46 s, against 0.36 s into a repository
+(loose objects, no archive). The downstream front end's path, a temporary
+repository then a pack, is not measured here.
+
+Tests: the archive is the same whatever the order of the files, to a
+file or to standard output; `git fsck --strict` is clean; its refs and
+objects are an extraction's into a repository, and `settle` over each
+gives the same trees. `add` writes its own trees, checked against
+`git write-tree` of the same files.

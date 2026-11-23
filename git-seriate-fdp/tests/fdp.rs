@@ -52,13 +52,49 @@ fn varint(b: &[u8]) -> (u64, usize) {
 
 #[test]
 fn every_stock_descriptor_renders_and_reads_back() {
-    let schema = Schema::stock().unwrap();
-    let renderer = FdpRenderer { root: schema.root };
+    let renderer = FdpRenderer::new(Schema::stock().unwrap());
     for fdp in stock_files() {
         let text = renderer.render("x.pb", &fdp).unwrap();
         assert!(text.starts_with(b"#@ prototext:"), "annotated");
         assert_eq!(renderer.parse("x.pb", &text).unwrap(), fdp);
     }
+}
+
+/// Spec 0465 S3: the guarantee `render` no longer checks at runtime. Every
+/// descriptor of fdp-scan's corpus (each `*.truth.json` names the files of
+/// its layout, start and end), rendered with the stock schema and with
+/// another (prototext's frozen test set, of an older `descriptor.proto`),
+/// reads back to its bytes.
+#[test]
+fn every_corpus_descriptor_reads_back_with_either_schema() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../fdp-scan/tests/corpus");
+    let other: &[u8] = include_bytes!("../../prototext-core/fixtures/descriptor.pb");
+    let renderers = [
+        FdpRenderer::new(Schema::stock().unwrap()),
+        FdpRenderer::new(Schema::from_descriptor_set(other, git_seriate_fdp::FDP).unwrap()),
+    ];
+    let mut checked = 0;
+    for entry in std::fs::read_dir(&dir).unwrap() {
+        let path = entry.unwrap().path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let Some(layout) = name.strip_suffix(".truth.json") else {
+            continue;
+        };
+        let bytes = std::fs::read(dir.join(format!("{layout}.bin"))).unwrap();
+        let truth: Vec<(String, usize, usize)> =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        for (file, start, end) in truth {
+            let fdp = &bytes[start..end];
+            for r in &renderers {
+                let text = r.render("x.pb", fdp).unwrap();
+                assert_eq!(r.parse("x.pb", &text).unwrap(), fdp, "{layout}: {file}");
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked > 100, "{checked}: the corpus is there");
 }
 
 #[test]
@@ -103,11 +139,9 @@ fn r1_keeps_only_the_json_names_protoc_would_not_derive() {
     };
     let canonical = rules::Fdp::new().unwrap().canon("t.pb", &fdp);
     let text = String::from_utf8(
-        FdpRenderer {
-            root: Schema::stock().unwrap().root,
-        }
-        .render("t.pb", &canonical)
-        .unwrap(),
+        FdpRenderer::new(Schema::stock().unwrap())
+            .render("t.pb", &canonical)
+            .unwrap(),
     )
     .unwrap();
     assert_eq!(text.matches("json_name").count(), 1, "{text}");
@@ -197,6 +231,7 @@ fn settle(repo: &gix::Repository, kit: &Kit, canonicalizer: &dyn Canonicalizer) 
                 comparator: kit.comparator.as_ref(),
                 legacy: None,
             },
+            verify_canon: false,
         },
     )
     .unwrap();

@@ -39,10 +39,13 @@ impl Finding<'_> {
 
 /// Fold `report` into `problems`. Refused, with the reason, when the report
 /// wasn't built with a `fixups.yaml` computed from `sources`.
+/// `dependents`: each file `advise`'s pool refused only because an import
+/// was refused, with that chain's root (spec 0468).
 pub fn apply(
     report: &Value,
     a: &Analysis,
     sources: &[Source],
+    dependents: &HashMap<String, String>,
     problems: &mut Vec<Problem>,
 ) -> Result<(), String> {
     check_fixups(report, sources)?;
@@ -99,7 +102,8 @@ pub fn apply(
     // First, everything but knock-on refusals and what is said of a file
     // refused that way; the roots' place is then known.
     for f in &findings {
-        if f.knock_on().is_some() || (f.code == "W4" && knocked.contains_key(&f.path)) {
+        let dependent = knocked.contains_key(&f.path) || dependents.contains_key(&f.path);
+        if f.knock_on().is_some() || (f.code == "W4" && dependent) {
             continue;
         }
         let at = match f.code {
@@ -147,15 +151,24 @@ pub fn apply(
         refusal_at.entry(f.path.clone()).or_insert(at);
     }
     // Then a W4 on a file refused for its import, where that refusal went
-    // (S4).
+    // (S4); or, protoback not refusing it, on a file advise's pool refused
+    // for an import, where the chain's root went (spec 0468 S2).
     for f in &findings {
-        if f.code == "W4" && knocked.contains_key(&f.path) {
-            let at = refusal_at
-                .get(&f.path)
-                .copied()
-                .or_else(|| first_problem(&f.path, problems));
-            attach(at, f, problems);
+        if f.code != "W4" {
+            continue;
         }
+        let at = if knocked.contains_key(&f.path) {
+            refusal_at.get(&f.path).copied()
+        } else if let Some(root) = dependents.get(&f.path) {
+            refusal_at.get(root).copied().or_else(|| {
+                problems
+                    .iter()
+                    .position(|p| p.kind == ProblemKind::Refused && p.files.first() == Some(root))
+            })
+        } else {
+            continue;
+        };
+        attach(at.or_else(|| first_problem(&f.path, problems)), f, problems);
     }
 
     for idle in report["idle_directives"].as_array().into_iter().flatten() {
@@ -306,7 +319,7 @@ mod tests {
         let a = analyze(&input);
         let mut ps = problems(&a, &input);
         let r = report(&dir, &stamp(&input.sources));
-        apply(&r, &a, &input.sources, &mut ps).unwrap();
+        apply(&r, &a, &input.sources, &HashMap::new(), &mut ps).unwrap();
         let summary: Vec<_> = ps
             .iter()
             .map(|p| (p.kind.name(), p.files[0].as_str(), p.build.len()))
@@ -324,7 +337,7 @@ mod tests {
 
         // A report built with fixups from other sources is refused.
         let r = report(&dir, "# computed from:\n#   other\n");
-        assert!(apply(&r, &a, &input.sources, &mut ps)
+        assert!(apply(&r, &a, &input.sources, &HashMap::new(), &mut ps)
             .unwrap_err()
             .contains("wasn't computed from the current sources"));
         std::fs::remove_dir_all(&dir).unwrap();
@@ -449,7 +462,7 @@ mod tests {
             ]),
             json!([]),
         );
-        apply(&r, &a, &input.sources, &mut ps).unwrap();
+        apply(&r, &a, &input.sources, &HashMap::new(), &mut ps).unwrap();
         let stale = ps
             .iter()
             .find(|p| p.kind == ProblemKind::StaleImporter)
@@ -460,6 +473,34 @@ mod tests {
         let unforeseen: Vec<_> = ps.iter().filter(|p| p.kind == ProblemKind::Build).collect();
         assert_eq!(unforeseen.len(), 1, "{ps:?}");
         assert!(unforeseen[0].detail.contains("other.proto"), "{ps:?}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Spec 0468: protoback writes `grand.proto` with a W4 and no W19, but
+    /// advise's pool refused it for its import (`child.proto`, refused for
+    /// `user.proto`): the W4 goes under `user.proto`'s refusal.
+    #[test]
+    fn a_w4_on_a_dependent_of_a_refused_import() {
+        use crate::advise::problems::problems_and_dependents;
+        let dir = scratch("dependent");
+        let input = skew();
+        let a = analyze(&input);
+        let (mut ps, dependents) = problems_and_dependents(&a, &input);
+        assert_eq!(
+            dependents.get("grand.pb").map(String::as_str),
+            Some("user.pb")
+        );
+        let w4 = json!({ "code": "W4", "message": "unresolvable type .u.U",
+            "fields": { "file": "grand.proto", "type": ".u.U" } });
+        let root = w19("user.proto", json!({ "reason": "\".p.L\" is not defined" }));
+        let r = build_report(&dir, &input, json!([w4, root]), json!([]));
+        apply(&r, &a, &input.sources, &dependents, &mut ps).unwrap();
+        assert_eq!(
+            summary(&ps),
+            [("stale-importer", "user.pb", 0), ("refused", "user.pb", 2)],
+            "{ps:?}"
+        );
+        assert!(!ps.iter().any(|p| p.kind == ProblemKind::Build), "{ps:?}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -480,7 +521,7 @@ mod tests {
         ] {
             let mut ps = problems(&a, &input);
             let r = build_report(&dir, &input, warnings, json!([]));
-            apply(&r, &a, &input.sources, &mut ps).unwrap();
+            apply(&r, &a, &input.sources, &HashMap::new(), &mut ps).unwrap();
             assert_eq!(
                 summary(&ps),
                 [("stale-importer", "user.pb", 0), ("refused", "user.pb", 4)],
@@ -498,7 +539,7 @@ mod tests {
             ]),
             json!([]),
         );
-        apply(&r, &a, &input.sources, &mut ps).unwrap();
+        apply(&r, &a, &input.sources, &HashMap::new(), &mut ps).unwrap();
         let build: Vec<_> = ps.iter().filter(|p| p.kind == ProblemKind::Build).collect();
         assert_eq!(build.len(), 1, "{ps:?}");
         assert_eq!(build[0].files, ["x.pb"]);

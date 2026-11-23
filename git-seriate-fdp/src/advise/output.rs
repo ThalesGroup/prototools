@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 
 use super::actions::actions;
 use super::decide::analyze;
-use super::problems::{problems, Problem};
+use super::problems::{problems_and_dependents, Problem};
 use super::{fixups, status, Input, Source};
 
 /// Everything, with `report` (a protoback build report) read back into the
@@ -16,9 +16,9 @@ use super::{fixups, status, Input, Source};
 /// `command` is how the generated files name the command (S7's wording).
 pub fn advise(input: &Input, report: Option<&Value>, command: &str) -> Result<Value, String> {
     let a = analyze(input);
-    let mut ps = problems(&a, input);
+    let (mut ps, dependents) = problems_and_dependents(&a, input);
     if let Some(r) = report {
-        super::report::apply(r, &a, &input.sources, &mut ps)?;
+        super::report::apply(r, &a, &input.sources, &dependents, &mut ps)?;
     }
     let (candidates, no_source) = actions(&ps, &input.sources);
     Ok(json!({

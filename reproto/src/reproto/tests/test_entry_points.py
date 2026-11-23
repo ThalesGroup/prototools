@@ -42,4 +42,7 @@ def test_every_program_answers_version(name: str) -> None:
         capture_output=True, text=True, check=False,
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == f'{name}, version {reproto.version()}'
+    first, *rest = result.stdout.strip().splitlines()
+    assert first == f'{name}, version {reproto.version()}'
+    # reproto names the Python protobuf it runs on (spec 0467 S2).
+    assert all(line.startswith('Python protobuf ') for line in rest), result.stdout

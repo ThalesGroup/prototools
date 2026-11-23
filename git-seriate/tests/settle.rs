@@ -28,12 +28,21 @@ fn isolated(command: &mut Command, repo: &Path) {
         .env("HOME", home)
         .env("XDG_CONFIG_HOME", home)
         .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env_remove("GIT_CONFIG_GLOBAL");
+        .env_remove("GIT_CONFIG_GLOBAL")
+        // Signing (spec 0463): no agent nor askpass of the caller's.
+        .env_remove("SSH_AUTH_SOCK")
+        .env_remove("SSH_ASKPASS")
+        .env_remove("SSH_ASKPASS_REQUIRE");
 }
 
 fn git_seriate(repo: &Path, args: &[&str]) -> (bool, String, String) {
+    git_seriate_env(repo, args, &[])
+}
+
+fn git_seriate_env(repo: &Path, args: &[&str], env: &[(&str, &str)]) -> (bool, String, String) {
     let mut command = Command::new(env!("CARGO_BIN_EXE_git-seriate"));
     isolated(&mut command, repo);
+    command.envs(env.iter().copied());
     let out = command.arg("-C").arg(repo).args(args).output().unwrap();
     (
         out.status.success(),
@@ -359,6 +368,255 @@ fn commits_are_signed_when_git_is_configured_to() {
         ],
     );
     git(&repo, &["verify-commit", "main"]);
+}
+
+// ── Signing in-process (spec 0463) ───────────────────────────────────────────
+
+/// A new key of `kind` (`-t`), with `passphrase`; `None` without
+/// ssh-keygen.
+fn ssh_key(dir: &Path, name: &str, kind: &str, passphrase: &str) -> Option<PathBuf> {
+    let key = dir.join(name);
+    let made = Command::new("ssh-keygen")
+        .args(["-q", "-t", kind, "-N", passphrase, "-C", "", "-f"])
+        .arg(&key)
+        .output()
+        .ok()?;
+    assert!(
+        made.status.success(),
+        "{}",
+        String::from_utf8_lossy(&made.stderr)
+    );
+    Some(key)
+}
+
+fn sign_with(repo: &Path, key: &Path) {
+    git(repo, &["config", "commit.gpgSign", "true"]);
+    git(repo, &["config", "gpg.format", "ssh"]);
+    git(repo, &["config", "user.signingKey", key.to_str().unwrap()]);
+}
+
+/// Every commit of `branch` accepted by `git verify-commit` against `pub`.
+fn verify_all(repo: &Path, branch: &str, public: &Path) {
+    let allowed = repo.parent().unwrap().join("allowed");
+    let public = std::fs::read_to_string(public).unwrap();
+    std::fs::write(&allowed, format!("tester@example.com {public}")).unwrap();
+    git(
+        repo,
+        &[
+            "config",
+            "gpg.ssh.allowedSignersFile",
+            allowed.to_str().unwrap(),
+        ],
+    );
+    for id in git(repo, &["rev-list", branch]).lines() {
+        git(repo, &["verify-commit", id]);
+    }
+}
+
+/// `commit`'s signature, and the payload it signs: the commit without its
+/// `gpgsig` header.
+fn signature_and_payload(commit: &str) -> (String, String) {
+    let (mut sig, mut payload, mut in_sig) = (String::new(), String::new(), false);
+    for line in commit.split_inclusive('\n') {
+        if let Some(rest) = line.strip_prefix("gpgsig ") {
+            in_sig = true;
+            sig.push_str(rest);
+        } else if in_sig && line.starts_with(' ') {
+            sig.push_str(&line[1..]);
+        } else {
+            in_sig = false;
+            payload.push_str(line);
+        }
+    }
+    (sig, payload)
+}
+
+/// What `ssh-keygen -Y sign` writes for `payload` with `key`, in `env`.
+fn ssh_keygen_signs(key: &Path, payload: &str, env: &[(&str, &str)]) -> String {
+    use std::io::Write;
+    let mut child = Command::new("ssh-keygen")
+        .args(["-Y", "sign", "-n", "git", "-f"])
+        .arg(key)
+        .envs(env.iter().copied())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(payload.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).unwrap()
+}
+
+#[test]
+fn signs_like_ssh_keygen_with_a_key_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = new_repo(tmp.path());
+    let Some(key) = ssh_key(tmp.path(), "key", "ed25519", "") else {
+        eprintln!("skipped: no ssh-keygen");
+        return;
+    };
+    sign_with(&repo, &key);
+    small(&repo);
+    // No ssh-keygen on its PATH: signed in-process, or not at all.
+    let (ok, _, err) = git_seriate_env(&repo, &["settle", "--into", "main"], &[("PATH", "")]);
+    assert!(ok, "{err}");
+    for id in git(&repo, &["rev-list", "main"]).lines() {
+        let (sig, payload) = signature_and_payload(&git(&repo, &["cat-file", "commit", id]));
+        assert_eq!(sig, ssh_keygen_signs(&key, &payload, &[]), "commit {id}");
+    }
+    verify_all(&repo, "main", &key.with_extension("pub"));
+}
+
+/// An `ssh-agent` of the test's, stopped when dropped.
+struct TestAgent {
+    child: std::process::Child,
+    sock: PathBuf,
+}
+
+impl TestAgent {
+    fn start(dir: &Path) -> Option<TestAgent> {
+        let sock = dir.join("agent.sock");
+        let child = Command::new("ssh-agent")
+            .arg("-D")
+            .arg("-a")
+            .arg(&sock)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .ok()?;
+        for _ in 0..100 {
+            if sock.exists() {
+                return Some(TestAgent { child, sock });
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        None
+    }
+
+    fn env(&self) -> [(&str, &str); 1] {
+        [("SSH_AUTH_SOCK", self.sock.to_str().unwrap())]
+    }
+
+    fn add(&self, key: &Path) {
+        let out = Command::new("ssh-add")
+            .arg(key)
+            .envs(self.env())
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+impl Drop for TestAgent {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+#[test]
+fn signs_through_the_agent() {
+    for kind in ["rsa", "ecdsa", "ed25519"] {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = new_repo(tmp.path());
+        let Some(key) = ssh_key(tmp.path(), "key", kind, "") else {
+            eprintln!("skipped: no ssh-keygen");
+            return;
+        };
+        let Some(agent) = TestAgent::start(tmp.path()) else {
+            eprintln!("skipped: no ssh-agent");
+            return;
+        };
+        agent.add(&key);
+        // The private key gone: only the agent can sign.
+        std::fs::remove_file(&key).unwrap();
+        let public = key.with_extension("pub");
+        sign_with(&repo, &public);
+        small(&repo);
+        let [sock] = agent.env();
+        let env = [sock, ("PATH", "")];
+        let (ok, _, err) = git_seriate_env(&repo, &["settle", "--into", "main"], &env);
+        assert!(ok, "{kind}: {err}");
+        verify_all(&repo, "main", &public);
+        // RSA (PKCS #1 v1.5) and Ed25519 are deterministic: ssh-keygen,
+        // through the same agent, writes the same.
+        if kind != "ecdsa" {
+            for id in git(&repo, &["rev-list", "main"]).lines() {
+                let (sig, payload) =
+                    signature_and_payload(&git(&repo, &["cat-file", "commit", id]));
+                assert_eq!(
+                    sig,
+                    ssh_keygen_signs(&public, &payload, &agent.env()),
+                    "{kind}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn an_encrypted_key_asks_once() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = new_repo(tmp.path());
+    let Some(key) = ssh_key(tmp.path(), "key", "ed25519", "secret words") else {
+        eprintln!("skipped: no ssh-keygen");
+        return;
+    };
+    sign_with(&repo, &key);
+    small(&repo);
+    let count = tmp.path().join("asked");
+    let askpass = tmp.path().join("askpass");
+    let script = |answer: &str| {
+        format!(
+            "#!/bin/sh\necho x >> '{}'\necho '{answer}'\n",
+            count.display()
+        )
+    };
+    use std::os::unix::fs::PermissionsExt;
+    let env = [
+        ("SSH_ASKPASS", askpass.to_str().unwrap()),
+        ("SSH_ASKPASS_REQUIRE", "force"),
+        // No ssh-keygen: the key is decrypted in-process.
+        ("PATH", ""),
+    ];
+
+    // A wrong passphrase: refused, nothing written.
+    std::fs::write(&askpass, script("wrong")).unwrap();
+    std::fs::set_permissions(&askpass, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let (ok, _, err) = git_seriate_env(&repo, &["settle", "--into", "main"], &env);
+    assert!(!ok);
+    assert!(err.contains("bad passphrase"), "{err}");
+    assert!(git(&repo, &["branch", "--list", "main"]).is_empty());
+
+    // The right one: asked for once, for every commit.
+    std::fs::remove_file(&count).unwrap();
+    std::fs::write(&askpass, script("secret words")).unwrap();
+    let (ok, _, err) = git_seriate_env(&repo, &["settle", "--into", "main"], &env);
+    assert!(ok, "{err}");
+    assert!(
+        git(&repo, &["rev-list", "--count", "main"])
+            .trim()
+            .parse::<u32>()
+            .unwrap()
+            > 1
+    );
+    assert_eq!(std::fs::read_to_string(&count).unwrap().lines().count(), 1);
+    verify_all(&repo, "main", &key.with_extension("pub"));
 }
 
 /// Runs the `git ...` command a checked-out note names, in `repo`.

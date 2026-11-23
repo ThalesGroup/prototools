@@ -25,6 +25,11 @@ pub struct Extracted {
 pub trait Renderer {
     fn render(&self, path: &str, item: &[u8]) -> Result<Vec<u8>, String>;
     fn parse(&self, path: &str, stored: &[u8]) -> Result<Vec<u8>, String>;
+    /// Names and numbers that change whenever the text written for some
+    /// bytes may change (spec 0464 S1): the renderer's own version, and what
+    /// else it renders with, such as a schema. A history commit written with
+    /// others is canonicalized again.
+    fn version(&self) -> Vec<(String, u32)>;
 }
 
 /// The form versions are identified and compared by (spec 0450 S2).
@@ -62,6 +67,46 @@ impl Renderer for AsIs {
     }
     fn parse(&self, _: &str, stored: &[u8]) -> Result<Vec<u8>, String> {
         Ok(stored.to_vec())
+    }
+    fn version(&self) -> Vec<(String, u32)> {
+        vec![("generic".into(), 1)]
+    }
+}
+
+/// A renderer whose every rendering is read back before it is kept
+/// (spec 0465 S2): `seriate.checkRendering`. An item whose text doesn't
+/// read back to its bytes is refused.
+pub struct Checked(pub Box<dyn Renderer>);
+
+impl Checked {
+    /// `renderer`, checked if `repo`'s git configuration sets
+    /// `seriate.checkRendering`.
+    pub fn configured(repo: &gix::Repository, renderer: Box<dyn Renderer>) -> Box<dyn Renderer> {
+        if repo
+            .config_snapshot()
+            .boolean("seriate.checkRendering")
+            .unwrap_or(false)
+        {
+            Box::new(Checked(renderer))
+        } else {
+            renderer
+        }
+    }
+}
+
+impl Renderer for Checked {
+    fn render(&self, path: &str, item: &[u8]) -> Result<Vec<u8>, String> {
+        let text = self.0.render(path, item)?;
+        if self.0.parse(path, &text)? != item {
+            return Err("render: the text does not read back to the same bytes".into());
+        }
+        Ok(text)
+    }
+    fn parse(&self, path: &str, stored: &[u8]) -> Result<Vec<u8>, String> {
+        self.0.parse(path, stored)
+    }
+    fn version(&self) -> Vec<(String, u32)> {
+        self.0.version()
     }
 }
 

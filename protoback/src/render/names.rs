@@ -84,9 +84,16 @@ pub struct Visible {
     packages: HashSet<String>,
 }
 
+impl Visible {
+    /// Whether `file` is among the files seen.
+    pub fn sees(&self, file: &str) -> bool {
+        self.files.contains(file)
+    }
+}
+
 /// Every symbol of the loaded files, by full name (no leading dot): its
 /// kind in each file defining it (S1).
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct SymbolTable {
     symbols: HashMap<String, Vec<(String, SymbolKind)>>,
     packages: HashMap<String, String>,
@@ -268,6 +275,26 @@ impl SymbolTable {
         Visible {
             files: files.into_iter().collect(),
             packages,
+        }
+    }
+
+    /// The files defining the message or enum `name` (no leading dot).
+    pub fn type_files(&self, name: &str) -> Vec<&str> {
+        self.symbols
+            .get(name)
+            .into_iter()
+            .flatten()
+            .filter(|(_, kind)| kind.is_type())
+            .map(|(file, _)| file.as_str())
+            .collect()
+    }
+
+    /// `dep` imported by `file`, as `--repair-skew` adds it (spec 0469 S2):
+    /// names in `file` then resolve as protoc will see them.
+    pub fn add_import(&mut self, file: &str, dep: &str) {
+        let (deps, _) = self.imports.entry(file.to_string()).or_default();
+        if !deps.iter().any(|d| d == dep) {
+            deps.push(dep.to_string());
         }
     }
 

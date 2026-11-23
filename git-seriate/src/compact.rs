@@ -28,7 +28,10 @@ use gix::refs::transaction::PreviousValue;
 use gix::ObjectId;
 
 use crate::format::Block;
-use crate::history::{apply, commit_tree, committer, diff, with_time, Change, Signer};
+use crate::history::{
+    apply, canonical_form, commit_tree, committer, diff, files, with_time, Change, Signer,
+};
+use crate::plugins::{Canonicalizer, LegacyReader, Renderer};
 use crate::store::{self, branch_ref, tip};
 use crate::Error;
 
@@ -44,6 +47,15 @@ pub struct Options {
     pub dry_run: bool,
 }
 
+/// The plugins `compact` uses.
+pub struct Plugins<'a> {
+    /// Reads older blocks; `None` for none.
+    pub legacy: Option<&'a dyn LegacyReader>,
+    /// To check a commit written before spec 0464 before it is marked.
+    pub renderer: &'a dyn Renderer,
+    pub canonicalizer: &'a dyn Canonicalizer,
+}
+
 /// What `compact` did, or would do.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Report {
@@ -54,6 +66,9 @@ pub struct Report {
     pub reduced: usize,
     /// Commits of an older format written in `format: 1`.
     pub converted: usize,
+    /// Commits written before spec 0464, their items checked canonical,
+    /// given the renderer's version (spec 0464 S3).
+    pub marked: usize,
     pub moved: bool,
     pub backup: Option<String>,
     pub warnings: Vec<String>,
@@ -73,17 +88,25 @@ struct Commit {
     subject: String,
     /// Its block was read by the legacy reader.
     legacy: bool,
+    /// It has no renderer's version, and its items are canonical under
+    /// today's rule sets and renderer: it is given that version.
+    mark: bool,
 }
 
 /// Compact a history branch (spec 0452 S6).
 ///
-/// With `legacy`, commits of an older format are read, and written in
-/// `format: 1`: a run that drops nothing still converts them.
+/// With `plugins.legacy`, commits of an older format are read, and written
+/// in `format: 1`; commits with no renderer's version whose items are
+/// canonical are given it (spec 0464). A run that drops nothing still
+/// converts and marks them.
 pub fn compact(
     repo: &gix::Repository,
     options: &Options,
-    legacy: Option<&dyn crate::plugins::LegacyReader>,
+    plugins: &Plugins,
 ) -> Result<Report, Error> {
+    let legacy = plugins.legacy;
+    let rules = plugins.canonicalizer.rule_sets();
+    let renderer = plugins.renderer.version();
     if !(1..=3).contains(&options.level) {
         return Err(Error::Refused(format!(
             "--level {}: 1, 2 or 3",
@@ -126,6 +149,12 @@ pub fn compact(
             None => ObjectId::empty_tree(repo.object_hash()),
         };
         let changes = diff(repo, parent_tree, decoded.tree())?;
+        let mark = match &block {
+            Some(b) => {
+                unmarked_and_canonical(repo, plugins, &rules, b, decoded.tree(), &mut report)?
+            }
+            None => false,
+        };
         chain.push(Commit {
             id,
             block,
@@ -133,6 +162,7 @@ pub fn compact(
             changes,
             subject: message.lines().next().unwrap_or("").to_string(),
             legacy: is_legacy,
+            mark,
         });
         current = parent;
     }
@@ -144,9 +174,11 @@ pub fn compact(
         .position(|c| c.time >= options.cutoff)
         .unwrap_or(chain.len());
     let (before, after) = chain.split_at(first_kept);
+    // Nothing before the cutoff: nothing to drop, but the commits after it
+    // may still be converted or marked.
     let cutoff_tree = match before.last() {
         Some(c) => commit_tree(repo, c.id)?,
-        None => return Ok(report),
+        None => ObjectId::empty_tree(repo.object_hash()),
     };
 
     // For each path, the last commit before the cutoff that changes it.
@@ -305,7 +337,12 @@ pub fn compact(
         .filter(|c| c.legacy && kept_ids.contains(&c.id))
         .count()
         + after.iter().filter(|c| c.legacy).count();
-    if report.dropped == 0 && report.reduced == 0 && report.converted == 0 {
+    report.marked = before
+        .iter()
+        .filter(|c| c.mark && kept_ids.contains(&c.id))
+        .count()
+        + after.iter().filter(|c| c.mark).count();
+    if report.dropped == 0 && report.reduced == 0 && report.converted == 0 && report.marked == 0 {
         return Ok(report);
     }
     let target = if options.dry_run {
@@ -345,9 +382,15 @@ pub fn compact(
     for k in &kept {
         let changes: Vec<Change> = k.changes.iter().map(|c| (*c).clone()).collect();
         tree = apply(&target, tree, &changes)?;
-        let message = match (&k.commit.block, k.reduced || k.commit.legacy) {
+        let message = match (
+            &k.commit.block,
+            k.reduced || k.commit.legacy || k.commit.mark,
+        ) {
             (Some(block), true) => {
                 let mut block = block.clone();
+                if k.commit.mark {
+                    block.renderer = renderer.clone();
+                }
                 let removed: Vec<&str> = k
                     .commit
                     .changes
@@ -374,7 +417,13 @@ pub fn compact(
     // were.
     for c in after {
         let tree = commit_tree(repo, c.id)?;
-        let message = c.block.as_ref().filter(|_| c.legacy).map(Block::message);
+        let message = c.block.as_ref().filter(|_| c.legacy || c.mark).map(|b| {
+            let mut b = b.clone();
+            if c.mark {
+                b.renderer = renderer.clone();
+            }
+            b.message()
+        });
         parent = Some(rewrite(parent, tree, c.id, message)?);
     }
     if options.dry_run {
@@ -403,4 +452,39 @@ pub fn compact(
         store::delete_branch(repo, name, commit)?;
     }
     Ok(report)
+}
+
+/// A snapshot commit written before spec 0464 (no renderer's version) with
+/// today's rule sets, whose every item is canonical: `compact` gives it the
+/// version. One that isn't is said, and left for `settle` to rewrite.
+fn unmarked_and_canonical(
+    repo: &gix::Repository,
+    plugins: &Plugins,
+    rules: &[(String, u32)],
+    block: &Block,
+    tree: ObjectId,
+    report: &mut Report,
+) -> Result<bool, Error> {
+    let Some(contents) = &block.contents else {
+        return Ok(false);
+    };
+    if !block.renderer.is_empty() || block.canon_rules != rules {
+        return Ok(false);
+    }
+    let items: HashMap<String, ObjectId> = files(repo, tree, "")?.into_iter().collect();
+    for path in contents {
+        let Some(oid) = items.get(path) else {
+            return Ok(false);
+        };
+        let stored = repo.find_blob(*oid).map_err(Error::git)?.data.clone();
+        if canonical_form(plugins.renderer, plugins.canonicalizer, path, &stored)? != stored {
+            report.warnings.push(format!(
+                "{}: {path} is not canonical under its canon_rules: not marked; settle will \
+                 rewrite it",
+                block.source.identity
+            ));
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }

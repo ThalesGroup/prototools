@@ -86,6 +86,13 @@ pub fn file(ctx: &Ctx<'_, '_>, locations: &[Location]) -> Option<Vec<u8>> {
         for d in &deps {
             w.push_dependency(d.as_bytes()).ok()?;
         }
+        // --repair-skew: the imports the text adds (spec 0469 S7).
+        if let Some(added) = shared.repairs.and_then(|r| r.imports.get(&ctx.file_name())) {
+            for dep in added.keys() {
+                w.push_dependency(shared.variant.canonize_dependency(dep, keep).as_bytes())
+                    .ok()?;
+            }
+        }
         w.clear_option_dependency();
         for d in &option_deps {
             if ctx.editions_target() {

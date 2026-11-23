@@ -312,6 +312,15 @@ class _SectionedCommand(click.Command):
             formatter.write(self.epilog + '\n')
 
 
+def _protobuf_line() -> str:
+    """The Python protobuf imported, and what it lacks (spec 0467 S2)."""
+    from .protobuf_check import describe, missing_editions
+    missing = missing_editions()
+    if missing:
+        return f"{describe()}: older than reproto's descriptor.proto, lacks {', '.join(missing)}"
+    return describe()
+
+
 @click.command(
     cls=_SectionedCommand,
     help='Parse DESCRIPTOR_FILES and generate output based on the options given.',
@@ -339,6 +348,9 @@ class _SectionedCommand(click.Command):
 @click.version_option(
     version=version(),
     prog_name='reproto',
+    # Spec 0467 S2: which Python protobuf runs it, and whether it is older
+    # than reproto's descriptor.proto.
+    message='%(prog)s, version %(version)s\n' + _protobuf_line(),
 )
 # --- Input ---
 @click.argument(
@@ -882,6 +894,10 @@ def main(
     from .lib.warnings import cli_attention, configure_collector, get_collector, warn
     # First: every warning from here on is counted (spec 0438 S4).
     configure_collector(detailed=detailed_warnings)
+
+    # Spec 0467 S2: an older Python protobuf than reproto's descriptor.proto.
+    from .protobuf_check import check as check_protobuf
+    check_protobuf()
 
     # Merge deprecated alias values into canonical params.
     pb_path = pb_path + pb_path_deprecated

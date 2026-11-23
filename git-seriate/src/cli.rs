@@ -79,6 +79,11 @@ enum Command<E: Subcommand> {
         /// KEY=VALUE, shown, never interpreted; repeatable.
         #[arg(long = "meta", value_name = "KEY=VALUE")]
         metadata: Vec<String>,
+        /// Write the snapshot as an archive of a bare repository to FILE,
+        /// or to standard output for -, instead of into a repository: none
+        /// is needed (unpack with `mkdir r.git && tar xf FILE -C r.git`).
+        #[arg(long, value_name = "FILE")]
+        tar_out: Option<PathBuf>,
         /// The directory whose files, at any depth, are the snapshot.
         dir: PathBuf,
     },
@@ -99,6 +104,11 @@ enum Command<E: Subcommand> {
         /// Show what would be done, and write nothing.
         #[arg(long)]
         dry_run: bool,
+        /// Canonicalize every item, trusting no history commit, and report
+        /// each one a commit claims canonical that isn't: exit 1 if any.
+        /// With --dry-run, a check that writes nothing.
+        #[arg(long)]
+        verify_canon: bool,
         /// Print, on standard error, what each phase of the sort did, and
         /// every move of the greedy phases: which snapshot, from where to
         /// where (positions among the snapshots sorted, 0 the oldest).
@@ -185,7 +195,13 @@ pub fn run<E: Subcommand>(
         Ok(cli) => cli,
         Err(e) => e.exit(),
     };
-    match dispatch(cli, kit, extra) {
+    // A command given `--tar-out` writes an archive: it needs no repository
+    // (spec 0466 S3), the generic `add` as a front end's own.
+    let tar_out = matches
+        .subcommand()
+        .and_then(|(_, m)| m.try_get_one::<PathBuf>("tar_out").ok().flatten())
+        .is_some();
+    match dispatch(cli, tar_out, kit, extra) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("{name}: {e}");
@@ -313,11 +329,23 @@ fn write_man(command: clap::Command, name: &str, dir: &Path) -> std::io::Result<
 
 fn dispatch<E: Subcommand>(
     cli: Cli<E>,
+    tar_out: bool,
     kit: impl FnOnce(&gix::Repository) -> Result<Kit, Error>,
     extra: impl FnOnce(E, &gix::Repository, &Kit) -> Result<(), Error>,
 ) -> Result<(), Error> {
     let start = cli.directory.unwrap_or_else(|| PathBuf::from("."));
-    let repo = gix::discover(&start).map_err(|e| Error::Git(e.to_string()))?;
+    // With `--tar-out` and no repository, an empty one stands in, for the
+    // settings a front end reads (all defaults); in a repository, only its
+    // configuration is read (spec 0466 S3).
+    let (repo, _stand_in) = match gix::discover(&start) {
+        Ok(repo) => (repo, None),
+        Err(_) if tar_out => {
+            let dir = tempfile::tempdir()?;
+            let repo = gix::init_bare(dir.path()).map_err(Error::git)?;
+            (repo, Some(dir))
+        }
+        Err(e) => return Err(Error::Git(e.to_string())),
+    };
     let kit = &kit(&repo)?;
     match cli.command {
         Command::Extra(e) => extra(e, &repo, kit)?,
@@ -327,6 +355,7 @@ fn dispatch<E: Subcommand>(
             order_hint,
             group,
             metadata,
+            tar_out,
             dir,
         } => {
             let (items, newest) = read_dir(&dir)?;
@@ -357,15 +386,31 @@ fn dispatch<E: Subcommand>(
                 rejected: Vec::new(),
                 record: Vec::new(),
             };
-            match store::add(&repo, snapshot)? {
+            let mut archive = crate::archive::Archive::new();
+            let added = match &tar_out {
+                Some(_) => store::add_to(&mut store::Sink::Archive(&mut archive), snapshot)?,
+                None => store::add(&repo, snapshot)?,
+            };
+            if let Some(out) = &tar_out {
+                archive.write_to_path(out)?;
+            }
+            // Standard output holds the archive with `--tar-out -`.
+            let say = |line: String| {
+                if tar_out.as_deref() == Some(Path::new("-")) {
+                    eprintln!("{line}");
+                } else {
+                    println!("{line}");
+                }
+            };
+            match added {
                 Added::Written { branch, rejected } => {
                     for r in &rejected {
                         eprintln!("warning: {}: refused ({})", r.name, r.reason);
                     }
-                    println!("added {branch}");
+                    say(format!("added {branch}"));
                 }
-                Added::Unchanged { branch } => println!("unchanged {branch}"),
-                Added::Nothing => println!("nothing to add: {} holds no file", dir.display()),
+                Added::Unchanged { branch } => say(format!("unchanged {branch}")),
+                Added::Nothing => say(format!("nothing to add: {} holds no file", dir.display())),
             }
         }
         Command::Settle {
@@ -374,6 +419,7 @@ fn dispatch<E: Subcommand>(
             no_cutoff,
             settling_days,
             dry_run,
+            verify_canon,
             stats,
             branches,
         } => {
@@ -402,6 +448,7 @@ fn dispatch<E: Subcommand>(
                     comparator: kit.comparator.as_ref(),
                     legacy: kit.legacy.as_deref(),
                 },
+                verify_canon,
             };
             let report = history::settle(&repo, &options)?;
             for w in &report.warnings {
@@ -428,6 +475,16 @@ fn dispatch<E: Subcommand>(
                     .as_ref()
                     .map_or(String::new(), |b| format!("; previous tip saved as {b}"))
             );
+            if !report.false_markers.is_empty() {
+                for f in &report.false_markers {
+                    eprintln!("not canonical: {f}");
+                }
+                return Err(Error::Refused(format!(
+                    "{} item(s) of the history are not what their commit's canon_rules and \
+                     renderer claim",
+                    report.false_markers.len()
+                )));
+            }
         }
         Command::Compact {
             into,
@@ -441,7 +498,12 @@ fn dispatch<E: Subcommand>(
                 level,
                 dry_run,
             };
-            let report = crate::compact::compact(&repo, &options, kit.legacy.as_deref())?;
+            let plugins = crate::compact::Plugins {
+                legacy: kit.legacy.as_deref(),
+                renderer: kit.renderer.as_ref(),
+                canonicalizer: kit.canonicalizer.as_ref(),
+            };
+            let report = crate::compact::compact(&repo, &options, &plugins)?;
             for a in &report.actions {
                 println!("{a}");
             }
@@ -454,11 +516,12 @@ fn dispatch<E: Subcommand>(
                 "compacted"
             };
             println!(
-                "{verb} {}: dropped {}, reduced {}, converted {}{}",
+                "{verb} {}: dropped {}, reduced {}, converted {}, marked {}{}",
                 report.branch,
                 report.dropped,
                 report.reduced,
                 report.converted,
+                report.marked,
                 report
                     .backup
                     .as_ref()

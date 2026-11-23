@@ -23,6 +23,38 @@ SPDX-License-Identifier: MIT
   the release's protoc now. The release's Python is nixpkgs' default
   `python3` (3.13.15 at the pin, unchanged), no longer `python313` by
   name (spec 0462).
+- git-seriate: commits signed in-process (spec 0463): through the SSH
+  agent when it holds `user.signingKey`, else with the key file, read
+  once, its passphrase asked for once (on the terminal, or through
+  `SSH_ASKPASS`); `ssh-keygen` for the rest (an RSA key file among them).
+  Signatures are `ssh-keygen`'s, byte for byte where the key type is
+  deterministic.
+- git-seriate: `settle --verify-canon`, which canonicalizes every item and
+  reports each one a history commit claims canonical and isn't; `compact`
+  marks the commits written before spec 0464 whose items are canonical
+  (`marked` in its summary) (spec 0464).
+- git-seriate: `add --tar-out FILE`, and git-seriate-fdp: `extract
+  --tar-out FILE`: the snapshots as a tar of a bare repository, with no
+  repository: one pack built in memory, compressed as written, the same
+  archive for the same input. `store::add_to` and `store::Sink`,
+  `archive::Archive`; `extract::extract_files_into` (spec 0466).
+- git-seriate: `seriate.checkRendering`, and `plugins::Checked`: every
+  rendering read back before it is kept (spec 0465).
+- protoback: `--repair-skew`, off by default: the import of the one
+  written file defining a type used is added (W33); a field whose map
+  value type is in no file, or whose type no written file defines, is
+  commented out (W34), and an extension whose number is in no extension
+  range of its extendee (W35); a type several written files define is
+  reported, not repaired (W36). Each repair commented in the file
+  (spec 0469).
+- reproto: a warning, W37, when the Python protobuf it imports is older
+  than its own `descriptor.proto` (an inherited `PYTHONPATH`, say); and
+  `--version` names that protobuf (spec 0467).
+- Nix: `hakari-check`, in `ci`: `workspace-hack` is what cargo-hakari
+  generates, every member depends on it, and it makes their features
+  agree; `workspace-hack` regenerated. `unknown-fields-stub-check`: fails
+  when types-protobuf declares `google.protobuf.unknown_fields` (spec
+  0467).
 - Docs: a tutorial for `git seriate` and `git seriate-fdp`
   (`docs/git-seriate/tutorial.md`), and their entry in the README.
 - Nix: `git-seriate` and `git-seriate-fdp` packages, with shell
@@ -112,6 +144,20 @@ SPDX-License-Identifier: MIT
 
 ### Changed
 
+- git-seriate: `settle` takes a history commit written with today's rule
+  sets and renderer as canonical, its items as they are: a re-sort no
+  longer parses and renders the whole history. History commits record
+  the renderer's version (`renderer:`, beside `canon_rules`); `Renderer`
+  has a new method, `version`, and `history::Options` a new field,
+  `verify_canon`; `compact` takes `compact::Plugins` instead of the legacy
+  reader. The FDP renderer's version includes its schema's fingerprint
+  (`FdpRenderer::new`, `Schema::fingerprint`) (spec 0464).
+- git-seriate-fdp: renderings are no longer read back at runtime, but in
+  the tests and with `seriate.checkRendering`; spec 0453 G3 amended (spec
+  0465).
+- git-seriate: `compact` with nothing before its cutoff still converts
+  and marks the commits after it.
+
 - One protobuf release, v36.2, behind every copy of `descriptor.proto`
   and the other well-known types: the vendored upb, the built-in
   descriptors reproto and protoback fill in, prototext's prebuilt
@@ -177,6 +223,13 @@ SPDX-License-Identifier: MIT
   ignored.
 
 ### Fixed
+
+- reproto: an edition it can't name (unset, or not in the imported
+  Python protobuf's enum) was written `edition = "UNKNOWN";`; it is a W6,
+  the file not written, as in protoback (spec 0467).
+- git-seriate-fdp: `advise --report` left a W4 on a file its pool refused
+  for a refused import as `build` (and so failed `--strict`); it attaches
+  under that import's root (spec 0468).
 
 - reproto, protoback: an `extend` block whose every field is commented
   out (its extendee or type in no file) was written with its `extend`

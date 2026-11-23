@@ -190,8 +190,9 @@ let
     src            = workspaceSrc;
     pname          = "prototools-tests";
     # git-seriate's end-to-end tests check every tree they make with
-    # `git fsck --strict` (spec 0452 G5).
-    nativeBuildInputs = protocArgs.nativeBuildInputs ++ [ pkgs.gitMinimal ];
+    # `git fsck --strict` (spec 0452 G5), and sign with ssh-keygen and an
+    # ssh-agent of their own (spec 0463); without them, they skip.
+    nativeBuildInputs = protocArgs.nativeBuildInputs ++ [ pkgs.gitMinimal pkgs.openssh ];
     CARGO_PROFILE  = "quick";
     cargoArtifacts = depsCacheTests;
     cargoExtraArgs = workspaceArgs;
@@ -215,6 +216,30 @@ let
     cargoExtraArgs     = "-p prototext-upb --test descriptor_access";
     cargoTestExtraArgs = "-- --ignored";
     nativeBuildInputs  = protocArgs.nativeBuildInputs ++ [ pkgs.rustfmt ];
+  });
+
+  # workspace-hack is what cargo-hakari generates, every member depends on
+  # it, and it makes their features agree: otherwise a build of one crate
+  # (maturin's of each wheel, a nixpkgs recipe's) compiles its dependencies
+  # again with other features than the workspace build did. A dependency
+  # or feature changed in any Cargo.toml makes it stale: this fails `ci`
+  # then, with the command that refreshes it. Offline, on the vendored
+  # dependencies: hakari reads `cargo metadata`, and builds nothing.
+  hakariCheck = crane.mkCargoDerivation (commonArgs // {
+    src                     = workspaceSrc;
+    pname                   = "prototools-hakari-check";
+    cargoArtifacts          = null;
+    doInstallCargoArtifacts = false;
+    nativeBuildInputs       = commonArgs.nativeBuildInputs ++ [ pkgs.cargo-hakari ];
+    buildPhaseCargoCommand  = ''
+      if ! cargo hakari generate --diff || ! cargo hakari manage-deps --dry-run \
+          || ! cargo hakari verify; then
+        echo "workspace-hack is stale. Refresh it with:" >&2
+        echo "  cargo hakari generate && cargo hakari manage-deps" >&2
+        exit 1
+      fi
+    '';
+    installPhaseCommand = "touch $out";
   });
 
   # Common postInstall for both prototext variants.
@@ -594,7 +619,7 @@ in {
     rustFmt
     rustClippy
     rustTests
-    descriptorAccessCheck
+    descriptorAccessCheck hakariCheck
     workspaceBuild
     prototext
     protoscan

@@ -200,6 +200,23 @@ pub fn symbol_visibility(
     }
 }
 
+/// `--repair-skew`: `node` (a field, method or extension) commented out
+/// (spec 0469 S3, S4): its lines orphans, the comment before them, the
+/// warning. Whether it was.
+pub fn repaired_out(ctx: &Ctx<'_, '_>, node: usize, depth: usize, lines: &mut Block) -> bool {
+    let Some(o) = ctx.shared.repairs.and_then(|r| r.orphans.get(&node)) else {
+        return false;
+    };
+    lines.abandon();
+    lines.insert(0, anomaly("WARNING", "repair-skew", &o.comment, depth));
+    ctx.events.borrow_mut().push(RenderEvent::Squash(
+        o.code,
+        format!("'{}': {}", ctx.file_name(), o.message),
+        o.fields.clone(),
+    ));
+    true
+}
+
 /// The comment before a symbol `--export-used` writes `export` (spec 0458
 /// S4); inserted after the symbol's SourceCodeInfo is marked, so that its
 /// span starts at the symbol, as protoc's does.
@@ -526,17 +543,19 @@ pub fn extend_blocks(
                 continue;
             }
             let mut blk = super::message::field(ctx, *fd, depth + 1, false);
-            let summoned = shared.graph.nodes[*fd].is_summoned;
+            let repaired = repaired_out(ctx, *fd, depth + 1, &mut blk);
+            let summoned = shared.graph.nodes[*fd].is_summoned && !repaired;
             if let (Some(sci), Some(path), true) = (&ctx.sci, path, !track_orphans || summoned) {
                 sci.mark(&mut blk, path.clone());
             }
+            // A repaired one is an orphan already, its comment kept a comment.
             if track_orphans {
                 if summoned {
                     is_orphan = false;
-                } else {
+                } else if !repaired {
                     blk.abandon();
                 }
-            } else {
+            } else if !repaired {
                 is_orphan = false;
             }
             block.extend(blk);
@@ -869,6 +888,48 @@ fn render_body(
             node.fqdn.clone()
         };
         out.push(Line::new(format!("{cmd} {dep_name};"), depth, kind));
+    }
+    // --repair-skew (spec 0469 S2, S5): the imports added, each said; the
+    // types it could not choose a file for.
+    let file_name = ctx.file_name();
+    if let Some(added) = shared.repairs.and_then(|r| r.imports.get(&file_name)) {
+        for (dep, symbols) in added {
+            let list: Vec<&str> = symbols.iter().map(String::as_str).collect();
+            out.push(anomaly(
+                "WARNING",
+                "repair-skew",
+                &format!(
+                    "import added: defines {}, used here; not imported in the source",
+                    list.join(", ")
+                ),
+                depth,
+            ));
+            let shown = shared
+                .variant
+                .canonize_dependency(dep, shared.keep_variant_descriptor);
+            out.push(Line::code(format!("import {};", json_dumps(&shown)), depth));
+            ctx.events.borrow_mut().push(RenderEvent::Squash(
+                "W33",
+                format!(
+                    "'{file_name}': import \"{dep}\" added: it defines {} (--repair-skew)",
+                    list.join(", ")
+                ),
+                serde_json::json!({ "file": file_name, "import": dep, "symbols": list }),
+            ));
+        }
+    }
+    if let Some(ambiguous) = shared.repairs.and_then(|r| r.ambiguous.get(&file_name)) {
+        for (symbol, defining) in ambiguous {
+            ctx.events.borrow_mut().push(RenderEvent::Squash(
+                "W36",
+                format!(
+                    "'{file_name}': {symbol} is defined by {}, none imported: not repaired \
+                     (--repair-skew)",
+                    defining.join(", ")
+                ),
+                serde_json::json!({ "file": file_name, "symbol": symbol, "defined_in": defining }),
+            ));
+        }
     }
     let topo_file = shared.topo_file(&name);
     if let Some(tf) = topo_file {

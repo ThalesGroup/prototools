@@ -105,6 +105,26 @@ pub const CODES: &[(&str, &str)] = &[
         "a nested symbol another file uses, which STRICT visibility can't export (--export-used)",
     ),
     (
+        "W33",
+        "an import added: the one written file defining a type used (--repair-skew)",
+    ),
+    (
+        "W34",
+        "a field or method commented out: its type is defined in no file (--repair-skew)",
+    ),
+    (
+        "W35",
+        "an extension commented out: its number is in no extension range of its extendee (--repair-skew)",
+    ),
+    (
+        "W36",
+        "a type several written files define, not imported: not repaired (--repair-skew)",
+    ),
+    (
+        "W37",
+        "the Python protobuf imported is older than reproto's descriptor.proto",
+    ),
+    (
         "T1",
         "text: a field by number declared nowhere, read as length-delimited",
     ),
@@ -127,8 +147,8 @@ pub fn is_code(code: &str) -> bool {
 /// The squashed codes, in the order their summary lines are printed: the
 /// most actionable first (spec 0041), then by code.
 const SQUASHED_ORDER: &[&str] = &[
-    "W5", "W4", "W6", "W19", "W20", "W21", "W22", "W28", "W30", "W31", "W32", "T1", "T2", "T3",
-    "T4",
+    "W5", "W4", "W6", "W19", "W20", "W21", "W22", "W28", "W30", "W31", "W32", "W33", "W34", "W35",
+    "W36", "T1", "T2", "T3", "T4",
 ];
 
 #[derive(Debug, Default)]

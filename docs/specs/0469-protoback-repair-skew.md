@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0469 — protoback --repair-skew: the output compiles despite version skew
 
-Status: draft
+Status: implemented
+Implemented in: 2026-11-23
 App: protoback
 Refs: docs/specs/0458-protoback-export-used.md (the model: an opt-in,
         each change commented and reported),
@@ -67,18 +68,19 @@ right by default.
   import "a/row.proto";
   ```
 
-  W33, `'b/user.proto': import "a/row.proto" added: a.Row is defined
-  there (--repair-skew)`, with `file`, `import` and `symbols`. The
-  descriptor written beside the text (`--emit-binary`) gets the
-  dependency too.
+  W33, `'b/user.proto': import "a/row.proto" added: it defines a.Row
+  (--repair-skew)`, with `file`, `import` and `symbols`. The descriptor
+  written beside the text (`--emit-binary`) gets the dependency too.
 
 - **S3. A type no file defines.** A field (or a method) whose type no
   written file defines (a W4 today) is commented out, an orphan, with a
   comment: `// WARNING[repair-skew]: commented out: .a.Gone is defined in
   no file`. W34, with `file`, `field` and `type`. A map field whose value
-  type is missing, the same; a oneof left with no field, an orphan whole,
-  as 0459 does an extend block; a message left with no field stays (an
-  empty message compiles).
+  type phase 2 stripped (its entry then malformed, and written as a
+  message the output lacks), the same; a oneof left with no field, an
+  orphan whole, as 0459 does an extend block; a message left with no
+  field stays (an empty message compiles). Anything already an orphan
+  (unsummoned, pruned) is not repaired.
 
 - **S4. An extension number its extendee doesn't declare.** An extension
   whose number is in none of its extendee's extension ranges is
@@ -94,9 +96,10 @@ right by default.
   `--detailed-warnings`, every occurrence in the report. `advise --report`
   attaches W33 to W36 to the file's problem (0455), as it does a W4.
 
-- **S7. The descriptors and the schema database** follow the text, as for
-  0458: what protoc would build from it. A field commented out isn't in
-  the descriptor written beside it.
+- **S7. The descriptor written beside the text** gets the imports added.
+  A field, method or extension commented out stays in it, as every orphan
+  protoback writes does: the descriptor keeps what the input declares,
+  and SourceCodeInfo's paths count the input's fields.
 
 ## Alternatives considered
 
@@ -119,9 +122,23 @@ references, not between files `advise` decides among.
 4. `repair_skew_leaves_the_ambiguous` — two files define the type: W36,
    nothing changed.
 5. `repair_skew_binary_follows_the_text` — with `--emit-binary`: the
-   dependency added, the fields commented out absent.
+   dependency added.
 6. The self-check (without the option): no change.
 
 ## Measured outcome
 
-Filled in at implementation.
+2026-11-23. The tests pass, protoc 36.2 compiling the repaired file that
+it refuses without the option. The self-check against the previous
+build: 0 of 1 669 cases and 0 of 1 655 graph dumps differ (the option is
+off by default).
+
+The downstream table's second row, "a field whose type no file defines,
+written as is", is a map: phase 2 strips a map entry's value whose type
+is in no loaded file (W4), the entry is then malformed, and the map field
+is written as `repeated MEntry m = N;`, of a message the output lacks.
+A plain field of a type in no loaded file is commented out already,
+without the option; S3's general rule fires only where the output omits
+a type it holds, which no test here produces.
+
+Not measured here: the downstream repository's 9 files and the 15 that
+fail through them.

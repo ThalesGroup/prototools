@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0463 — git-seriate: commits signed in-process
 
-Status: draft
+Status: implemented
+Implemented in: 2026-11-23
 App: git-seriate
 Refs: docs/specs/0452-git-seriate-the-store-and-the-history.md (the
         history commits, signed as git signs them)
@@ -60,12 +61,14 @@ parent's id.
     (ssh-add KEY)`.
 
 - **S4. `ssh-keygen`,** as today, otherwise: a key type or a key file
-  format S2 and S3 don't support, an agent that refuses. Each fallback is
-  per command, decided at the first commit, and said once on stderr under
-  `--verbose`.
+  format S2 and S3 don't support, an agent that refuses. The method is
+  decided once per command, at its first commit.
 
-- **S5. Key types:** Ed25519, RSA (`rsa-sha2-512`) and ECDSA (P-256,
-  P-384) in-process; others fall back (S4).
+- **S5. Key types:** through the agent, any it signs (RSA with
+  `rsa-sha2-512`); from a key file, Ed25519 and ECDSA (P-256, P-384).
+  An RSA key file falls back (S4): the `rsa` crate's private-key
+  operations are not constant-time (RUSTSEC-2023-0071), with no fixed
+  release.
 
 ## Alternatives considered
 
@@ -78,9 +81,9 @@ chain is sequential.
 
 ## Test plan
 
-1. `signs_like_ssh_keygen_with_a_key_file` — an Ed25519 and an RSA key
-   file: the in-process signature is byte for byte `ssh-keygen`'s (both
-   are deterministic).
+1. `signs_like_ssh_keygen_with_a_key_file` — an Ed25519 key file: the
+   in-process signature is byte for byte `ssh-keygen`'s (both are
+   deterministic); through the agent, an RSA key's too.
 2. `signs_through_the_agent` — an `ssh-agent` started for the test, the
    key added: a history signed through it, each commit accepted by
    `git verify-commit` against an `allowedSignersFile`; ECDSA verified
@@ -94,4 +97,20 @@ chain is sequential.
 
 ## Measured outcome
 
-Filled in at implementation.
+2026-11-23, an idle 12-CPU host, quick profile (optimized), the best of
+three. `settle` of 1,000 generated snapshots (`seriation-gen`, 300
+revisions), every commit written:
+
+| | before | after |
+|---|---|---|
+| unsigned | 0.75 s | 0.73 s |
+| signed, Ed25519 key file | 5.17 s (`ssh-keygen`) | 0.90 s |
+| signed, through the agent | | 0.97 s |
+
+`ssh-keygen` cost 4.4 ms a commit here; the downstream front end
+measured 62 ms on its host, so its gain should be larger than this.
+
+The test plan's items 1 to 3 pass with git-seriate given no `PATH`: a
+fallback to `ssh-keygen` would fail them. The signatures are
+`ssh-keygen`'s byte for byte (Ed25519 file; Ed25519 and RSA through the
+agent); ECDSA's, not deterministic, verify.

@@ -21,6 +21,13 @@ prototools-complete = { workspace = true }
 gix            = { version = "0.76", default-features = false, features = ["tree-editor"] }
 seriation      = { workspace = true }
 serde_yaml     = "0.9"
+# Spec 0463: SSHSIG in-process; no `rsa` feature (RUSTSEC-2023-0071).
+ssh-key        = { version = "0.6.7", default-features = false, features = ["std", "ed25519", "p256", "p384", "encryption", "getrandom"] }
+rpassword      = "7.5"
+# Spec 0466: archives, on the zlib gix already uses.
+flate2         = { version = "1", default-features = false, features = ["zlib-rs"] }
+tar            = { version = "0.4", default-features = false }
+tempfile       = "3"
 workspace-hack = { version = "0.1", path = "../workspace-hack" }
 
 [dev-dependencies]

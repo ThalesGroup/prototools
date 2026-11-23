@@ -833,6 +833,10 @@ pub fn message(
         let real_oneof = oneof.filter(|&o| !synthetic.get(o).copied().unwrap_or(false));
         let Some(o) = real_oneof else {
             let mut lines = field(ctx, fd, depth + 1, false);
+            if super::file::repaired_out(ctx, fd, depth + 1, &mut lines) {
+                out.extend(lines);
+                continue;
+            }
             if shared.graph.nodes[fd].is_summoned {
                 mark(ctx, &mut lines, child_path(ctx, sci_path, 2, f_idx));
             }
@@ -856,6 +860,10 @@ pub fn message(
                 continue;
             };
             let mut lines = field(ctx, fd2, depth + 2, true);
+            if super::file::repaired_out(ctx, fd2, depth + 2, &mut lines) {
+                block.extend(lines);
+                continue;
+            }
             if shared.graph.nodes[fd2].is_summoned {
                 mark(ctx, &mut lines, child_path(ctx, sci_path, 2, f2_idx));
             }
@@ -1255,7 +1263,9 @@ pub fn service(ctx: &Ctx<'_, '_>, svc: usize, depth: usize, sci_path: Option<&[i
             continue;
         };
         let mut lines = method(ctx, meth, &m, depth + 1);
-        mark(ctx, &mut lines, path);
+        if !super::file::repaired_out(ctx, meth, depth + 1, &mut lines) {
+            mark(ctx, &mut lines, path);
+        }
         lines.div_maybe(depth);
         out.extend(lines);
     }

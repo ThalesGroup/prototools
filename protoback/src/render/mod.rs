@@ -14,6 +14,7 @@ mod message;
 pub mod names;
 mod options;
 pub(crate) mod pyfmt;
+mod repair;
 mod sci;
 mod text;
 
@@ -55,6 +56,8 @@ pub struct Shared<'a> {
     /// `--export-used`: the symbols to write `export`, and those it can't
     /// (spec 0458).
     pub exports: Option<&'a export::Exports>,
+    /// `--repair-skew`: the imports to add, what to comment out (spec 0469).
+    pub repairs: Option<&'a repair::Repairs>,
     /// The `*Options` a proto3 file may extend (`options_fqns`).
     pub options_fqns: BTreeSet<String>,
     /// `--keep-descriptor-path`.
@@ -535,6 +538,7 @@ fn on_pool<T: Send>(jobs: usize, f: impl FnOnce() -> T + Send) -> T {
 }
 
 pub use export::exports;
+pub use repair::repairs;
 
 /// File `i`'s descriptor (a WKT dependency of the schema database);
 /// `None` when its render fails.

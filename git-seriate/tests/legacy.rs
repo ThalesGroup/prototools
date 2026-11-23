@@ -37,6 +37,7 @@ impl LegacyReader for Old {
             rejected: Vec::new(),
             record: Vec::new(),
             canon_rules: Vec::new(),
+            renderer: Vec::new(),
             reduced: false,
         })
     }
@@ -114,6 +115,7 @@ fn options<'a>(item_paths: &'a Pattern, legacy: &'a Old) -> Options<'a> {
             comparator: &seriation::LinesChars,
             legacy: Some(legacy),
         },
+        verify_canon: false,
     }
 }
 
@@ -177,7 +179,11 @@ fn an_old_history_is_settled_and_converted() {
             level: 1,
             dry_run: false,
         },
-        Some(&Old),
+        &compact::Plugins {
+            legacy: Some(&Old),
+            renderer: &AsIs,
+            canonicalizer: &NoRules,
+        },
     )
     .unwrap();
     assert_eq!((report.dropped, report.converted), (0, 2), "{report:?}");

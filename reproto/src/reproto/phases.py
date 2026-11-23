@@ -1825,8 +1825,16 @@ def _phase7_output(ctx: Context, out_repo: Path) -> None:
                 need_slot = ctx.binary or bool(ctx.build_schema_db)
                 slot = DescOut() if need_slot else None
                 ctx.out_desc = slot
+                from .syntax import UnnamedEditionError
                 try:
                     content = re_fdp.render(ctx)[0].flush(ctx)
+                except UnnamedEditionError as e:
+                    # Spec 0467 S1: not written, as protoback (spec 0457).
+                    ctx.out_desc = None
+                    from .lib.warnings import get_collector
+                    get_collector().w6(re_fdp.name, '', str(e))
+                    advance()
+                    continue
                 except (KeyError, ValueError, TypeError, AttributeError) as e:
                     # A bug: the file is not rendered (spec 0429 S16).
                     ctx.out_desc = None

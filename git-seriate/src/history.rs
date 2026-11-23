@@ -13,6 +13,7 @@ use gix::ObjectId;
 
 use crate::format::Block;
 use crate::plugins::{Canonicalizer, ItemPaths, Renderer};
+pub(crate) use crate::sign::Signer;
 use crate::store::{self, branch_ref, tip};
 use crate::Error;
 
@@ -52,12 +53,18 @@ pub struct Options<'a> {
     pub branches: Vec<String>,
     pub sort: seriation::Settings,
     pub plugins: Plugins<'a>,
+    /// Canonicalize every item, trusting no history commit, and report each
+    /// one a commit's marker wrongly claims canonical (spec 0464 S4).
+    pub verify_canon: bool,
 }
 
 /// What `settle` did, or would do with `dry_run`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Report {
     pub branch: String,
+    /// Under `--verify-canon`: each item a history commit's marker claims
+    /// canonical, and isn't (spec 0464 S4).
+    pub false_markers: Vec<String>,
     /// Commits kept as they were, above the re-sorted part's base.
     pub kept: usize,
     /// The snapshots written, oldest first.
@@ -182,7 +189,16 @@ pub fn settle(repo: &gix::Repository, options: &Options) -> Result<Report, Error
     let old_chain: Vec<&Entry> = region.iter().rev().collect();
     refuse_repeated(repo, &old_chain)?;
 
-    // 4. The sort.
+    // 4. The sort. A history commit written with today's rule sets and
+    // renderer is canonical: its items are taken from its tree as they are
+    // (spec 0464 S3).
+    let rules = options.plugins.canonicalizer.rule_sets();
+    let renderer = options.plugins.renderer.version();
+    let trust = Trust {
+        rules: &rules,
+        renderer: &renderer,
+        verify: options.verify_canon,
+    };
     let target = if options.dry_run {
         repo.clone().with_object_memory()
     } else {
@@ -195,6 +211,7 @@ pub fn settle(repo: &gix::Repository, options: &Options) -> Result<Report, Error
                 &target,
                 s,
                 &by_branch,
+                &trust,
                 options.dry_run,
                 &mut report,
             )?);
@@ -208,6 +225,21 @@ pub fn settle(repo: &gix::Repository, options: &Options) -> Result<Report, Error
         .iter()
         .map(|input| versions.snapshot(input))
         .collect::<Result<_, _>>()?;
+    if options.verify_canon {
+        for input in &inputs {
+            for (path, claimed) in &input.claimed {
+                let canonical = versions.canonical(path, input_item(input, path))?;
+                if canonical != *claimed {
+                    report.false_markers.push(format!(
+                        "{}: {path}: {} is not canonical, {} is",
+                        input.block.source.identity,
+                        claimed.to_hex_with_len(8),
+                        canonical.to_hex_with_len(8)
+                    ));
+                }
+            }
+        }
+    }
     let sorted = seriation::sort(
         &snapshots,
         &mut versions,
@@ -227,12 +259,11 @@ pub fn settle(repo: &gix::Repository, options: &Options) -> Result<Report, Error
         .collect();
 
     // 5. The plan.
-    let rules = options.plugins.canonicalizer.rule_sets();
     let plan = plan(
         &old_chain,
         &inputs,
         &sorted.order,
-        &rules,
+        &trust,
         walk.base,
         &walk.below_identities,
         &mut report,
@@ -253,6 +284,7 @@ pub fn settle(repo: &gix::Repository, options: &Options) -> Result<Report, Error
                 let input = &inputs[*i];
                 let mut block = input.block.clone();
                 block.canon_rules = rules.clone();
+                block.renderer = renderer.clone();
                 let tree = overlay(&target, parent_tree, &versions.stored_items(input)?)?;
                 report.written.push(block.source.identity.clone());
                 let commit = gix::objs::Commit {
@@ -503,6 +535,61 @@ struct SortInput {
     block: Block,
     items: Vec<(String, ObjectId)>,
     author: gix::actor::Signature,
+    /// Its items are canonical, from a history commit trusted (spec 0464
+    /// S3): taken as they are.
+    trusted: bool,
+    /// Under `--verify-canon`, the items a trusted commit holds, to compare
+    /// with the canonical forms of `items`.
+    claimed: Vec<(String, ObjectId)>,
+}
+
+/// Which history commits are canonical as they stand (spec 0464 S3).
+struct Trust<'a> {
+    rules: &'a [(String, u32)],
+    renderer: &'a [(String, u32)],
+    /// `--verify-canon`: none, but each is checked.
+    verify: bool,
+}
+
+impl Trust<'_> {
+    /// Written with today's rule sets and renderer.
+    fn current(&self, block: &Block) -> bool {
+        block.canon_rules == self.rules && block.renderer == self.renderer
+    }
+
+    /// Kept by the plan as it is: written with today's rule sets, and
+    /// today's renderer or none recorded (before spec 0464; `compact` adds
+    /// it).
+    fn keeps(&self, block: &Block) -> bool {
+        block.canon_rules == self.rules
+            && (block.renderer == self.renderer || block.renderer.is_empty())
+    }
+}
+
+/// `stored`'s canonical stored form: parsed, canonicalized, rendered.
+pub(crate) fn canonical_form(
+    renderer: &dyn Renderer,
+    canonicalizer: &dyn Canonicalizer,
+    path: &str,
+    stored: &[u8],
+) -> Result<Vec<u8>, Error> {
+    let raw = renderer
+        .parse(path, stored)
+        .map_err(|e| Error::Refused(format!("{path}: {e}")))?;
+    let canonical = canonicalizer.canon(path, &raw);
+    renderer
+        .render(path, &canonical)
+        .map_err(|e| Error::Refused(format!("{path}: {e}")))
+}
+
+/// The item of `input` at `path`.
+fn input_item(input: &SortInput, path: &str) -> ObjectId {
+    input
+        .items
+        .iter()
+        .find(|(p, _)| p == path)
+        .map(|(_, oid)| *oid)
+        .expect("a claimed item is one of the input's")
 }
 
 /// The sort places each snapshot once, so a history that holds one twice
@@ -551,23 +638,16 @@ fn sort_input_from_branch(repo: &gix::Repository, l: &store::Listed) -> Result<S
         block: l.block.clone(),
         items: files(repo, decoded.tree(), "")?,
         author,
+        trusted: false,
+        claimed: Vec::new(),
     })
 }
 
-/// A snapshot commit of the history: its snapshot branch's raw items when
-/// the branch is there, else its own, read from the history's tree at it;
-/// the branch is then recreated from them.
-fn sort_input_from_history(
+/// The items a history commit lists, read from the history's tree at it.
+fn history_items(
     target: &gix::Repository,
     s: &SnapCommit,
-    by_branch: &HashMap<&str, &store::Listed>,
-    dry_run: bool,
-    report: &mut Report,
-) -> Result<SortInput, Error> {
-    let identity = &s.block.source.identity;
-    if let Some(l) = by_branch.get(identity.as_str()) {
-        return sort_input_from_branch(target, l);
-    }
+) -> Result<Vec<(String, ObjectId)>, Error> {
     let all: HashMap<String, ObjectId> = files(target, s.tree, "")?.into_iter().collect();
     let paths = s.block.contents.clone().unwrap_or_default();
     let mut items = Vec::new();
@@ -580,6 +660,31 @@ fn sort_input_from_history(
         })?;
         items.push((path, oid));
     }
+    Ok(items)
+}
+
+/// A snapshot commit of the history: its own items when it is trusted
+/// (spec 0464 S3); else its snapshot branch's raw items when the branch is
+/// there, else its own, the branch then recreated from them.
+fn sort_input_from_history(
+    target: &gix::Repository,
+    s: &SnapCommit,
+    by_branch: &HashMap<&str, &store::Listed>,
+    trust: &Trust,
+    dry_run: bool,
+    report: &mut Report,
+) -> Result<SortInput, Error> {
+    let identity = &s.block.source.identity;
+    let current = trust.current(&s.block);
+    let branch = by_branch.get(identity.as_str());
+    if let Some(l) = branch.filter(|_| !current || trust.verify) {
+        let mut input = sort_input_from_branch(target, l)?;
+        if current {
+            input.claimed = history_items(target, s)?;
+        }
+        return Ok(input);
+    }
+    let items = history_items(target, s)?;
     let commit = target.find_commit(s.id).map_err(Error::git)?;
     let decoded = commit.decode().map_err(Error::git)?;
     let author = decoded
@@ -587,6 +692,23 @@ fn sort_input_from_history(
         .map_err(Error::git)?
         .to_owned()
         .map_err(Error::git)?;
+    let trusted = current && !trust.verify;
+    // Under --verify-canon, with no raw items to start from: the commit's
+    // own, canonicalized, against themselves.
+    let claimed = if current && trust.verify {
+        items.clone()
+    } else {
+        Vec::new()
+    };
+    if branch.is_some() {
+        return Ok(SortInput {
+            block: s.block.clone(),
+            items,
+            author,
+            trusted,
+            claimed,
+        });
+    }
     if !dry_run {
         let mut snapshot_items = Vec::new();
         for (path, oid) in &items {
@@ -598,6 +720,7 @@ fn sort_input_from_history(
         }
         let mut block = s.block.clone();
         block.canon_rules.clear();
+        block.renderer.clear();
         store::add(
             target,
             store::NewSnapshot {
@@ -615,6 +738,8 @@ fn sort_input_from_history(
         block: s.block.clone(),
         items,
         author,
+        trusted,
+        claimed,
     })
 }
 
@@ -649,15 +774,7 @@ impl<'a, 'r> Versions<'a, 'r> {
         }
         let stored = self.target.find_blob(oid).map_err(Error::git)?.data.clone();
         let p = &self.plugins;
-        let raw = p
-            .renderer
-            .parse(path, &stored)
-            .map_err(|e| Error::Refused(format!("{path}: {e}")))?;
-        let canonical = p.canonicalizer.canon(path, &raw);
-        let rendered = p
-            .renderer
-            .render(path, &canonical)
-            .map_err(|e| Error::Refused(format!("{path}: {e}")))?;
+        let rendered = canonical_form(p.renderer, p.canonicalizer, path, &stored)?;
         let c = if rendered == stored {
             oid
         } else {
@@ -675,7 +792,7 @@ impl<'a, 'r> Versions<'a, 'r> {
         for (path, oid) in &input.items {
             let next = self.files.len() as seriation::FileId;
             let file = *self.files.entry(path.clone()).or_insert(next);
-            let c = self.canonical(path, *oid)?;
+            let c = self.stored(input, path, *oid)?;
             let next = self.by_id.len() as seriation::VersionId;
             let version = *self.ids.entry(c).or_insert(next);
             if version == next {
@@ -697,8 +814,17 @@ impl<'a, 'r> Versions<'a, 'r> {
         input
             .items
             .iter()
-            .map(|(path, oid)| Ok((path.clone(), self.canonical(path, *oid)?)))
+            .map(|(path, oid)| Ok((path.clone(), self.stored(input, path, *oid)?)))
             .collect()
+    }
+
+    /// An item of `input` as its canonical stored blob: itself when the
+    /// input is trusted (spec 0464 S3).
+    fn stored(&mut self, input: &SortInput, path: &str, oid: ObjectId) -> Result<ObjectId, Error> {
+        if input.trusted {
+            return Ok(oid);
+        }
+        self.canonical(path, oid)
     }
 }
 
@@ -733,7 +859,7 @@ fn plan(
     old_chain: &[&Entry],
     inputs: &[SortInput],
     order: &[usize],
-    rules: &[(String, u32)],
+    trust: &Trust,
     walk_base: Option<ObjectId>,
     below: &HashSet<String>,
     report: &mut Report,
@@ -750,7 +876,7 @@ fn plan(
             Entry::Snapshot(s) => {
                 matched < order.len()
                     && identity(order[matched]) == s.block.source.identity
-                    && s.block.canon_rules == rules
+                    && trust.keeps(&s.block)
             }
             Entry::Manual(m) => match &m.anchor {
                 Some(a) if Some(a.as_str()) == last_kept_snapshot => true,
@@ -937,7 +1063,7 @@ fn history_identities(
 }
 
 /// Every blob of `tree`, with its path, in tree order.
-fn files(
+pub(crate) fn files(
     repo: &gix::Repository,
     tree: ObjectId,
     prefix: &str,
@@ -1097,66 +1223,6 @@ pub(crate) fn checked_out(
         return Ok(false);
     }
     Ok(repo.head_name().map_err(Error::git)?.as_ref() == Some(name))
-}
-
-/// Signs commits with SSH when git is configured to (spec 0452 S5 step 6).
-pub(crate) struct Signer {
-    key: Option<std::path::PathBuf>,
-}
-
-impl Signer {
-    pub(crate) fn from_config(repo: &gix::Repository) -> Result<Self, Error> {
-        let config = repo.config_snapshot();
-        let sign = config.boolean("commit.gpgSign").unwrap_or(false);
-        let ssh = config
-            .string("gpg.format")
-            .is_some_and(|f| f.eq_ignore_ascii_case(b"ssh"));
-        if !(sign && ssh) {
-            return Ok(Signer { key: None });
-        }
-        let key = config
-            .string("user.signingKey")
-            .ok_or_else(|| Error::Refused("commit.gpgSign is set, but not user.signingKey".into()))?
-            .to_string();
-        let key = match key.strip_prefix("~/") {
-            Some(rest) => {
-                std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(rest)
-            }
-            None => std::path::PathBuf::from(key),
-        };
-        Ok(Signer { key: Some(key) })
-    }
-
-    pub(crate) fn sign(&self, mut commit: gix::objs::Commit) -> Result<gix::objs::Commit, Error> {
-        use gix::objs::WriteTo;
-        use std::io::Write;
-        let Some(key) = &self.key else {
-            return Ok(commit);
-        };
-        let mut payload = Vec::new();
-        commit.write_to(&mut payload).map_err(Error::git)?;
-        let mut child = std::process::Command::new("ssh-keygen")
-            .args(["-Y", "sign", "-n", "git", "-f"])
-            .arg(key)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .map_err(|e| Error::Refused(format!("running ssh-keygen: {e}")))?;
-        child.stdin.take().unwrap().write_all(&payload)?;
-        let out = child.wait_with_output()?;
-        if !out.status.success() || out.stdout.is_empty() {
-            return Err(Error::Refused(format!(
-                "signing with {}: {}",
-                key.display(),
-                String::from_utf8_lossy(&out.stderr).trim()
-            )));
-        }
-        commit
-            .extra_headers
-            .push(("gpgsig".into(), out.stdout.into()));
-        Ok(commit)
-    }
 }
 
 // ── Trailers ──────────────────────────────────────────────────────────────────

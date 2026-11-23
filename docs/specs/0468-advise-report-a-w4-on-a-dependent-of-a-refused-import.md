@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0468 — advise --report: a W4 on a dependent of a refused import
 
-Status: draft
+Status: implemented
+Implemented in: 2026-11-23
 App: git-seriate-fdp
 Refs: docs/specs/0454-advise-what-a-history-of-descriptors-cannot-hold.md
         (S4: a file refused for its import, reported under it),
@@ -64,4 +65,8 @@ once, under that root (0454 S4): it knows, and drops what it knows
 
 ## Measured outcome
 
-Filled in at implementation.
+2026-11-23. `a_w4_on_a_dependent_of_a_refused_import` passes (a W4 on
+`grand.proto`, refused by advise's pool for `child.proto`, itself for
+`user.proto`, goes under `user.proto`'s refusal; nothing left as
+`build`); the 0455 tests are unchanged. The downstream case is not run
+here.

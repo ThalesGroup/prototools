@@ -43,6 +43,9 @@ pub struct Block {
     pub record: Vec<(String, String)>,
     /// History commits only: each composed rule set's version.
     pub canon_rules: Vec<(String, u32)>,
+    /// History commits only: the renderer's version (spec 0464 S2); empty
+    /// in a commit written before it.
+    pub renderer: Vec<(String, u32)>,
     /// History commits only: `compact` removed items from it.
     pub reduced: bool,
 }
@@ -144,10 +147,15 @@ impl Block {
                 writeln!(m, "  {}: {}", quote(k), quote(v)).unwrap();
             }
         }
-        if !self.canon_rules.is_empty() {
-            m.push_str("canon_rules:\n");
-            for (k, v) in &self.canon_rules {
-                writeln!(m, "  {}: {v}", quote(k)).unwrap();
+        for (key, versions) in [
+            ("canon_rules", &self.canon_rules),
+            ("renderer", &self.renderer),
+        ] {
+            if !versions.is_empty() {
+                writeln!(m, "{key}:").unwrap();
+                for (k, v) in versions {
+                    writeln!(m, "  {}: {v}", quote(k)).unwrap();
+                }
             }
         }
         if self.reduced {
@@ -257,27 +265,30 @@ impl Block {
                 })
                 .collect::<Result<_, ReadError>>()?,
         };
-        let canon_rules = match map.get("canon_rules") {
-            None => Vec::new(),
-            Some(v) => v
-                .as_mapping()
-                .ok_or_else(|| bad("canon_rules"))?
-                .iter()
-                .map(|(k, v)| {
-                    let version = v.as_u64().and_then(|n| u32::try_from(n).ok());
-                    Ok((
-                        text(k, "canon_rules")?,
-                        version.ok_or_else(|| bad("canon_rules"))?,
-                    ))
-                })
-                .collect::<Result<_, ReadError>>()?,
+        // A name and a version each: `canon_rules`, `renderer`.
+        let versions = |key: &str| -> Result<Vec<(String, u32)>, ReadError> {
+            match map.get(key) {
+                None => Ok(Vec::new()),
+                Some(v) => v
+                    .as_mapping()
+                    .ok_or_else(|| bad(key))?
+                    .iter()
+                    .map(|(k, v)| {
+                        let version = v.as_u64().and_then(|n| u32::try_from(n).ok());
+                        Ok((text(k, key)?, version.ok_or_else(|| bad(key))?))
+                    })
+                    .collect(),
+            }
         };
+        let canon_rules = versions("canon_rules")?;
+        let renderer = versions("renderer")?;
         Ok(Some(Block {
             source,
             contents,
             rejected,
             record: pairs(map.get("record"), "record")?,
             canon_rules,
+            renderer,
             reduced: map.get("reduced").and_then(serde_yaml::Value::as_bool) == Some(true),
         }))
     }
@@ -348,6 +359,7 @@ mod tests {
             }],
             record: vec![("storage".into(), "extent".into())],
             canon_rules: vec![("generic".into(), 1)],
+            renderer: vec![("generic".into(), 1)],
             reduced: true,
         }
     }
@@ -369,6 +381,7 @@ mod tests {
             rejected: Vec::new(),
             record: Vec::new(),
             canon_rules: Vec::new(),
+            renderer: Vec::new(),
             reduced: false,
             ..block()
         };

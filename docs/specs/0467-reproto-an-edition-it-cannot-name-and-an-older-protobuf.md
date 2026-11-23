@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0467 — reproto: an edition it can't name, and an older protobuf
 
-Status: draft
+Status: implemented
+Implemented in: 2026-11-23
 App: reproto
 Refs: docs/specs/0457-protoback-edition-names-from-the-input.md (what
         protoback does with an edition it can't name),
@@ -94,4 +95,16 @@ from installs outside Nix, and break the dev-shell's use of it.
 
 ## Measured outcome
 
-Filled in at implementation.
+2026-11-23. The downstream report reproduced with Python protobuf 7.34.1
+first on `PYTHONPATH`, and not otherwise; reproto as built writes
+`edition = "2026";`.
+
+The tests pass: an edition 1003 file is a W6 on both tools, the other
+file written, `UNKNOWN` nowhere; W37 with the built-in enum given a value
+the imported one lacks. reproto's suite, on reproto and on protoback,
+passes (`--version`'s test reads its first line, then the protobuf one).
+
+The dropped value is read from the serialized message
+(`_dropped_edition`): types-protobuf 6.32.1 has no stub for
+`google.protobuf.unknown_fields`. `unknown-fields-stub-check`, in `ci`,
+fails when one appears, naming what to switch back.

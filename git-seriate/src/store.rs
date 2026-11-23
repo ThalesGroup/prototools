@@ -62,8 +62,55 @@ pub struct Listed {
     pub block: Block,
 }
 
+/// Where [`add_to`] writes a snapshot: a repository, or an archive being
+/// built (spec 0466 S1).
+pub enum Sink<'a> {
+    Repo(&'a gix::Repository),
+    Archive(&'a mut crate::archive::Archive),
+}
+
+impl Sink<'_> {
+    fn write(&mut self, object: &impl gix::objs::WriteTo) -> Result<ObjectId, Error> {
+        match self {
+            Sink::Repo(repo) => Ok(repo.write_object(object).map_err(Error::git)?.detach()),
+            Sink::Archive(archive) => {
+                let mut data = Vec::new();
+                object.write_to(&mut data).map_err(Error::git)?;
+                archive.write(object.kind(), &data)
+            }
+        }
+    }
+
+    fn tip(&self, branch: &str, ref_name: &gix::refs::FullName) -> Result<Option<ObjectId>, Error> {
+        match self {
+            Sink::Repo(repo) => tip(repo, ref_name),
+            Sink::Archive(archive) => Ok(archive.branch(branch)),
+        }
+    }
+
+    fn set_branch(
+        &mut self,
+        branch: &str,
+        ref_name: &gix::refs::FullName,
+        id: ObjectId,
+    ) -> Result<(), Error> {
+        match self {
+            Sink::Repo(repo) => set_ref(repo, ref_name, PreviousValue::MustNotExist, id),
+            Sink::Archive(archive) => {
+                archive.set_branch(branch, id);
+                Ok(())
+            }
+        }
+    }
+}
+
 /// Add a snapshot as its branch (spec 0452 S3).
 pub fn add(repo: &gix::Repository, snapshot: NewSnapshot) -> Result<Added, Error> {
+    add_to(&mut Sink::Repo(repo), snapshot)
+}
+
+/// [`add`], into a repository or an archive.
+pub fn add_to(sink: &mut Sink, snapshot: NewSnapshot) -> Result<Added, Error> {
     let branch = snapshot.source.identity.clone();
     let ref_name = branch_ref(&branch)?;
     let mut rejected = snapshot.rejected;
@@ -72,17 +119,12 @@ pub fn add(repo: &gix::Repository, snapshot: NewSnapshot) -> Result<Added, Error
         return Ok(Added::Nothing);
     }
 
-    let mut editor = repo
-        .edit_tree(ObjectId::empty_tree(repo.object_hash()))
-        .map_err(Error::git)?;
+    let mut blobs = Vec::with_capacity(placed.len());
     for (path, bytes) in &placed {
-        let blob = repo.write_blob(bytes).map_err(Error::git)?.detach();
-        editor
-            .upsert(path.as_str(), EntryKind::Blob, blob)
-            .map_err(Error::git)?;
+        let blob = sink.write(&gix::objs::BlobRef { data: bytes })?;
+        blobs.push((path.as_str(), blob));
     }
-    let tree = editor.write().map_err(Error::git)?.detach();
-    check_tree(repo, tree)?;
+    let tree = write_tree(sink, &blobs)?;
 
     let block = Block {
         source: snapshot.source,
@@ -90,6 +132,7 @@ pub fn add(repo: &gix::Repository, snapshot: NewSnapshot) -> Result<Added, Error
         rejected: rejected.clone(),
         record: snapshot.record,
         canon_rules: Vec::new(),
+        renderer: Vec::new(),
         reduced: false,
     };
     let commit = gix::objs::Commit {
@@ -101,8 +144,8 @@ pub fn add(repo: &gix::Repository, snapshot: NewSnapshot) -> Result<Added, Error
         message: block.message().into(),
         extra_headers: Vec::new(),
     };
-    let id = commit_id(repo, &commit)?;
-    if let Some(existing) = tip(repo, &ref_name)? {
+    let id = commit_id(&commit)?;
+    if let Some(existing) = sink.tip(&branch, &ref_name)? {
         return if existing == id {
             Ok(Added::Unchanged { branch })
         } else {
@@ -112,9 +155,9 @@ pub fn add(repo: &gix::Repository, snapshot: NewSnapshot) -> Result<Added, Error
             )))
         };
     }
-    let written = repo.write_object(&commit).map_err(Error::git)?.detach();
+    let written = sink.write(&commit)?;
     debug_assert_eq!(written, id);
-    set_ref(repo, &ref_name, PreviousValue::MustNotExist, written)?;
+    sink.set_branch(&branch, &ref_name, written)?;
     Ok(Added::Written { branch, rejected })
 }
 
@@ -330,26 +373,41 @@ fn check_path(path: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The tree passes what `git fsck --strict` checks of entries: every
-/// level sorted as git sorts, no duplicate, no invalid name. A failure is
-/// a bug here, reported, never a written tree.
-fn check_tree(repo: &gix::Repository, tree: ObjectId) -> Result<(), Error> {
-    let object = repo.find_tree(tree).map_err(Error::git)?;
-    let decoded = object.decode().map_err(Error::git)?;
-    for pair in decoded.entries.windows(2) {
+/// The tree of `items` (paths placed, with their blobs), written, every
+/// level before its parent. Each level passes what `git fsck --strict`
+/// checks of entries: sorted as git sorts, no duplicate. A failure is a bug
+/// here, reported, never a written tree.
+fn write_tree(sink: &mut Sink, items: &[(&str, ObjectId)]) -> Result<ObjectId, Error> {
+    use gix::objs::tree::Entry;
+    let mut entries = Vec::new();
+    let mut dirs: std::collections::BTreeMap<&str, Vec<(&str, ObjectId)>> = Default::default();
+    for &(path, oid) in items {
+        match path.split_once('/') {
+            None => entries.push(Entry {
+                mode: EntryKind::Blob.into(),
+                filename: path.into(),
+                oid,
+            }),
+            Some((dir, rest)) => dirs.entry(dir).or_default().push((rest, oid)),
+        }
+    }
+    for (dir, sub) in dirs {
+        entries.push(Entry {
+            mode: EntryKind::Tree.into(),
+            filename: dir.into(),
+            oid: write_tree(sink, &sub)?,
+        });
+    }
+    entries.sort();
+    for pair in entries.windows(2) {
         if pair[0] >= pair[1] {
             return Err(Error::Bug(format!(
-                "tree {tree}: {:?} not before {:?}",
+                "a tree: {:?} not before {:?}",
                 pair[0].filename, pair[1].filename
             )));
         }
     }
-    for entry in &decoded.entries {
-        if entry.mode.is_tree() {
-            check_tree(repo, entry.oid.to_owned())?;
-        }
-    }
-    Ok(())
+    sink.write(&gix::objs::Tree { entries })
 }
 
 // ── Git helpers ───────────────────────────────────────────────────────────────
@@ -370,11 +428,12 @@ fn signature(seconds: i64) -> gix::actor::Signature {
 }
 
 /// The id `commit` will have, without writing it.
-fn commit_id(repo: &gix::Repository, commit: &gix::objs::Commit) -> Result<ObjectId, Error> {
+fn commit_id(commit: &gix::objs::Commit) -> Result<ObjectId, Error> {
     use gix::objs::WriteTo;
     let mut buf = Vec::new();
     commit.write_to(&mut buf).map_err(Error::git)?;
-    gix::objs::compute_hash(repo.object_hash(), gix::object::Kind::Commit, &buf).map_err(Error::git)
+    gix::objs::compute_hash(gix::hash::Kind::Sha1, gix::object::Kind::Commit, &buf)
+        .map_err(Error::git)
 }
 
 /// Where `name` points, if it exists.
