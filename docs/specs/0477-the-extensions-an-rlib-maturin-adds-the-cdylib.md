@@ -206,5 +206,20 @@ own protobuf release, red on `main` already; fixed in 0f66c4cb, after
 which it passes with this change (reproto 397 passed, 2 skipped; the
 extensions' tests passing).
 
-Not measured yet: `workspaceBuild`'s time before and after (test plan 3),
-which wants a quiet host.
+`workspaceBuild`'s time (test plan 3), 2026-11-24, on a quiet host:
+`nix-build --check` of the derivation alone, before (`0f66c4cb`) and
+after (`e7d71442`), both fetched with `builtins.fetchGit`, `--max-jobs 2
+--cores 6`, alternating which goes first. One run of six, whose build
+phase took 24 minutes instead of 3 (the host held it up; its maturin step
+was normal), is left out.
+
+| | before (3 runs) | after (2 runs) |
+|---|---|---|
+| build phase | 175 s (173–178) | 170 s (163–178) |
+| maturin, first wheel | 64 s | 33 s |
+| maturin, the other two | 15 s | 15 s |
+| total | 259 s | 224 s |
+
+About 35 s per build, 13%: the first wheel's maturin step halves. A
+first measurement, the day before on a less quiet host, had shown the
+build phase 20 s slower after; the quiet runs don't confirm it.
