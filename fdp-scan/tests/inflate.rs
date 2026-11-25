@@ -312,7 +312,10 @@ fn skip_reasons() {
 /// A descriptor with bytes ≥ 0x80: a name, a package, and a dependency
 /// of `len` bytes, long enough that its length takes two bytes.
 fn java_fdp(len: usize) -> Vec<u8> {
+    // A message `M` before the dependency: a record cut inside the
+    // dependency still declares something (spec 0483 S1).
     let mut b = fdp("x/y.proto");
+    b.extend_from_slice(&[0x22, 3, 0x0a, 1, b'M']);
     let dep = format!("{}.proto", "d".repeat(len - 6));
     b.push(0x1a);
     b.extend_from_slice(&[0x80 | (dep.len() as u8 & 0x7f), (dep.len() >> 7) as u8]);

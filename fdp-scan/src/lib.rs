@@ -25,6 +25,8 @@ use prototext_graph::score::{score_one, Ending, Policy, ScoringOpts};
 /// and [`implausible_edition_cut`] read. The stock ones, whatever schema
 /// the walk scored against: every `descriptor.proto` in use keeps them
 /// (specs 0449 S1, 0456 S1).
+const FDP_NAME: u64 = 1;
+const FDP_PACKAGE: u64 = 2;
 const FDP_DEPENDENCY: u64 = 3;
 const FDP_PUBLIC_DEPENDENCY: u64 = 10;
 const FDP_WEAK_DEPENDENCY: u64 = 11;
@@ -135,6 +137,9 @@ pub enum Reason {
     /// Cut before an `edition` no writer sets, the record holds its name
     /// only (spec 0456 S1).
     ImplausibleEdition,
+    /// The record declares nothing but its name, package and dependencies,
+    /// and does not stand alone (spec 0483 S1).
+    DeclaresNothing,
 }
 
 /// [`scan`], with the candidates it refused and why. `scan` is this function's
@@ -345,6 +350,13 @@ fn score_candidate_with(
         }
         Some(cut) => start + cut,
     };
+    let record = &data[start..end];
+    // A record the cuts above shortened no longer ends where the walk did,
+    // so it doesn't stand alone either.
+    let stood_alone = stands_alone(entry.ending) && end == start + entry.termination;
+    if declares_nothing(record) && !stood_alone {
+        return Err(Reason::DeclaresNothing);
+    }
     // The order rule ends many records exactly where they would have ended
     // anyway, at random bytes that happen to read as a lower field. Only a
     // record the option made *shorter* lost anything, so only that one is
@@ -512,6 +524,30 @@ fn dangling_dependency_cut(record: &[u8]) -> Option<usize> {
     (kept < fields.len()).then(|| fields[kept].start)
 }
 
+/// Whether `record` declares nothing but its name, its package and its
+/// dependencies (spec 0483 S1): no message, enum, service, extension,
+/// option, `syntax` or `edition`. Such a record is real only standing
+/// alone, as a file that only imports, with nothing after it to cut it;
+/// the rule of spec 0448 S6 for a name alone, extended. Measured before
+/// deciding, on 27 234 real descriptors (seriate-tuto's corpora, the
+/// protoback harness corpus with googleapis, and a downstream user's
+/// history): 5 such records, all files that only re-export their imports,
+/// which stand alone where they occur.
+fn declares_nothing(record: &[u8]) -> bool {
+    top_level_fields(record).is_some_and(|fields| {
+        fields.iter().all(|f| {
+            matches!(
+                f.number,
+                FDP_NAME
+                    | FDP_PACKAGE
+                    | FDP_DEPENDENCY
+                    | FDP_PUBLIC_DEPENDENCY
+                    | FDP_WEAK_DEPENDENCY
+            )
+        })
+    })
+}
+
 /// Where `record` must end so that its `edition` is one a writer sets, or
 /// `None` if it is (spec 0456 S1).
 ///
@@ -647,9 +683,19 @@ mod tests {
 
     /// The smallest `FileDescriptorProto` the scanner will report: a `name`
     /// and a `package`, which is what a real 19-byte descriptor looks like.
+    /// It declares nothing, so it is reported only standing alone (spec
+    /// 0483 S1): where bytes after it cut it, use [`make_declaring_fdp`].
     fn make_fdp(name: &str) -> Vec<u8> {
         let mut buf = name_field(name);
         buf.extend_from_slice(&framed(2, b"p"));
+        buf
+    }
+
+    /// [`make_fdp`] with a message `M`: a record that declares something,
+    /// and so is kept when the bytes after it cut it (spec 0483 S1).
+    fn make_declaring_fdp(name: &str) -> Vec<u8> {
+        let mut buf = make_fdp(name);
+        buf.extend_from_slice(&framed(4, &framed(1, b"M")));
         buf
     }
 
@@ -913,7 +959,7 @@ mod tests {
     #[test]
     fn a_record_followed_by_rubbish_is_still_recovered() {
         for tail in [&[0x77u8][..], &[0x18, 0x01][..]] {
-            let fdp = make_fdp("foo.proto");
+            let fdp = make_declaring_fdp("foo.proto");
             let mut buf = fdp.clone();
             buf.extend_from_slice(tail);
 
@@ -1106,10 +1152,14 @@ mod tests {
     /// declares is now caught, where the stock schema would read it blind.
     #[test]
     fn a_callers_schema_checks_the_fields_it_adds() {
+        // `syntax` declares something (spec 0483 S1), and this vendor schema
+        // declares it, where it has no `message_type`.
         let mut fdp = make_fdp("vendor.proto");
+        fdp.extend_from_slice(&framed(12, b"proto3"));
+        let kept = fdp.len();
         fdp.extend_from_slice(&framed(8, &[0x28, 0x01])); // FileOptions 5 as a varint
         let found = scan_explained_with(&fdp, vendor_graph(), "vendor.FileDescriptorProto").found;
-        assert_eq!(found, vec![(0, make_fdp("vendor.proto").len())]);
+        assert_eq!(found, vec![(0, kept)]);
         assert_eq!(scan(&fdp), vec![(0, fdp.len())], "stock: read blind, kept");
     }
 
@@ -1180,6 +1230,63 @@ mod tests {
     /// `edition: 2`, refused alone and between random bytes. An editions
     /// record is kept whole, and cut before the same bytes after it; an
     /// `edition` without `syntax: "editions"` is cut.
+    /// A template bundle's record (spec 0483 Background): a `.proto` path,
+    /// its package, its Java outer class in field 3, then message names in
+    /// field 7, which don't read as `FieldDescriptorProto`s.
+    fn template_record(name: &str) -> Vec<u8> {
+        let mut buf = name_field(name);
+        buf.extend_from_slice(&framed(2, b"y"));
+        buf.extend_from_slice(&framed(3, b"com.example.protos.y.Runtime"));
+        for message in ["Alpha", "Beta"] {
+            buf.extend_from_slice(&framed(7, message.as_bytes()));
+        }
+        buf
+    }
+
+    #[test]
+    fn a_template_record_is_refused() {
+        let data = template_record("x/y/proto/runtime.proto");
+        let explained = scan_explained(&data);
+        assert!(explained.found.is_empty(), "{explained:?}");
+        assert_eq!(explained.rejected[0].reason, Reason::DeclaresNothing);
+    }
+
+    /// Spec 0483 N2: a dependency is not held to the name rule. Real
+    /// descriptors import files that no `.proto` source wrote, compiled by
+    /// other compilers: a schema language's `.sdl`, the old `.protodevel`.
+    #[test]
+    fn a_dependency_need_not_end_in_dot_proto() {
+        let mut fdp = make_declaring_fdp("x/db.proto");
+        fdp.extend_from_slice(&framed(3, b"x/schemas/sys_root.sdl"));
+        fdp.extend_from_slice(&framed(3, b"x/proto/y.protodevel"));
+        fdp.push(0);
+        assert_eq!(scan(&fdp), [(0, fdp.len() - 1)]);
+    }
+
+    #[test]
+    fn a_cut_record_that_declares_nothing_is_refused() {
+        // A name and a package, then field 7 strings that cut the walk.
+        let mut data = name_field("x/y/proto/runtime.proto");
+        data.extend_from_slice(&framed(2, b"y"));
+        data.extend_from_slice(&framed(7, b"Alpha"));
+        let explained = scan_explained(&data);
+        assert!(explained.found.is_empty(), "{explained:?}");
+        assert_eq!(explained.rejected[0].reason, Reason::DeclaresNothing);
+    }
+
+    #[test]
+    fn an_imports_only_file_standing_alone_is_found() {
+        let mut fdp = name_field("x/reexport.proto");
+        fdp.extend_from_slice(&framed(2, b"x"));
+        fdp.extend_from_slice(&framed(3, b"x/a.proto"));
+        fdp.extend_from_slice(&framed(3, b"x/b.proto"));
+        // At the end of the buffer, and before a NUL.
+        assert_eq!(scan(&fdp), [(0, fdp.len())]);
+        let mut data = fdp.clone();
+        data.push(0);
+        assert_eq!(scan(&data), [(0, fdp.len())]);
+    }
+
     #[test]
     fn test_scan_cuts_an_implausible_edition() {
         let mut found = name_field("com.example.crawl.proto");
@@ -1195,7 +1302,7 @@ mod tests {
             assert_eq!(explained.rejected[0].reason, Reason::ImplausibleEdition);
         }
 
-        let mut editions = make_fdp("a.proto");
+        let mut editions = make_declaring_fdp("a.proto");
         editions.extend(framed(12, b"editions"));
         editions.extend(varint_field(14, 1001));
         assert_eq!(scan(&editions), vec![(0, editions.len())]);
@@ -1203,7 +1310,7 @@ mod tests {
         trailed.extend(varint_field(14, 2));
         assert_eq!(scan(&trailed), vec![(0, editions.len())]);
 
-        let mut no_syntax = make_fdp("a.proto");
+        let mut no_syntax = make_declaring_fdp("a.proto");
         let cut = no_syntax.len();
         no_syntax.extend(varint_field(14, 1000));
         assert_eq!(scan(&no_syntax), vec![(0, cut)]);
@@ -1222,7 +1329,7 @@ mod tests {
     /// with a dangling index after its own fields ends before it.
     #[test]
     fn test_scan_cuts_a_record_before_a_dangling_weak_dependency() {
-        let mut one_import = make_fdp("a.proto");
+        let mut one_import = make_declaring_fdp("a.proto");
         one_import.extend(framed(3, b"b.proto"));
 
         for index in [varint_field(11, 1), framed(11, &[0x00, 0x01])] {
@@ -1243,7 +1350,7 @@ mod tests {
     /// the record comes back exact rather than refused.
     #[test]
     fn test_scan_cuts_a_junk_index_after_a_record() {
-        let fdp = make_fdp("a.proto");
+        let fdp = make_declaring_fdp("a.proto");
         let mut buf = fdp.clone();
         buf.extend_from_slice(&[0x58, 0xd8, 0x27, 0x9a]);
         assert_eq!(scan(&buf), vec![(0, fdp.len())]);
@@ -1282,7 +1389,7 @@ mod tests {
     /// Spec 0449 S7. Nested, the cut lies inside the field the record lost.
     #[test]
     fn test_scan_reports_a_nested_order_cut_past_the_end() {
-        let mut fdp = make_fdp("go.proto");
+        let mut fdp = make_declaring_fdp("go.proto");
         let cut = fdp.len();
         let mut options = framed(8, b"Outer"); // java_outer_classname
         let nested = options.len();

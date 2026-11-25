@@ -162,6 +162,10 @@ SPDX-License-Identifier: MIT
 
 ### Changed
 
+- fdp-scan: a record that declares nothing but its name, package and
+  dependencies is refused unless it stands alone (`declares-nothing`):
+  gzipped template records read as truncated descriptors, false versions
+  of real files (spec 0483).
 - protoscan: `--proto-out` writes a second descriptor of the same name
   with different bytes as `<name>~2.pb` (then `~3`…), as git-seriate's
   store names them; it used to overwrite the first. The same bytes again

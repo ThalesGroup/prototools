@@ -107,6 +107,7 @@ pub fn reason_code(reason: fdp_scan::Reason) -> &'static str {
         fdp_scan::Reason::Defect => "defect",
         fdp_scan::Reason::DanglingDependency => "dangling-dependency",
         fdp_scan::Reason::ImplausibleEdition => "implausible-edition",
+        fdp_scan::Reason::DeclaresNothing => "declares-nothing",
     }
 }
 
