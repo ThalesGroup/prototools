@@ -821,13 +821,16 @@ let
   # dependencies of the local Cargo.lock and the version the tree carries
   # (for the version checks).
   #   prototext (PR 1), protoscan (PR 2, spec 0407 S8), protolens (PR 4,
-  #   spec 0410 S4): Rust applications;
+  #   spec 0410 S4), protoback and git-seriate (spec 0486 S4): Rust
+  #   applications;
   #   reproto (PR 3, spec 0411 S6), with the four python3Packages libraries
   #   that take its source, version and passthru.cargoDeps.
   stagedRust = {
     prototext = ./nixpkgs/pkgs/by-name/pr/prototext/package.nix;
     protoscan = ./nixpkgs/pkgs/by-name/pr/protoscan/package.nix;
     protolens = ./nixpkgs/pkgs/by-name/pr/protolens/package.nix;
+    protoback = ./nixpkgs/pkgs/by-name/pr/protoback/package.nix;
+    git-seriate = ./nixpkgs/pkgs/by-name/gi/git-seriate/package.nix;
   };
   stagedReproto = ./nixpkgs/pkgs/by-name/re/reproto/package.nix;
   # The four libraries, python3Packages entries in nixpkgs, which take their
@@ -1008,6 +1011,8 @@ in
   wkt-db               = wktDb;
   prototext-fixtures   = prototextFixtures;
   nixpkgs-staging      = nixpkgsStaging;
+  # One staged Rust application at a time: nix-build -A nixpkgs-staging-rust.protoback
+  nixpkgs-staging-rust = stagedRustBuilds;
   nixpkgs-staging-check = nixpkgsStagingCheck;
   nixpkgs-staging-unstable = nixpkgsStagingUnstable;
   nixpkgs-staging-unstable-reproto-alone = stagingUnstable.reprotoAlone;

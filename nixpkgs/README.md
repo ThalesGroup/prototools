@@ -10,6 +10,8 @@ nixpkgs tree (spec 0405):
 | `pkgs/by-name/re/reproto/package.nix` | same path: reproto (spec 0411 S6; NixOS/nixpkgs#572923) |
 | `pkgs/development/python-modules/{fdp-scan,prototext-codec,prototext-graph,tree-sitter-textproto}/default.nix` | same paths: reproto's four libraries, `python3Packages` entries that take their source, version and vendored crates from reproto, so that one update moves all five (spec 0411 S6, as amended in review; NixOS/nixpkgs#572923) |
 | `pkgs/by-name/pr/protolens/package.nix` | same path (spec 0410: NixOS/nixpkgs#572911, merged at 0.3.4) |
+| `pkgs/by-name/pr/protoback/package.nix` | same path (spec 0486 S4: `protoback: init at 0.4.0`, to open) |
+| `pkgs/by-name/gi/git-seriate/package.nix` | same path, `git-seriate` and `git-seriate-fdp` (spec 0486 S4: `git-seriate: init at 0.4.0`, to open) |
 
 They are what a nixpkgs PR submits, copied verbatim: nixfmt-formatted, with
 no SPDX header (their licensing is declared in `REUSE.toml`).
@@ -32,8 +34,10 @@ dependencies change, and at every release tag.
 The packages follow one PR at a time, in the order of spec 0405 S9:
 prototext, protoscan, protolens, then reproto with its four libraries.
 
-`pr-description.md` and `pr-briefing.md` are the notes for the current PR:
-its description, and what to be ready to answer in review.
+`pr-description-<package>.md` and `pr-briefing-<package>.md` are the notes
+for a PR being prepared: its description, and what to be ready to answer in
+review (protoback and git-seriate, for 0.4.0). `pr-description.md` and
+`pr-briefing.md` are prototext's first PR's, kept as the model.
 
 ## Releasing
 
@@ -53,11 +57,19 @@ its description, and what to be ready to answer in review.
    its `crates` and `wheels-*` artifacts, then approve its two jobs: they
    upload the seven crates to crates.io and the wheels to PyPI, with
    trusted publishing. A job that fails halfway finishes when re-run.
+   Approve them the day they wait: GitHub expires an approval wait after
+   30 days, without notice, and the run can't be re-run after that. v0.3.6's
+   expired so (spec 0486): to run a release's upload again, delete its
+   tag on douzebis and push the same tag object back, which starts the
+   tag's own workflow; approve only the job that is missing.
 4. nixpkgs, in a checkout of `master`:
    - copy the staged file;
    - `nix-update prototext` (sets `hash` and `cargoHash`);
-   - build it, run `nixpkgs-review`, open the PR
-     (`prototext: init at X.Y.Z`, then `prototext: A.B.C -> X.Y.Z`).
+   - build that package alone (`nix-build -A prototext`), its tests and
+     version check included, then open the PR (`prototext: init at
+     X.Y.Z`, then `prototext: A.B.C -> X.Y.Z`). Not `nixpkgs-review` or
+     any evaluation of the whole of nixpkgs on the development host: it
+     runs out of memory there (spec 0486 S6).
 5. Copy the updated `package.nix` back here (with its `hash` and
    `cargoHash`), and commit.
 6. Start the next cycle: as in step 1, with the next version and a `-dev`
