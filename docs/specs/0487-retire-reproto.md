@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0487 — retire reproto
 
-Status: draft
+Status: implemented (S1 to S6; S7 waits for the next release)
+Implemented in: 2026-11-25
 App: reproto, protoback, prototext, protolens, nix, release
 Refs: docs/specs/0486-release-0.4.0.md (0.4.0, reproto's last release;
         S8, what this spec decides for nixpkgs and PyPI),
@@ -208,3 +209,8 @@ Decided by the maintainer, 2026-11-25:
   retargeted pyright found one error in a test annotation nothing linted
   before (`prototext-pyo3/tests/test_descriptor_text.py`: warnings are
   `(code, message)` pairs since 2026-11-17), fixed.
+  `protobuf-release-check` failed on its allowance for `buf`, which only
+  reproto's tests brought into `ci`: removed. The full `ci`, `pypi`,
+  `crates-io` and the four staged Python libraries pass.
+- **S6:** merged into `main` on 2026-11-25.
+- **S7:** open, at the next release.
