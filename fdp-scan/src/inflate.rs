@@ -14,7 +14,8 @@ use flate2::{Crc, Decompress, FlushDecompress, Status};
 use memchr::memmem;
 use prototext_graph::score::load::LoadedGraph;
 
-use crate::{scan_explained_with_options, wkt_graph, Explained, ScanOptions, FDP};
+use crate::class::{self, Read};
+use crate::{decode_varint, scan_explained_with_options, wkt_graph, Explained, ScanOptions, FDP};
 
 /// A zip local file header's signature.
 const ZIP_LOCAL: &[u8] = b"PK\x03\x04";
@@ -61,6 +62,9 @@ pub enum MemberKind {
     Zip { name: String },
     /// A gzip member.
     Gzip,
+    /// A Java class file's string constants, decoded (spec 0481 S4): a
+    /// transform of the whole enclosing buffer, written without an offset.
+    Class,
 }
 
 /// One container of an [`Origin`]'s chain.
@@ -68,6 +72,7 @@ pub enum MemberKind {
 pub struct Layer {
     /// The offset of its header in the enclosing buffer: a zip member's
     /// local header (its `P`), a gzip member's `1f 8b` (spec 0480 S6).
+    /// 0, and not written, for a transform of the whole buffer (`Class`).
     pub at: usize,
     pub kind: MemberKind,
 }
@@ -88,6 +93,7 @@ impl Origin {
             parts.push(match &layer.kind {
                 MemberKind::Zip { name } => format!("zip@{}!{}", layer.at, escape(name)),
                 MemberKind::Gzip => format!("gzip@{}", layer.at),
+                MemberKind::Class => "class".into(),
             });
         }
         parts.join("!")
@@ -111,7 +117,8 @@ fn escape(name: &str) -> String {
         .replace(';', "%3B")
 }
 
-/// Why a member found was not read (spec 0480 S5).
+/// Why a member found was not read (spec 0480 S5), or a descriptor found
+/// not kept (spec 0481 S3).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SkipReason {
     Encrypted,
@@ -123,6 +130,18 @@ pub enum SkipReason {
     MemberLimit,
     /// The input's budget spent: no member after this one is inflated.
     InputLimit,
+    /// A class file's magic and version, or a member named `*.class`, but
+    /// no constant pool that parses (spec 0481 S1): not scanned raw either,
+    /// its raw bytes being what truncates descriptors.
+    ClassFile,
+    /// A descriptor in a class file's strings that doesn't start and end
+    /// where string constants do: reassembled wrong, so not kept (spec 0481
+    /// S3). Its range is in the decoded strings.
+    Cut {
+        name: String,
+        start: usize,
+        end: usize,
+    },
 }
 
 impl SkipReason {
@@ -134,6 +153,17 @@ impl SkipReason {
             SkipReason::DepthLimit => "depth-limit".into(),
             SkipReason::MemberLimit => "member-limit".into(),
             SkipReason::InputLimit => "input-limit".into(),
+            SkipReason::ClassFile => "class-file".into(),
+            SkipReason::Cut { name, .. } => format!("cut {name}"),
+        }
+    }
+
+    /// Where what was skipped is, as text: the member's chain, or for a
+    /// descriptor cut its range too.
+    pub fn place(&self, origin: &Origin, prefix: Option<&str>) -> String {
+        match self {
+            SkipReason::Cut { start, end, .. } => origin.text(prefix, *start, *end),
+            _ => origin.chain(prefix),
         }
     }
 }
@@ -151,7 +181,8 @@ pub enum Visit<'a> {
         /// what the stored members of `data` report themselves.
         explained: &'a Explained,
     },
-    /// A member found and not read. Its origin ends with its own layer.
+    /// A member found and not read, its origin ending with its own layer;
+    /// or a descriptor not kept, where [`SkipReason::place`] says.
     Skipped {
         origin: &'a Origin,
         reason: SkipReason,
@@ -256,6 +287,16 @@ struct Walk<'g, F> {
 
 impl<F: FnMut(Visit<'_>)> Walk<'_, F> {
     fn walk(&mut self, data: &[u8], origin: &mut Origin, depth: usize) {
+        let named_class = matches!(
+            origin.layers.last(),
+            Some(Layer { kind: MemberKind::Zip { name }, .. }) if name.ends_with(".class")
+        );
+        match class::read(data) {
+            Read::Class(strings) => return self.class_file(data, strings, origin),
+            Read::Broken => return self.skipped(origin, SkipReason::ClassFile),
+            Read::NotClass if named_class => return self.skipped(origin, SkipReason::ClassFile),
+            Read::NotClass => {}
+        }
         let headers = headers(data);
         let deep = depth >= self.limits.max_depth;
 
@@ -500,6 +541,59 @@ impl<F: FnMut(Visit<'_>)> Walk<'_, F> {
         }
     }
 
+    /// A class file (spec 0481 S3): its raw bytes visited with nothing
+    /// found, then its decoded strings, keeping only the descriptors that
+    /// fill a run of string constants exactly, in protoc's part sizes.
+    fn class_file(&mut self, data: &[u8], strings: Vec<Vec<u8>>, origin: &mut Origin) {
+        (self.visit)(Visit::Scanned {
+            origin,
+            data,
+            explained: &Explained::default(),
+        });
+        let mut decoded = Vec::new();
+        let mut bounds = vec![0];
+        for part in strings {
+            decoded.extend_from_slice(&part);
+            bounds.push(decoded.len());
+        }
+        // Empty strings would give a part of length 0 inside a run.
+        bounds.dedup();
+        // A descriptor counts if it fills a run of strings exactly, cut as
+        // protoc cuts it (spec 0481 S3).
+        let whole_run = |start: usize, end: usize| {
+            let (Ok(first), Ok(last)) = (bounds.binary_search(&start), bounds.binary_search(&end))
+            else {
+                return false;
+            };
+            let lengths: Vec<usize> = bounds[first..=last]
+                .windows(2)
+                .map(|w| w[1] - w[0])
+                .collect();
+            class::protoc_shape(&lengths)
+        };
+        let mut explained =
+            scan_explained_with_options(&decoded, self.graph, self.root, self.options);
+        let (whole, cut): (Vec<_>, Vec<_>) = explained
+            .found
+            .iter()
+            .partition(|&&(start, end)| whole_run(start, end));
+        explained.found = whole;
+        origin.layers.push(Layer {
+            at: 0,
+            kind: MemberKind::Class,
+        });
+        (self.visit)(Visit::Scanned {
+            origin,
+            data: &decoded,
+            explained: &explained,
+        });
+        for (start, end) in cut {
+            let name = record_name(&decoded[start..end]);
+            self.skipped(origin, SkipReason::Cut { name, start, end });
+        }
+        origin.layers.pop();
+    }
+
     fn skipped(&mut self, origin: &Origin, reason: SkipReason) {
         (self.visit)(Visit::Skipped { origin, reason });
     }
@@ -606,6 +700,19 @@ fn gzip_header(data: &[u8], at: usize) -> Option<usize> {
         pos += 2;
     }
     (pos < data.len()).then_some(pos)
+}
+
+/// The name a record starts with: field 1, a string.
+fn record_name(record: &[u8]) -> String {
+    record
+        .split_first()
+        .filter(|(&tag, _)| tag == 0x0a)
+        .and_then(|(_, rest)| {
+            let (len, n) = decode_varint(rest)?;
+            rest.get(n..n.checked_add(usize::try_from(len).ok()?)?)
+        })
+        .map(|name| String::from_utf8_lossy(name).into_owned())
+        .unwrap_or_default()
 }
 
 fn crc32(bytes: &[u8]) -> u32 {

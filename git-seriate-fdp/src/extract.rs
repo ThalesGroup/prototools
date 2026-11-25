@@ -45,9 +45,10 @@ impl Extractor for FdpExtractor<'_> {
                 let inner = (!origin.layers.is_empty()).then_some(origin);
                 collect(data, explained, inner, &mut out);
             }
-            fdp_scan::Visit::Skipped { origin, reason } => out
-                .record
-                .push((format!("skipped {}", origin.chain(None)), reason.code())),
+            fdp_scan::Visit::Skipped { origin, reason } => out.record.push((
+                format!("skipped {}", reason.place(origin, None)),
+                reason.code(),
+            )),
         };
         match &self.schema.graph {
             Some((graph, root)) => {

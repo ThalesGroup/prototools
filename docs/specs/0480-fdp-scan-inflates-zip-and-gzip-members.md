@@ -75,10 +75,13 @@ can only do so if extraction recorded where each descriptor was found.
   returning ranges into its input. An inflating variant can follow when
   a Python caller needs one.
 - **N5. No encoded descriptors.** Some generated code holds the
-  descriptor encoded, not compressed, and inflating does not reveal it:
+  descriptor encoded, not compressed, and inflating does not reveal it
+  whole:
   - **Java:** `descriptorData` string constants, which a class file
     stores as modified UTF-8 (bytes ≥ 0x80 take two bytes, NUL is
-    `C0 80`). An inflated jar still shows no raw descriptor.
+    `C0 80`). Read raw, a class file yields descriptors cut at their
+    first byte ≥ 0x80, reported as whole: spec 0481 decodes class files
+    instead.
   - **C#:** a base64 string literal.
   - **Python sources:** an escaped bytes literal in `_pb2.py`. Compiled
     `.pyc` files marshal the raw bytes, though, so a wheel or `.pyz` of

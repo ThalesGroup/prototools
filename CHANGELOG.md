@@ -151,6 +151,14 @@ SPDX-License-Identifier: MIT
   `origin`, each member skipped a `skipped` entry. git-seriate:
   `store::Item` has `record`, entries the store keys by the path it
   stores the item under (spec 0480).
+- fdp-scan: `scan_inflating` reads a Java class file (the input, or a zip
+  member) through its string constants, decoded as protobuf-java decodes
+  `descriptorData`, never its raw bytes, which cut a descriptor at its
+  first byte ≥ 0x80. A descriptor that doesn't fill a run of string
+  constants exactly, cut as protoc cuts `descriptorData` (400-byte parts
+  before protoc 3.5, 16 000-byte since), is skipped as `cut`; a class file
+  that doesn't parse, as `class-file`. Origins gain a `class` layer (spec
+  0481).
 
 ### Changed
 

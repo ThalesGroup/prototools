@@ -10,6 +10,7 @@
 
 use std::sync::OnceLock;
 
+mod class;
 mod inflate;
 
 pub use inflate::{

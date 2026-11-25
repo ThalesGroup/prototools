@@ -138,7 +138,7 @@ fn scan(data: &[u8], cli: &Cli) -> Result<(), String> {
                     .iter()
                     .try_for_each(|&(start, end)| out.descriptor(origin, data, start, end)),
                 Visit::Skipped { origin, reason } => {
-                    eprintln!("skipped {}: {}", origin.chain(None), reason.code());
+                    eprintln!("skipped {}: {}", reason.place(origin, None), reason.code());
                     Ok(())
                 }
             };
