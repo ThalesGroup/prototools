@@ -135,17 +135,17 @@ protoscan life-client
 # \
 #                                                                              \
 # ######################################################################       \
-# #                           Enters reproto                           #       \
+# #                           Enters protoback                           #     \
 # ######################################################################       \
 #                                                                              \
 
 
-# reproto extracts it into a reusable schema DB:
-reproto -I life-client --schema-db-out life.desc
+# protoback extracts it into a reusable schema DB:
+protoback -I life-client --schema-db-out life.desc
 
 ls -lhd life.desc life/* \
 #                                                                              \
-# Not just extraction — reproto delivered 💪:                                  \
+# Not just extraction — protoback delivered 💪:                                \
 # - life.desc:          the descriptor set, ready to reuse                     \
 # - life/hopcroft.rkyv: the scoring graph, for type inference                  \
 # - life/index.rkyv:    the fast-access index                                  \
@@ -262,7 +262,7 @@ clear && header "5. Takeaways" && picture images/takeaways.jpeg 22
 # \
 #                                                                              \
 # No schema at hand  → descriptors usually hide in the binary: protoscan       \
-#                      finds them, reproto gives the .proto back.              \
+#                      finds them, protoback gives the .proto back.            \
 #                                                                              \
 # No root type       → a corpus types even a message it has never seen,        \
 #                      piece by piece: protolens's heat cues.                  \

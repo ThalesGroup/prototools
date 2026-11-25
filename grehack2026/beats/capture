@@ -85,7 +85,7 @@ steps:
       On a field whose type is a named message or enum (not a bare scalar), press `v`.
 
       protolens hands off to Neovim, opened at that type's declaration in the reconstructed .proto source —
-      the SourceCodeInfo reproto synthesized, resolved against the proto/ stub beside life.desc.
+      the SourceCodeInfo protoback synthesized, resolved against the proto/ stub beside life.desc.
 
       👋 Press `v` on `grid` or `rules`, look at the declaration, come back.
     node: /

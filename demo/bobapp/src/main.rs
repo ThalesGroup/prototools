@@ -144,7 +144,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // Before any network setup (S9): the audience extracts the schema from the
-    // binary and feeds it straight to `reproto --schema-db-out`.
+    // binary and feeds it straight to `protoback --schema-db-out`.
     if let Some(path) = &cli.dump_descriptor {
         log::write_to(path, DESCRIPTOR_SET)?;
         println!("wrote {} ({} bytes)", path.display(), DESCRIPTOR_SET.len());
@@ -366,7 +366,7 @@ fn write_log(dir: &Path, recorder: &codec::SharedRecorder, api_key: &str) -> Res
     eprintln!("Read it back — Places entries resolve; Routes entries are opaque:");
     eprintln!();
     eprintln!("  bobapp --dump-descriptor /tmp/bobapp.desc");
-    eprintln!("  reproto --schema-db-out /tmp/bobapp-db /tmp/bobapp.desc");
+    eprintln!("  protoback --schema-db-out /tmp/bobapp-db /tmp/bobapp.desc");
     eprintln!(
         "  protolens --descriptor-set /tmp/bobapp-db/bobapp.desc {}",
         path.display()

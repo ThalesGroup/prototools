@@ -4,7 +4,7 @@
 
 # nix/shells.nix — user-shell and dev-shell definitions.
 #
-# user-shell: plain shell with prototext, protolens, reproto, protoscan installed.
+# user-shell: plain shell with prototext, protolens, protoback, protoscan installed.
 #             Activated by `nix-shell` (via shell.nix).
 #
 # dev-shell:  full development environment with Cargo, Rust tools, Python
@@ -38,7 +38,8 @@
 , rustcVersion      # pkgs.rustc.unwrapped.version
 , prototext
 , protolens
-, reproto
+, reproto           # the dev-shell's, until spec 0487 S5
+, protoback
 , reprotoSrc        # filtered reproto source (builtins.path)
 , reprotoTestDeps   # full Python dep list for the dev-shell
 , lintSettings      # the Python linters' settings (nix/python.nix)
@@ -59,7 +60,7 @@ in
 
 {
   # ---------------------------------------------------------------------------
-  # User shell — plain shell with prototext and reproto installed.
+  # User shell — plain shell with prototext and protoback installed.
   # ---------------------------------------------------------------------------
   user-shell = pkgs.mkShell {
     name = "prototools-user";
@@ -67,17 +68,17 @@ in
     # wktDb contributes no binary — nix-shell sources each build input's
     # setup-hook, and its is what exports PROTOTEXT_DESCRIPTOR_SET
     # (spec 0228 S5), so no shellHook line is needed for it.
-    buildInputs = [ prototext protolens reproto protoscan wktDb ];
+    buildInputs = [ prototext protolens protoback protoscan wktDb ];
 
     shellHook = ''
       old_opts=$(set +o)
       set -euo pipefail
 
       export NIXSHELL_REPO="${repoRoot}"
-      export MANPATH="${prototext}/share/man:${protolens}/share/man:${reproto}/share/man:${protoscan}/share/man:''${MANPATH:-}"
+      export MANPATH="${prototext}/share/man:${protolens}/share/man:${protoback}/share/man:${protoscan}/share/man:''${MANPATH:-}"
       source ${prototext}/share/bash-completion/completions/prototext.bash
       source ${protolens}/share/bash-completion/completions/protolens.bash
-      source ${reproto}/share/bash-completion/completions/reproto.bash
+      source ${protoback}/share/bash-completion/completions/protoback.bash
       source ${protoscan}/share/bash-completion/completions/protoscan.bash
 
       [[ "$old_opts" == *"set -o errexit"*  ]] && set -e || set +e

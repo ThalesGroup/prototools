@@ -108,7 +108,7 @@ beat 10's payoff.
 
 ```sh
 bobapp --dump-descriptor /tmp/bobapp.desc
-reproto --schema-db-out /tmp/bobapp-db /tmp/bobapp.desc
+protoback --schema-db-out /tmp/bobapp-db /tmp/bobapp.desc
 protolens /tmp/bobapplog/log.pb --descriptor-set /tmp/bobapp-db
 ```
 

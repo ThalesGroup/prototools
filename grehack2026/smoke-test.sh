@@ -45,7 +45,7 @@ check "versions" <<'EOF'
 set -e
 prototext --version
 protolens --version
-reproto --help >/dev/null
+protoback --help >/dev/null
 protoscan --help >/dev/null
 EOF
 
@@ -134,7 +134,7 @@ check "editor path, uid 4242" --user 4242:4242 <<<"$editor_check"
 # ── The game of life (spec 0375) ─────────────────────────────────────────────
 
 # Test plan 1: the schema is in the binaries, for protoscan to find: life.proto,
-# and descriptor.proto beside it for reproto (spec 0388 S13). The client is a
+# and descriptor.proto beside it (spec 0388 S13). The client is a
 # wrapProgram script (grehack2026/game/default.nix); its binary is the
 # .life-client-wrapped beside it.
 check "protoscan finds life.proto and descriptor.proto in the client and the server" <<'EOF'
@@ -300,7 +300,7 @@ EOF
 check "the talk's tools and material (spec 0403 S1, S7)" <<'EOF'
 set -e
 for c in teleprompt chafa nvim buf protoc hexdump life-tap life-server \
-         life-client prototext protolens reproto protoscan; do
+         life-client prototext protolens protoback protoscan; do
   command -v "$c" >/dev/null || { echo "$c is not on PATH"; exit 1; }
 done
 teleprompt --help >/dev/null
@@ -364,7 +364,7 @@ EOF
 
 check "the gRPConf talk's tools and material (spec 0404 S1, S3, S4)" <<'EOF'
 set -e
-for c in teleprompt nvim buf protoc prototext protolens reproto protoscan; do
+for c in teleprompt nvim buf protoc prototext protolens protoback protoscan; do
   command -v "$c" >/dev/null || { echo "$c is not on PATH"; exit 1; }
 done
 for c in bat tree rsync; do
@@ -390,14 +390,14 @@ check "the gRPConf talk's pipeline, as uid 1000, offline (spec 0404)" --network 
 set -e
 cd /workshop/grpconf2026
 rm -rf alice && mkdir alice
-reproto --desc-root bob/app --schema-db-out alice/app.desc >/dev/null
+protoback --desc-root bob/app --schema-db-out alice/app.desc >/dev/null
 for walk in "alice/app.desc bob/capture beats/capture" \
             "alice/app.desc bob/logfile beats/app.desc"; do
   set -- $walk
   out=$(protolens --descriptor-set "$1" "$2" --script "$3" script 2>&1)
   ! grep -q "error:" <<<"$out" || { echo "$3:"; grep "error:" <<<"$out"; exit 1; }
 done
-reproto --desc-root "$PROTOTEXT_GOOGLEAPIS_SET" --proto-out alice/places \
+protoback --desc-root "$PROTOTEXT_GOOGLEAPIS_SET" --proto-out alice/places \
   --emit-binary --seed 'file:google/maps/places/v1/*.proto' >/dev/null
 pbs=$(shopt -s globstar; ls -1 alice/places/**/*.pb | wc -l)
 protos=$(shopt -s globstar; ls -1 alice/places/**/*.proto | wc -l)

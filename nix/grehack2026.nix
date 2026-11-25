@@ -9,7 +9,7 @@
 # them under one reference (.github/workflows/workshop-image.yml).
 #
 # Attributes (exported from default.nix as `grehack2026.*`):
-#   runtime      — the tools: prototext, protolens, reproto, protoscan, the
+#   runtime      — the tools: prototext, protolens, protoback, protoscan, the
 #                  WKT schema database, and the game of life with its tap
 #                  (spec 0375); the demos' tools bring Neovim and buf
 #   life         — life-server, life-client, life-tap (spec 0375)
@@ -19,7 +19,7 @@
 { pkgs
 , prototext
 , protolens
-, reproto
+, protoback
 , protoscan
 , life
 , wktDb
@@ -46,7 +46,7 @@ let
     # through the covert channel. life-client carries its own wrapped copy;
     # putting it here lets a participant run `fortune` by hand and compare
     # with what the client sends back.
-    paths = [ prototext protolens reproto protoscan wktDb life pkgs.wireshark-cli pkgs.fortune ];
+    paths = [ prototext protolens protoback protoscan wktDb life pkgs.wireshark-cli pkgs.fortune ];
   };
 
   uid = 1000;
@@ -73,7 +73,7 @@ let
 
       prototools — GreHack 2026 workshop
 
-      Tools:     prototext  protolens  reproto  protoscan
+      Tools:     prototext  protolens  protoback  protoscan
       Material:  /workshop
       Your files: /work, when started with -v "$PWD":/work
 

@@ -9,7 +9,7 @@
 #       --script beats/app.desc
 #
 # The root type is not in alice/app.desc — it is Bob's own log envelope,
-# which reproto recovered no schema for.  The session opens untyped.
+# which protoback recovered no schema for.  The session opens untyped.
 # This beat names the structure by hand, enables heat cues, and follows
 # the cues as far as alice/app.desc can take them.
 #

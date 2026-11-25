@@ -15,7 +15,7 @@ demo/header "1. Setup"
 # \
 # Meet our two tools.
 \
-prototext --version && reproto --version
+prototext --version && protoback --version
 
 # \
 # Build the googleapis schema DB — we will use it throughout.
@@ -302,7 +302,7 @@ vim +'set ft=pbtxt' <( \
 
 # \
 #                                                                                \
-# From descriptors, reproto can build a scoring DB — a compiled schema with      \
+# From descriptors, protoback can build a scoring DB — a compiled schema with    \
 # a scoring graph side-car.  --schema-db-out produces it from any seed.          \
 #
 
@@ -315,7 +315,7 @@ vim +'set ft=pbtxt' <( \
 #
 
 \
-reproto \
+protoback \
     --schema-db-out stash/opmeta.desc \
     --scoring-html-out stash/opmeta.html \
     --builtin descriptor \
@@ -384,7 +384,7 @@ xdg-open stash/opmeta-hopcroft.html
 # \
 # IpRules toy example: 5 nodes raw, 4 nodes after Hopcroft.
 \
-reproto -q \
+protoback -q \
     --schema-db-out stash/iprules.desc \
     --scoring-html-out stash/iprules.html \
     --builtin descriptor \
@@ -410,7 +410,7 @@ demo/header "7. Decompiling descriptors"
 # compiled binaries, shipped alongside gRPC services, or stored in schema        \
 # registries — even when the original .proto source is not.                      \
 #                                                                                \
-# reproto turns a descriptor back into readable .proto source.  Useful when      \
+# protoback turns a descriptor back into readable .proto source.  Useful when    \
 # you need to write code that audits or processes the corresponding protobufs.   \
 #
 
@@ -429,27 +429,27 @@ out=$( \
 # \
 # Decompile it back to .proto source.
 \
-reproto -q \
-    -O stash/reproto-out \
+protoback -q \
+    -O stash/protoback-out \
     --builtin descriptor \
     $GOOGLEAPIS_DESCS/google/type/postal_address.pb
 # \
 # Let's see the result.
 \
-vim stash/reproto-out/google/type/postal_address.proto; \
+vim stash/protoback-out/google/type/postal_address.proto; \
 bat --style=numbers,header-filename -l proto \
-    stash/reproto-out/google/type/postal_address.proto
+    stash/protoback-out/google/type/postal_address.proto
 # \
 # 👆 Human-readable .proto source, recovered from the binary descriptor.
 # \
 #                                                                                \
-# reproto can decompile an entire schema DB — thousands of files at once.        \
+# protoback can decompile an entire schema DB — thousands of files at once.      \
 #
 
 # \
 # Decompile the entire googleapis DB: thousands of .proto files reconstructed.
 \
-reproto -O stash/googleapis-out \
+protoback -O stash/googleapis-out \
     --builtin descriptor \
     -I $GOOGLEAPIS_DESCS .
 # \
@@ -466,7 +466,7 @@ code --reuse-window stash/googleapis-out/google/type/postal_address.proto
 # \
 #                                                                                \
 # What if some descriptors are missing — imported files not available?           \
-# reproto handles incomplete inputs gracefully: missing imports are noted        \
+# protoback handles incomplete inputs gracefully: missing imports are noted      \
 # as orphan comments (///) in the output, so nothing is silently dropped.        \
 # The --prune flag makes this explicit and controlled.                           \
 #
@@ -478,14 +478,14 @@ demo/header "8. Seeding and pruning"
 #                                                                                \
 # The decompilation is thousands of files — but Simon's audit team does not      \
 # need all of googleapis.  They only care about one message: AuditLog, the       \
-# record of every Cloud API call.  Pass its descriptor as the seed: reproto      \
+# record of every Cloud API call.  Pass its descriptor as the seed: protoback    \
 # pulls only its transitive closure.                                             \
 #
 
 # \
 # Seed on AuditLog: thousands of files collapse to 8.
 \
-reproto -q \
+protoback -q \
     -O stash/audit-seed \
     --builtin descriptor \
     -I $GOOGLEAPIS_DESCS \
@@ -501,12 +501,12 @@ code --reuse-window stash/audit-seed/google/cloud/audit/audit_log.proto
 # \
 #                                                                                \
 # But Simon's tool only decodes payloads — it never needs to interpret RPC       \
-# error statuses.  Prune google/rpc/status.proto: reproto drops the file and     \
+# error statuses.  Prune google/rpc/status.proto: protoback drops the file and   \
 # orphans the field that referenced it, leaving a /// comment so nothing is      \
 # silently lost.                                                                 \
 #
 \
-reproto -q \
+protoback -q \
     -O stash/audit-pruned \
     --builtin descriptor \
     -I $GOOGLEAPIS_DESCS \

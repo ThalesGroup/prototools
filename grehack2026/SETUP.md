@@ -162,9 +162,9 @@ network: they run in any container started as in section 3.
 The gRPConf 2026 talk on prototools, with a real-world corpus: Bob's
 app talks to Google Maps, and Alice has only the app binary, one captured
 request and a log. It shows where `protoc --decode` falls short, schema
-recovery from the binary with `protoscan` and `reproto`, type inference
+recovery from the binary with `protoscan` and `protoback`, type inference
 against the whole googleapis corpus (8,000 files), and a byte-exact
-re-encoding. Its annexes go further: performance, a `reproto` deep-dive, and
+re-encoding. Its annexes go further: performance, a `protoback` deep-dive, and
 the anomaly taxonomy.
 
 ```sh

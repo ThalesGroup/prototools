@@ -32,7 +32,7 @@ clear && header "prototools"
 # \
 # prototools has three command-line interfaces:                                \
 # - protoscan, for scanning any blob for schema descriptors                    \
-# - reproto, for extracting, indexing, and decompiling schema descriptors      \
+# - protoback, for extracting, indexing, and decompiling schema descriptors    \
 #   back to .proto source files                                                \
 # - prototext, for converting protobufs between binary and text format —       \
 #   and guaranteeing a byte-for-byte round trip. And if you give it a corpus   \
@@ -97,13 +97,13 @@ protoscan bob/app
 # It looks like the app embeds the Google Places API descriptor set 💡.
 
 # \
-# Let's process those descriptors with our second prototool, reproto, so that  \
-# we can take a look at them in the clear and enable type inference.           \
+# Let's process those descriptors with our second prototool, protoback, so     \
+# that we can take a look at them in the clear and enable type inference.      \
 
-reproto --desc-root bob/app --schema-db-out alice/app.desc  # 🤞
+protoback --desc-root bob/app --schema-db-out alice/app.desc  # 🤞
 
 ls -lhd alice/app.desc alice/app/* \
-# reproto delivered 💪:                                                        \
+# protoback delivered 💪:                                                      \
 # - app.desc:           set of extracted descriptors                           \
 # - app/hopcroft.rkyv:  associated type-inference graph                        \
 # - app/proto/:         all decompiled .proto files                            \
@@ -168,7 +168,7 @@ clear && header "7. Three takeaways"
 
 # \
 # 1. Descriptors are usually hiding in the binary itself. You rarely have to   \
-#    guess a schema — reproto gives you the .proto back.                       \
+#    guess a schema — protoback gives you the .proto back.                     \
 
 # \
 # 2. A corpus can type a message it has never seen, piece by piece, because    \
@@ -190,7 +190,7 @@ clear && header "Annexes"
 
 # \
 # A. Performance                                                               \
-# B. reproto deep-dive                                                         \
+# B. protoback deep-dive                                                       \
 # C. Anomaly taxonomy                                                          \
 
 
@@ -208,23 +208,23 @@ time protolens --descriptor-set $PROTOTEXT_GOOGLEAPIS_SET $PROTOTEXT_GOOGLEAPIS_
 # And the navigation remains fluid
 protolens --descriptor-set $PROTOTEXT_GOOGLEAPIS_SET $PROTOTEXT_GOOGLEAPIS_SET
 
-clear && header "B. reproto deep-dive"
+clear && header "B. protoback deep-dive"
 
 # \
-# reproto decompiles FileDescriptorProto blobs back to .proto source.          \
+# protoback decompiles FileDescriptorProto blobs back to .proto source.        \
 # It is designed to be flexible and forgiving.                                 \
 
 # \
-# 1. We can ask reproto to decompile only a subset of an FDS.                  \
+# 1. We can ask protoback to decompile only a subset of an FDS.                \
 
 # Here, let's decompile only the "places v1" subset of the google APIs:
-reproto \
+protoback \
     --desc-root $PROTOTEXT_GOOGLEAPIS_SET \
     --proto-out alice/places \
     --emit-binary \
     --seed 'file:google/maps/places/v1/*.proto'
 
-# reproto extracted 34 files: the 18 places.v1 files plus their transitive deps:
+# protoback extracted 34 files: the 18 places.v1 files plus their transitive deps:
 (shopt -s globstar; ls -1 alice/places/**/*.pb)
 # and decompiled them to equivalent .proto files:
 (shopt -s globstar; ls -1 alice/places/**/*.proto)
@@ -232,7 +232,7 @@ reproto \
 view alice/places/google/maps/places/v1/places_service.proto
 
 # \
-# 2. We can also have reproto work on an incomplete FDS.                       \
+# 2. We can also have protoback work on an incomplete FDS.                     \
 
 # For example, let's make a copy the binary descriptors we just extracted:
 mkdir -p alice/places-incomplete \
@@ -240,21 +240,21 @@ mkdir -p alice/places-incomplete \
 # Now remove polyline.pb from the copy:
 rm alice/places-incomplete/google/maps/places/v1/polyline.pb
 # And remove the TravelMode definition from travel_mode.pb:
-reproto \
+protoback \
     --desc-root alice/places-incomplete \
     --proto-out alice/places-incomplete \
     --emit-binary \
-    --use-variant all \
+    --builtin all \
     google/maps/places/v1/travel_mode.pb \
     --prune enum:google.maps.places.v1.TravelMode
 
-# Finally, re-run the initial reproto command on the pruned set
-reproto \
+# Finally, re-run the initial protoback command on the pruned set
+protoback \
     --desc-root alice/places-incomplete \
     --proto-out alice/places-incomplete \
     --emit-binary \
     --seed 'file:google/maps/places/v1/*.proto'
-# reproto noticed the missing dependencies and worked around them.
+# protoback noticed the missing dependencies and worked around them.
 
 # How did it manage? Let's have a look at a diff:
 view -d -R \
@@ -262,12 +262,12 @@ view -d -R \
     alice/places-incomplete/google/maps/places/v1/places_service.proto
 
 # \
-# 3. We can ask reproto to transcribe to proto2 syntax, while decompiling      \
+# 3. We can ask protoback to transcribe to proto2 syntax, while decompiling    \
 #    a FDP, even if the original syntax was proto3 or editions.                \
 #    This can be handy if your compile tools don't support (say) editions.     \
 
-# The relevant reproto option is --force-proto2-output:
-reproto \
+# The relevant protoback option is --force-proto2-output:
+protoback \
     --desc-root alice/places \
     --proto-out alice/places-proto2 \
     --force-proto2-output

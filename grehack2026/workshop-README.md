@@ -17,7 +17,7 @@ guide, including how to start the container, is `SETUP.md`:
 - `protolens` browses a protobuf interactively: types, heat cues, the raw
   bytes behind every line. `F1` lists its keys.
 - `protoscan` finds the protobuf descriptors embedded in a binary.
-- `reproto` turns descriptors back into `.proto` files and schema databases.
+- `protoback` turns descriptors back into `.proto` files and schema databases.
 
 `$PROTOTEXT_DESCRIPTOR_SET` (the well-known types) is the default schema
 database; `$PROTOTEXT_GOOGLEAPIS_SET` holds all of googleapis, for

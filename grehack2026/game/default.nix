@@ -11,7 +11,7 @@
 #
 # build.rs runs protoc on proto/grehack/life/v1/life.proto; the binaries
 # embed its FileDescriptorProto for protoscan to find (spec 0375 S3), and
-# descriptor.proto's beside it for reproto (spec 0388 S13). The
+# descriptor.proto's beside it (spec 0388 S13). The
 # unit tests run as part of the build (crane's cargo test).
 #
 # life-tap runs dumpcap and tshark, so it is wrapped with wireshark-cli on

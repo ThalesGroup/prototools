@@ -604,7 +604,7 @@ let
 
   shells = import ./nix/shells.nix {
     inherit pkgs pythonPkgs pythonBin pythonExecutable buf protoc;
-    inherit (rust) prototext protolens;
+    inherit (rust) prototext protolens protoback;
     inherit (python) reprotoSrc reprotoTestDeps reproto lintSettings;
     inherit (rust) protoscan pyo3EnvironmentSignature;
     inherit wktDb;
@@ -659,7 +659,7 @@ let
   '';
 
   # ---------------------------------------------------------------------------
-  # Convenience bundle: prototext + protolens + reproto + protoscan, and
+  # Convenience bundle: prototext + protolens + protoback + protoscan, and
   # git-seriate and git-seriate-fdp
   #
   # wktDb contributes no binary — it is here for its setup-hook, which
@@ -668,7 +668,7 @@ let
   # ---------------------------------------------------------------------------
   prototools = pkgs.symlinkJoin {
     name   = "prototools";
-    paths  = [ rust.prototext rust.protolens python.reproto rust.protoscan
+    paths  = [ rust.prototext rust.protolens rust.protoback rust.protoscan
                rust.gitSeriate rust.gitSeriateFdp wktDb ];
   };
 
@@ -725,8 +725,8 @@ let
   grehack2026 = import ./nix/grehack2026.nix {
     inherit pkgs wktDb mkClosureCheck gitRevision grehackDemo grpconfTalk;
     life = grehackLife;
-    inherit (rust) prototext protolens;
-    inherit (python) reproto googleapisDb googleapisPbs;
+    inherit (rust) prototext protolens protoback;
+    inherit (python) googleapisDb googleapisPbs;
     inherit (rust) protoscan;
   };
 
@@ -736,8 +736,7 @@ let
   demoShells = import ./nix/demo-shells.nix {
     inherit pkgs wktDb grehackDemo grpconfTalk;
     grehackRuntime = grehack2026.runtime;
-    inherit (rust) prototext protolens;
-    inherit (python) reproto;
+    inherit (rust) prototext protolens protoback;
     inherit (rust) protoscan;
   };
 

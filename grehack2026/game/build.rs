@@ -18,9 +18,9 @@
 //! module (spec 0386 G3), so it does not link the log types either.
 //!
 //! `descriptor.proto`'s FDP is written too, for the binaries to embed beside
-//! life's (spec 0388 S13): `reproto` wants `descriptor.proto` in its input
-//! set, so with it in the client, `reproto -I life-client` needs no
-//! `--use-variant descriptor`. It comes from protoc's own include directory.
+//! life's (spec 0388 S13), which reproto needed in its input set; protoback
+//! fills it in from its built-in copy, so it is now one more file protoscan
+//! finds. It comes from protoc's own include directory.
 
 use prost::Message;
 use prost_types::FileDescriptorSet;

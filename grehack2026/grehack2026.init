@@ -14,7 +14,7 @@ printf -v _capture '%q' "${_init_dir}/capture"
 teleprompt_at_exit "[ -e ${_capture}/tap.pid ] && life-tap --out ${_capture} --stop"
 unset _capture
 
-# Alice's copy of the client binary, for protoscan and reproto (spec 0388
+# Alice's copy of the client binary, for protoscan and protoback (spec 0388
 # S3). On a Nix PATH, life-client is a wrapper script; the binary, with its
 # embedded descriptors, is the .life-client-wrapped beside it.
 _client="$(readlink -f "$(command -v life-client)")"

@@ -8,7 +8,7 @@ SPDX-License-Identifier: MIT
 
 Running order for the live demo that follows the talk: what happens on screen, in which window, and the point each step makes. The teleprompt deck `grehack2026.sh` is the source of truth; this file follows it section by section. If the two disagree, the deck wins and this file is out of date.
 
-The demo app is the crate in `game/`: a Game of Life client and server talking cleartext gRPC (`life-client`, `life-server`), plus a network tap (`life-tap`). The tools under the lens are `protoscan`, `reproto`, `prototext` and `protolens`.
+The demo app is the crate in `game/`: a Game of Life client and server talking cleartext gRPC (`life-client`, `life-server`), plus a network tap (`life-tap`). The tools under the lens are `protoscan`, `protoback`, `prototext` and `protolens`.
 
 ## Setup
 
@@ -49,7 +49,7 @@ Every capture starts the same way. Bob's client is not running (Bob quits it wit
 - Capture: Bob quits the client, the tap starts, Bob runs `life-client --paused`, presses `n` three times and quits it, then `life-tap --stop` and `tail -n 3 capture/tap.log`.
 - `hexdump -v -C capture/000001-request.pb`: opaque. Protobuf is self-describing only up to field numbers and wire types; reading values needs a schema, that is, a descriptor set and a root type.
 - `protoscan life-client`: the client carries its own schema. protoscan lists the embedded `FileDescriptorProto`s: the game's `grehack/life/v1/life.proto`, and the well-known `google/protobuf/descriptor.proto`. `--proto_out DIR` would extract them.
-- `reproto -I life-client --schema-db-out life.desc` turns those descriptors into a schema database. reproto needs `descriptor.proto` in its input set, and the client carries it, so no `--use-variant` is needed.
+- `protoback -I life-client --schema-db-out life.desc` turns those descriptors into a schema database.
 
 ## 1b. Schema DB
 
@@ -58,10 +58,10 @@ Every capture starts the same way. Bob's client is not running (Bob quits it wit
   - `life/hopcroft.rkyv` is the type-inference scoring graph;
   - `life/proto/` holds the decompiled `.proto` sources;
   - `life/index.rkyv` is the fast-access index.
-- `view life/proto/grehack/life/v1/life.proto`: a faithful `.proto` rebuilt from binary descriptors, with no access to the source. Everything reproto needed came from the binary.
+- `view life/proto/grehack/life/v1/life.proto`: a faithful `.proto` rebuilt from binary descriptors, with no access to the source. Everything protoback needed came from the binary.
 - `prototext --descriptor-set life.desc list-schemas capture/000001-response.pb` infers the capture's type by scoring it against the DB.
 - `protoc --decode=grehack.life.v1.StepRequest` on `000001-request.pb` works, but it is spartan.
-- `protolens --descriptor-set life.desc capture/000001-response.pb --script beats/capture` gives the better view: annotations, the inferred type, and the wire level one keystroke (`w`) away. On a field whose type is a named message or enum, `v` opens Neovim at that type's declaration in the reconstructed `.proto`. This works because of the `SourceCodeInfo` reproto synthesized, and the `life/proto/` stub beside `life.desc`. Schema recovery is not just a list of types: we go from a byte on the wire to the line of source that defines it, and back.
+- `protolens --descriptor-set life.desc capture/000001-response.pb --script beats/capture` gives the better view: annotations, the inferred type, and the wire level one keystroke (`w`) away. On a field whose type is a named message or enum, `v` opens Neovim at that type's declaration in the reconstructed `.proto`. This works because of the `SourceCodeInfo` protoback synthesized, and the `life/proto/` stub beside `life.desc`. Schema recovery is not just a list of types: we go from a byte on the wire to the line of source that defines it, and back.
 
 ## 2. Eve is spying
 
@@ -98,7 +98,7 @@ A single capture (spec 0396). Alice does not control Eve, so which message carri
 
 ## 5. Takeaways
 
-1. Descriptors are usually hiding in the binary itself: protoscan finds them, and reproto gives the `.proto` back.
+1. Descriptors are usually hiding in the binary itself: protoscan finds them, and protoback gives the `.proto` back.
 2. A corpus can type a message it has never seen, piece by piece, because that message is built from messages it does know. That is what protolens's heat cues are for.
 3. What your decoder normalizes away is evidence: a shadowed value, a spurious continuation bit, a truncated tail. prototools surfaces it, all the way back to the original bytes.
 

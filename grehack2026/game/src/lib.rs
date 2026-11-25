@@ -36,9 +36,9 @@ pub mod pb {
 pub static DESCRIPTOR: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/life.fdp"));
 
 /// The serialized `FileDescriptorProto` of the well-known
-/// `google/protobuf/descriptor.proto`, embedded beside [`DESCRIPTOR`] so that
-/// `reproto -I` on a binary finds it in its input set and needs no
-/// `--use-variant descriptor` (spec 0388 S13).
+/// `google/protobuf/descriptor.proto`, embedded beside [`DESCRIPTOR`]
+/// (spec 0388 S13), which reproto needed in its input set; protoback fills
+/// it in from its built-in copy, so it is now one more file protoscan finds.
 pub static DESCRIPTOR_PROTO: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/descriptor.fdp"));
 
 /// The fully qualified name of the one method, read from [`DESCRIPTOR`]:

@@ -74,7 +74,7 @@ user interface for working with protobufs, including for reverse-engineering.
 The CLIs:
 - **protoscan** extracts FileDescriptorProto **[PRON: "file-descriptor-proto"]**
   descriptors from binaries **[PRON: BY-nuh-reez]**.
-- **reproto** decompiles and analyzes descriptor sets.
+- **protoback** decompiles and analyzes descriptor sets.
 - **prototext** does lossless serialization and deserialization
   **[PRON: dee-see-ree-uh-lih-ZAY-shun]** with schema **[PRON: SKEE-muh]**
   inference **[PRON: IN-fuh-runss]**.
@@ -135,11 +135,11 @@ Can we find descriptors **[PRON: dih-SCRIP-terz]** in the binary **[PRON: BY-nuh
 Yes. bob/app contains reflected descriptors — and they look like a subset of
 the Google APIs. Interesting.
 
-Let's extract, decompile **[PRON: dee-kum-PYL]**, and index them with reproto.
+Let's extract, decompile **[PRON: dee-kum-PYL]**, and index them with protoback.
 
-*(runs reproto)*
+*(runs protoback)*
 
-reproto delivered. We now have a descriptor set, a type-inference
+protoback delivered. We now have a descriptor set, a type-inference
 **[PRON: IN-fuh-runss]** graph, a fast-access index, and decompiled `.proto`
 source files.
 
@@ -480,7 +480,7 @@ Navigation stays fluid and startup latency is short.
 | 1:00 | prototools overview |
 | 2:00 | The stage — Bob & Alice setup |
 | 3:00 | protoc --decode_raw |
-| 4:00 | protoscan / reproto |
+| 4:00 | protoscan / protoback |
 | 5:30 | Launch protolens on capture |
 | 5:50 | capture step 1 — SearchTextRequest |
 | 6:30 | capture step 2 — score tooltip |

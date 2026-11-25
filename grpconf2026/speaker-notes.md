@@ -166,7 +166,7 @@ version was retired; spec 0394 gave this cut its name.)
 | prototools overview | 2 min |
 | The stage (scenario setup) | 1 min |
 | protoc falls short | 2 min |
-| protoscan + reproto (no tree/file view) | 1.5 min |
+| protoscan + protoback (no tree/file view) | 1.5 min |
 | prototext + protolens/capture (no intermediate protoc decode) | 3 min |
 | protolens/logfile (app.desc) | 5 min |
 | protolens/logfile (googleapis) | 5 min |
@@ -206,7 +206,7 @@ no field names.
 
 **Q: How long does it take to build a schema database from a binary?**
 In the demo: a few seconds for a ~10 MB binary. The bottleneck is
-protoscan (scanning for embedded descriptors) and reproto (decompilation
+protoscan (scanning for embedded descriptors) and protoback (decompilation
 and graph construction). Both are single-pass. A 50 MB binary stays
 under a minute on a laptop.
 
@@ -221,7 +221,7 @@ embed descriptors in plaintext for reflection support.
 protoscan works on the binary file itself, not on a live service.
 For a live service that exposes the gRPC reflection API, you would use
 `grpc_cli` or `grpcurl --list` to retrieve the descriptors — then feed
-the resulting descriptor set to prototext or protolens. reproto is
+the resulting descriptor set to prototext or protolens. protoback is
 not needed in that case.
 
 ---
@@ -259,7 +259,7 @@ fields, wire-type mismatches). The Hopcroft graph is a bisimulation
 structure built from the descriptor set: it encodes which message types
 are structurally compatible with each other, so the scorer can
 efficiently navigate through nested types without trying every
-combination. The graph is built once by reproto and stored in
+combination. The graph is built once by protoback and stored in
 `hopcroft.rkyv`.
 
 **Q: What does a negative score mean? Is the type wrong?**
