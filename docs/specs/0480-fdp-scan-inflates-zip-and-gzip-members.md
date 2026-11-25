@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0480 — fdp-scan inflates zip and gzip members
 
-Status: draft
+Status: implemented
+Implemented in: 2026-11-25
 App: fdp-scan, protoscan, git-seriate-fdp
 Refs: docs/protoscan/scan.md §5 (compressed descriptors: Go's APIv1
         gzips them, no surveyed tool reads them, the pre-pass sketched),
@@ -343,4 +344,31 @@ to make the option a default. The model:
 
 ## Measured outcome
 
-Filled in at implementation.
+2026-11-25, test 11: protoscan built from this branch (`quick` profile,
+optimized), `--origin` with `--inflate` off then on, on a quiet host.
+Times are the median of 5 runs, memory the largest peak RSS. The files
+are public releases (their published SHA-256 checked where one exists);
+they are only read.
+
+| file | size | off: s | off: MiB | on: s | on: MiB | found, off → on |
+|---|---|---|---|---|---|---|
+| `gh` 2.62.0 (Go, APIv2) | 50.1 MB | 0.087 | 51.3 | 0.102 | 51.4 | 26 → 26 |
+| `terraform` 0.12.31 (Go, APIv1) | 69.8 MB | 0.107 | 70.0 | 0.141 | 70.2 | 0 → 34 |
+| `etcd` 3.3.27 (Go, gogo) | 22.5 MB | 0.040 | 24.9 | 0.047 | 24.9 | 0 → 24 |
+| `bundletool-all-1.17.2.jar` | 32.5 MB | 0.053 | 34.6 | 0.426 | 47.8 | 0 → 56 |
+
+- **The cost model held.** On executables, inflating adds 15 to 30 % and
+  no memory: their few gzip members are small. On the jar, a deflated
+  archive of 13 715 members, 8× the time and 13 MiB more memory, the
+  members inflated one at a time.
+- **The case the option exists for:** builds against APIv1 and gogo go
+  from no descriptor found to all of them.
+- **What the jar showed beyond cost:** read raw, its class files gave
+  truncated descriptors; spec 0481 reads them instead. Its other 20
+  descriptors come from native executables it carries, whole.
+- **protoscan's default** stays off here. At these costs, on by default
+  looks affordable; that decision is left to a later spec, once a
+  second corpus has been measured.
+
+Not measured: a real decompression bomb against the limits (test 6 covers
+them on built inputs), and inputs of several gigabytes.
