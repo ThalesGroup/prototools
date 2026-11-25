@@ -14,8 +14,8 @@ mod class;
 mod inflate;
 
 pub use inflate::{
-    scan_inflating, scan_inflating_with, InflateLimits, Layer, MemberKind, Origin, SkipReason,
-    Visit,
+    scan_inflating, scan_inflating_filtered, scan_inflating_with, InflateLimits, Layer, MemberKind,
+    Origin, SkipReason, Visit,
 };
 
 use prototext_graph::score::load::LoadedGraph;

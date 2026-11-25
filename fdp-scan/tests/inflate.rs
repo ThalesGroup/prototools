@@ -9,8 +9,8 @@ use std::io::Write;
 use std::path::Path;
 
 use fdp_scan::{
-    scan_explained, scan_inflating, InflateLimits, MemberKind, Origin, ScanOptions, SkipReason,
-    Visit,
+    scan_explained, scan_inflating, scan_inflating_filtered, InflateLimits, MemberKind, Origin,
+    ScanOptions, SkipReason, Visit,
 };
 use flate2::write::{DeflateEncoder, GzEncoder};
 use flate2::{Compression, Crc};
@@ -477,4 +477,156 @@ fn part_shapes() {
             "a".repeat(27)
         )]
     );
+}
+
+// ── Declining a buffer's scan (spec 0482) ────────────────────────────────────
+
+/// Every visit, as text: `scanned <chain>`, `found <origin>` per
+/// descriptor, `skipped <place> <reason>`; and every buffer offered to
+/// `scan`, `offered <chain>`, with `scan`'s answer.
+fn transcript(data: &[u8], mut scan: impl FnMut(&Origin, &[u8]) -> bool) -> Vec<String> {
+    let seen = std::cell::RefCell::new(Vec::new());
+    scan_inflating_filtered(
+        data,
+        fdp_scan_wkt(),
+        "google.protobuf.FileDescriptorProto",
+        &ScanOptions::default(),
+        &InflateLimits::default(),
+        |origin, bytes| {
+            let answer = scan(origin, bytes);
+            seen.borrow_mut()
+                .push(format!("offered {} {answer}", origin.chain(None)));
+            answer
+        },
+        |visit| match visit {
+            Visit::Scanned {
+                origin, explained, ..
+            } => {
+                seen.borrow_mut()
+                    .push(format!("scanned {}", origin.chain(None)));
+                for &(start, end) in &explained.found {
+                    seen.borrow_mut()
+                        .push(format!("found {}", origin.text(None, start, end)));
+                }
+            }
+            Visit::Skipped { origin, reason } => seen.borrow_mut().push(format!(
+                "skipped {} {}",
+                reason.place(origin, None),
+                reason.code()
+            )),
+        },
+    );
+    seen.into_inner()
+}
+
+/// The embedded schema, as `scan_inflating` uses it.
+fn fdp_scan_wkt() -> &'static prototext_graph::score::load::LoadedGraph {
+    static GRAPH: std::sync::OnceLock<prototext_graph::score::load::LoadedGraph> =
+        std::sync::OnceLock::new();
+    GRAPH.get_or_init(|| {
+        prototext_graph::score::load::LoadedGraph::from_static_bytes(prototext::WKT_GRAPH)
+            .expect("the embedded WKT graph loads")
+    })
+}
+
+/// The visits of the unfiltered walk, as [`transcript`] writes them.
+fn unfiltered(data: &[u8]) -> Vec<String> {
+    transcript(data, |_, _| true)
+        .into_iter()
+        .filter(|line| !line.starts_with("offered "))
+        .collect()
+}
+
+/// Inputs exercising every kind of buffer: clear, gzip, stored and
+/// deflated zip, a class file, skipped members.
+fn mixed_inputs() -> Vec<Vec<u8>> {
+    let (a, b) = (fdp("a.proto"), fdp("b.proto"));
+    let mut encrypted = zip_member("e.pb", &a, Zip::Deflated);
+    encrypted[6] |= 1;
+    let d = java_fdp(130);
+    vec![
+        embedded(&[&a, &gzip(&b)]),
+        embedded(&[
+            &zip_member("s.pb", &a, Zip::Stored),
+            &zip_member("d.pb", &b, Zip::Deflated),
+            &encrypted,
+        ]),
+        embedded(&[&zip_member("x/Y.class", &class_file(&[&d]), Zip::Deflated)]),
+    ]
+}
+
+#[test]
+fn declined_buffers_are_walked() {
+    let b = fdp("b.proto");
+    let data = embedded(&[&fdp("a.proto"), &zip_member("d.pb", &b, Zip::Deflated)]);
+    // The input declined, its member accepted.
+    let seen = transcript(&data, |origin, _| !origin.layers.is_empty());
+    assert_eq!(
+        seen,
+        [
+            "offered  false".to_string(),
+            "offered zip@".to_string() + &format!("{}!d.pb true", 64 + fdp("a.proto").len() + 64),
+            format!("scanned zip@{}!d.pb", 64 + fdp("a.proto").len() + 64),
+            format!(
+                "found zip@{}!d.pb!0..{}",
+                64 + fdp("a.proto").len() + 64,
+                b.len()
+            ),
+        ]
+    );
+}
+
+#[test]
+fn declining_everything_scans_nothing() {
+    for data in mixed_inputs() {
+        let declined: Vec<String> = transcript(&data, |_, _| false)
+            .into_iter()
+            .filter(|line| !line.starts_with("offered "))
+            .collect();
+        let skips: Vec<String> = unfiltered(&data)
+            .into_iter()
+            .filter(|line| line.starts_with("skipped "))
+            .collect();
+        assert_eq!(declined, skips, "only the skips remain");
+    }
+}
+
+#[test]
+fn accepting_everything_is_scan_inflating() {
+    for data in mixed_inputs() {
+        let mut plain = Vec::new();
+        scan_inflating(
+            &data,
+            &ScanOptions::default(),
+            &InflateLimits::default(),
+            |visit| plain.push(format!("{visit:?}")),
+        );
+        let mut filtered = Vec::new();
+        scan_inflating_filtered(
+            &data,
+            fdp_scan_wkt(),
+            "google.protobuf.FileDescriptorProto",
+            &ScanOptions::default(),
+            &InflateLimits::default(),
+            |_, _| true,
+            |visit| filtered.push(format!("{visit:?}")),
+        );
+        assert_eq!(plain, filtered);
+    }
+}
+
+#[test]
+fn the_predicate_sees_decoded_class_strings() {
+    let d = java_fdp(900);
+    let class = class_file(&parts(&d, 400));
+    let mut offered = Vec::new();
+    transcript(&class, |origin, bytes| {
+        offered.push((origin.chain(None), bytes.to_vec()));
+        true
+    });
+    assert_eq!(offered, [("class".to_string(), d.clone())]);
+    // Declined, the class file gets no visit at all.
+    assert!(transcript(&class, |_, _| false)
+        .iter()
+        .all(|line| line.starts_with("offered ")));
 }

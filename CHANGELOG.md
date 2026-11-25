@@ -151,6 +151,9 @@ SPDX-License-Identifier: MIT
   `origin`, each member skipped a `skipped` entry. git-seriate:
   `store::Item` has `record`, entries the store keys by the path it
   stores the item under (spec 0480).
+- fdp-scan: `scan_inflating_filtered`, which offers each buffer to the
+  caller before scanning it: declined, it isn't scanned, but its members
+  are still read and offered (spec 0482).
 - fdp-scan: `scan_inflating` reads a Java class file (the input, or a zip
   member) through its string constants, decoded as protobuf-java decodes
   `descriptorData`, never its raw bytes, which cut a descriptor at its

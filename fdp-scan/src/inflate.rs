@@ -210,11 +210,29 @@ pub fn scan_inflating_with(
     limits: &InflateLimits,
     visit: impl FnMut(Visit<'_>),
 ) {
+    scan_inflating_filtered(data, graph, root, options, limits, |_, _| true, visit);
+}
+
+/// [`scan_inflating_with`], the caller deciding which buffers are scanned
+/// (spec 0482): `scan` is offered each buffer the walk would scan, with its
+/// origin and bytes, before scanning it (for a class file, its decoded
+/// strings). Declined, the buffer is not scanned and gets no visit, but its
+/// members are still found, read and offered in turn.
+pub fn scan_inflating_filtered(
+    data: &[u8],
+    graph: &LoadedGraph,
+    root: &str,
+    options: &ScanOptions,
+    limits: &InflateLimits,
+    scan: impl FnMut(&Origin, &[u8]) -> bool,
+    visit: impl FnMut(Visit<'_>),
+) {
     let mut walk = Walk {
         graph,
         root,
         options,
         limits: *limits,
+        scan,
         visit,
         spent: 0,
         exhausted: false,
@@ -270,11 +288,13 @@ enum Inflated {
     Limit(SkipReason),
 }
 
-struct Walk<'g, F> {
+struct Walk<'g, S, F> {
     graph: &'g LoadedGraph,
     root: &'g str,
     options: &'g ScanOptions,
     limits: InflateLimits,
+    /// Whether to scan a buffer (spec 0482).
+    scan: S,
     visit: F,
     /// Bytes inflated so far, for [`InflateLimits::max_total`].
     spent: usize,
@@ -285,7 +305,7 @@ struct Walk<'g, F> {
     scratch: Vec<u8>,
 }
 
-impl<F: FnMut(Visit<'_>)> Walk<'_, F> {
+impl<S: FnMut(&Origin, &[u8]) -> bool, F: FnMut(Visit<'_>)> Walk<'_, S, F> {
     fn walk(&mut self, data: &[u8], origin: &mut Origin, depth: usize) {
         let named_class = matches!(
             origin.layers.last(),
@@ -317,19 +337,23 @@ impl<F: FnMut(Visit<'_>)> Walk<'_, F> {
             }
         }
 
-        let mut explained = scan_explained_with_options(data, self.graph, self.root, self.options);
-        if !deep {
-            let inside = |start: usize| stored.iter().any(|(_, r)| r.contains(&start));
-            explained.found.retain(|&(start, _)| !inside(start));
-            explained.rejected.retain(|r| !inside(r.start));
-            explained.order_cuts.retain(|c| !inside(c.start));
+        // Declined, the buffer is not scanned, and its stored members have
+        // nothing from it to give up (spec 0482 S3).
+        if (self.scan)(origin, data) {
+            let mut explained =
+                scan_explained_with_options(data, self.graph, self.root, self.options);
+            if !deep {
+                let inside = |start: usize| stored.iter().any(|(_, r)| r.contains(&start));
+                explained.found.retain(|&(start, _)| !inside(start));
+                explained.rejected.retain(|r| !inside(r.start));
+                explained.order_cuts.retain(|c| !inside(c.start));
+            }
+            (self.visit)(Visit::Scanned {
+                origin,
+                data,
+                explained: &explained,
+            });
         }
-        (self.visit)(Visit::Scanned {
-            origin,
-            data,
-            explained: &explained,
-        });
-        drop(explained);
 
         let mut claimed = 0;
         for (at, header) in headers {
@@ -545,17 +569,28 @@ impl<F: FnMut(Visit<'_>)> Walk<'_, F> {
     /// found, then its decoded strings, keeping only the descriptors that
     /// fill a run of string constants exactly, in protoc's part sizes.
     fn class_file(&mut self, data: &[u8], strings: Vec<Vec<u8>>, origin: &mut Origin) {
-        (self.visit)(Visit::Scanned {
-            origin,
-            data,
-            explained: &Explained::default(),
-        });
         let mut decoded = Vec::new();
         let mut bounds = vec![0];
         for part in strings {
             decoded.extend_from_slice(&part);
             bounds.push(decoded.len());
         }
+        // What is offered is what would be scanned: the decoded strings.
+        // Declined, the class file gets no visit at all (spec 0482 S2, S3).
+        origin.layers.push(Layer {
+            at: 0,
+            kind: MemberKind::Class,
+        });
+        let accepted = (self.scan)(origin, &decoded);
+        origin.layers.pop();
+        if !accepted {
+            return;
+        }
+        (self.visit)(Visit::Scanned {
+            origin,
+            data,
+            explained: &Explained::default(),
+        });
         // Empty strings would give a part of length 0 inside a run.
         bounds.dedup();
         // A descriptor counts if it fills a run of strings exactly, cut as
