@@ -4,7 +4,7 @@
 #
 # SPDX-License-Identifier: MIT
 
-# libreproto:/patch/lib_proto_helpers.sh
+# protoback/data/lib_proto_helpers.sh (reproto/patch/ until spec 0487)
 #
 # Helper for generating protobuf artifacts conditionally based on requested extensions.
 # Usage:

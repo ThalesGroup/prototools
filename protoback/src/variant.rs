@@ -5,78 +5,61 @@
 //! The variant: a YAML file and, beside it, a directory of `.pb`
 //! fallbacks (reproto's `variant.py`). Resolution: `--proto-variant`, then
 //! `REPROTO_VARIANT` (both through clap), then the built-in
-//! `google-protobuf`, whose files are reproto's, embedded (spec 0428 S7).
+//! `google-protobuf`, whose files are in `data/variants/`, embedded (spec
+//! 0428 S7; reproto's package data until it was retired, spec 0487).
 
 use prototext_upb::descriptor_access::FileDescriptorProto;
 use std::path::{Path, PathBuf};
 
 use serde_yaml::Value;
 
-const BUILTIN_YAML: &str = include_str!("../../reproto/src/reproto/variants/google-protobuf.yaml");
+const BUILTIN_YAML: &str = include_str!("../data/variants/google-protobuf.yaml");
 
 /// The built-in variant's fallbacks, by root-relative `.pb` path.
 const BUILTIN_PBS: &[(&str, &[u8])] = &[
     (
         "google/protobuf/any.pb",
-        include_bytes!("../../reproto/src/reproto/variants/google-protobuf/google/protobuf/any.pb"),
+        include_bytes!("../data/variants/google-protobuf/google/protobuf/any.pb"),
     ),
     (
         "google/protobuf/api.pb",
-        include_bytes!("../../reproto/src/reproto/variants/google-protobuf/google/protobuf/api.pb"),
+        include_bytes!("../data/variants/google-protobuf/google/protobuf/api.pb"),
     ),
     (
         "google/protobuf/descriptor.pb",
-        include_bytes!(
-            "../../reproto/src/reproto/variants/google-protobuf/google/protobuf/descriptor.pb"
-        ),
+        include_bytes!("../data/variants/google-protobuf/google/protobuf/descriptor.pb"),
     ),
     (
         "google/protobuf/duration.pb",
-        include_bytes!(
-            "../../reproto/src/reproto/variants/google-protobuf/google/protobuf/duration.pb"
-        ),
+        include_bytes!("../data/variants/google-protobuf/google/protobuf/duration.pb"),
     ),
     (
         "google/protobuf/empty.pb",
-        include_bytes!(
-            "../../reproto/src/reproto/variants/google-protobuf/google/protobuf/empty.pb"
-        ),
+        include_bytes!("../data/variants/google-protobuf/google/protobuf/empty.pb"),
     ),
     (
         "google/protobuf/field_mask.pb",
-        include_bytes!(
-            "../../reproto/src/reproto/variants/google-protobuf/google/protobuf/field_mask.pb"
-        ),
+        include_bytes!("../data/variants/google-protobuf/google/protobuf/field_mask.pb"),
     ),
     (
         "google/protobuf/source_context.pb",
-        include_bytes!(
-            "../../reproto/src/reproto/variants/google-protobuf/google/protobuf/source_context.pb"
-        ),
+        include_bytes!("../data/variants/google-protobuf/google/protobuf/source_context.pb"),
     ),
     (
         "google/protobuf/struct.pb",
-        include_bytes!(
-            "../../reproto/src/reproto/variants/google-protobuf/google/protobuf/struct.pb"
-        ),
+        include_bytes!("../data/variants/google-protobuf/google/protobuf/struct.pb"),
     ),
     (
         "google/protobuf/timestamp.pb",
-        include_bytes!(
-            "../../reproto/src/reproto/variants/google-protobuf/google/protobuf/timestamp.pb"
-        ),
+        include_bytes!("../data/variants/google-protobuf/google/protobuf/timestamp.pb"),
     ),
     (
         "google/protobuf/type.pb",
-        include_bytes!(
-            "../../reproto/src/reproto/variants/google-protobuf/google/protobuf/type.pb"
-        ),
+        include_bytes!("../data/variants/google-protobuf/google/protobuf/type.pb"),
     ),
     (
         "google/protobuf/wrappers.pb",
-        include_bytes!(
-            "../../reproto/src/reproto/variants/google-protobuf/google/protobuf/wrappers.pb"
-        ),
+        include_bytes!("../data/variants/google-protobuf/google/protobuf/wrappers.pb"),
     ),
 ];
 

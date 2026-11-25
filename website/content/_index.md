@@ -8,8 +8,10 @@ A collection of two complementary protobuf tools:
 
 - **prototext** — lossless, bidirectional converter between binary protobuf
   wire format and human-readable text.
-- **reproto** — reconstructs `.proto` source files from compiled protobuf
+- **protoback** — reconstructs `.proto` source files from compiled protobuf
   descriptor sets (`.pb` files produced by `protoc --descriptor_set_out`).
+  It succeeds reproto, retired after 0.4.0, whose design the specs below
+  record.
 
 ---
 
@@ -53,15 +55,11 @@ human-readable text.
 
 ---
 
-## reproto
+## protoback
 
 Reconstructs `.proto` source files from compiled protobuf descriptor sets
-(`.pb` files produced by `protoc --descriptor_set_out`).
-
-### User documentation
-
-- [README](reproto-readme) — Overview, installation, and usage guide
-- [Man page](reproto-man-page) — Reference manual
+(`.pb` files produced by `protoc --descriptor_set_out`). Its rendering
+follows the design of reproto, its Python predecessor, retired after 0.4.0.
 
 ### Specs
 

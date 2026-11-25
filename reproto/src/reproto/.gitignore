@@ -1,6 +1,0 @@
-# SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
-#
-# SPDX-License-Identifier: MIT
-
-# Every subpackage's, not only the top one's (profiles/ was missed).
-__pycache__/

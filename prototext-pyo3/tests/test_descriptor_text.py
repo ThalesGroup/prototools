@@ -93,7 +93,7 @@ def _declaring_file(label_type: FieldDescriptorProto.Type.ValueType) -> bytes:
 _DESCRIPTOR = "google/protobuf/descriptor.proto"
 
 
-def _read(*binary: bytes, text: str = _TEXT) -> tuple[bytes, list[str]]:
+def _read(*binary: bytes, text: str = _TEXT) -> tuple[bytes, list[tuple[str, str]]]:
     """``text`` read in import order with ``binary``."""
     texts, skipped = read_descriptors(list(binary), [text], _DESCRIPTOR)
     assert skipped == []

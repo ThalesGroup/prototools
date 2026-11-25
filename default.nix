@@ -144,15 +144,14 @@ let
         # What drops the stub generator's ruff header before that
         # comparison (spec 0409 S2).
         ./scripts/strip-stub-header
-        # reproto's built-in variant, which protoback embeds so that both
-        # tools load the same fallbacks (spec 0428 S7).
-        ./reproto/src/reproto/variants/google-protobuf.yaml
+        # protoback's built-in variant (spec 0428 S7) and profiles (spec
+        # 0447 S6), which it embeds.
+        ./protoback/data/variants/google-protobuf.yaml
         (pkgs.lib.fileset.fileFilter (f: f.hasExt "pb")
-          ./reproto/src/reproto/variants/google-protobuf)
-        # reproto's built-in profiles, which protoback embeds (spec 0447 S6).
+          ./protoback/data/variants/google-protobuf)
         (pkgs.lib.fileset.fileFilter (f: f.hasExt "yaml")
-          ./reproto/src/reproto/profiles)
-        # pyvis's page, which protoback embeds to write reproto's
+          ./protoback/data/profiles)
+        # pyvis's page, which protoback embeds to write (as reproto did) its
         # --scoring-html-out byte for byte (spec 0430 S8).
         ./protoback/src/scoring/html
         # The adapter protoback runs Python plugins through (spec 0431 S3).
@@ -309,31 +308,36 @@ let
   # those build scripts need to find it.
 
   # ---------------------------------------------------------------------------
-  # reproto's well-known types (spec 0409 S4).
+  # protoback's well-known types (spec 0409 S4; reproto's until spec 0487).
   #
-  # reproto ships the WKTs' descriptors in its built-in variant
-  # (reproto/src/reproto/variants/google-protobuf/), for the descriptor sets
-  # that leave them implicit. They are committed, so reproto builds from its
-  # source as it stands:
+  # protoback embeds the WKTs' descriptors in its built-in variant
+  # (protoback/data/variants/google-protobuf/), for the descriptor sets
+  # that leave them implicit. They are committed, so protoback builds from
+  # its source as it stands:
   #
-  # reprotoWktGenerated — patch_reproto.sh run with the pinned protobuf:
+  # wktVariantGenerated — compile-wkt.sh run with the pinned protobuf:
   #   its .proto files, compiled by its protoc. Input only to the check.
-  # reprotoWktCheck — fails `ci`, with the diff and the refresh command,
+  # wktVariantCheck — fails `ci`, with the diff and the refresh command,
   #   when the committed .pb differ from what the pinned protobuf compiles.
   # ---------------------------------------------------------------------------
 
-  reprotoWktGenerated = pkgs.runCommand "reproto-wkt-generated" {
+  wktVariantGenerated = pkgs.runCommand "wkt-variant-generated" {
     strictDeps = true;
     nativeBuildInputs = [ protoc ];
   } ''
-    bash ${./reproto/patch}/patch_reproto.sh ${protoc}/include $out
+    bash ${pkgs.lib.fileset.toSource {
+      root = ./protoback/data;
+      fileset = pkgs.lib.fileset.unions [
+        ./protoback/data/compile-wkt.sh ./protoback/data/lib_proto_helpers.sh
+      ];
+    }}/compile-wkt.sh ${protoc}/include $out
   '';
 
-  reprotoWktCheck = pkgs.runCommand "reproto-wkt-check" { } ''
-    committed=${./reproto/src/reproto/variants/google-protobuf/google}
-    if ! diff -r $committed ${reprotoWktGenerated}/google >&2; then
-      echo "reproto/src/reproto/variants/google-protobuf/google/ is stale (diff above). Refresh it with:" >&2
-      echo "  cp -r \$(nix-build -A reproto-wkt-generated)/google/. reproto/src/reproto/variants/google-protobuf/google/ && chmod -R u+w reproto/src/reproto/variants/google-protobuf/google" >&2
+  wktVariantCheck = pkgs.runCommand "wkt-variant-check" { } ''
+    committed=${./protoback/data/variants/google-protobuf/google}
+    if ! diff -r $committed ${wktVariantGenerated}/google >&2; then
+      echo "protoback/data/variants/google-protobuf/google/ is stale (diff above). Refresh it with:" >&2
+      echo "  cp -r \$(nix-build -A wkt-variant-generated)/google/. protoback/data/variants/google-protobuf/google/ && chmod -R u+w protoback/data/variants/google-protobuf/google" >&2
       exit 1
     fi
     touch $out
@@ -363,7 +367,7 @@ let
     nativeBuildInputs = [ (pythonPkgs.python.withPackages (ps: [ ps.protobuf ])) ];
   } ''
     python3 -I - ${./prototext-upb/vendor/descriptor.pb} \
-      ${./reproto/src/reproto/variants/google-protobuf/google/protobuf/descriptor.pb} <<'EOF'
+      ${./protoback/data/variants/google-protobuf/google/protobuf/descriptor.pb} <<'EOF'
     import sys
     from google.protobuf import descriptor_pb2
     def file(path):
@@ -383,7 +387,7 @@ let
   # tree-sitter-textproto — the textproto grammar (spec 0408).
   #
   # The generated parser (tree-sitter-textproto/src/) is committed,
-  # so each consumer builds it with a C compiler alone: reproto's Python
+  # so each consumer builds it with a C compiler alone: the Python
   # module through its setuptools package (nix/python.nix), protolens through
   # its build.rs (the cc crate). Nothing here feeds a build any more:
   #
@@ -472,8 +476,9 @@ let
   #           that every binary and extension is copied out of. All of it
   #           embeds the WKT graph committed under prototext/wkt/prebuilt/
   #           (spec 0401 S1, S2), so nothing waits for the graph below.
-  # python  — reproto and its tests, on the rust extensions.
-  # wktRkyv — the graph regenerated by reproto: a leaf, which only
+  # python  — the grammar's Python module, the full tests, on the rust
+  #           extensions.
+  # wktRkyv — the graph regenerated by protoback: a leaf, which only
   #           wktDb's schema DB and wkt-prebuilt-check read.
   #
   # All shared Crane artefacts (depsCache, rustTests, etc.) come from the
@@ -500,7 +505,7 @@ let
   pypi = import ./nix/pypi.nix {
     inherit pkgs pythonPkgs;
     inherit (rust) workspaceBuild;
-    inherit (python) reproto treeSitterTextprotoPkg;
+    inherit (python) treeSitterTextprotoPkg;
   };
 
   # The WKT scoring graph, generated by protoback from the code as it is
@@ -605,7 +610,7 @@ let
   shells = import ./nix/shells.nix {
     inherit pkgs pythonPkgs pythonBin pythonExecutable buf protoc;
     inherit (rust) prototext protolens protoback;
-    inherit (python) reprotoSrc reprotoTestDeps reproto lintSettings;
+    inherit (python) lintDeps lintSettings;
     inherit (rust) protoscan pyo3EnvironmentSignature;
     inherit wktDb;
     # The demos' inputs — the googleapis database, the grpconf stage, the
@@ -754,11 +759,11 @@ let
     rust.rustFmt rust.rustClippy rust.rustTests rust.descriptorAccessCheck rust.hakariCheck
     rust.prototext rust.protolens
     rust.prototextCodec rust.fdpScanLib rust.prototextGraphLib
-    rust.protoscan rust.gitSeriate rust.gitSeriateFdp python.reproto
+    rust.protoscan rust.gitSeriate rust.gitSeriateFdp
     python.fdpScanTests python.prototextCodecTests
     python.pythonLint python.pythonRuff
     treeSitterTextprotoHighlightTest treeSitterTextprotoCheck
-    reprotoWktCheck upbReleaseCheck descriptorCopiesCheck
+    wktVariantCheck upbReleaseCheck descriptorCopiesCheck
     wktDb wktPrebuiltCheck prototextFixturesCheck fdpScanCorpusCheck
     prototoolsClosureCheck
     completionTests
@@ -775,7 +780,7 @@ let
     rust.rustFmt rust.rustTests rust.descriptorAccessCheck rust.hakariCheck
     rust.prototext rust.protolens
     rust.prototextCodec rust.fdpScanLib rust.prototextGraphLib
-    rust.protoscan rust.gitSeriate rust.gitSeriateFdp python.reproto
+    rust.protoscan rust.gitSeriate rust.gitSeriateFdp
     python.fdpScanTests python.prototextCodecTests
     python.pythonLint python.pythonRuff
     treeSitterTextprotoHighlightTest treeSitterTextprotoCheck
@@ -795,7 +800,7 @@ let
   # between releases.
   # ---------------------------------------------------------------------------
   # stagingSrc: the workspace, plus what the Python recipes build from
-  # (reproto/, the grammar's binding) and the extensions' test suites.
+  # (the grammar's binding) and the extensions' test suites.
   stagingSrc =
     let
       fs = pkgs.lib.fileset;
@@ -804,7 +809,6 @@ let
       root    = ./.;
       fileset = fs.unions [
         (fs.fromSource workspaceSrc)
-        (noPyc ./reproto)
         (noPyc ./tree-sitter-textproto)
         (noPyc ./prototext-pyo3/tests)
         (noPyc ./fdp-scan-pyo3/tests)
@@ -813,14 +817,15 @@ let
 
   # Each staged recipe, built as nixpkgs builds it from the tag, but from a
   # local source (workspaceSrc for the Rust applications, which need nothing
-  # else, so editing reproto rebuilds neither), with the vendored
+  # else), with the vendored
   # dependencies of the local Cargo.lock and the version the tree carries
   # (for the version checks).
   #   prototext (PR 1), protoscan (PR 2, spec 0407 S8), protolens (PR 4,
   #   spec 0410 S4), protoback and git-seriate (spec 0486 S4): Rust
   #   applications;
-  #   reproto (PR 3, spec 0411 S6), with the four python3Packages libraries
-  #   that take its source, version and passthru.cargoDeps.
+  #   the four python3Packages libraries, which took reproto's source,
+  #   version and vendored crates (PR 3, spec 0411 S6) until reproto was
+  #   retired (spec 0487), and now fetch their own.
   stagedRust = {
     prototext = ./nixpkgs/pkgs/by-name/pr/prototext/package.nix;
     protoscan = ./nixpkgs/pkgs/by-name/pr/protoscan/package.nix;
@@ -828,10 +833,8 @@ let
     protoback = ./nixpkgs/pkgs/by-name/pr/protoback/package.nix;
     git-seriate = ./nixpkgs/pkgs/by-name/gi/git-seriate/package.nix;
   };
-  stagedReproto = ./nixpkgs/pkgs/by-name/re/reproto/package.nix;
-  # The four libraries, python3Packages entries in nixpkgs, which take their
-  # source, version and vendored crates from reproto (spec 0411 S6).
-  stagedReprotoLibs = pkgs.lib.genAttrs
+  # The four libraries, python3Packages entries in nixpkgs.
+  stagedPythonLibs = pkgs.lib.genAttrs
     [ "fdp-scan" "prototext-codec" "prototext-graph" "tree-sitter-textproto" ]
     (name: ./nixpkgs/pkgs/development/python-modules + "/${name}/default.nix");
 
@@ -850,33 +853,16 @@ let
       rustBuilds = builtins.mapAttrs
         (name: file: stagedBuild workspaceSrc rust.workspaceVersion (sp.callPackage file { }))
         stagedRust;
-      # reproto, with the given prototext for its tests, and the Python
-      # package set, as nixpkgs passes python3Packages, with the four
-      # libraries in it. They read reproto, and reproto depends on them: a
-      # fixpoint, which laziness resolves as in nixpkgs, since reproto's
-      # source, version and vendored crates do not depend on them.
-      withPrototext = prototext:
-        let
-          pythonPkgs = py // builtins.mapAttrs
-            (_: file: py.callPackage file { inherit reproto; })
-            stagedReprotoLibs;
-          reproto = stagedBuild stagingSrc (rust.pyprojectVersion "reproto")
-            (sp.callPackage stagedReproto {
-              python3Packages = pythonPkgs;
-              inherit prototext;
-            });
-        in { inherit pythonPkgs reproto; };
-      # The staged prototext, as stacked PRs give it to reproto's tests.
-      staged = withPrototext rustBuilds.prototext;
+      # The Python package set, as nixpkgs passes python3Packages, with
+      # the four libraries in it.
+      pythonPkgs = py // builtins.mapAttrs
+        (_: file: stagedBuild stagingSrc rust.workspaceVersion (py.callPackage file { }))
+        stagedPythonLibs;
     in {
-      inherit rustBuilds;
-      inherit (staged) pythonPkgs reproto;
+      inherit rustBuilds pythonPkgs;
       farm = name: sp.linkFarmFromDrvs name
-        (builtins.attrValues rustBuilds ++ [ staged.reproto ]
-          ++ map (lib: staged.pythonPkgs.${lib}) (builtins.attrNames stagedReprotoLibs));
-      # reproto with that nixpkgs' own prototext, as a reproto-only PR
-      # builds (spec 0423 S6): its failure says the PRs must be stacked.
-      reprotoAlone = (withPrototext sp.prototext).reproto;
+        (builtins.attrValues rustBuilds
+          ++ map (lib: pythonPkgs.${lib}) (builtins.attrNames stagedPythonLibs));
     };
 
   # As nixpkgs builds the recipes: its default Python, with its own Python
@@ -884,7 +870,6 @@ let
   staging = mkStaging pkgs pkgs.python3Packages;
   stagedRustBuilds   = staging.rustBuilds;
   stagedPythonPkgs   = staging.pythonPkgs;
-  stagedReprotoBuild = staging.reproto;
   nixpkgsStaging     = staging.farm "nixpkgs-staging";
 
   # Against the nixos-unstable pin, with its default Python, as nixpkgs
@@ -895,14 +880,12 @@ let
 
   # Every staged file, and the version each declares (callPackage'd as
   # nixpkgs calls it).
-  stagedFiles = builtins.attrValues stagedRust ++ [ stagedReproto ]
-    ++ builtins.attrValues stagedReprotoLibs;
+  stagedFiles = builtins.attrValues stagedRust
+    ++ builtins.attrValues stagedPythonLibs;
   stagedVersions =
     builtins.mapAttrs (_: file: (pkgs.callPackage file { }).version) stagedRust
-    // { reproto = (pkgs.callPackage stagedReproto {
-           python3Packages = stagedPythonPkgs;
-           inherit (rust) prototext;
-         }).version; };
+    // builtins.mapAttrs
+      (_: file: (pkgs.python3Packages.callPackage file { }).version) stagedPythonLibs;
 
   # nixfmt, and the version rule: at a release every staged version equals
   # the workspace's; between releases the workspace carries X.Y.Z-dev, and a
@@ -967,7 +950,6 @@ in
   descriptor-access-check = rust.descriptorAccessCheck;
   hakari-check         = rust.hakariCheck;
   prototext-codec      = rust.prototextCodec;
-  reproto              = python.reproto;
   wkt-rkyv             = wktRkyv;
   wkt-prebuilt-check   = wktPrebuiltCheck;
   fdp-scan-corpus      = fdpScanCorpus;
@@ -1002,10 +984,9 @@ in
   # One staged Rust application at a time: nix-build -A nixpkgs-staging-rust.protoback
   nixpkgs-staging-rust = stagedRustBuilds;
   # One staged Python library at a time: nix-build -A nixpkgs-staging-python.fdp-scan
-  nixpkgs-staging-python = pkgs.lib.getAttrs (builtins.attrNames stagedReprotoLibs) stagedPythonPkgs;
+  nixpkgs-staging-python = pkgs.lib.getAttrs (builtins.attrNames stagedPythonLibs) stagedPythonPkgs;
   nixpkgs-staging-check = nixpkgsStagingCheck;
   nixpkgs-staging-unstable = nixpkgsStagingUnstable;
-  nixpkgs-staging-unstable-reproto-alone = stagingUnstable.reprotoAlone;
   prototext-fixtures-check = prototextFixturesCheck;
   protoscan            = rust.protoscan;
   protoback            = rust.protoback;
@@ -1018,8 +999,8 @@ in
   tree-sitter-textproto-highlight-test = treeSitterTextprotoHighlightTest;
   tree-sitter-textproto-generated = treeSitterTextprotoGenerated;
   tree-sitter-textproto-check = treeSitterTextprotoCheck;
-  reproto-wkt-generated = reprotoWktGenerated;
-  reproto-wkt-check     = reprotoWktCheck;
+  wkt-variant-generated = wktVariantGenerated;
+  wkt-variant-check     = wktVariantCheck;
   upb-release-check     = upbReleaseCheck;
   descriptor-copies-check = descriptorCopiesCheck;
 }

@@ -4,20 +4,21 @@
 #
 # SPDX-License-Identifier: MIT
 
-# reproto/patch/patch_reproto.sh
+# protoback/data/compile-wkt.sh (reproto/patch/patch_reproto.sh until
+# spec 0487)
 #
 # Compiles the well-known types' .proto files to the binary .pb descriptors
-# reproto ships in its built-in variant, for the descriptor sets that leave
-# them implicit. The .pb are committed; the Nix check reproto-wkt-check runs
-# this script with the pinned protobuf and compares (spec 0409 S4).
+# protoback embeds in its built-in variant, for the descriptor sets that
+# leave them implicit. The .pb are committed; the Nix check wkt-variant-check
+# runs this script with the pinned protobuf and compares (spec 0409 S4).
 #
 # Usage:
-#   ./patch_reproto.sh <include> <out>
+#   ./compile-wkt.sh <include> <out>
 #
 # Arguments:
 #   include   protobuf's include directory, holding google/protobuf/*.proto
 #   out       the variant directory to write to, normally
-#             reproto/src/reproto/variants/google-protobuf
+#             protoback/data/variants/google-protobuf
 #
 # Requirements:
 #   - "protoc" must be in PATH.

@@ -40,24 +40,9 @@ jobs:
       # See docs/specs/0102-prototext-args-crate.md for the dropped refactor
       # that would have made this fast.
 
-      # In a venv: the runner image's own Python and packages cannot shadow
-      # ours (ubuntu-latest moved to 26.04 and reproto then found no
-      # google._upb). protobuf as a binary wheel only: reproto needs its upb
-      # backend, which the pure-Python wheel lacks, so fail here if absent.
-      - name: Install Python dependencies for reproto
-        run: |
-          python3 -m venv "$RUNNER_TEMP/venv"
-          "$RUNNER_TEMP/venv/bin/pip" install --quiet --only-binary protobuf \
-            click google-re2 protobuf pyvis pyyaml rapidfuzz rich
-          "$RUNNER_TEMP/venv/bin/python" -c 'import sys, google.protobuf, google._upb._message; print(sys.version.split()[0], "protobuf", google.protobuf.__version__)'
-
-      - name: Generate man pages
-        run: |
-          mkdir -p man/man1
-          # prototext and protoscan omitted — see comment above.
-          # Spec 0413 S2: both of reproto's pages.
-          REPROTO_GEN_MAN=man/man1 PYTHONPATH=reproto/src \
-            "$RUNNER_TEMP/venv/bin/python" -m reproto
+      # reproto's README and man pages were published here until it was
+      # retired (spec 0487); protoback's, like prototext's, would need the
+      # Rust build.
 
       - name: Copy docs into website/content
         run: |
@@ -74,12 +59,9 @@ jobs:
           # README → readme.md
           inject README.md website/content/readme.md
 
-          # reproto/README.md → reproto-readme.md
-          inject reproto/README.md website/content/reproto-readme.md
-
           # docs/*.md (workspace-wide docs) plus each app's own docs/<app>/*.md
           # (not specs/) — flattened into the same website/content/ namespace.
-          for f in docs/*.md docs/prototext/*.md docs/reproto/*.md; do
+          for f in docs/*.md docs/prototext/*.md; do
             [ -f "$f" ] || continue
             name=$(basename "$f" .md | tr '[:upper:]' '[:lower:]' | tr '_' '-')
             inject "$f" "website/content/${name}.md"
@@ -116,23 +98,6 @@ jobs:
           # prototext man page — omitted (prototext.1 not generated here).
           # See docs/specs/0102-prototext-args-crate.md.
 
-          # reproto man page → website/content/reproto-man-page.md
-          {
-            printf '+++\ntitle = "reproto Man Page"\n+++\n\n'
-            printf '<div class="manpage">\n'
-            mandoc -T html -O fragment man/man1/reproto.1 2>/dev/null \
-              || cat man/man1/reproto.1
-            printf '</div>\n'
-          } > website/content/reproto-man-page.md
-
-          # reproto-instantiate-schema man page
-          {
-            printf '+++\ntitle = "reproto-instantiate-schema Man Page"\n+++\n\n'
-            printf '<div class="manpage">\n'
-            mandoc -T html -O fragment man/man1/reproto-instantiate-schema.1 2>/dev/null \
-              || cat man/man1/reproto-instantiate-schema.1
-            printf '</div>\n'
-          } > website/content/reproto-instantiate-schema-man-page.md
 
       - name: Build
         run: cd website && zola build

@@ -61,7 +61,7 @@ jobs:
       # known to fail), so Nix runs clippy and the tests side by side rather
       # than one step after the other (spec 0401 S9). rustfmt stays first:
       # it fails fast and needs nothing compiled.
-      - name: Run CI targets (clippy, tests, build, reproto tests, python lint)
+      - name: Run CI targets (clippy, tests, build, python lint)
         run: nix-build -A ${{ matrix.ci-target }}
 
       # Spec 0412 S4: the packages a release publishes, built on main as

@@ -38,10 +38,8 @@
 , rustcVersion      # pkgs.rustc.unwrapped.version
 , prototext
 , protolens
-, reproto           # the dev-shell's, until spec 0487 S5
 , protoback
-, reprotoSrc        # filtered reproto source (builtins.path)
-, reprotoTestDeps   # full Python dep list for the dev-shell
+, lintDeps          # nix/python.nix: what the repository's Python imports
 , lintSettings      # the Python linters' settings (nix/python.nix)
 , protoscan
 , wktDb             # well-known-types schema DB; carries the PROTOTEXT_DESCRIPTOR_SET setup-hook
@@ -205,7 +203,7 @@ in
         # proto/ tree.
         #
         # The googleapis database is not here (spec 0394): it is a corpus
-        # fetch, a whole-corpus protoc run and a reproto pass. The grpconf2026
+        # fetch, a whole-corpus protoc run and a protoback pass. The grpconf2026
         # demo shell exports it, and bin/profile builds it on demand.
         export PROTOTEXT_WKT_SET="${wktDb}/share/prototools/wkt.desc"
 
@@ -228,11 +226,10 @@ in
         # pyo3's crates (spec 0477 S3).
         export PYO3_ENVIRONMENT_SIGNATURE="${pyo3EnvironmentSignature}"
         export PATH="${repoRoot}/bin:${pythonBin}/bin:${repoRoot}/target/release:$PATH"
-        # `devOnlyPyDeps` is appended rather than folded into
-        # reprotoTestDeps: that list is also the dep set of reprotoTests,
-        # googleapisTests and customTests, and nothing that runs under
-        # `ci` needs a terminal emulator.
-        export PYTHONPATH="$PWD/reproto/src:${pythonPkgs.makePythonPath (reprotoTestDeps ++ devOnlyPyDeps)}:$PYTHONPATH"
+        # `devOnlyPyDeps` is appended rather than folded into lintDeps:
+        # that list is also what pythonLint runs with, and nothing that runs
+        # under `ci` needs a terminal emulator.
+        export PYTHONPATH="${pythonPkgs.makePythonPath (lintDeps ++ devOnlyPyDeps)}:$PYTHONPATH"
       }
 
       _hook_python() {
@@ -380,8 +377,8 @@ components = [\"rust-src\", \"rustfmt\", \"clippy\"]"
         if command -v protolens &>/dev/null; then
           PROTOLENS_GEN_MAN=man/man1 protolens
         fi
-        if python3 -c "import reproto" 2>/dev/null; then
-          REPROTO_GEN_MAN=man/man1 python3 -m reproto
+        if command -v protoback &>/dev/null; then
+          PROTOBACK_GEN_MAN=man/man1 protoback
         fi
         if command -v protoscan &>/dev/null; then
           PROTOSCAN_GEN_MAN=man/man1 protoscan
@@ -526,7 +523,7 @@ LUAEOF
       }
 
       _hook_completions() {
-        echo "[hook] completions: prototext, protolens, reproto, protoscan"
+        echo "[hook] completions: prototext, protolens, protoback, protoscan"
         # bash completion for prototext
         if command -v prototext &>/dev/null; then
           # As printed: the binary's own bash script (spec 0406), unpatched.
@@ -538,9 +535,9 @@ LUAEOF
           source <(PROTOLENS_COMPLETE=bash protolens)
         fi
 
-        # bash completion for reproto, as reproto prints it (spec 0422 S2)
-        if command -v reproto &>/dev/null; then
-          source <(_REPROTO_COMPLETE=bash_source reproto)
+        # bash completion for protoback
+        if command -v protoback &>/dev/null; then
+          source <(PROTOBACK_COMPLETE=bash protoback)
         fi
 
         # bash completion for protoscan

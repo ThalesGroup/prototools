@@ -7,7 +7,7 @@
 //!
 //! `--profile NAME`, repeatable. NAME is looked up as a path (`.yaml`
 //! optional), then in each folder of `$PROTOBACK_PROFILE_PATH`, then among
-//! the built-in profiles (reproto's `profiles/`, embedded). A key is an
+//! the built-in profiles (`data/profiles/`, embedded). A key is an
 //! option's long name; a later profile overrides an earlier one, the
 //! command line overrides them all, and lists accumulate. A profile
 //! `X.yaml` may have a folder `X/` beside it, laid out as a descriptor root:
@@ -20,11 +20,9 @@ use serde_yaml::Value;
 
 pub const ENV: &str = "PROTOBACK_PROFILE_PATH";
 
-/// The built-in profiles: reproto's package data, embedded.
-const BUILTIN: &[(&str, &str)] = &[(
-    "prost.yaml",
-    include_str!("../../reproto/src/reproto/profiles/prost.yaml"),
-)];
+/// The built-in profiles: `data/profiles/`, embedded (reproto's package
+/// data until it was retired, spec 0487).
+const BUILTIN: &[(&str, &str)] = &[("prost.yaml", include_str!("../data/profiles/prost.yaml"))];
 
 /// The values a key takes, where the option limits them.
 const CHOICES: &[(&str, &[&str])] = &[

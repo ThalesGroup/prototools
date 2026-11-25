@@ -6,7 +6,7 @@
 name        = "prototext-graph"
 version.workspace    = true
 edition     = "2021"
-description = "Build a Hopcroft-deduplicated scoring graph from reproto YAML output"
+description = "Build a Hopcroft-deduplicated scoring graph from protoback's YAML output"
 license     = "MIT"
 repository.workspace = true
 

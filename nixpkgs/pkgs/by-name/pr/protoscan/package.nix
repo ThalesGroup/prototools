@@ -60,7 +60,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
       protoscan scans a file (an executable, a shared library, a firmware
       image, an archive) for the protobuf FileDescriptorProto records it
       embeds, prints each one's file name, and can write them out as .pb
-      files, which prototext decodes and reproto turns back into .proto
+      files, which prototext decodes and protoback turns back into .proto
       sources.
     '';
     homepage = "https://github.com/douzebis/prototools";

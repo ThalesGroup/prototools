@@ -131,7 +131,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: pypi
-      url: https://pypi.org/project/prototext-reproto/
+      url: https://pypi.org/project/prototext-codec/
     permissions:
       contents: read
       id-token: write # PyPI trusted publishing

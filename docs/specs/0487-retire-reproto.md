@@ -103,20 +103,32 @@ deleting them can't break a generator, and every later run is shorter.
   - **`scripts/bench-protoback` stays,** on a corpus the harness prepared
     before; a new one can no longer be prepared.
   - **pythonLint and pythonRuff stay until S5,** linting reproto while it
-    exists.
+    exists. In S5 they move to the Python that remains (the extensions' and
+    full tests, protoback's plugin adapter, the scripts), rather than go.
 - **S3. Generators on protoback.** `wktRkyv`, `googleapisDb` and `customDb`
   run protoback (and `protoback instantiate`); `wktPrebuiltCheck` passing
   unchanged is G3's proof.
 - **S4. Products on protoback:** the shells, the prototools bundle and its
   closure check, the tutorial, `demo/`, both talks, the workshop smoke
   test and image (D5), each checked as `ci` checks it today.
-- **S5. Remove reproto:** `reproto/`, `bin/reproto*`, its Nix package,
+- **S5. Remove reproto:** first the moves, then the deletion.
+  - **The moves:** the variant (`google-protobuf.yaml` and its `.pb`) to
+    `protoback/data/variants/`, the profiles to `protoback/data/profiles/`,
+    and `patch_reproto.sh` to `protoback/data/compile-wkt.sh` with its
+    helper; `reprotoWktCheck` becomes `wktVariantCheck`
+    (`wkt-variant-check`).
+  - **The deletion:** `reproto/`, `bin/reproto*`, its Nix package,
   its `prototext-reproto` wheel, the website pages, the `reproto-alone`
-  staging steps, its staged nixpkgs recipe, and what remains in the docs,
-  which say "reproto, retired after 0.4.0" where history needs it. The
-  four Python libraries stay (D4): their staged nixpkgs recipes stop
-  reading reproto's source and version, and take the repository's
-  tarball and their own sub-directories.
+  staging steps, its staged nixpkgs recipe, `scripts/reproto-phase-times`,
+  and `tests/harness/` (a test of a `bin/proto-gen` long gone, run by
+  nothing). The docs say "reproto, retired after 0.4.0" where history
+  needs it. The four Python libraries stay (D4): their staged nixpkgs
+  recipes stop reading reproto's source and version, and take the
+  repository's tarball and their own sub-directories.
+  - **What stays as history:** provenance in protoback's comments
+    ("reproto's `variant.py`"), the fixtures' `reproto.test` package
+    names, `attic/`, `grpconf2026/artifacts.md`, the 0.4.0 PR notes under
+    `nixpkgs/`, and the specs.
 - **S6. The merge:** the full `ci` on the branch, the staged nixpkgs
   recipes built, then `main`.
 - **S7. After the next release:** nixpkgs and PyPI as D6 decides.
@@ -171,8 +183,28 @@ Decided by the maintainer, 2026-11-25:
    protoback and no reproto on the `PATH`; the shells build; the bundle's
    closure check passes.
 5. **S5 and S6, the full `ci`,** and the staged nixpkgs recipes; `git grep
-   reproto` outside `docs/` and `CHANGELOG.md` finds only history.
+   reproto` outside `docs/` and `CHANGELOG.md` finds only history (S5's
+   list).
 
 ## Measured outcome
 
-Filled in at implementation.
+2026-11-25, on branch `retire-reproto`:
+
+- **S1 and S2:** the full `ci` passed in about 35 minutes for `ci` itself
+  (about an hour before, with the harness and reproto's suites), rebuilt
+  from scratch after a garbage collection; the grammar's staged Python
+  recipe builds.
+- **S3:** `wkt-prebuilt-check` passes with protoback generating:
+  `prototext/wkt/prebuilt/` byte-identical; `wkt-db` built by reproto
+  (`main`) and by protoback identical file for file, but for its
+  setup-hook's own store path. `custom-tests` (25) and `googleapis-tests`
+  (88) pass on the databases protoback builds.
+- **S4:** the bundle's and the image's closure checks, the three shells,
+  and the workshop image's smoke test pass with protoback. The client
+  still embeds `descriptor.proto` (spec 0388 S13), which only reproto
+  needed: protoback, given the client's descriptors without it, builds the
+  same `life.proto` with no warning.
+- **S5:** `wkt-variant-check` passes on the moved descriptors. The
+  retargeted pyright found one error in a test annotation nothing linted
+  before (`prototext-pyo3/tests/test_descriptor_text.py`: warnings are
+  `(code, message)` pairs since 2026-11-17), fixed.

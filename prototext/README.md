@@ -174,7 +174,7 @@ region_code: "US"
 ...
 ```
 
-Build a descriptor DB with `reproto --build-schema-db`, or use the
+Build a descriptor DB with `protoback --schema-db-out`, or use the
 pre-built `googleapis-db` Nix derivation (~8 000 types):
 
 ```shell

@@ -1,22 +1,32 @@
 {
   lib,
   buildPythonPackage,
+  fetchFromGitHub,
   rustPlatform,
   protobuf,
   pytestCheckHook,
-  reproto,
+
+  # passthru
+  nix-update-script,
 }:
 
-buildPythonPackage {
+buildPythonPackage (finalAttrs: {
   pname = "prototext-codec";
-  inherit (reproto) src version cargoDeps;
+  version = "0.4.0";
   pyproject = true;
   __structuredAttrs = true;
 
-  # nixpkgs-update: no auto update
-  # Built from reproto's source, at its version, with its vendored crates:
-  # reproto needs all four of these libraries at exactly its version, so
-  # they move with it, in reproto's update.
+  src = fetchFromGitHub {
+    owner = "douzebis";
+    repo = "prototools";
+    tag = "v${finalAttrs.version}";
+    hash = "sha256-zE8jDoPISjJg56cRjs0LJDDBQv9dWYAryg29RpZLsZU=";
+  };
+
+  cargoDeps = rustPlatform.fetchCargoVendor {
+    inherit (finalAttrs) pname version src;
+    hash = "sha256-0r9goxXjNTPSdktSC7moIg39okYVFwEpoKwmSfQV23U=";
+  };
 
   buildAndTestSubdir = "prototext-pyo3";
 
@@ -33,10 +43,19 @@ buildPythonPackage {
 
   pythonImportsCheck = [ "prototext_codec_lib" ];
 
+  # Only v-prefixed release tags
+  passthru.updateScript = nix-update-script {
+    extraArgs = [
+      "--version-regex"
+      "^v(\\d+\\.\\d+\\.\\d+)$"
+    ];
+  };
+
   meta = {
     description = "Python bindings to prototext's lossless protobuf codec";
     homepage = "https://github.com/douzebis/prototools";
+    changelog = "https://github.com/douzebis/prototools/blob/${finalAttrs.src.rev}/CHANGELOG.md";
     license = lib.licenses.mit;
     maintainers = with lib.maintainers; [ douzebis ];
   };
-}
+})

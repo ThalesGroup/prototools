@@ -11,9 +11,6 @@
 # Current members:
 #   prototext-core   — pure-Rust library (codec + schema)
 #   prototext        — binary: enhanced-textproto ↔ wire converter
-#
-# Future members slot in as siblings without restructuring:
-#   reproto/         → crates.io: reproto
 
 [workspace]
 resolver = "2"

@@ -10,10 +10,10 @@
 #   prototext_graph-<v>-cp313-cp313-<platform>.whl        (maturin, dist: prototext-graph)
 #   fdp_scan-<v>-cp313-cp313-<platform>.whl               (maturin, dist: fdp-scan)
 #   tree_sitter_textproto-<v>-cp313-cp313-<platform>.whl  (setuptools, dist: tree-sitter-textproto)
-#   prototext_reproto-<v>-py3-none-any.whl                (setuptools, dist: prototext-reproto)
 # The extensions' wheels come from workspaceBuild (spec 0409 S3), which
-# chooses and checks their platform tags; the other two are the `dist`
-# outputs of the packages nix/python.nix builds.
+# chooses and checks their platform tags; the grammar's is the `dist`
+# output of the package nix/python.nix builds. prototext-reproto's wheel
+# went with reproto after 0.4.0 (spec 0487).
 # protoscan is a Rust binary since spec 0407: no wheel, crates.io only.
 #
 # The derivation does not publish: at a release tag,
@@ -23,7 +23,6 @@
 { pkgs
 , pythonPkgs
 , workspaceBuild          # nix/rust.nix: $out/wheels/ holds the extensions' wheels
-, reproto                 # nix/python.nix: the package; its `dist` holds its wheel
 , treeSitterTextprotoPkg  # nix/python.nix: the grammar; its `dist` holds its wheel
 }:
 
@@ -60,7 +59,6 @@ in pkgs.runCommand "prototools-pypi" {
   mkdir -p "$out"
   cd "$out"
   cp ${workspaceBuild}/wheels/*.whl \
-     ${reproto.dist}/*.whl \
      ${treeSitterTextprotoPkg.dist}/*.whl .
   chmod u+w *.whl
   ${retagLinux}

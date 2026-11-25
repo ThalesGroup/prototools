@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Time and measure reproto or protoback on spec 0424 S21's cases.
+# Time and measure protoback on spec 0424 S21's cases.
 #
 # Usage: scripts/bench-protoback CMD OUTDIR
 #
-#   CMD     the command line to measure: `reproto`, `protoback`, ...
+#   CMD     the command line to measure: `protoback`, ...
 #   OUTDIR  where times.json (hyperfine) and rss.txt (peak resident size
 #           of one run of each case, in KiB) are written
 #

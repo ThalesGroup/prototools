@@ -7,8 +7,7 @@ nixpkgs tree (spec 0405):
 |---|---|
 | `pkgs/by-name/pr/prototext/package.nix` | same path (PR 1: NixOS/nixpkgs#572580, merged 2026-10-11 at 0.3.0; NixOS/nixpkgs#573094 updates it to 0.3.3, by hand: the recipe changed, spec 0413) |
 | `pkgs/by-name/pr/protoscan/package.nix` | same path (PR 2, spec 0407: NixOS/nixpkgs#572904, merged) |
-| `pkgs/by-name/re/reproto/package.nix` | same path: reproto (spec 0411 S6; NixOS/nixpkgs#572923) |
-| `pkgs/development/python-modules/{fdp-scan,prototext-codec,prototext-graph,tree-sitter-textproto}/default.nix` | same paths: reproto's four libraries, `python3Packages` entries that take their source, version and vendored crates from reproto, so that one update moves all five (spec 0411 S6, as amended in review; NixOS/nixpkgs#572923) |
+| `pkgs/development/python-modules/{fdp-scan,prototext-codec,prototext-graph,tree-sitter-textproto}/default.nix` | same paths: the four Python libraries, `python3Packages` entries. Until 0.4.0 they took their source, version and vendored crates from reproto (spec 0411 S6, as amended in review; NixOS/nixpkgs#572923); with reproto retired (spec 0487), each fetches its own, and nixpkgs' reproto goes by PR after the next release |
 | `pkgs/by-name/pr/protolens/package.nix` | same path (spec 0410: NixOS/nixpkgs#572911, merged at 0.3.4) |
 | `pkgs/by-name/pr/protoback/package.nix` | same path (spec 0486 S4: `protoback: init at 0.4.0`, to open) |
 | `pkgs/by-name/gi/git-seriate/package.nix` | same path, `git-seriate` and `git-seriate-fdp` (spec 0486 S4: `git-seriate: init at 0.4.0`, to open) |
@@ -19,10 +18,9 @@ no SPDX header (their licensing is declared in `REUSE.toml`).
 `nix-build -A nixpkgs-staging` builds each staged recipe from the local
 tree, through the same `callPackage`, with `src` and the vendored
 dependencies taken from here instead of the tag, so its tests and version
-check run on today's code. reproto's recipe is called with the pinned
-Python's package set, as nixpkgs passes `python3Packages`, extended with
-the four staged libraries, which read their source, version and vendored
-crates from that staged reproto, as in nixpkgs. `nix-build -A nixpkgs-staging-check` checks the
+check run on today's code. The four libraries are called with the pinned
+Python's package set, as nixpkgs passes `python3Packages`.
+`nix-build -A nixpkgs-staging-check` checks the
 formatting and the version: at a release the staged `version` equals the
 workspace's (`Cargo.toml`, `workspace.package.version`); between releases
 the workspace carries the next version with a `-dev` suffix and the staged
@@ -32,7 +30,10 @@ workflow (`.github/workflows/nixpkgs-staging.yml`) when the recipes or the
 dependencies change, and at every release tag.
 
 The packages follow one PR at a time, in the order of spec 0405 S9:
-prototext, protoscan, protolens, then reproto with its four libraries.
+prototext, protoscan, protolens, then reproto with its four libraries;
+protoback and git-seriate at 0.4.0. reproto, retired after 0.4.0 (spec
+0487), leaves nixpkgs by PR after the next release, the four libraries'
+recipes then fetching their own source.
 
 `pr-description-<package>.md` and `pr-briefing-<package>.md` are the notes
 for a PR being prepared: its description, and what to be ready to answer in
@@ -43,8 +44,8 @@ review (protoback and git-seriate, for 0.4.0). `pr-description.md` and
 
 1. In `Cargo.toml`, set `workspace.package.version` and the `version` of
    each internal crate under `workspace.dependencies` to the release; set
-   `version` in each `pyproject.toml`, and reproto's lower bounds on this
-   repository's packages (evaluation fails if one disagrees); run
+   `version` in each `pyproject.toml` (evaluation fails if one
+   disagrees); run
    `cargo update -w`, and `cargo update -p prototext-core` in
    `demo/bobapp` and `grehack2026/game`, which have lock files of their
    own. Add the release's section to `CHANGELOG.md`. Set the same

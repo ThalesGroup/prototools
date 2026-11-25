@@ -2,21 +2,10 @@
 #
 # SPDX-License-Identifier: MIT
 
-# nix/python.nix — Python packages: prototextCodec, fdpScanLib,
-#                  prototextGraphLib, reproto pipeline,
-#                  lint and ruff checks, stress tests.
-#
-# Source pipeline:
-#
-#   ./reproto/  ──[lib.fileset]──▶  reprotoSrc   (src/, pyproject.toml)
-#                                          │
-#                           ┌──────────────┼──────────────┐
-#                           ▼              ▼              ▼
-#                        wktRkyv        reproto      pythonLint …
-#
-# reproto builds from its source as committed: the well-known types'
-# descriptors it ships are committed, and default.nix's reproto-wkt-check
-# keeps them in step with the pinned protobuf (spec 0409 S4).
+# nix/python.nix — the Python side: the grammar's Python module, the
+#                  extensions' Python tests, the full tests (googleapis and
+#                  custom databases) and the descriptor sets bobapp embeds.
+#                  reproto, built here until 0.4.0, is retired (spec 0487).
 
 { pkgs
 , protoc            # nix/protobuf.nix: the one protobuf release (spec 0460)
@@ -28,40 +17,12 @@
 , prototextCodec
 , fdpScanLib
 , prototextGraphLib
-, protoback         # nix/rust.nix: the harness's candidate (spec 0428 S10)
+, protoback         # nix/rust.nix: what the full tests' databases are built with
 }:
 
 let
   # Sources hold tracked files only, in a git checkout (spec 0479).
   trackedSource = (import ./tracked.nix { inherit (pkgs) lib; }).toSource;
-
-  # Spec 0402 S3: versions from the manifests (see nix/rust.nix).
-  reprotoVersion   = pyprojectVersion "reproto";
-  # Spec 0402 S7: what runs a freshly installed script runs only where the
-  # host's binaries can run.
-  whenRunnable = pkgs.lib.optionalString
-    (pkgs.stdenv.buildPlatform.canExecute pkgs.stdenv.hostPlatform);
-
-
-  # ---------------------------------------------------------------------------
-  # reproto source pipeline
-  # ---------------------------------------------------------------------------
-
-  # reprotoSrc — what the reproto package is built from: src/ and
-  # pyproject.toml (spec 0401 S7). README.md, patch/ and
-  # tree-sitter-textproto/ are left out, so editing them rebuilds nothing:
-  # reprotoSrc feeds wktRkyv, whose graph wkt-prebuilt-check compares.
-  # __pycache__ files are left out too.
-  reprotoSrc =
-    let
-      fs   = pkgs.lib.fileset;
-      root = ../reproto;
-    in trackedSource {
-      inherit root;
-      fileset = fs.difference
-        (fs.unions [ (root + "/src") (root + "/pyproject.toml") ])
-        (fs.fileFilter (f: f.hasExt "pyc") (root + "/src"));
-    };
 
   # The textproto grammar's Python module (spec 0408 S4): a setuptools
   # package with one C extension, built from the committed parser
@@ -90,105 +51,13 @@ let
     pythonImportsCheck = [ "tree_sitter_textproto" ];
   };
 
-  # Common Python dependencies for reproto.
-  # reprotoPropagatedDeps: runtime deps only (no test tools, no codec).
-  # tree-sitter and the grammar are runtime deps because split_fdps.py
-  # imports them at module load time (top-level imports).
-  reprotoPropagatedDeps = [
-    pythonPkgs.click
-    pythonPkgs.google-re2
-    pythonPkgs.protobuf
-    pythonPkgs.pyvis
-    pythonPkgs.pyyaml
-    pythonPkgs.rapidfuzz
-    pythonPkgs.rich
-    pythonPkgs.tree-sitter
-    treeSitterTextprotoPkg
-  ];
-
-  # Python dependency set for the wktRkyv derivation: everything reproto
-  # needs to run `--schema-db-out`, and nothing more.
-  #
-  # fdpScanLib is not needed here. reproto imports fdp_scan_lib only for
-  # -I on a blob (spec 0243), from inside that branch, never at module
-  # load, so wktRkyv runs without it; it is attached to the final reproto
-  # package instead. (It used to be banned outright: fdp_scan_lib embedded
-  # the freshly generated graph, so it depended on wktRkyv. It now embeds
-  # the committed one, spec 0401 S2, and the ban is history.)
-  wktRkyvDeps = reprotoPropagatedDeps ++ [
-    prototextCodec
-    prototextGraphLib
+  # The full tests' Python: pytest, and yaml for their type lists; they run
+  # prototext and protoback as programs.
+  fullTestDeps = [
     pythonPkgs.pytest
     pythonPkgs."pytest-xdist"
+    pythonPkgs.pyyaml
   ];
-
-  # Full Python dependency set for running the reproto test suite and for the
-  # dev-shell PYTHONPATH.  Extends reprotoPropagatedDeps with the codec and
-  # pytest tools.  Used by pythonLint and dev-shell.
-  # types-protobuf is typing stubs, for pyright: lint and dev-shell only,
-  # never a runtime dependency (spec 0402 S5).
-  # tree-sitter-language-pack: the tests' second grammar, which reproto
-  # itself never imports.
-  reprotoTestDeps = wktRkyvDeps ++ [
-    fdpScanLib
-    pythonPkgs.tree-sitter-language-pack
-    pythonPkgs.types-protobuf
-  ];
-
-  # Final reproto package — built from its source, with tests.
-  reproto = pythonPkgs.buildPythonPackage {
-    pname   = "reproto";
-    version = reprotoVersion;
-    meta = metaCommon // {
-      description = "Reconstruct .proto sources and schema databases from protobuf descriptors";
-      mainProgram = "reproto";
-    };
-    src     = reprotoSrc;
-    pyproject = true;
-
-    # Spec 0402 S5: build-system, dependencies, and checks as nixpkgs
-    # spells them. Its test suite is gone (spec 0487 D3); the install
-    # check is the import of the package.
-    build-system = [ pythonPkgs.setuptools ];
-    nativeBuildInputs = [ pkgs.installShellFiles ];
-    dependencies = reprotoPropagatedDeps ++ [
-      prototextCodec   # reproto.load imports prototext_codec_lib at module load time
-      prototextGraphLib  # reproto --schema-db-out imports scoring_graph_lib
-      # reproto -I <blob> imports fdp_scan_lib to expand the blob (spec
-      # 0243 S10). It belongs here and NOT in reprotoPropagatedDeps, for
-      # the reason spelled out on wktRkyvDeps above: the shared list is
-      # what wktRkyv runs reproto with, and wktRkyv's graph is what
-      # wkt-prebuilt-check compares. reproto.load defers the import into
-      # the blob branch, so wktRkyv never needs it.
-      fdpScanLib
-    ];
-
-    doCheck = false;
-    doInstallCheck = true;
-    pythonImportsCheck = [ "reproto" ];
-    # Spec 0402 S8: `reproto --version` says the version Nix calls it
-    # (meta.mainProgram names the program); spec 0413 S5: so does every
-    # other program the package installs.
-    nativeInstallCheckInputs = [ pkgs.versionCheckHook ];
-    postInstallCheck = whenRunnable ''
-      for program in $out/bin/*; do
-        "$program" --version | grep -qF ${reprotoVersion} || {
-          echo "$program --version does not print ${reprotoVersion}" >&2
-          exit 1
-        }
-      done
-    '';
-
-    postInstall = whenRunnable ''
-      # reproto prints its own script for each shell (spec 0422).
-      installShellCompletion --cmd reproto \
-        --bash <(_REPROTO_COMPLETE=bash_source $out/bin/reproto) \
-        --zsh <(_REPROTO_COMPLETE=zsh_source $out/bin/reproto) \
-        --fish <(_REPROTO_COMPLETE=fish_source $out/bin/reproto)
-      # Generate and install the man pages (spec 0413 S2).
-      REPROTO_GEN_MAN=$out/share/man/man1 $out/bin/reproto
-    '';
-  };
 
   # Tests for fdp_scan_lib — run against the installed extension (no PYTHONPATH
   # override needed; the installed package is already on the Python path via
@@ -261,63 +130,52 @@ let
   };
 
   # ---------------------------------------------------------------------------
-  # Python lint — pyright type checking for the reproto Python package.
-  #
-  # The three extensions are installed in the environment, as
-  # reproto sees them, so pyright resolves prototext_codec_lib,
-  # prototext_graph_lib and fdp_scan_lib through the stubs their wheels
-  # ship.
-  #
-  # fdp_scan_lib is here even though it is banned from
-  # reprotoPropagatedDeps (see the comment there).  The ban exists so
-  # that wktRkyv's inputs stay free of the WKT graph reproto is itself
-  # used to build; pythonLint is a leaf nothing builds from, so
-  # depending on the extension closes no cycle.  It has to be listed:
-  # load.py's import of it is deferred to inside the function (spec 0243
-  # S10) for that same eval-recursion reason, but pyright resolves
-  # imports statically wherever they sit, so deferring hides nothing
-  # from it.
+  # Python lint: pyright and ruff on the repository's Python, which reproto
+  # was most of until it was retired (spec 0487): the extensions' and the
+  # full tests, protoback's plugin adapter, the scripts. attic/ and docs/
+  # are left out, and the extensions' own packages are pyright-excluded
+  # (lintSettings): their stubs come with the installed extensions.
   # ---------------------------------------------------------------------------
+  pythonSrc =
+    let fs = pkgs.lib.fileset; in trackedSource {
+      root = ../.;
+      fileset = fs.difference
+        (fs.fileFilter (f: f.hasExt "py") ../.)
+        (fs.unions [ ../attic ../docs ]);
+    };
+
+  # What that Python imports, and pyright's stubs for protobuf; the dev
+  # shell's PYTHONPATH too (nix/shells.nix).
+  lintDeps = fullTestDeps ++ [
+    prototextCodec
+    fdpScanLib
+    pythonPkgs.protobuf
+    pythonPkgs.types-protobuf
+  ];
+
   pythonLint = pkgs.runCommand "python-lint" {
     strictDeps = true;
     nativeBuildInputs = [
       pkgs.pyright
-      (pythonPkgs.python.withPackages (_: reprotoPropagatedDeps ++ [
-        prototextCodec
-        prototextGraphLib
-        fdpScanLib
-        pythonPkgs.pytest
-        pythonPkgs.tree-sitter-language-pack
-        pythonPkgs.types-protobuf
-      ]))
+      (pythonPkgs.python.withPackages (_: lintDeps))
     ];
   } ''
     set -euo pipefail
-
     # pyright needs a writable working directory for its cache.
-    cd "$TMPDIR"
-
-    export PYTHONPATH="${reprotoSrc}/src"
-
-    # A hermetic pyrightconfig.json, from lintSettings.
-    cp ${lintSettings.pyrightConfig [ "${reprotoSrc}/src" ]} pyrightconfig.json
-
+    cp -r ${pythonSrc} src && chmod -R u+w src && cd src
+    cp ${lintSettings.pyrightConfig [ ]} pyrightconfig.json
     echo "--- pyright ---"
-    pyright ${reprotoSrc}/src/
-
+    pyright
     touch $out
   '';
 
-  # ---------------------------------------------------------------------------
-  # Python ruff check — style and correctness linting for the reproto package.
-  # ---------------------------------------------------------------------------
   pythonRuff = pkgs.runCommand "python-ruff" {
     strictDeps = true;
     nativeBuildInputs = [ pythonPkgs.ruff ];
   } ''
     set -euo pipefail
     echo "--- ruff ---"
-    ruff check --no-cache ${lintSettings.ruffExcludeFlags} ${reprotoSrc}/src/
+    ruff check --no-cache ${lintSettings.ruffExcludeFlags} ${pythonSrc}
     touch $out
   '';
 
@@ -327,7 +185,7 @@ let
   #
   # Two derivations:
   #   googleapisDb    — fetches pinned googleapis corpus, compiles protos,
-  #                     runs reproto --schema-db-out, and instantiates
+  #                     runs protoback --schema-db-out, and instantiates
   #                     N_INSTANCES .pb messages: hand-crafted fixtures first,
   #                     then a seeded pseudo-random draw for the remainder.
   #                     Cached by Nix; only rebuilt when inputs change.
@@ -344,7 +202,7 @@ let
 
   # Compile every .proto in the googleapis corpus into a single multi-FDP FDS.
   # Pure function of corpus + protoc; cached independently of the DB build so
-  # that changes to reproto/instantiation logic don't force a recompile.
+  # that changes to protoback/instantiation logic don't force a recompile.
   googleapisPbs = pkgs.runCommand "googleapis-pbs" {
     strictDeps = true;
     nativeBuildInputs = [ protoc ];
@@ -511,7 +369,7 @@ print('\n'.join(lines[:$N_EXTRA]))
     nativeBuildInputs = [
       prototext
       protoback
-      (pythonPkgs.python.withPackages (_: reprotoTestDeps))
+      (pythonPkgs.python.withPackages (_: fullTestDeps))
     ];
   } ''
     set -euo pipefail
@@ -592,7 +450,7 @@ print('\n'.join(lines[:$N_EXTRA]))
     nativeBuildInputs = [
       prototext
       protoback
-      (pythonPkgs.python.withPackages (_: reprotoTestDeps))
+      (pythonPkgs.python.withPackages (_: fullTestDeps))
     ];
   } ''
     set -euo pipefail
@@ -603,12 +461,9 @@ print('\n'.join(lines[:$N_EXTRA]))
 
 in {
   inherit
-    reprotoSrc
     treeSitterTextprotoPkg
-    reprotoPropagatedDeps
-    wktRkyvDeps
-    reprotoTestDeps
-    reproto
+    fullTestDeps
+    lintDeps
     fdpScanTests
     prototextCodecTests
     pythonLint

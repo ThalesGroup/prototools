@@ -65,13 +65,13 @@ path = [
 SPDX-FileCopyrightText = "Porter Matteo Haet"
 SPDX-License-Identifier = "ISC"
 
-# The well-known types' descriptors reproto ships, compiled from protobuf's
-# own .proto files (Copyright 2008 Google Inc., BSD-3-Clause), so licensed
-# like them (spec 0409 S4). default.nix's reproto-wkt-check keeps them in
-# step with the pinned protobuf.
+# The well-known types' descriptors protoback embeds, compiled from
+# protobuf's own .proto files (Copyright 2008 Google Inc., BSD-3-Clause), so
+# licensed like them (spec 0409 S4). default.nix's wkt-variant-check keeps
+# them in step with the pinned protobuf.
 [[annotations]]
 path = [
-  "reproto/src/reproto/variants/google-protobuf/google/protobuf/*.pb",
+  "protoback/data/variants/google-protobuf/google/protobuf/*.pb",
 ]
 SPDX-FileCopyrightText = "2008 Google Inc."
 SPDX-License-Identifier = "BSD-3-Clause"
@@ -103,21 +103,6 @@ path = [
 ]
 SPDX-FileCopyrightText = "Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)"
 SPDX-License-Identifier = "MIT"
-
-# reproto's zsh and fish completion scripts, derived from Click 8.3's own
-# (click/shell_completion.py) with reproto's candidate types added (spec
-# 0422). zsh reads `#compdef` on a script's first line, so the notice is
-# kept here rather than in a header.
-[[annotations]]
-path = [
-  "reproto/src/reproto/completions.zsh",
-  "reproto/src/reproto/completions.fish",
-]
-SPDX-FileCopyrightText = [
-  "2014 Pallets",
-  "Frederic Ruget <fred@atlant.is> (GitHub: @douzebis)",
-]
-SPDX-License-Identifier = "MIT AND BSD-3-Clause"
 
 # pyvis 0.3.2's page, as reproto's --scoring-html-out writes it, embedded
 # by protoback to write the same bytes (spec 0430 S8): its template

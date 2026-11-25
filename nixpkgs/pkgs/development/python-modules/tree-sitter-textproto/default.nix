@@ -1,22 +1,27 @@
 {
   lib,
   buildPythonPackage,
+  fetchFromGitHub,
   setuptools,
-  reproto,
+
+  # passthru
+  nix-update-script,
 }:
 
-buildPythonPackage {
+buildPythonPackage (finalAttrs: {
   pname = "tree-sitter-textproto";
-  inherit (reproto) src version;
+  version = "0.4.0";
   pyproject = true;
   __structuredAttrs = true;
 
-  # nixpkgs-update: no auto update
-  # Built from reproto's source, at its version, with its vendored crates:
-  # reproto needs all four of these libraries at exactly its version, so
-  # they move with it, in reproto's update.
+  src = fetchFromGitHub {
+    owner = "douzebis";
+    repo = "prototools";
+    tag = "v${finalAttrs.version}";
+    hash = "sha256-zE8jDoPISjJg56cRjs0LJDDBQv9dWYAryg29RpZLsZU=";
+  };
 
-  sourceRoot = "${reproto.src.name}/tree-sitter-textproto";
+  sourceRoot = "${finalAttrs.src.name}/tree-sitter-textproto";
 
   build-system = [ setuptools ];
 
@@ -24,6 +29,14 @@ buildPythonPackage {
   doCheck = false;
 
   pythonImportsCheck = [ "tree_sitter_textproto" ];
+
+  # Only v-prefixed release tags
+  passthru.updateScript = nix-update-script {
+    extraArgs = [
+      "--version-regex"
+      "^v(\\d+\\.\\d+\\.\\d+)$"
+    ];
+  };
 
   meta = {
     description = "Textproto grammar for tree-sitter";
@@ -33,10 +46,11 @@ buildPythonPackage {
       number as a field name.
     '';
     homepage = "https://github.com/douzebis/prototools";
+    changelog = "https://github.com/douzebis/prototools/blob/${finalAttrs.src.rev}/CHANGELOG.md";
     license = with lib.licenses; [
       isc
       mit
     ];
     maintainers = with lib.maintainers; [ douzebis ];
   };
-}
+})

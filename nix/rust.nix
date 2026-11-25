@@ -87,7 +87,7 @@ let
   #
   # A dependency on one of this repository's Python packages must require
   # the same version, as `<name>>=<version>`: they are released together,
-  # and an older lower bound would let pip pair a new reproto with old
+  # and an older lower bound would let pip pair a new package with old
   # extensions (spec 0411 S3).
   pyprojectVersion = dir:
     let
@@ -480,16 +480,16 @@ let
   '';
 
   # ---------------------------------------------------------------------------
-  # protoback — reproto in Rust, on upb (spec 0424). Not published on
-  # crates.io, and not in nixpkgs; exported as `protoback` for downstream
-  # builds, and the differential harness's candidate (spec 0428 S10). Its
+  # protoback — reproto's successor, in Rust, on upb (spec 0424). Not
+  # published on crates.io; exported as `protoback` for downstream builds.
+  # Its
   # completion and man pages come from the binary itself, as protoscan's
   # (spec 0433 S7).
   # ---------------------------------------------------------------------------
   protoback = pkgs.runCommand "protoback-${workspaceVersion}" {
     nativeBuildInputs = [ pkgs.installShellFiles ];
     meta = metaCommon // {
-      description = "reproto in Rust, on upb";
+      description = "Reconstruct .proto sources and schema databases from protobuf descriptors";
       mainProgram = "protoback";
     };
   } (''
