@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0485 — a cargo profile argument, pytest bounded by the build's cores, and a local CI that fails fast
 
-Status: draft
+Status: implemented
+Implemented in: 2026-11-25
 App: nix, scripts
 Refs: docs/specs/0487-retire-reproto.md (reproto and the harness gone,
         which changed the pytest background, 2026-11-25),
@@ -65,8 +66,8 @@ Read on 2026-11-25:
   `workspaceBuild`, maturin's wheels.
 - **G2. The default changes nothing:** with `"release"`, every
   derivation is the one built today, byte for byte.
-- **G3. pytest parallel, bounded by `NIX_BUILD_CORES`,** in every Nix
-  pytest invocation.
+- **G3. pytest bounded by `NIX_BUILD_CORES`,** in every Nix pytest
+  invocation: serial, one process, as measured fastest (S4).
 - **G4. One command for a local full CI, cheap checks first, stopping at
   the first failure:** what a run checks, and in which order, is in the
   repository, not in whoever types the command.
@@ -92,10 +93,16 @@ Read on 2026-11-25:
 - **S3. The wheel guard** (0477 S5) under `quick`: maturin's residual is
   measured once under each profile; `maturinResidual` holds what each
   needs, extra entries being harmless.
-- **S4. pytest:** each Nix pytest invocation passes
-  `-n "$NIX_BUILD_CORES"`. A session fixture then runs once per worker
-  (the full tests' instance generation, one `protoback instantiate` call):
-  measured, and kept only if the suite is faster.
+- **S4. pytest, serial, and the full tests' fixture made fast.** Tried
+  first: `-n "$NIX_BUILD_CORES"` on each run, kept only if faster. It was
+  slower: the full tests' work is two session fixtures (one `protoback
+  instantiate`, one `prototext list-schemas` over every instance), which
+  each xdist worker runs again; the tests themselves only read the result.
+  So the runs stay serial, and the fixture's cost is cut where it was:
+  `list-schemas` prints every type tied at the top score (hundreds for some
+  googleapis instances, 27 MB of YAML for 88), which PyYAML's pure-Python
+  parser read in 64 s. Both suites parse it with PyYAML's C parser
+  (`CSafeLoader`) instead.
 - **S5. The `ci` target** stays `release`: its end-to-end checks (the
   Python tests on the wheels, completions, closure) run on
   `workspaceBuild`'s artifacts, and are the gate for what ships.
@@ -131,6 +138,25 @@ Read on 2026-11-25:
   without the dev shell, and its first steps are the cheap checks
   already.
 
+- **S8. Three uses, documented** in the README's installation section,
+  each with its command (decided 2026-11-25):
+  - **the maintainer releasing, and the CI:** `release`, thin LTO, the
+    whole machine (`scripts/ci`);
+  - **the maintainer developing:** `quick` (`--argstr cargoProfile
+    quick`), and `scripts/ci --preflight` after an edit;
+  - **a colleague building the tools to use them:** `release`, like what
+    ships, but bounded with Nix's own `--max-jobs 1 --cores 2` (or
+    `nix.conf`), so that the machine stays free for other work: `--cores`
+    becomes crane's `CARGO_BUILD_JOBS`, and thin LTO runs under Cargo's
+    jobserver, so the memory peak follows. No argument of ours: Nix's
+    flags reach every build, a downstream one included.
+- **S9. `README.md` leaves the workspace's source:** the crates' manifests
+  name it (`readme = "../README.md"`), so it was in `workspaceSrc`, and a
+  README edit rebuilt every tool. Only `cargo package` reads it:
+  `crates-io` builds from `cratesIoSrc`, the workspace's source plus the
+  README. (This changes the default's derivations, once, on purpose; G2
+  held for S1 to S3.)
+
 ## Alternatives considered
 
 - **A `quick` variant of each tool, or an overlay.** Every consumer
@@ -146,8 +172,10 @@ Read on 2026-11-25:
    derivation path.
 2. `nix-build -A ci --arg cargoProfile '"quick"'`: passes; the wheel
    guard holds.
-3. Once, our suites one test at a time: `RUST_TEST_THREADS=1` and
-   `pytest -n 1`, to find any test that needs others beside it.
+3. Once, the Rust suites one test at a time (`RUST_TEST_THREADS=1`), to
+   find any test that needs others beside it. Not the Python suites: they
+   ran serially until S4, so what S4 brings to test is parallelism, which
+   the runs with `--cores 6` do.
 4. `--cores 1`: pytest runs one worker. `googleapis-tests` timed serial
    and with `--cores 6`.
 5. `scripts/ci` on a tree with a formatting error in a Rust file: fails
@@ -161,4 +189,42 @@ Read on 2026-11-25:
 
 ## Measured outcome
 
-Filled in at implementation.
+2026-11-25, on branch `quick-builds`:
+
+- **G2:** with the default, `ci`, `pypi`, `crates-io`, `full-tests`,
+  `prototools` and `nixpkgs-staging` evaluate to the same derivation paths
+  as before S1 (compared before S4, which changes the pytest runs by
+  design). Another value than `release` or `quick` is refused, naming the
+  two.
+- **S2:** under `quick`, `ci`'s closure holds one dependency cache
+  (`prototools-deps`), against two under `release`.
+- **Test plan 2:** `nix-build -A ci --argstr cargoProfile quick` passes,
+  from cold: 654 s, the dependencies, the workspace, clippy and the tests
+  (`release`'s `ci` took about 35 minutes cold the same day).
+- **S3:** under `quick`, maturin compiles each extension's own crate and
+  nothing else: no cross-crate LTO, so nothing recompiled as bitcode.
+  `maturinResidual` is kept as it is, needed under `release`.
+- **S4:** `googleapis-tests` with `-n`, alternated back to back on one
+  derivation: 42.0 s and 44.6 s with `--cores 1`, 98.6 s and 95.7 s with
+  `--cores 6` (an earlier 91 s against 138 s compared runs under different
+  host load). Where the time went, profiled: `protoback instantiate` 0.95
+  s, `prototext list-schemas` 2.1 s, PyYAML's parse of its 27 MB output
+  64.5 s (`CSafeLoader`: 22.7 s), the tests under 5 ms each. Serial, with
+  `CSafeLoader`: 14 s. `custom-tests` 0.06 s, `prototext-codec-tests`
+  0.16 s, `fdp-scan-tests` 0.04 s.
+- **S6:** the preflight, 21 s. A formatting error stops it at `cargo fmt`
+  in 1 s, a ruff error at `ruff` in 2 s, both exiting 1; outside the dev
+  shell it refuses. Its first run found its own missing license header.
+  The full default run, `CI PASSED` (33 s, cached).
+- **S7:** `ci-workflow-check` passes, and fails on a step added to
+  `nix.yml` alone, listing both sides.
+- **Test plan 3:** `RUST_TEST_THREADS=1 cargo test --profile quick
+  --no-default-features --workspace`, under `env -i`: 2 108 passed, 26
+  ignored.
+- **S9:** found when S8's README edit rebuilt the release workspace. After
+  it, a README edit leaves `ci`'s derivation unchanged and changes
+  `crates-io`'s, checked by evaluation.
+- **The final run:** `scripts/ci`, `CI PASSED` in 656 s (the workspace
+  rebuilt for S9's change of source), and the staged Python libraries
+  built. `crates-io` was already built: its source now holds exactly what
+  the workspace's held before S9.

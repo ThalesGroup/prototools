@@ -108,6 +108,9 @@ in
       rustfmt
       clippy
       reuse
+      # The staged nixpkgs recipes' formatter, which scripts/ci's preflight
+      # runs as nixpkgs-staging-check does (spec 0485 S6).
+      nixfmt
       gh
       # Spec 0460's protoc (nix/protobuf.nix), not the pin's.
       protoc

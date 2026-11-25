@@ -151,7 +151,10 @@ def list_schemas_results(
 
     # Parse YAML: list of {path, types} dicts.
     # Each types entry is {type: <fqdn>, score: N, ...}.
-    raw = yaml.safe_load(ls.stdout) or []
+    # PyYAML's C parser: the output holds every type tied at the top score,
+    # hundreds for some instances (27 MB for 88), which the pure-Python
+    # parser takes a minute to read (spec 0485 S4).
+    raw = yaml.load(ls.stdout, Loader=yaml.CSafeLoader) or []
     results: dict[str, list[str]] = {}
     for entry, item in zip(_TYPE_ENTRIES, raw):
         results[entry.fqdn] = [t["type"] for t in (item.get("types") or [])]

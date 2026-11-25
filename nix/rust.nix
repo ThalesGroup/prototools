@@ -37,6 +37,7 @@
 , depsSrc
 , workspaceSrc
 , buf               # narrow-pinned buf (newer than the main nixpkgs pin's 1.59.0; see default.nix)
+, cargoProfile      # default.nix: "release" (what ships) or "quick" (spec 0485)
 }:
 
 let
@@ -146,7 +147,15 @@ let
   # external deps to recompile in every downstream derivation.
   # No protoc run: dummy build.rs never calls it.
   # ---------------------------------------------------------------------------
-  depsCache = crane.buildDepsOnly (protocArgs // {
+  # The profile of what builds the tools (spec 0485 S1): crane's default,
+  # `release`, unless default.nix's cargoProfile says `quick`. Set only
+  # then, so that the default's derivations are today's, byte for byte
+  # (G2).
+  profileArgs = pkgs.lib.optionalAttrs (cargoProfile != "release") {
+    CARGO_PROFILE = cargoProfile;
+  };
+
+  depsCache = crane.buildDepsOnly (protocArgs // profileArgs // {
     src            = workspaceSrc;
     pname          = "prototools-deps";
     cargoExtraArgs = workspaceArgs;
@@ -168,7 +177,8 @@ let
     pname = "prototools-fmt";
   });
 
-  rustClippy = crane.cargoClippy (protocArgs // {
+  # On depsCache, so in its profile: another would rebuild every dependency.
+  rustClippy = crane.cargoClippy (protocArgs // profileArgs // {
     src                  = workspaceSrc;
     pname                = "prototools-clippy";
     cargoArtifacts       = depsCache;
@@ -186,8 +196,10 @@ let
   # codegen units (spec 0401 S8). The tests compile in a third of the time,
   # and leave the cores to workspaceBuild and clippy, which run alongside;
   # with `release` the three LTO builds starved each other. It needs its own
-  # dependency cache, since a profile is part of every artifact's identity.
-  depsCacheTests = crane.buildDepsOnly (protocArgs // {
+  # dependency cache, since a profile is part of every artifact's identity;
+  # under cargoProfile = "quick", depsCache is that cache already, and the
+  # tests take it (spec 0485 S2): one dependency build fewer.
+  depsCacheTests = if cargoProfile == "quick" then depsCache else crane.buildDepsOnly (protocArgs // {
     src             = workspaceSrc;
     pname           = "prototools-deps-tests";
     CARGO_PROFILE   = "quick";
@@ -335,8 +347,8 @@ let
   # be run to generate completions, man pages or stubs.
   profileDir =
     if pkgs.stdenv.buildPlatform == pkgs.stdenv.hostPlatform
-    then "target/release"
-    else "target/${pkgs.stdenv.hostPlatform.rust.rustcTarget}/release";
+    then "target/${cargoProfile}"
+    else "target/${pkgs.stdenv.hostPlatform.rust.rustcTarget}/${cargoProfile}";
   canRun = pkgs.stdenv.buildPlatform.canExecute pkgs.stdenv.hostPlatform;
   whenRunnable = pkgs.lib.optionalString canRun;
 
@@ -407,7 +419,12 @@ let
   manylinuxArgs = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux
     "--compatibility manylinux_2_34";
 
-  workspaceBuild = crane.buildPackage (protocArgs // {
+  # maturin's spelling of the profile: `--release` as before for the
+  # default (G2).
+  maturinProfile =
+    if cargoProfile == "release" then "--release" else "--profile ${cargoProfile}";
+
+  workspaceBuild = crane.buildPackage (protocArgs // profileArgs // {
     src                                = workspaceSrc;
     pname                              = "prototools-workspace";
     nativeBuildInputs                  = protocArgs.nativeBuildInputs ++ [ pkgs.maturin ];
@@ -440,7 +457,7 @@ let
       fi
     '' + ''
       set -o pipefail
-      env -u _PYTHON_HOST_PLATFORM maturin build --release --offline \
+      env -u _PYTHON_HOST_PLATFORM maturin build ${maturinProfile} --offline \
         -m ${e.crateDir}/Cargo.toml ${maturinArgs} ${manylinuxArgs} --out $out/wheels \
         2>&1 | tee "$TMPDIR/maturin-${e.libName}.log"
       # maturin compiles the extension's crate and maturinResidual alone

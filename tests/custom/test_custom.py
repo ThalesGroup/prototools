@@ -145,7 +145,9 @@ def list_schemas_results(
 
     # Parse YAML: list of {path, types} dicts.
     # Each types entry is {type: <fqdn>, score: N, ...}.
-    raw = yaml.safe_load(ls.stdout) or []
+    # PyYAML's C parser, as the stress test reads the same output (spec
+    # 0485 S4).
+    raw = yaml.load(ls.stdout, Loader=yaml.CSafeLoader) or []
     results: dict[str, list[str]] = {}
     for entry, item in zip(_TYPE_ENTRIES, raw):
         results[entry.fqdn] = [t["type"] for t in (item.get("types") or [])]

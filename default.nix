@@ -34,6 +34,11 @@
 # label (spec 0374 S5). CI passes `--argstr gitRevision "$GITHUB_SHA"`; a local
 # build leaves it out, and the image has no revision label.
 , gitRevision ? null
+# The Cargo profile the tools are built in (spec 0485): "release", what
+# ships, or "quick" (no LTO, 16 codegen units), for development and
+# low-memory builds: --argstr cargoProfile quick. The tests build in quick
+# either way; releases, crates.io, PyPI and nixpkgs stay on release.
+, cargoProfile ? "release"
 # The nixpkgs the staged recipes are also checked against, as the nixpkgs
 # PRs build (spec 0423 S4): the nixos-unstable pin of nix/unstable.json,
 # moved by scripts/update-unstable-pin. The weekly check passes the
@@ -44,6 +49,9 @@
       inherit (pin) sha256;
     })
 }@args:
+
+assert builtins.elem cargoProfile [ "release" "quick" ]
+  || throw "cargoProfile: \"release\" or \"quick\", not \"${cargoProfile}\" (spec 0485 N2)";
 
 let
   # Sources hold tracked files only, in a git checkout (spec 0479).
@@ -214,7 +222,9 @@ let
         # The text forms of two of those sets, as protoc --decode prints
         # them, which the text-format tests parse (spec 0424 S5).
         (pkgs.lib.fileset.fileFilter (f: f.hasExt "txtpb") ./prototext-upb/tests/fixtures)
-        ./README.md
+        # Not README.md, which the crates' manifests name for their
+        # crates.io packages: a README edit would rebuild everything.
+        # cratesIoSrc adds it (spec 0485 S9).
       ])
       (pkgs.lib.fileset.unions [
         (pkgs.lib.fileset.maybeMissing ./target)
@@ -487,7 +497,7 @@ let
 
   rust = import ./nix/rust.nix {
     inherit pkgs protoc crane pythonPkgs pythonBin pythonExecutable
-            depsSrc workspaceSrc buf;
+            depsSrc workspaceSrc buf cargoProfile;
   };
 
   python = import ./nix/python.nix {
@@ -497,8 +507,20 @@ let
     inherit (rust) prototextCodec fdpScanLib prototextGraphLib protoback;
   };
 
+  # What `cargo package` needs besides the workspace: the README the
+  # crates' manifests name (`readme = "../README.md"`), left out of
+  # workspaceSrc so that editing it rebuilds no tool (spec 0485 S9).
+  cratesIoSrc = trackedSource {
+    root    = ./.;
+    fileset = pkgs.lib.fileset.unions [
+      (pkgs.lib.fileset.fromSource workspaceSrc)
+      ./README.md
+    ];
+  };
+
   cratesIo = import ./nix/crates-io.nix {
-    inherit pkgs crane workspaceSrc protoc;
+    inherit pkgs crane protoc;
+    workspaceSrc = cratesIoSrc;
     inherit (rust) commonArgs;
   };
 
@@ -766,7 +788,7 @@ let
     wktVariantCheck upbReleaseCheck descriptorCopiesCheck
     wktDb wktPrebuiltCheck prototextFixturesCheck fdpScanCorpusCheck
     prototoolsClosureCheck
-    completionTests
+    completionTests ciWorkflowCheck
     # nixpkgsStaging builds in its own workflow (nixpkgs-staging.yml): two
     # more full Rust builds would weigh on every CI run. The check stays.
     nixpkgsStagingCheck
@@ -786,7 +808,7 @@ let
     treeSitterTextprotoHighlightTest treeSitterTextprotoCheck
     wktDb wktPrebuiltCheck prototextFixturesCheck fdpScanCorpusCheck
     prototoolsClosureCheck
-    completionTests
+    completionTests ciWorkflowCheck
     # nixpkgsStaging builds in its own workflow (nixpkgs-staging.yml): two
     # more full Rust builds would weigh on every CI run. The check stays.
     nixpkgsStagingCheck
@@ -924,6 +946,39 @@ let
     python3 ${./prototools-complete/tests/tab_completion.py} bin | tee $out
   '';
 
+  # nix.yml and scripts/ci run the same Nix steps in the same order (spec
+  # 0485 S7): the commands of nix.yml's `run:` steps that name nix-build,
+  # nix-instantiate or scripts/, its matrix target written CI_TARGET,
+  # against `scripts/ci --list-steps`. A step added to one alone fails ci.
+  ciWorkflowCheck = pkgs.runCommand "ci-workflow-check" {
+    strictDeps = true;
+    nativeBuildInputs = [ (pkgs.python3.withPackages (ps: [ ps.pyyaml ])) ];
+  } ''
+    bash ${./scripts/ci} --list-steps > script-steps
+    python3 -I - ${./.github/workflows/nix.yml} script-steps <<'EOF'
+    import re, sys, yaml
+    workflow = yaml.safe_load(open(sys.argv[1]))
+    ours = [l.strip() for l in open(sys.argv[2]) if l.strip()]
+    theirs = []
+    for job in workflow["jobs"].values():
+        for step in job.get("steps", []):
+            run = " ".join(str(step.get("run", "")).split())
+            if re.search(r"nix-build|nix-instantiate|scripts/", run):
+                theirs.append(run.replace("''${{ matrix.ci-target }}", "CI_TARGET"))
+    if theirs != ours:
+        print("nix.yml and scripts/ci do not run the same steps (spec 0485 S7):",
+              file=sys.stderr)
+        for label, steps in (("nix.yml", theirs), ("scripts/ci", ours)):
+            print(f"  {label}:", file=sys.stderr)
+            for s in steps:
+                print(f"    {s}", file=sys.stderr)
+        print("Add the step to both: nix.yml's steps, and nix_steps in scripts/ci.",
+              file=sys.stderr)
+        sys.exit(1)
+    EOF
+    touch $out
+  '';
+
   # The release shell (spec 0412 S2): what scripts/check-crates and
   # scripts/publish-crates need, in CI's publish workflow and locally.
   releaseShell = pkgs.mkShell {
@@ -986,6 +1041,7 @@ in
   # One staged Python library at a time: nix-build -A nixpkgs-staging-python.fdp-scan
   nixpkgs-staging-python = pkgs.lib.getAttrs (builtins.attrNames stagedPythonLibs) stagedPythonPkgs;
   nixpkgs-staging-check = nixpkgsStagingCheck;
+  ci-workflow-check    = ciWorkflowCheck;
   nixpkgs-staging-unstable = nixpkgsStagingUnstable;
   prototext-fixtures-check = prototextFixturesCheck;
   protoscan            = rust.protoscan;

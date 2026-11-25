@@ -52,7 +52,9 @@ let
   };
 
   # The full tests' Python: pytest, and yaml for their type lists; they run
-  # prototext and protoback as programs.
+  # prototext and protoback as programs. The Nix pytest runs are serial,
+  # one process (spec 0485 S4): their work is a session fixture, which
+  # each xdist worker would run again.
   fullTestDeps = [
     pythonPkgs.pytest
     pythonPkgs."pytest-xdist"

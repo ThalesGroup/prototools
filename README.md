@@ -106,6 +106,36 @@ cd prototools
 nix-shell          # user shell — all tools on PATH
 ```
 
+### Building with Nix
+
+Three ways to build, by what the build is for:
+
+- **To use the tools, while working on something else:** what ships, but
+  a few cores at a time, so that the machine stays usable. Slower, the
+  same result.
+
+  ```shell
+  nix-build -A prototools --max-jobs 1 --cores 2
+  ```
+
+  `--cores` bounds the compilers running at once (and with them the memory
+  peak), `--max-jobs` the builds; `max-jobs` and `cores` in `nix.conf` set
+  them once and for all.
+- **To release, or check what ships:** the default `release` profile,
+  with thin LTO.
+
+  ```shell
+  scripts/ci              # in the dev shell: the CI, cheap checks first
+  ```
+- **To develop:** the `quick` profile, without LTO across crates: several
+  times faster to build, the code a little slower. The tests build in
+  `quick` either way.
+
+  ```shell
+  nix-build -A ci --argstr cargoProfile quick
+  scripts/ci --preflight  # after an edit: a minute, no build
+  ```
+
 ## License
 
 MIT — see [`LICENSES/MIT.txt`](LICENSES/MIT.txt).
