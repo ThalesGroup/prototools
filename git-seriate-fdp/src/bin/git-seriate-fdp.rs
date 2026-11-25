@@ -40,6 +40,11 @@ enum Fdp {
         /// 0449): for inputs known to come from protoc.
         #[arg(long)]
         increasing_field_numbers: bool,
+        /// Look into zip and gzip members too, nested up to 3 deep (spec
+        /// 0480). Each descriptor found in one records its origin; changes
+        /// what a snapshot holds, so a choice to make once for a history.
+        #[arg(long)]
+        inflate: bool,
         /// Write the snapshots as an archive of a bare repository to FILE,
         /// or to standard output for -, instead of into a repository: none
         /// is needed (unpack with `mkdir r.git && tar xf FILE -C r.git`).
@@ -88,6 +93,7 @@ fn main() -> ExitCode {
                 group,
                 metadata,
                 increasing_field_numbers,
+                inflate,
                 tar_out,
                 files,
             ) = match command {
@@ -122,6 +128,7 @@ fn main() -> ExitCode {
                     group,
                     metadata,
                     increasing_field_numbers,
+                    inflate,
                     tar_out,
                     files,
                 } => (
@@ -131,6 +138,7 @@ fn main() -> ExitCode {
                     group,
                     metadata,
                     increasing_field_numbers,
+                    inflate,
                     tar_out,
                     files,
                 ),
@@ -149,6 +157,7 @@ fn main() -> ExitCode {
                 group,
                 metadata,
                 increasing_field_numbers,
+                inflate,
             };
             let mut warnings = Vec::new();
             let mut archive = git_seriate::archive::Archive::new();

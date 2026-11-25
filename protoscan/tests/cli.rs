@@ -173,3 +173,82 @@ fn the_deprecated_proto_out_still_works_and_warns() {
         stderr(&out)
     );
 }
+
+fn gzip(bytes: &[u8]) -> Vec<u8> {
+    use std::io::Write;
+    let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    e.write_all(bytes).unwrap();
+    e.finish().unwrap()
+}
+
+/// A zip local header claiming an encrypted deflated member, and junk data.
+fn encrypted_zip_member(name: &str) -> Vec<u8> {
+    let mut b = b"PK\x03\x04".to_vec();
+    b.extend_from_slice(&[20, 0, 1, 0, 8, 0, 0, 0, 0, 0]); // version, flags, method, time, date
+    b.extend_from_slice(&[0; 4]); // crc
+    b.extend_from_slice(&8u32.to_le_bytes());
+    b.extend_from_slice(&8u32.to_le_bytes());
+    b.extend_from_slice(&(name.len() as u16).to_le_bytes());
+    b.extend_from_slice(&[0, 0]);
+    b.extend_from_slice(name.as_bytes());
+    b.extend_from_slice(&[0xa5; 8]);
+    b
+}
+
+/// Spec 0480 S7: `--inflate` finds what a gzip member holds, `--origin`
+/// says where, skipped members go to stderr, and a second descriptor of
+/// one name is written `~2`.
+#[test]
+fn inflate_origin_and_variants() {
+    let dir = scratch("inflate");
+    let bin = dir.join("mixed.bin");
+    let clear = fdp("pkg/a.proto");
+    let other = FileDescriptorProto {
+        name: Some("pkg/a.proto".to_string()),
+        package: Some("other".to_string()),
+        ..Default::default()
+    }
+    .encode_to_vec();
+    let member = gzip(&other);
+    let mut data = vec![0u8; 16];
+    data.extend(&clear);
+    data.extend([0u8; 16]);
+    let gzip_at = data.len();
+    data.extend(&member);
+    data.extend([0u8; 16]);
+    let zip_at = data.len();
+    data.extend(encrypted_zip_member("e.pb"));
+    data.extend([0u8; 16]);
+    std::fs::write(&bin, &data).unwrap();
+
+    let plain = protoscan(&[&bin, Path::new("--origin")]);
+    assert!(plain.status.success(), "{}", stderr(&plain));
+    assert_eq!(
+        stdout(&plain),
+        format!("pkg/a.proto\t16..{}\n", 16 + clear.len())
+    );
+
+    let out_dir = dir.join("out");
+    let out = protoscan(&[
+        &bin,
+        Path::new("--inflate"),
+        Path::new("--origin"),
+        Path::new("--proto-out"),
+        &out_dir,
+    ]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        stdout(&out),
+        format!(
+            "pkg/a.proto\t16..{}\npkg/a.proto\tgzip@{gzip_at}!0..{}\n",
+            16 + clear.len(),
+            other.len()
+        )
+    );
+    assert_eq!(
+        stderr(&out),
+        format!("skipped zip@{zip_at}!e.pb: encrypted\n")
+    );
+    assert_eq!(std::fs::read(out_dir.join("pkg/a.pb")).unwrap(), clear);
+    assert_eq!(std::fs::read(out_dir.join("pkg/a~2.pb")).unwrap(), other);
+}

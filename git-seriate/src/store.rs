@@ -27,6 +27,9 @@ const TOOL: &str = "git-seriate";
 pub struct Item {
     pub path: String,
     pub bytes: Vec<u8>,
+    /// Record entries about this item (spec 0480 S8): each is written as
+    /// `<key> <stored path>`, the path the store places it under.
+    pub record: Vec<(String, String)>,
 }
 
 /// A snapshot to add.
@@ -114,8 +117,13 @@ pub fn add_to(sink: &mut Sink, snapshot: NewSnapshot) -> Result<Added, Error> {
     let branch = snapshot.source.identity.clone();
     let ref_name = branch_ref(&branch)?;
     let mut rejected = snapshot.rejected;
-    let placed = place_items(snapshot.items, &mut rejected);
-    if placed.is_empty() && snapshot.record.is_empty() {
+    let Placed {
+        files: placed,
+        record: item_record,
+    } = place_items(snapshot.items, &mut rejected);
+    let mut record = snapshot.record;
+    record.extend(item_record);
+    if placed.is_empty() && record.is_empty() {
         return Ok(Added::Nothing);
     }
 
@@ -130,7 +138,7 @@ pub fn add_to(sink: &mut Sink, snapshot: NewSnapshot) -> Result<Added, Error> {
         source: snapshot.source,
         contents: (!placed.is_empty()).then(|| placed.iter().map(|(p, _)| p.clone()).collect()),
         rejected: rejected.clone(),
-        record: snapshot.record,
+        record,
         canon_rules: Vec::new(),
         renderer: Vec::new(),
         reduced: false,
@@ -285,8 +293,32 @@ pub fn import(
 
 // ── Path rules ────────────────────────────────────────────────────────────────
 
-/// The items' final paths and bytes, by path (spec 0452 S3 steps 1–2).
-fn place_items(items: Vec<Item>, rejected: &mut Vec<Rejection>) -> Vec<(String, Vec<u8>)> {
+/// What [`place_items`] decided.
+struct Placed {
+    /// The items' final paths and bytes, by path (spec 0452 S3 steps 1–2).
+    files: Vec<(String, Vec<u8>)>,
+    /// Their record entries, keyed by those paths (spec 0480 S8), in item
+    /// order.
+    record: Vec<(String, String)>,
+}
+
+/// Places the items. An item dropped as the same bytes again gives its
+/// record entries to the copy kept; two values for one key are joined by
+/// `; `, as a record's keys are unique.
+fn place_items(items: Vec<Item>, rejected: &mut Vec<Rejection>) -> Placed {
+    let mut record: Vec<(String, String)> = Vec::new();
+    let mut note = |entries: Vec<(String, String)>, path: &str| {
+        for (key, value) in entries {
+            let key = format!("{key} {path}");
+            match record.iter_mut().find(|(k, _)| *k == key) {
+                Some((_, v)) => {
+                    v.push_str("; ");
+                    v.push_str(&value);
+                }
+                None => record.push((key, value)),
+            }
+        }
+    };
     let mut files: HashMap<String, Vec<u8>> = HashMap::new();
     let mut dirs: HashSet<String> = HashSet::new();
     // Per path as given, the paths its items were written under.
@@ -312,8 +344,9 @@ fn place_items(items: Vec<Item>, rejected: &mut Vec<Rejection>) -> Vec<(String, 
             continue;
         }
         let seen = variants.entry(item.path.clone()).or_default();
-        if seen.iter().any(|p| files[p] == item.bytes) {
-            continue; // the same item again
+        if let Some(kept) = seen.iter().find(|p| files[*p] == item.bytes) {
+            note(item.record, kept); // the same item again
+            continue;
         }
         let taken = |p: &str| files.contains_key(p) || dirs.contains(p);
         let path = if taken(&item.path) {
@@ -329,11 +362,15 @@ fn place_items(items: Vec<Item>, rejected: &mut Vec<Rejection>) -> Vec<(String, 
             dirs.insert((*a).to_string());
         }
         seen.push(path.clone());
+        note(item.record, &path);
         files.insert(path, item.bytes);
     }
     let mut placed: Vec<(String, Vec<u8>)> = files.into_iter().collect();
     placed.sort_by(|a, b| a.0.cmp(&b.0));
-    placed
+    Placed {
+        files: placed,
+        record,
+    }
 }
 
 /// `("dir/bar~2", ".txt")` for `"dir/bar~2.txt"`: the extension is the last
@@ -514,6 +551,7 @@ mod tests {
             .map(|(p, b)| Item {
                 path: p.to_string(),
                 bytes: b.as_bytes().to_vec(),
+                record: Vec::new(),
             })
             .collect()
     }
@@ -521,6 +559,7 @@ mod tests {
     fn placed(list: &[(&str, &str)]) -> (Vec<String>, Vec<(String, String)>) {
         let mut rejected = Vec::new();
         let paths = place_items(items(list), &mut rejected)
+            .files
             .into_iter()
             .map(|(p, _)| p)
             .collect();
@@ -563,6 +602,29 @@ mod tests {
             ("t/bar.txt", "2"),
         ]);
         assert_eq!(paths, ["t/bar.txt", "t/bar~2.txt"]);
+    }
+
+    #[test]
+    fn item_records_are_keyed_by_the_stored_path() {
+        // Spec 0480 S8: a `~2` variant's entry names `~2`, and a dropped
+        // copy's entry joins the kept one's.
+        let item = |bytes: &str, origin: &str| Item {
+            path: "a.pb".into(),
+            bytes: bytes.as_bytes().to_vec(),
+            record: vec![("origin".into(), origin.into())],
+        };
+        let mut rejected = Vec::new();
+        let Placed { record, .. } = place_items(
+            vec![item("1", "x"), item("2", "y"), item("1", "z")],
+            &mut rejected,
+        );
+        assert_eq!(
+            record,
+            [
+                ("origin a.pb".to_string(), "x; z".to_string()),
+                ("origin a~2.pb".to_string(), "y".to_string()),
+            ]
+        );
     }
 
     #[test]

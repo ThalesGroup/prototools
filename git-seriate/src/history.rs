@@ -787,6 +787,7 @@ fn sort_input_from_history(
             snapshot_items.push(store::Item {
                 path: path.clone(),
                 bytes: blob.data.clone(),
+                record: Vec::new(),
             });
         }
         let mut block = s.block.clone();
@@ -1391,6 +1392,7 @@ mod tests {
                     .map(|(p, t)| store::Item {
                         path: p.to_string(),
                         bytes: t.as_bytes().to_vec(),
+                        record: Vec::new(),
                     })
                     .collect(),
                 rejected: Vec::new(),

@@ -98,6 +98,7 @@ fn add_corpus(repo: &Path, name: &str, filter: impl Fn(usize) -> bool) {
                     .map(|(path, text)| Item {
                         path: path.clone(),
                         bytes: text.clone().into_bytes(),
+                        record: Vec::new(),
                     })
                     .collect(),
                 rejected: Vec::new(),
@@ -192,6 +193,7 @@ fn small(repo: &Path) {
                 items: vec![Item {
                     path: "f.txt".into(),
                     bytes: text.as_bytes().to_vec(),
+                    record: Vec::new(),
                 }],
                 rejected: Vec::new(),
                 record: Vec::new(),
@@ -767,6 +769,7 @@ fn the_checked_out_note_names_a_command_that_works() {
             items: vec![Item {
                 path: "f.txt".into(),
                 bytes: b"a\nb\nc\nd\n".to_vec(),
+                record: Vec::new(),
             }],
             rejected: Vec::new(),
             record: Vec::new(),
@@ -811,6 +814,7 @@ fn stats_name_each_move_of_the_sort() {
                 items: vec![Item {
                     path: "f.txt".into(),
                     bytes: text.as_bytes().to_vec(),
+                    record: Vec::new(),
                 }],
                 rejected: Vec::new(),
                 record: Vec::new(),

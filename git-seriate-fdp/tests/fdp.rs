@@ -431,3 +431,84 @@ fn modification_times_that_say_nothing_are_warned_about() {
         "{warnings:?}"
     );
 }
+
+fn gzip(bytes: &[u8]) -> Vec<u8> {
+    use std::io::Write;
+    let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    e.write_all(bytes).unwrap();
+    e.finish().unwrap()
+}
+
+/// A descriptor's item path: its name, `.proto` made `.pb`.
+fn item_path_of(fdp: &[u8]) -> String {
+    use prototext_upb::descriptor::{Encode, FileDescriptorProto};
+    let name = FileDescriptorProto::decode(fdp).unwrap().name.unwrap();
+    format!("{}.pb", name.strip_suffix(".proto").unwrap())
+}
+
+/// Spec 0480 S8: with `inflate`, a descriptor in a gzip member is an item
+/// with its origin recorded, a member skipped is recorded, and a descriptor
+/// in the clear records nothing; without, the member is not looked into.
+#[test]
+fn inflate_records_origins_and_skipped_members() {
+    let stock = stock_files();
+    let (clear, packed) = (&stock[0], &stock[1]);
+    let member = gzip(packed);
+    let mut encrypted = b"PK\x03\x04".to_vec();
+    encrypted.extend_from_slice(&[20, 0, 1, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    encrypted.extend_from_slice(&8u32.to_le_bytes());
+    encrypted.extend_from_slice(&8u32.to_le_bytes());
+    encrypted.extend_from_slice(&[4, 0, 0, 0]);
+    encrypted.extend_from_slice(b"e.pb");
+    encrypted.extend_from_slice(&[0xa5; 8]);
+    let gzip_at = 64 + clear.len() + 64;
+    let zip_at = gzip_at + member.len() + 64;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let file = executable(tmp.path(), "x", &[clear, &member, &encrypted], None);
+    let blocks = |inflate: bool| {
+        let root = tmp.path().join(if inflate { "on" } else { "off" });
+        std::fs::create_dir_all(&root).unwrap();
+        let (_, r) = repo(&root);
+        let kit = kit(&r).unwrap();
+        extract_files(
+            &r,
+            &kit,
+            std::slice::from_ref(&file),
+            &ExtractOptions {
+                id: Some("x".into()),
+                build_time: Some(1_700_000_000),
+                inflate,
+                ..ExtractOptions::default()
+            },
+            &mut Vec::new(),
+        )
+        .unwrap();
+        git_seriate::store::list_with(&r, None)
+            .unwrap()
+            .remove(0)
+            .block
+    };
+
+    let off = blocks(false);
+    assert_eq!(off.contents.unwrap(), [item_path_of(clear)]);
+    assert!(off.record.is_empty(), "{:?}", off.record);
+
+    let on = blocks(true);
+    let mut contents = vec![item_path_of(clear), item_path_of(packed)];
+    contents.sort();
+    assert_eq!(on.contents.unwrap(), contents);
+    assert_eq!(
+        on.record,
+        [
+            (
+                format!("skipped zip@{zip_at}!e.pb"),
+                "encrypted".to_string()
+            ),
+            (
+                format!("origin {}", item_path_of(packed)),
+                format!("gzip@{gzip_at}!0..{}", packed.len())
+            ),
+        ]
+    );
+}

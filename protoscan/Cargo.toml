@@ -26,3 +26,7 @@ clap_mangen         = "0.2"
 # The descriptor layer, to read a found record's name (spec 0418 S1).
 prototext-upb       = { workspace = true }
 workspace-hack      = { version = "0.1", path = "../workspace-hack" }
+
+[dev-dependencies]
+# Zip and gzip members built for the tests (spec 0480).
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }

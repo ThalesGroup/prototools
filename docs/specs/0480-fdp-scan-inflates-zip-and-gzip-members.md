@@ -126,43 +126,51 @@ can only do so if extraction recorded where each descriptor was found.
   - 1 GiB inflated per input, which bounds time.
 
   Inflating a member stops as soon as a limit is reached, and the member
-  is skipped (S5): its partial bytes are not scanned.
+  is skipped (S5): its partial bytes are not scanned. Once the input's
+  budget is spent, no later member is inflated, and only the first is
+  reported. A member one level too deep is still inflated, its bytes
+  dropped, so that only a checked member is reported skipped (S2); a
+  stored one that deep stays its parent's, scanned in the clear.
 - **S5. The API: a visitor.** Nothing is held once visited (G5):
 
   ```rust
-  pub struct ScanOptions {
-      pub increasing_field_numbers: bool,
-      /// Look into zip and gzip members (spec 0480). `None`: as before.
-      pub inflate: Option<InflateLimits>,
-  }
-
-  /// One scanned buffer: the input, or a member.
-  pub struct Visit<'a> {
-      pub origin: &'a Origin,     // the chain of containers; empty for the input
-      pub data: &'a [u8],         // valid during the call only
-      pub explained: &'a Explained, // as today: ranges into `data`
-      pub skipped: &'a [Skipped], // members of `data` not read, and why
-  }
-
   pub fn scan_inflating(
       data: &[u8],
-      graph: &LoadedGraph,
-      root: &str,
-      options: &ScanOptions,
-      visit: impl FnMut(&Visit),
+      options: &ScanOptions,      // unchanged: how each buffer is scanned
+      limits: &InflateLimits,     // how far the walk goes (S4)
+      visit: impl FnMut(Visit<'_>),
   );
+  // scan_inflating_with: the same, against the caller's schema
+  // (`graph`, `root`), as scan_explained_with_options.
 
-  pub struct Skipped { pub at: usize, pub kind: MemberKind, pub reason: SkipReason }
+  pub enum Visit<'a> {
+      /// A buffer scanned: the input, or a member read.
+      Scanned {
+          origin: &'a Origin,         // the chain of containers; empty for the input
+          data: &'a [u8],             // valid during the call only
+          explained: &'a Explained,   // as today: ranges into `data`
+      },
+      /// A member found and not read; its origin ends with its own layer.
+      Skipped { origin: &'a Origin, reason: SkipReason },
+  }
+  // Origin { layers: Vec<Layer> }, Layer { at, kind: MemberKind }
   // MemberKind: Zip { name: String } | Gzip
   // SkipReason: Encrypted, Method(u16), DepthLimit, MemberLimit, InputLimit
   ```
 
-  The visitor is called once per buffer: the input first, then each
-  member depth-first, a member's own members right after it. A caller
-  wanting a tree or a flat list builds it in the visitor. `Explained`
-  is unchanged. `scan`, `scan_explained` and the other entry points are
-  unchanged and never inflate, so `scan` and `scan_explained(...).found`
-  still agree (0448 S7).
+  The visitor sees the input first, then each member depth-first, a
+  member's own members right after it, each member skipped where it is
+  found. A caller wanting a tree or a flat list builds it in the visitor.
+  - **The limits are an argument of their own,** not a field of
+    `ScanOptions`: the existing entry points never inflate, and would
+    otherwise carry a field they ignore. `ScanOptions` keeps meaning how
+    a buffer is scanned, and the walk passes it to every buffer.
+  - **A skip is a visit of its own,** not a list on its parent's visit.
+    A member skipped for a limit is only known once it has been inflated,
+    after its parent was visited.
+  - `Explained` gains only `Clone`. `scan`, `scan_explained` and the
+    other entry points are unchanged, so `scan` and
+    `scan_explained(...).found` still agree (0448 S7).
 - **S6. Origin, as text.** An optional prefix given by the caller, a
   chain of containers from the input inward, then the range in the
   innermost buffer. Offsets are in decimal, as `order_cuts` records them
@@ -183,8 +191,9 @@ can only do so if extraction recorded where each descriptor was found.
     such as `<file>/<member>` for a whole-file archive the caller
     expanded itself. `Origin::text(prefix)` writes it; fdp-scan never
     invents one.
-  - **In a member name,** `%` and `!` are written `%25` and `%21`, so
-    `!` always separates.
+  - **In a member name,** `%`, `!` and `;` are written `%25`, `%21` and
+    `%3B`: `!` always separates layers, and `;` the origins a record
+    joins (S8).
 
   Examples:
   - `1048576..1050112`: in the clear, in the input;
@@ -222,7 +231,11 @@ can only do so if extraction recorded where each descriptor was found.
     item, `~2` variant included. Only the store knows its naming rule,
     so a caller can't compute a path a later change of that rule would
     make wrong. An item dropped as the same bytes again keeps its
-    entries, under the path of the copy kept.
+    entries, under the path of the copy kept: a record's keys are unique,
+    so two values of one key are joined by `; `.
+  - An order cut in a member gives its range as an origin:
+    `order-cut a.pb` = `gzip@N!0..1536, out of order at 88`. In the
+    input, as before.
   - Skipped members add `skipped <origin of the member>` = the reason, on
     the snapshot, not only on stderr.
 - **S9. Cost when off: none.** The option is checked once, before the

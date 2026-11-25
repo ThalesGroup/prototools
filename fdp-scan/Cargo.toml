@@ -20,6 +20,10 @@ categories  = ["encoding", "parsing"]
 prototext       = { workspace = true }
 prototext-graph = { workspace = true }
 workspace-hack  = { version = "0.1", path = "../workspace-hack" }
+# Zip and gzip members (spec 0480 S1): the back end `git-seriate` already
+# builds, pure Rust; `memchr` finds the members' signatures.
+flate2          = { version = "1", default-features = false, features = ["zlib-rs"] }
+memchr          = "2"
 
 [dev-dependencies]
 # The corpus's truth files (spec 0448 S9).

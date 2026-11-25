@@ -1040,6 +1040,8 @@ checksum = "9f1f227452a390804cdb637b74a86990f2a7d7ba4b7d5693aac9b4dd6defd8d6"
 name = "fdp-scan"
 version = "0.3.6"
 dependencies = [
+ "flate2",
+ "memchr",
  "prototext",
  "prototext-graph",
  "serde_json",
@@ -1266,6 +1268,7 @@ dependencies = [
  "chrono",
  "clap",
  "fdp-scan",
+ "flate2",
  "git-seriate",
  "gix",
  "prototext",
@@ -3028,6 +3031,7 @@ dependencies = [
  "clap_complete",
  "clap_mangen",
  "fdp-scan",
+ "flate2",
  "prototext-upb",
  "prototools-complete",
  "workspace-hack",

@@ -19,51 +19,83 @@ use crate::Schema;
 pub struct FdpExtractor<'a> {
     pub schema: &'a Schema,
     pub options: fdp_scan::ScanOptions,
+    /// Look into zip and gzip members too (spec 0480 S8).
+    pub inflate: Option<fdp_scan::InflateLimits>,
 }
 
 impl Extractor for FdpExtractor<'_> {
     fn extract(&self, bytes: &[u8]) -> Extracted {
-        let explained = match &self.schema.graph {
-            Some((graph, root)) => {
-                fdp_scan::scan_explained_with_options(bytes, graph, root, &self.options)
-            }
-            None => fdp_scan::scan_explained_options(bytes, &self.options),
+        let mut out = Extracted::default();
+        let Some(limits) = &self.inflate else {
+            let explained = match &self.schema.graph {
+                Some((graph, root)) => {
+                    fdp_scan::scan_explained_with_options(bytes, graph, root, &self.options)
+                }
+                None => fdp_scan::scan_explained_options(bytes, &self.options),
+            };
+            collect(bytes, &explained, None, &mut out);
+            return out;
         };
-        let path_of = |start: usize| name_at(bytes, start).map(|n| item_path(&n));
-        let items = explained
-            .found
-            .iter()
-            .filter_map(|&(start, end)| {
-                Some(Item {
-                    path: path_of(start)?,
-                    bytes: bytes[start..end].to_vec(),
-                })
-            })
-            .collect();
-        let rejected = explained
-            .rejected
-            .iter()
-            .map(|r| Rejection {
-                name: r.name.clone(),
-                reason: reason_code(r.reason).into(),
-            })
-            .collect();
-        let record = explained
-            .order_cuts
-            .iter()
-            .filter_map(|c| {
-                Some((
-                    format!("order-cut {}", path_of(c.start)?),
-                    format!("{}..{}, out of order at {}", c.start, c.end, c.at),
-                ))
-            })
-            .collect();
-        Extracted {
-            items,
-            rejected,
-            record,
+        let visit = |visit: fdp_scan::Visit<'_>| match visit {
+            fdp_scan::Visit::Scanned {
+                origin,
+                data,
+                explained,
+            } => {
+                let inner = (!origin.layers.is_empty()).then_some(origin);
+                collect(data, explained, inner, &mut out);
+            }
+            fdp_scan::Visit::Skipped { origin, reason } => out
+                .record
+                .push((format!("skipped {}", origin.chain(None)), reason.code())),
+        };
+        match &self.schema.graph {
+            Some((graph, root)) => {
+                fdp_scan::scan_inflating_with(bytes, graph, root, &self.options, limits, visit)
+            }
+            None => fdp_scan::scan_inflating(bytes, &self.options, limits, visit),
         }
+        out
     }
+}
+
+/// What the scan of `data` found, added to `out`. `origin` is that of a
+/// member (spec 0480 S8): each descriptor found in it records it, and its
+/// order cuts are told by origin. `None`, the input: as before.
+fn collect(
+    data: &[u8],
+    explained: &fdp_scan::Explained,
+    origin: Option<&fdp_scan::Origin>,
+    out: &mut Extracted,
+) {
+    let path_of = |start: usize| name_at(data, start).map(|n| item_path(&n));
+    out.items
+        .extend(explained.found.iter().filter_map(|&(start, end)| {
+            Some(Item {
+                path: path_of(start)?,
+                bytes: data[start..end].to_vec(),
+                record: origin
+                    .map(|o| ("origin".to_string(), o.text(None, start, end)))
+                    .into_iter()
+                    .collect(),
+            })
+        }));
+    out.rejected
+        .extend(explained.rejected.iter().map(|r| Rejection {
+            name: r.name.clone(),
+            reason: reason_code(r.reason).into(),
+        }));
+    out.record
+        .extend(explained.order_cuts.iter().filter_map(|c| {
+            let range = match origin {
+                Some(o) => o.text(None, c.start, c.end),
+                None => format!("{}..{}", c.start, c.end),
+            };
+            Some((
+                format!("order-cut {}", path_of(c.start)?),
+                format!("{range}, out of order at {}", c.at),
+            ))
+        }));
 }
 
 /// The scanner's refusal reasons, as the block records them.
@@ -115,6 +147,9 @@ pub struct Options {
     pub group: Option<String>,
     pub metadata: Vec<(String, String)>,
     pub increasing_field_numbers: bool,
+    /// Look into zip and gzip members (spec 0480 S8), within the default
+    /// limits.
+    pub inflate: bool,
 }
 
 /// What extracting one file did.
@@ -164,6 +199,7 @@ pub fn extract_files_into(
         options: fdp_scan::ScanOptions {
             increasing_field_numbers: options.increasing_field_numbers,
         },
+        inflate: options.inflate.then(fdp_scan::InflateLimits::default),
     };
     let mut times = Vec::new();
     for file in files {
@@ -197,6 +233,7 @@ pub fn extract_files_into(
                 Ok(text) => items.push(Item {
                     path: item.path,
                     bytes: text,
+                    record: item.record,
                 }),
                 Err(e) => rejected.push(Rejection {
                     name: item.path,

@@ -582,6 +582,7 @@ pub fn read_dir(dir: &Path) -> Result<(Vec<Item>, i64), Error> {
                 items.push(Item {
                     path: relative,
                     bytes: std::fs::read(&path)?,
+                    record: Vec::new(),
                 });
             }
         }

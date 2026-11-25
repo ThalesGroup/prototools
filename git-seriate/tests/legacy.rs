@@ -142,6 +142,7 @@ fn an_old_history_is_settled_and_converted() {
             items: vec![Item {
                 path: "f.txt".into(),
                 bytes: b"a\nb\nx\n".to_vec(),
+                record: Vec::new(),
             }],
             rejected: Vec::new(),
             record: Vec::new(),

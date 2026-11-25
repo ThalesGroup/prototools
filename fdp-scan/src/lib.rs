@@ -10,6 +10,13 @@
 
 use std::sync::OnceLock;
 
+mod inflate;
+
+pub use inflate::{
+    scan_inflating, scan_inflating_with, InflateLimits, Layer, MemberKind, Origin, SkipReason,
+    Visit,
+};
+
 use prototext_graph::score::load::LoadedGraph;
 use prototext_graph::score::{score_one, Ending, Policy, ScoringOpts};
 
@@ -59,7 +66,7 @@ pub fn scan(data: &[u8]) -> Vec<(usize, usize)> {
 }
 
 /// What [`scan`] finds, and what it refused (spec 0448 S7).
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Explained {
     /// Exactly what [`scan`] returns.
     pub found: Vec<(usize, usize)>,

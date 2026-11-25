@@ -141,9 +141,23 @@ SPDX-License-Identifier: MIT
   comment and a W31 in the report; a nested one under edition 2026's
   `STRICT`, which can't be exported, is reported as W32. The descriptor
   written beside the text follows it (spec 0458).
+- fdp-scan: `scan_inflating` and `scan_inflating_with`, which also look into
+  zip members (stored or deflated) and gzip members, nested up to 3 deep,
+  and show the caller each buffer once, through a visitor, with its origin:
+  the chain of members it was found in. Limits per member (256 MiB) and
+  per input (1 GiB). protoscan: `--inflate`, members skipped reported on
+  stderr, and `--origin`, which prints `NAME<TAB>ORIGIN`. git-seriate-fdp:
+  `extract --inflate`, each descriptor found in a member recording its
+  `origin`, each member skipped a `skipped` entry. git-seriate:
+  `store::Item` has `record`, entries the store keys by the path it
+  stores the item under (spec 0480).
 
 ### Changed
 
+- protoscan: `--proto-out` writes a second descriptor of the same name
+  with different bytes as `<name>~2.pb` (then `~3`…), as git-seriate's
+  store names them; it used to overwrite the first. The same bytes again
+  are written once (spec 0480 S7).
 - nix: the Nix sources hold the files git tracks only (staged ones
   count), when the repository is a git checkout: untracked files (the
   dev-shell's `ruff.toml` and `rust-toolchain.toml`, fixtures tests write)
