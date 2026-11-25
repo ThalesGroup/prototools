@@ -5,7 +5,7 @@
 """Test harness for the prototext auto-inference pipeline against the custom DB.
 
 The custom DB covers fixture types (mockup.*, test.*, tutorial.*) compiled from
-the reproto test fixtures, plus the opentelemetry-proto corpus.
+the custom fixtures (tests/custom/fixtures), plus the opentelemetry-proto corpus.
 
 Pipeline per test:
   1. Session fixture: read CUSTOM_DB env var → .desc path.
@@ -97,8 +97,9 @@ def all_instances(
     fqdns = [e.fqdn for e in _TYPE_ENTRIES]
     gen = subprocess.run(
         [
-            "reproto-instantiate-schema",
-            "--descriptor", str(schema_db),
+            "protoback",
+            "instantiate",
+            "--descriptor-set", str(schema_db),
             "-O", str(inst_dir),
             *fqdns,
         ],

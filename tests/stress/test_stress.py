@@ -97,14 +97,15 @@ def all_instances(
 ) -> dict[str, Path]:
     """Generate one instance per type; return {fqdn: instance_path}.
 
-    All instances are generated in a single reproto-instantiate-schema call (DB loaded once).
+    All instances are generated in a single protoback instantiate call (DB loaded once).
     """
     inst_dir = tmp_path_factory.mktemp("instances")
     fqdns = [e.fqdn for e in _TYPE_ENTRIES]
     gen = subprocess.run(
         [
-            "reproto-instantiate-schema",
-            "--descriptor", str(schema_db),
+            "protoback",
+            "instantiate",
+            "--descriptor-set", str(schema_db),
             "-O", str(inst_dir),
             *fqdns,
         ],

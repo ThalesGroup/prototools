@@ -423,13 +423,13 @@ let
 
   # Build the googleapis schema DB + instantiated messages.
   # Depends on googleapisPbs (single multi-FDP FDS) so proto compilation is
-  # not repeated when reproto or instantiation logic changes.
+  # not repeated when protoback or instantiation logic changes.
   googleapisDb = pkgs.runCommand "googleapis-db" {
     strictDeps = true;
     nativeBuildInputs = [
       prototext
-      reproto
-      (pythonPkgs.python.withPackages (_: reprotoPropagatedDeps))
+      protoback
+      pythonPkgs.python
     ];
   } ''
     set -euo pipefail
@@ -439,11 +439,11 @@ let
     # location protolens looks in when no -I/--proto-root is given (spec
     # 0155 G2), so `protolens <db>/googleapis.desc` gets working
     # jump-to-definition with no flag. It is also the only place inside
-    # the stub directory reproto permits (spec 0155 G1), the rest of it
+    # the stub directory protoback permits (spec 0155 G1), the rest of it
     # being hopcroft.rkyv/index.rkyv.
     #
     mkdir -p "$out"
-    reproto \
+    protoback \
       --builtin all \
       --force-proto2-for-editions \
       --proto-out="$out/googleapis/proto" \
@@ -500,7 +500,7 @@ print('\n'.join(lines[:$N_EXTRA]))
                      <(echo "$MANDATORY" | sort -u) \
                      <(echo "$ALREADY"   | sort -u))
     FQDNS=$(printf '%s\n%s' "$MANDATORY_NEW" "$EXTRA")
-    reproto-instantiate-schema \
+    protoback instantiate \
       --descriptor-set "$out/googleapis.desc" \
       -O "$out/instances" \
       $FQDNS
@@ -510,12 +510,11 @@ print('\n'.join(lines[:$N_EXTRA]))
     strictDeps = true;
     nativeBuildInputs = [
       prototext
-      reproto
+      protoback
       (pythonPkgs.python.withPackages (_: reprotoTestDeps))
     ];
   } ''
     set -euo pipefail
-    export PYTHONPATH="${reprotoSrc}/src"
     export STRESS_DB="${googleapisDb}/googleapis.desc"
     pytest -p no:cacheprovider ${../tests/stress}/
     touch $out
@@ -525,8 +524,8 @@ print('\n'.join(lines[:$N_EXTRA]))
   # Custom DB + tests — fixture types and opentelemetry-proto.
   #
   # Two derivations:
-  #   customDb    — compiles reproto fixture protos + opentelemetry-proto corpus,
-  #                 runs reproto --schema-db-out.
+  #   customDb    — compiles the custom fixture protos + opentelemetry-proto corpus,
+  #                 runs protoback --schema-db-out.
   #   customTests — runs pytest with CUSTOM_DB pointing at customDb.
   # ---------------------------------------------------------------------------
 
@@ -541,7 +540,7 @@ print('\n'.join(lines[:$N_EXTRA]))
     strictDeps = true;
     nativeBuildInputs = [
       protoc
-      reproto
+      protoback
     ];
   } ''
     set -euo pipefail
@@ -578,7 +577,7 @@ print('\n'.join(lines[:$N_EXTRA]))
 
     # ── Build the schema DB ───────────────────────────────────────────────────
     mkdir -p "$out"
-    reproto \
+    protoback \
       --builtin all \
       --force-proto2-for-editions \
       -I"$PB" \
@@ -592,12 +591,11 @@ print('\n'.join(lines[:$N_EXTRA]))
     strictDeps = true;
     nativeBuildInputs = [
       prototext
-      reproto
+      protoback
       (pythonPkgs.python.withPackages (_: reprotoTestDeps))
     ];
   } ''
     set -euo pipefail
-    export PYTHONPATH="${reprotoSrc}/src"
     export CUSTOM_DB="${customDb}/custom.desc"
     pytest -p no:cacheprovider ${../tests/custom}/
     touch $out
