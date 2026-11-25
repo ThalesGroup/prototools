@@ -31,7 +31,7 @@ path = "bindings/rust/lib.rs"
 
 [dependencies]
 tree-sitter-language = "0.1"
-workspace-hack        = { version = "0.1", path = "../../workspace-hack" }
+workspace-hack        = { version = "0.1", path = "../workspace-hack" }
 
 [build-dependencies]
 cc = "1.2"

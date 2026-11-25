@@ -12,7 +12,7 @@
 #                                          │
 #                           ┌──────────────┼──────────────┐
 #                           ▼              ▼              ▼
-#                        wktRkyv        reproto      reprotoTests …
+#                        wktRkyv        reproto      pythonLint …
 #
 # reproto builds from its source as committed: the well-known types'
 # descriptors it ships are committed, and default.nix's reproto-wkt-check
@@ -70,19 +70,19 @@ let
   # wheel goes to PyPI with the others (spec 0411).
   treeSitterTextprotoPkg = pythonPkgs.buildPythonPackage {
     pname   = "tree-sitter-textproto";
-    version = pyprojectVersion "reproto/tree-sitter-textproto";
+    version = pyprojectVersion "tree-sitter-textproto";
     meta = metaCommon // {
       description = "The textproto tree-sitter grammar, for the Python tree_sitter library";
     };
     src = trackedSource {
-      root    = ../reproto/tree-sitter-textproto;
+      root    = ../tree-sitter-textproto;
       fileset = pkgs.lib.fileset.unions [
-        ../reproto/tree-sitter-textproto/pyproject.toml
-        ../reproto/tree-sitter-textproto/setup.py
-        ../reproto/tree-sitter-textproto/binding.c
-        ../reproto/tree-sitter-textproto/src
-        ../reproto/tree-sitter-textproto/tree_sitter_textproto
-        ../reproto/tree-sitter-textproto/LICENSE
+        ../tree-sitter-textproto/pyproject.toml
+        ../tree-sitter-textproto/setup.py
+        ../tree-sitter-textproto/binding.c
+        ../tree-sitter-textproto/src
+        ../tree-sitter-textproto/tree_sitter_textproto
+        ../tree-sitter-textproto/LICENSE
       ];
     };
     pyproject = true;
@@ -124,7 +124,7 @@ let
 
   # Full Python dependency set for running the reproto test suite and for the
   # dev-shell PYTHONPATH.  Extends reprotoPropagatedDeps with the codec and
-  # pytest tools.  Used by reprotoTests, pythonLint, and dev-shell.
+  # pytest tools.  Used by pythonLint and dev-shell.
   # types-protobuf is typing stubs, for pyright: lint and dev-shell only,
   # never a runtime dependency (spec 0402 S5).
   # tree-sitter-language-pack: the tests' second grammar, which reproto
@@ -147,8 +147,8 @@ let
     pyproject = true;
 
     # Spec 0402 S5: build-system, dependencies, and checks as nixpkgs
-    # spells them. The test suite runs in reprotoTests (ci), not here;
-    # the install check is the import of the package.
+    # spells them. Its test suite is gone (spec 0487 D3); the install
+    # check is the import of the package.
     build-system = [ pythonPkgs.setuptools ];
     nativeBuildInputs = [ pkgs.installShellFiles ];
     dependencies = reprotoPropagatedDeps ++ [
@@ -178,7 +178,6 @@ let
         }
       done
     '';
-    passthru.tests = { inherit reprotoTests; };
 
     postInstall = whenRunnable ''
       # reproto prints its own script for each shell (spec 0422).
@@ -190,66 +189,6 @@ let
       REPROTO_GEN_MAN=$out/share/man/man1 $out/bin/reproto
     '';
   };
-
-  # Tests run separately so that the installable reproto package has doCheck = false
-  # (avoiding pytest during nix-shell) while ci still enforces test passage.
-  reprotoTests = pkgs.runCommand "reproto-tests" {
-    strictDeps = true;
-    nativeBuildInputs = [
-      protoc
-      pkgs.buf
-      prototext
-      (pythonPkgs.python.withPackages (_: reprotoTestDeps))
-    ];
-  } ''
-    export PYTHONPATH="${reprotoSrc}/src"
-    pytest -p no:cacheprovider ${reprotoSrc}/src/reproto/tests/ -x
-    touch $out
-  '';
-
-  # The same suite, every binary input given as protoc's text form
-  # (spec 0427): the text path must agree with the binary one.
-  reprotoTestsViaText = let
-    # Named, not looked up on PATH: another package's bare python may
-    # come first there.
-    testPython = pythonPkgs.python.withPackages (_: reprotoTestDeps);
-  in pkgs.runCommand "reproto-tests-via-text" {
-    strictDeps = true;
-    nativeBuildInputs = [
-      protoc
-      pkgs.buf
-      prototext
-      testPython
-    ];
-  } ''
-    export PYTHONPATH="${reprotoSrc}/src"
-    export REPROTO="${testPython}/bin/python3 -m reproto.tests.via_text"
-    pytest -p no:cacheprovider ${reprotoSrc}/src/reproto/tests/ -x
-    touch $out
-  '';
-
-  # The same suite against protoback (spec 0424 test plan 8, spec 0433 G5):
-  # its CLI tests pass whichever tool runs them.
-  # The plugins run under the test interpreter, named: the bare python3
-  # another input puts first on PATH lacks protobuf.
-  reprotoTestsOnProtoback = let
-    testPython = pythonPkgs.python.withPackages (_: reprotoTestDeps);
-  in pkgs.runCommand "reproto-tests-on-protoback" {
-    strictDeps = true;
-    nativeBuildInputs = [
-      protoc
-      pkgs.buf
-      prototext
-      protoback
-      testPython
-    ];
-  } ''
-    export PYTHONPATH="${reprotoSrc}/src"
-    export REPROTO="${protoback}/bin/protoback"
-    export PROTOBACK_PYTHON="${testPython}/bin/python3"
-    pytest -p no:cacheprovider ${reprotoSrc}/src/reproto/tests/ -x
-    touch $out
-  '';
 
   # Tests for fdp_scan_lib — run against the installed extension (no PYTHONPATH
   # override needed; the installed package is already on the Python path via
@@ -304,7 +243,7 @@ let
         "prototext-graph-pyo3/prototext_graph_lib"
         # The grammar's Python module: a C extension known to pyright only
         # by its stub, like the pyo3 packages above (spec 0408 S4).
-        "reproto/tree-sitter-textproto"
+        "tree-sitter-textproto"
         "docs/mockup"
       ];
     };
@@ -339,21 +278,6 @@ let
   # imports statically wherever they sit, so deferring hides nothing
   # from it.
   # ---------------------------------------------------------------------------
-  # A canary (spec 0467): reproto reads a dropped edition from the bytes
-  # (syntax.py, `_dropped_edition`) because types-protobuf has no stub for
-  # google.protobuf.unknown_fields. The bump that brings one fails here,
-  # saying what to undo.
-  unknownFieldsStubCheck = pkgs.runCommand "unknown-fields-stub-check" { } ''
-    stub=${pythonPkgs.types-protobuf}/${pythonPkgs.python.sitePackages}/google-stubs/protobuf/unknown_fields.pyi
-    if [ -e "$stub" ]; then
-      echo "types-protobuf now declares google.protobuf.unknown_fields: replace" >&2
-      echo "_dropped_edition (reproto/src/reproto/syntax.py) with" >&2
-      echo "unknown_fields.UnknownFieldSet, and remove this check (spec 0467)." >&2
-      exit 1
-    fi
-    touch $out
-  '';
-
   pythonLint = pkgs.runCommand "python-lint" {
     strictDeps = true;
     nativeBuildInputs = [
@@ -622,7 +546,7 @@ print('\n'.join(lines[:$N_EXTRA]))
   } ''
     set -euo pipefail
 
-    FIXTURES="${reprotoSrc}/src/reproto/tests/fixtures"
+    FIXTURES="${trackedSource { root = ../tests/custom/fixtures; fileset = ../tests/custom/fixtures; }}"
     PB=$TMPDIR/pb
     mkdir -p "$PB"
 
@@ -679,90 +603,14 @@ print('\n'.join(lines[:$N_EXTRA]))
     touch $out
   '';
 
-  # The differential harness of spec 0424 S11: a reference and a candidate
-  # run the same cases, every output compared byte for byte.
-  # protobackHarness compares everything reproto and protoback write: the
-  # files (the .proto, .pb and scoring YAML files, the schema database, the
-  # instances; specs 0429 to 0432), stdout, stderr and the exit status
-  # (spec 0433); protobackDumpHarness, the graph dumps of phases 1 to 6
-  # (spec 0428 S10). The two are part of `ci`; their -full versions add
-  # googleapis, and are part of `full-tests`.
-  protobackHarnessSrc =
-    let fs = pkgs.lib.fileset; in
-    trackedSource {
-      root = ../.;
-      fileset = fs.difference
-        (fs.unions [
-          ../scripts/protoback-harness
-          ../reproto/src/reproto/tests/fixtures
-          ../prototext/wkt/SOURCES
-          ../tests/fixtures/anomalies.pb
-        ])
-        (fs.fileFilter (f: f.hasExt "pyc") ../reproto/src/reproto/tests/fixtures);
-    };
-
-  mkProtobackHarness = { name, prepareFlags ? "", candidate ? "reproto", runFlags ? "",
-                         checkHelp ? false }:
-    pkgs.runCommand name {
-      strictDeps = true;
-      nativeBuildInputs = [ protoc reproto protoback pythonPkgs.python ];
-    } ''
-      set -euo pipefail
-      harness=${protobackHarnessSrc}/scripts/protoback-harness
-      python3 "$harness" prepare "$TMPDIR/work" --otel ${corpusOtel} ${prepareFlags}
-      python3 "$harness" run "$TMPDIR/work" ${runFlags} \
-        --reference reproto --candidate ${candidate} --jobs "$NIX_BUILD_CORES"
-      ${pkgs.lib.optionalString checkHelp ''
-        # --help compared by options and texts (spec 0433 S6).
-        python3 "$harness" help --reference reproto --candidate ${candidate}
-      ''}
-      cp "$TMPDIR/work/report.txt" "$out"
-    '';
-
-  withGoogleapis = "--googleapis ${googleapisPbs}/googleapis.pb";
-  dumpGraph = { candidate = "protoback"; runFlags = "--dump-graph"; };
-  # Every stream compared (spec 0433 S8), the programs' own names in
-  # their usage lines read as protoback's (spec 0424 S12).
-  outputs = {
-    candidate = "protoback";
-    checkHelp = true;
-    runFlags = pkgs.lib.escapeShellArgs [
-      "--rename" "Usage: reproto =Usage: protoback "
-      "--rename" "'reproto --help'='protoback --help'"
-      "--rename" "Usage: reproto-instantiate-schema =Usage: protoback instantiate "
-      "--rename" "'reproto-instantiate-schema --help'='protoback instantiate --help'"
-    ];
-  };
-
-  protobackHarness = mkProtobackHarness (outputs // { name = "protoback-harness"; });
-  protobackHarnessFull = mkProtobackHarness (outputs // {
-    name = "protoback-harness-full";
-    prepareFlags = withGoogleapis;
-  });
-  protobackDumpHarness = mkProtobackHarness (dumpGraph // {
-    name = "protoback-dump-harness";
-  });
-  protobackDumpHarnessFull = mkProtobackHarness (dumpGraph // {
-    name = "protoback-dump-harness-full";
-    prepareFlags = withGoogleapis;
-  });
-
 in {
   inherit
-    unknownFieldsStubCheck
-    protobackHarness
-    protobackHarnessFull
-    protobackDumpHarness
-    protobackDumpHarnessFull
     reprotoSrc
     treeSitterTextprotoPkg
     reprotoPropagatedDeps
     wktRkyvDeps
     reprotoTestDeps
     reproto
-    reprotoTests
-    reprotoTestsViaText
-    reprotoTestsOnProtoback
     fdpScanTests
     prototextCodecTests
     pythonLint

@@ -67,7 +67,7 @@ in pkgs.stdenv.mkDerivation (commonArgs // {
     cat >> "$CARGO_HOME/config.toml" <<EOF
 
 [patch.crates-io]
-tree-sitter-textproto = { path = "$PWD/reproto/tree-sitter-textproto" }
+tree-sitter-textproto = { path = "$PWD/tree-sitter-textproto" }
 prototext-upb    = { path = "$PWD/prototext-upb" }
 prototext-core   = { path = "$PWD/prototext-core" }
 prototext-graph  = { path = "$PWD/prototext-graph" }

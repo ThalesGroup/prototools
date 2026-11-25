@@ -50,7 +50,7 @@ SPDX-License-Identifier = "MIT"
 # docs/specs/0121-tree-sitter-textproto-field-no-vendoring.md.
 [[annotations]]
 path = [
-  "reproto/tree-sitter-textproto/grammar.js",
+  "tree-sitter-textproto/grammar.js",
 ]
 SPDX-FileCopyrightText = "Porter Matteo Haet"
 SPDX-License-Identifier = "ISC"
@@ -60,7 +60,7 @@ SPDX-License-Identifier = "ISC"
 # tree-sitter-textproto-check keeps them in step with the grammar.
 [[annotations]]
 path = [
-  "reproto/tree-sitter-textproto/src/**",
+  "tree-sitter-textproto/src/**",
 ]
 SPDX-FileCopyrightText = "Porter Matteo Haet"
 SPDX-License-Identifier = "ISC"

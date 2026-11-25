@@ -129,12 +129,12 @@ let
         # The textproto grammar's committed parser and highlights query,
         # which its crate compiles and carries for protolens (specs 0408 S5,
         # 0414 S2).
-        ./reproto/tree-sitter-textproto/src
-        ./reproto/tree-sitter-textproto/highlights.scm
+        ./tree-sitter-textproto/src
+        ./tree-sitter-textproto/highlights.scm
         # What the grammar's crate packages besides (spec 0414 S1): its
         # license notices, and the grammar the parser is generated from.
-        ./reproto/tree-sitter-textproto/LICENSE
-        ./reproto/tree-sitter-textproto/grammar.js
+        ./tree-sitter-textproto/LICENSE
+        ./tree-sitter-textproto/grammar.js
         # The extensions' Python packages, __init__.py and committed stub:
         # maturin packs them into the wheels, and workspaceBuild compares
         # the stub generator's output with the committed stubs (spec 0409).
@@ -158,7 +158,6 @@ let
         # The adapter protoback runs Python plugins through (spec 0431 S3).
         ./protoback/src/plugin/adapter.py
         (fixtureFilter ./prototext/fixtures)
-        (fixtureFilter ./reproto/src/reproto/tests/fixtures)
         (fixtureFilter ./prototext-graph/tests/fixtures)
         (fixtureFilter ./tests/fixtures)
         # fdp-scan's regression corpus (spec 0448 S8): the layouts and their
@@ -383,7 +382,7 @@ let
   # ---------------------------------------------------------------------------
   # tree-sitter-textproto — the textproto grammar (spec 0408).
   #
-  # The generated parser (reproto/tree-sitter-textproto/src/) is committed,
+  # The generated parser (tree-sitter-textproto/src/) is committed,
   # so each consumer builds it with a C compiler alone: reproto's Python
   # module through its setuptools package (nix/python.nix), protolens through
   # its build.rs (the cc crate). Nothing here feeds a build any more:
@@ -403,16 +402,16 @@ let
     nativeBuildInputs = [ pkgs.tree-sitter pkgs.nodejs ];
   } ''
     export HOME="$TMPDIR"
-    cp ${./reproto/tree-sitter-textproto/grammar.js} grammar.js
+    cp ${./tree-sitter-textproto/grammar.js} grammar.js
     tree-sitter generate
     mkdir -p $out
     cp -r src $out/src
   '';
 
   treeSitterTextprotoCheck = pkgs.runCommand "tree-sitter-textproto-check" { } ''
-    if ! diff -ru ${./reproto/tree-sitter-textproto/src} ${treeSitterTextprotoGenerated}/src >&2; then
-      echo "reproto/tree-sitter-textproto/src/ is stale (diff above). Refresh it with:" >&2
-      echo "  cp -r \$(nix-build -A tree-sitter-textproto-generated)/src/. reproto/tree-sitter-textproto/src/ && chmod -R u+w reproto/tree-sitter-textproto/src" >&2
+    if ! diff -ru ${./tree-sitter-textproto/src} ${treeSitterTextprotoGenerated}/src >&2; then
+      echo "tree-sitter-textproto/src/ is stale (diff above). Refresh it with:" >&2
+      echo "  cp -r \$(nix-build -A tree-sitter-textproto-generated)/src/. tree-sitter-textproto/src/ && chmod -R u+w tree-sitter-textproto/src" >&2
       exit 1
     fi
     touch $out
@@ -431,11 +430,11 @@ let
     export HOME="$TMPDIR"
     mkdir -p work/queries work/test/highlight
     cd work
-    cp ${./reproto/tree-sitter-textproto/grammar.js} grammar.js
-    cp ${./reproto/tree-sitter-textproto/highlights.scm} queries/highlights.scm
-    cp ${./reproto/tree-sitter-textproto/test/highlight/textproto.txt} test/highlight/textproto.txt
+    cp ${./tree-sitter-textproto/grammar.js} grammar.js
+    cp ${./tree-sitter-textproto/highlights.scm} queries/highlights.scm
+    cp ${./tree-sitter-textproto/test/highlight/textproto.txt} test/highlight/textproto.txt
     # The committed parser (spec 0408 S3): the one the tools ship.
-    cp -r ${./reproto/tree-sitter-textproto/src} src
+    cp -r ${./tree-sitter-textproto/src} src
     chmod -R u+w src
     cat > tree-sitter.json <<'JSON'
     {
@@ -757,15 +756,13 @@ let
     rust.prototext rust.protolens
     rust.prototextCodec rust.fdpScanLib rust.prototextGraphLib
     rust.protoscan rust.gitSeriate rust.gitSeriateFdp python.reproto
-    python.reprotoTests python.reprotoTestsViaText python.reprotoTestsOnProtoback
     python.fdpScanTests python.prototextCodecTests
-    python.pythonLint python.pythonRuff python.unknownFieldsStubCheck
+    python.pythonLint python.pythonRuff
     treeSitterTextprotoHighlightTest treeSitterTextprotoCheck
     reprotoWktCheck upbReleaseCheck descriptorCopiesCheck
     wktDb wktPrebuiltCheck prototextFixturesCheck fdpScanCorpusCheck
     prototoolsClosureCheck
     completionTests
-    python.protobackHarness python.protobackDumpHarness
     # nixpkgsStaging builds in its own workflow (nixpkgs-staging.yml): two
     # more full Rust builds would weigh on every CI run. The check stays.
     nixpkgsStagingCheck
@@ -780,7 +777,6 @@ let
     rust.prototext rust.protolens
     rust.prototextCodec rust.fdpScanLib rust.prototextGraphLib
     rust.protoscan rust.gitSeriate rust.gitSeriateFdp python.reproto
-    python.reprotoTests python.reprotoTestsViaText python.reprotoTestsOnProtoback
     python.fdpScanTests python.prototextCodecTests
     python.pythonLint python.pythonRuff
     treeSitterTextprotoHighlightTest treeSitterTextprotoCheck
@@ -800,7 +796,7 @@ let
   # between releases.
   # ---------------------------------------------------------------------------
   # stagingSrc: the workspace, plus what the Python recipes build from
-  # reproto/ (reproto and the grammar) and the extensions' test suites.
+  # (reproto/, the grammar's binding) and the extensions' test suites.
   stagingSrc =
     let
       fs = pkgs.lib.fileset;
@@ -810,6 +806,7 @@ let
       fileset = fs.unions [
         (fs.fromSource workspaceSrc)
         (noPyc ./reproto)
+        (noPyc ./tree-sitter-textproto)
         (noPyc ./prototext-pyo3/tests)
         (noPyc ./fdp-scan-pyo3/tests)
       ];
@@ -954,7 +951,6 @@ let
 
   full-tests = pkgs.linkFarmFromDrvs "full-tests" [
     ci python.googleapisDb python.googleapisTests python.customDb python.customTests
-    python.protobackHarnessFull python.protobackDumpHarnessFull
   ];
 
 in
@@ -971,15 +967,12 @@ in
   rust-tests           = rust.rustTests;
   descriptor-access-check = rust.descriptorAccessCheck;
   hakari-check         = rust.hakariCheck;
-  unknown-fields-stub-check = python.unknownFieldsStubCheck;
   prototext-codec      = rust.prototextCodec;
   reproto              = python.reproto;
   wkt-rkyv             = wktRkyv;
   wkt-prebuilt-check   = wktPrebuiltCheck;
   fdp-scan-corpus      = fdpScanCorpus;
   fdp-scan-corpus-check = fdpScanCorpusCheck;
-  reproto-tests        = python.reprotoTests;
-  reproto-tests-on-protoback = python.reprotoTestsOnProtoback;
   fdp-scan-tests       = python.fdpScanTests;
   prototext-codec-tests = python.prototextCodecTests;
   python-lint          = python.pythonLint;
@@ -992,10 +985,6 @@ in
   googleapis-tests     = python.googleapisTests;
   custom-db            = python.customDb;
   custom-tests         = python.customTests;
-  protoback-harness    = python.protobackHarness;
-  protoback-harness-full = python.protobackHarnessFull;
-  protoback-dump-harness = python.protobackDumpHarness;
-  protoback-dump-harness-full = python.protobackDumpHarnessFull;
   bobapp-desc          = python.bobappDesc;
   bobapp-extra-desc    = python.bobappExtraDesc;
   bobapp               = bobappDemo;
@@ -1013,6 +1002,8 @@ in
   nixpkgs-staging      = nixpkgsStaging;
   # One staged Rust application at a time: nix-build -A nixpkgs-staging-rust.protoback
   nixpkgs-staging-rust = stagedRustBuilds;
+  # One staged Python library at a time: nix-build -A nixpkgs-staging-python.fdp-scan
+  nixpkgs-staging-python = pkgs.lib.getAttrs (builtins.attrNames stagedReprotoLibs) stagedPythonPkgs;
   nixpkgs-staging-check = nixpkgsStagingCheck;
   nixpkgs-staging-unstable = nixpkgsStagingUnstable;
   nixpkgs-staging-unstable-reproto-alone = stagingUnstable.reprotoAlone;

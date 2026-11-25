@@ -45,11 +45,6 @@ where = ["src"]
 "reproto.variants" = ["*.yaml", "**/*.pb"]
 "reproto.profiles" = ["*.yaml"]
 
-[tool.pytest.ini_options]
-testpaths = ["src/reproto/tests"]
-python_files = ["test_*.py"]
-pythonpath = ["src"]
-addopts = "-n auto"
 
 [tool.ruff]
 src = ["src"]

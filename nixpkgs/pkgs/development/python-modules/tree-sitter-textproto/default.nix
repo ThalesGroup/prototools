@@ -16,7 +16,7 @@ buildPythonPackage {
   # reproto needs all four of these libraries at exactly its version, so
   # they move with it, in reproto's update.
 
-  sourceRoot = "${reproto.src.name}/reproto/tree-sitter-textproto";
+  sourceRoot = "${reproto.src.name}/tree-sitter-textproto";
 
   build-system = [ setuptools ];
 

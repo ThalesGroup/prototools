@@ -27,7 +27,7 @@ members = [
     "prototext-schema",
     "prototext-upb",
     "protolens",
-    "reproto/tree-sitter-textproto",
+    "tree-sitter-textproto",
     "prototools-complete",
     "prototools-affinity",
     "fdp-scan",
@@ -72,7 +72,7 @@ prototools-affinity = { path = "prototools-affinity", version = "0.4.0" }
 fdp-scan            = { path = "fdp-scan", version = "0.4.0" }
 seriation           = { path = "seriation", version = "0.4.0" }
 git-seriate         = { path = "git-seriate", version = "0.4.0" }
-tree-sitter-textproto = { path = "reproto/tree-sitter-textproto", version = "0.4.0" }
+tree-sitter-textproto = { path = "tree-sitter-textproto", version = "0.4.0" }
 
 [profile.release]
 codegen-units   = 1

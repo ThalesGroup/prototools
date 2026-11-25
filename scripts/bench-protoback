@@ -8,9 +8,10 @@
 #           of one run of each case, in KiB) are written
 #
 # Environment:
-#   BENCH_CORPUS  a corpus prepared by `scripts/protoback-harness prepare`;
-#                 the googleapis case runs only if it was prepared with
-#                 --googleapis
+#   BENCH_CORPUS  a corpus as the differential harness prepared it, before
+#                 spec 0487 removed the harness (a prepared one is kept in
+#                 ~/.cache/protoback-harness/bench-corpus); the googleapis
+#                 case runs only if it was prepared with --googleapis
 #   BENCH_CPUS    the vCPUs to pin to (default 0-7: both clusters of
 #                 docs/prototext/bench-process.md, whole; protoback is
 #                 multi-threaded)
@@ -36,7 +37,7 @@ run=$out/run
 unset REPROTO_VARIANT PROTOTEXT_DESCRIPTOR_SET PROTOTEXT_DEFAULT_DESCRIPTOR
 
 # The flags of wktRkyv, customDb and googleapisDb (nix/python.nix,
-# default.nix), as scripts/protoback-harness runs them.
+# default.nix), as the differential harness ran them.
 declare -A cases=(
     [wkt]="$cmd -I $corpus/wkt --schema-db-out=out/wkt-db.desc --emit-extension-ranges -O out/wkt-db/proto wkt.desc"
     [custom]="$cmd --use-variant all --force-proto2-for-editions -I $corpus/custom --proto-out=out/custom/proto --emit-scoring-yaml --schema-db-out=out/custom.desc ."
