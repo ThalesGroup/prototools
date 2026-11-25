@@ -14,7 +14,7 @@
 
 rustPlatform.buildRustPackage (finalAttrs: {
   pname = "protoback";
-  version = "0.3.6";
+  version = "0.4.0";
   __structuredAttrs = true;
 
   src = fetchFromGitHub {

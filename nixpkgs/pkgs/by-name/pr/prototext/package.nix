@@ -13,7 +13,7 @@
 
 rustPlatform.buildRustPackage (finalAttrs: {
   pname = "prototext";
-  version = "0.3.6";
+  version = "0.4.0";
   __structuredAttrs = true;
 
   src = fetchFromGitHub {
