@@ -198,3 +198,18 @@ Progress, 2026-11-25:
 - **S5, done:** the reviewer's comments on the five PRs read in full; their
   points open each `pr-briefing-<package>.md`, beside its
   `pr-description-<package>.md`.
+- **S3, done:** `v0.4.0` on `4da0f2d6`, pushed to both remotes; run
+  45603141263, both jobs approved: crates.io holds the 14 crates at 0.4.0
+  (the four reserved ones' first versions), PyPI the five packages. The
+  staged recipes passed from the tag on x86_64-linux, aarch64-linux,
+  aarch64-darwin and the nixos-unstable pin.
+- **S4, on nixpkgs `master`** (5556d588), in worktrees of the local clone:
+  branches `protoback-init` and `git-seriate-init`, the hashes set with
+  `nix-update --version skip`, each package built alone. protoback first
+  failed: on `master`, the Rust setup hook points `JEMALLOC_OVERRIDE` at a
+  sentinel unless a package provides jemalloc, which upstream's pins don't
+  do yet; with `buildInputs = [ rust-jemalloc-sys ]` it passes. Only
+  protoback links jemalloc. aarch64-linux and darwin on `master` are left
+  to nixpkgs' CI on the PRs, before review.
+- **Step 5:** the PR recipes copied back, and the four other staged recipes
+  given 0.4.0's hashes (one tarball, one `Cargo.lock`).

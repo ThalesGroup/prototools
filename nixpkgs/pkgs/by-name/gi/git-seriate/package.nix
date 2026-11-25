@@ -22,10 +22,10 @@ rustPlatform.buildRustPackage (finalAttrs: {
     owner = "douzebis";
     repo = "prototools";
     tag = "v${finalAttrs.version}";
-    hash = "sha256-PTOmgGRMhMrss2HBwgLp7ub7uNVncNVkT63W+7wqk3U=";
+    hash = "sha256-zE8jDoPISjJg56cRjs0LJDDBQv9dWYAryg29RpZLsZU=";
   };
 
-  cargoHash = "sha256-aHobnBJJWsMem2oehd8pNwlrXHdjnY/it20mGK9+N2s=";
+  cargoHash = "sha256-0r9goxXjNTPSdktSC7moIg39okYVFwEpoKwmSfQV23U=";
 
   # Two git subcommands: git-seriate, and git-seriate-fdp for the protobuf
   # descriptors embedded in executables.

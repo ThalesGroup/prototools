@@ -41,7 +41,7 @@ and #573094:
 - **`versionCheckHook`**: `git-seriate --version` prints the version
   (`mainProgram`).
 - **96 tests** in 16 test binaries run in the check phase, none skipped
-  (x86_64-linux, upstream's nixpkgs pin, 2026-11-25).
+  (x86_64-linux, nixpkgs `master` 5556d588, 2026-11-25).
 
 ## Questions a reviewer may ask
 
@@ -63,6 +63,10 @@ and #573094:
   vendored crates of the local `Cargo.lock`
   (`nix-build -A nixpkgs-staging-rust.git-seriate`): tests, completions,
   man pages and version check.
-- To do at the release: in a nixpkgs checkout of `master`, `nix-update`
-  for `hash` and `cargoHash`, then build the package alone. Not
-  `nixpkgs-review` on the development host, which runs out of memory there.
+- Upstream CI, from the `v0.4.0` tag, on x86_64-linux, aarch64-linux and
+  aarch64-darwin, with upstream's nixpkgs pins.
+- On nixpkgs `master` (5556d588), with `nix-update --version skip` for
+  `hash` and `cargoHash`: `nix-build -A git-seriate` passes. git-seriate
+  doesn't link jemalloc, so protoback's `rust-jemalloc-sys` question doesn't
+  arise here. Not `nixpkgs-review` on the development host, which runs out
+  of memory there.

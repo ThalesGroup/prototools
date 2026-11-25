@@ -36,6 +36,13 @@ and where this recipe stands:
   protoback's output with `protoc` and skip without it; the plugin tests
   run their test plugins as `python3 plugin.py`, and fail without it.
   Neither is a runtime dependency.
+- **`buildInputs = [ rust-jemalloc-sys ]`**: protoback's allocator is
+  jemalloc (`tikv-jemallocator`). On nixpkgs `master`, the Rust setup hook
+  makes such crates use the system library: it points `JEMALLOC_OVERRIDE`
+  at a path that doesn't exist unless a package provides one, and the build
+  fails. `rust-jemalloc-sys` provides it, built with the `_rjem_` symbol
+  prefix the crate expects; ripgrep uses it the same way. The other
+  prototools packages don't link jemalloc.
 - **`postInstall`**, behind `canExecute`:
   - completions: `PROTOBACK_COMPLETE=<shell> protoback` prints the script,
     for bash, zsh and fish;
@@ -43,7 +50,7 @@ and where this recipe stands:
     `protoback-instantiate.1`.
 - **`versionCheckHook`**: `protoback --version` prints the version.
 - **74 tests** in 11 test binaries run in the check phase, none skipped
-  (x86_64-linux, upstream's nixpkgs pin, 2026-11-25).
+  (x86_64-linux, nixpkgs `master` 5556d588, 2026-11-25).
 
 ## Questions a reviewer may ask
 
@@ -64,6 +71,9 @@ and where this recipe stands:
   vendored crates of the local `Cargo.lock`
   (`nix-build -A nixpkgs-staging-rust.protoback`): tests, completions,
   man pages and version check.
-- To do at the release: in a nixpkgs checkout of `master`, `nix-update`
-  for `hash` and `cargoHash`, then build the package alone. Not
+- Upstream CI, from the `v0.4.0` tag, on x86_64-linux, aarch64-linux and
+  aarch64-darwin, with upstream's nixpkgs pins.
+- On nixpkgs `master` (5556d588), with `nix-update --version skip` for
+  `hash` and `cargoHash`: `nix-build -A protoback`, which first failed on
+  the jemalloc sentinel above, then passed with `rust-jemalloc-sys`. Not
   `nixpkgs-review` on the development host, which runs out of memory there.
