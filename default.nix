@@ -39,6 +39,11 @@
 # low-memory builds: --argstr cargoProfile quick. The tests build in quick
 # either way; releases, crates.io, PyPI and nixpkgs stay on release.
 , cargoProfile ? "release"
+# Whether an evaluation of an output prints how to bound the build (spec
+# 0489 S2). A downstream that imports this file for its tools passes false:
+# the hint names this repository's attribute and README, not its own. The
+# derivations are the same either way; the trace is evaluation only.
+, boundHint ? true
 # The nixpkgs the staged recipes are also checked against, as the nixpkgs
 # PRs build (spec 0423 S4): the nixos-unstable pin of nix/unstable.json,
 # moved by scripts/update-unstable-pin. The weekly check passes the
@@ -714,10 +719,11 @@ let
 
   # Spec 0489 S2: how to bound a build, said once per evaluation of an
   # output (each depends on this one expression); not by the user shell,
-  # whose hook builds bounded, nor under PROTOTOOLS_QUIET (scripts/ci, the
-  # workflow, the shell's hook).
-  boundHint =
-    if builtins.getEnv "PROTOTOOLS_QUIET" != "" then null
+  # whose hook builds bounded, nor without the `boundHint` argument (a
+  # downstream importing this file), nor under PROTOTOOLS_QUIET
+  # (scripts/ci, the workflow).
+  buildHint =
+    if !boundHint || builtins.getEnv "PROTOTOOLS_QUIET" != "" then null
     else builtins.trace ''
       prototools: on a machine with little memory, bound the build:
         nix-build -A prototools --max-jobs 1 --cores 2
@@ -1019,7 +1025,7 @@ let
 
 in
 builtins.mapAttrs
-  (name: value: if builtins.elem name unhinted then value else builtins.seq boundHint value)
+  (name: value: if builtins.elem name unhinted then value else builtins.seq buildHint value)
 {
   default              = ci;
   # Spec 0461: the protobuf release, for downstream builds.

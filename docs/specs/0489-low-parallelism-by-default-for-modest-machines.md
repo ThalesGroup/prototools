@@ -130,7 +130,12 @@ derivation: the bounded tools would be other store paths than
   final set), the user shell's attribute and `protobufRelease` (data that
   downstream builds import) not: entering `nix-shell` prints nothing, its
   tools being bounded already (S1). `scripts/ci` and the workflow set
-  `PROTOTOOLS_QUIET`.
+  `PROTOTOOLS_QUIET`. A downstream that imports `default.nix` for its tools
+  passes `boundHint = false` (an argument, default `true`): the hint names
+  this repository's attribute and README, not the downstream's, and
+  `PROTOTOOLS_QUIET`, one variable, would silence the downstream's own
+  hint with it (prototools' request, 2026-11-26). The derivations are the
+  same either way, the trace being evaluation only.
 - **S3. The README** says, at "Building with Nix", that `nix-shell`
   builds its tools at low parallelism, rooted, and how to raise it
   (`PROTOTOOLS_BUILD_FLAGS`).
@@ -178,7 +183,8 @@ derivation: the bounded tools would be other store paths than
    shell opened without the tools.
 5. `nix-instantiate -A prototools` prints S2's message once; with
    `PROTOTOOLS_QUIET=1`, nothing; entering `nix-shell`, nothing;
-   `scripts/ci --preflight`, nothing.
+   `scripts/ci --preflight`, nothing. With `boundHint = false` (`--arg`, or an import
+   passing it), nothing, the `.drv` unchanged.
 
 ## Measured outcome
 
