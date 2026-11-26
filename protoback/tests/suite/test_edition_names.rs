@@ -10,7 +10,7 @@
 //! Edition enum lacks. Its inputs, bare FileDescriptorProtos its code built
 //! with Python's protobuf (`b.pb` with edition 1003 appended), are the
 //! `#@prototext` fixtures `edition_names/`, made once by that code
-//! (`stash/0488/gen/test_edition_names_and_instantiate.py`). Its unit test,
+//! (`protoback/tests/fixtures/gen/test_edition_names_and_instantiate.py`). Its unit test,
 //! `test_an_older_protobuf_is_said` (W37, a Python protobuf older than
 //! reproto's descriptor.proto), is reproto-only: protoback has no Python
 //! protobuf.

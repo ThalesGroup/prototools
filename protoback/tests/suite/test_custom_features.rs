@@ -14,7 +14,7 @@
 //! descriptor.proto and cpp_features.proto moved to package `proto2` under
 //! other paths, the user files pointed at them), are the `#@prototext`
 //! fixtures `custom_features/`, made once by that code
-//! (`stash/0488/gen/test_custom_features.py`); both tests' descriptor.proto
+//! (`protoback/tests/fixtures/gen/test_custom_features.py`); both tests' descriptor.proto
 //! are the same bytes, one fixture. The last test's expected value, the
 //! field's options as the original serialized them, is the generator's.
 

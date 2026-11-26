@@ -9,7 +9,7 @@
 //! (proto3 with extension ranges, required fields, explicit defaults): the
 //! original built those descriptors with Python's protobuf; they are the
 //! `#@prototext` fixtures `anomalies/`, made once by its code
-//! (`stash/0488/gen/test_anomalies.py`). A1 and A2 compile fixtures with
+//! (`protoback/tests/fixtures/gen/test_anomalies.py`). A1 and A2 compile fixtures with
 //! protoc.
 //!
 //! Ported from `test_anomalies.py`, its command-line tests; names

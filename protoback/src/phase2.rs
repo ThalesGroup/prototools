@@ -746,7 +746,7 @@ fn edition_defaults(descriptor: &FileDescriptorProto<'_>) -> EditionDefaults {
 /// (`prototext_upb::DESCRIPTOR_SET`). A `FeatureSet` the original built is
 /// its bytes here; T6's and T7's descriptors, built with Python's protobuf,
 /// are `#@prototext` fixtures made once by its code
-/// (`stash/0488/gen/test_feature_resolution.py`).
+/// (`protoback/tests/fixtures/gen/test_feature_resolution.py`).
 #[cfg(test)]
 mod test_feature_resolution {
     use super::*;

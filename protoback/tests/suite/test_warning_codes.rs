@@ -7,7 +7,7 @@
 //! Ported from `test_warning_codes.py`, its one-parameter-list test running
 //! its parameters in turn. Its inputs, built with Python's protobuf, are the
 //! fixtures `warning_codes/`, made once by its code
-//! (`stash/0488/gen/test_warning_codes.py`): `a.textpb` as protoc printed
+//! (`protoback/tests/fixtures/gen/test_warning_codes.py`): `a.textpb` as protoc printed
 //! and the original edited it, `b.pb` (`#@prototext`) with its undeclared
 //! group.
 

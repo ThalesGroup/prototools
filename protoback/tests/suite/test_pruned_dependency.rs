@@ -17,7 +17,7 @@
 //! Ported from `test_pruned_dependency.py`. The input of its last test,
 //! built with Python's protobuf, is the `#@prototext` fixture
 //! `pruned_dependency/set.pb`, made once by that code
-//! (`stash/0488/gen/test_pruned_dependency.py`).
+//! (`protoback/tests/fixtures/gen/test_pruned_dependency.py`).
 
 use crate::common::{compile_proto, encode_fixture, fixture, protoback, tmp, tools, Run};
 use std::path::{Path, PathBuf};

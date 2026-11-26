@@ -474,7 +474,7 @@ impl Walk<'_> {
 /// The unit tests of `test_instantiate.py` (spec 0488 S2), on the functions
 /// that port reproto's `generate_instance` and `load_pool`. The schemas its
 /// code built with Python's protobuf are `#@prototext` fixtures, made once
-/// by that code (`stash/0488/gen/test_edition_names_and_instantiate.py`),
+/// by that code (`protoback/tests/fixtures/gen/test_edition_names_and_instantiate.py`),
 /// written as `.desc` here as the original wrote them.
 #[cfg(test)]
 mod test_instantiate {

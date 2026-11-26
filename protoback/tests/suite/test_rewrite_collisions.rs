@@ -15,7 +15,7 @@
 //! moved to package `proto2`, `FileOptions` gaining `internal_flag = 99` and
 //! losing field 20; a user file with options added), are the fixtures
 //! `rewrite_collisions/`, made once by that code
-//! (`stash/0488/gen/test_rewrite_collisions.py`): the three sets
+//! (`protoback/tests/fixtures/gen/test_rewrite_collisions.py`): the three sets
 //! `#@prototext`, of the original's bytes (checked here), and `user.textpb`
 //! as protoc printed it. protobuf's copy is the original's too: Python wrote
 //! it by field number, protoc not quite, so compiling it here would not give

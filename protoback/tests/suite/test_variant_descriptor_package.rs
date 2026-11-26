@@ -15,7 +15,7 @@
 //! descriptor.proto, renamed and repackaged; a proto2 user file; a proto3
 //! file extending `altpb.FieldOptions`), is the `#@prototext` fixture
 //! `variant_descriptor_package/set.pb`, made once by that code with protobuf
-//! 7.34.1 (`stash/0488/gen/test_variant_descriptor_package.py`).
+//! 7.34.1 (`protoback/tests/fixtures/gen/test_variant_descriptor_package.py`).
 
 use crate::common::{encode_fixture, protoback, tmp, words, Run};
 use std::path::{Path, PathBuf};

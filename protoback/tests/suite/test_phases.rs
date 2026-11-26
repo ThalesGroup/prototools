@@ -13,7 +13,7 @@
 //! is `test_p1_`). The inputs its code built with Python's protobuf (P1's
 //! self-dependent set, P5's two circular files, M2's set printed by
 //! `text_format`) are the fixtures `phases/`, made once by that code
-//! (`stash/0488/gen/test_phases.py`).
+//! (`protoback/tests/fixtures/gen/test_phases.py`).
 
 use crate::common::{
     compile_proto, compile_proto_multi, encode_fixture, fixture, protoback, tmp, tools, Run,

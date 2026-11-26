@@ -11,7 +11,7 @@
 //!
 //! Ported from `test_blob_root_and_defaults.py`, its command-line tests.
 //! Its two members, built with Python's protobuf, importing nothing, are the
-//! `#@prototext` fixtures `blob_root/` (`stash/0488/gen/`), the blob
+//! `#@prototext` fixtures `blob_root/` (`protoback/tests/fixtures/gen/`), the blob
 //! assembled from them as its `_write_blob` did: a header, the members
 //! joined by NULs, a footer. Its unit test is in `protoback/src/complete.rs`.
 

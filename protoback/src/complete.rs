@@ -243,7 +243,7 @@ mod tests {
 /// function that ports reproto's `_complete_blob_members`
 /// (`descriptor_files`, a blob root); its members, built with Python's
 /// protobuf, are `#@prototext` fixtures made once by its code
-/// (`stash/0488/gen/test_blob_root_and_defaults.py`), the blob assembled as
+/// (`protoback/tests/fixtures/gen/test_blob_root_and_defaults.py`), the blob assembled as
 /// its `_write_blob` did.
 #[cfg(test)]
 mod test_blob_root_and_defaults {
