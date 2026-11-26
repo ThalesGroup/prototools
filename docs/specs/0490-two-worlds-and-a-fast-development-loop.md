@@ -119,9 +119,12 @@ same command names in both repositories.
   Python package's source directory, which the dev shell puts on
   `PYTHONPATH` before Nix's builds; `check` runs it before `pytest` when
   a Rust source is newer than a deployed module.
-- **S6. The modest setting:** `PROTOTOOLS_MODEST=1` bounds every build an
-  entry point starts: Nix's at `--max-jobs 1 --cores 2`, cargo's at
-  `CARGO_BUILD_JOBS=2`. The user shell is modest by default (0489:
+- **S6. The modest setting:** `PROTOTOOLS_MODEST=1` bounds the builds an
+  entry point starts itself: Nix's at `--max-jobs 1 --cores 2` (`check
+  --nix`, `check --release`), cargo's at `CARGO_BUILD_JOBS=2` (the dev
+  shell, `check`). It cannot bound what `nix-shell` builds before the
+  hook runs, the dev shell's inputs: Nix reads its limits before it
+  evaluates, so those take `--max-jobs 1 --cores 2` on the command line. The user shell is modest by default (0489:
   `PROTOTOOLS_BUILD_FLAGS` still overrides its flags); the dev shell and
   `check` are not, `PROTOTOOLS_MODEST=1` asking for it.
 - **S7. `BUILDING.md`**, a new file at the root, says it all in one place:

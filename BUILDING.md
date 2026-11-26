@@ -74,8 +74,10 @@ out of memory. The bounds:
   for all.
 - **The dev shell and `check`** use every core by default, the
   development cycle being meant to be fast. `PROTOTOOLS_MODEST=1` bounds
-  every build they start: cargo at two jobs, Nix at `--max-jobs 1 --cores
-  2`.
+  cargo at two jobs in both, and Nix at `--max-jobs 1 --cores 2` in
+  `check --nix` and `check --release`. It cannot bound the Nix builds
+  that entering the dev shell makes, for the same reason as `nix-build`'s:
+  for those, `nix-shell dev-shell.nix --max-jobs 1 --cores 2`.
 
 ## Developing
 
