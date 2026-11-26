@@ -59,25 +59,45 @@ let
   # message) selects among those compiled, not found fresh, stops it,
   # named. A flag, an environment variable or a source path that differs
   # from the layers below recompiles silently otherwise, and the build
-  # costs twice again; stopping at the first keeps a drift's failure to
-  # seconds. (jq leaves at its first match; cargo, its output closed,
-  # stops.) Needs jq.
+  # costs twice again.
+  # - Stopping at the first keeps a drift's failure to seconds: jq leaves
+  #   at its first match, and cargo, its output closed, stops at its next
+  #   message (measured here: 6 s). A cargo that went on would only make
+  #   the failure later: `$(…)` waits for it, and the verdict stands.
+  # - Not blind (S4): with nothing redone, it must have seen fresh units,
+  #   as every reuse here does (most of them). None means that cargo's
+  #   messages are no longer what it reads (a cargo or crane change), and
+  #   it would no longer see a drift: that fails too.
+  # Needs jq.
   reuseGuard = { who, command, unexpected }: ''
     status=0
-    again=$(cargoWithProfile ${command} --message-format json-render-diagnostics \
-      | jq -n -r 'first(inputs | select(.reason == "compiler-artifact"
-          and .fresh == false and (${unexpected})))
-        | "\(.target.name) (\(.target.kind | join(",")), \(.package_id))"'
+    verdict=$(cargoWithProfile ${command} --message-format json-render-diagnostics \
+      | jq -n -r 'label $stop
+          | foreach ((inputs | select(.reason == "compiler-artifact")), null) as $m (0;
+              if $m != null and $m.fresh == true then . + 1 else . end;
+              if $m == null then "fresh \(.)"
+              elif $m.fresh == false and ($m | (${unexpected})) then
+                ("again \($m.target.name) (\($m.target.kind | join(",")), \($m.package_id))",
+                 break $stop)
+              else empty end)'
       exit "''${PIPESTATUS[0]}") || status=$?
-    if [ -n "$again" ]; then
-      echo "${who} compiled again what the layers below had compiled (spec 0491 S3):" >&2
-      echo "  $again" >&2
-      echo "and was stopped there. Its flags or environment differ from theirs:" \
-           "rebuild with CARGO_LOG=cargo::core::compiler::fingerprint=info to see why." >&2
+    case $verdict in
+      again\ *)
+        echo "${who} compiled again what the layers below had compiled (spec 0491 S3):" >&2
+        echo "  ''${verdict#again }" >&2
+        echo "and was stopped there. Its flags or environment differ from theirs:" \
+             "rebuild with CARGO_LOG=cargo::core::compiler::fingerprint=info to see why." >&2
+        exit 1 ;;
+    esac
+    [ "$status" -eq 0 ] || exit "$status"
+    if [ "$verdict" = "fresh 0" ] || [ -z "$verdict" ]; then
+      echo "${who}: cargo reported no unit fresh, where most must be (spec 0491 S4):" \
+           "its messages are not what this guard reads any more (a cargo or crane" \
+           "change?), and it would not see a compilation redone. Fix the guard" \
+           "(reuseGuard, nix/rust.nix)." >&2
       exit 1
     fi
-    [ "$status" -eq 0 ] || exit "$status"
-  '';
+'';
 
   # Every build embeds the WKT scoring graph committed under
   # prototext/wkt/prebuilt/, which prototext's build.rs copies with no feature

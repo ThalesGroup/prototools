@@ -80,6 +80,17 @@ the 14 examples and the 48 `cfg(test)` units and test binaries.
     (prototools' wheel guards maturin's phase only, and noted that a
     redone build phase would pass unseen: this closes it here.)
 
+  Stopping relies on cargo stopping once `jq` has left, at its next
+  message (here, within seconds). A cargo that went on would make the
+  failure later, not wrong: the guard waits for cargo, and its verdict
+  stands.
+- **S4. Not blind:** with nothing redone, the guard must have seen fresh
+  units, as every reuse here does (most of its units). None, and cargo
+  succeeding, fails too: cargo's messages are no longer what the guard
+  reads (a cargo or crane change), and it would not see a drift. The
+  guard thus guards itself, without a fixture or a derivation expected to
+  fail, which Nix does not express.
+
 ## Alternatives considered
 
 - **`workspaceBuild` installing its target, the tests on it:** the
@@ -99,6 +110,8 @@ the 14 examples and the 48 `cfg(test)` units and test binaries.
    closure check.
 3. The guards: a flag given to one side alone (`RUSTFLAGS = "--cfg
    reuse_drift"`, in `rustTests`, then in `workspaceBuild`) fails each.
+   Blinded (cargo's messages without `fresh`, through `jq 'del(.fresh)'`),
+   S4 fails `workspaceBuild`.
 4. The measurement, in the release world, on a warm `depsCache`, the
    machine otherwise idle, with the maintainer's go-ahead:
    - **CPU:** each Rust derivation of `ci` built one at a time
@@ -129,5 +142,6 @@ the workspace competed for the same 12 CPUs. Both guards pass in `ci` and
 non-test code is gone from every run.
 
 Test plan 3, quick world: the drift in `rustTests`, then in
-`workspaceBuild`, fails each guard after 6 s, at the first dependency
-recompiled (`cfg_if`).
+`workspaceBuild`, fails each guard after 8 and 6 s (the whole
+`nix-build`), at the first dependency recompiled (`cfg_if`): cargo
+stopped there. Blinded, S4 fails `workspaceBuild` after 6 s.
