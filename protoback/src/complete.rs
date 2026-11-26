@@ -238,3 +238,37 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 }
+
+/// The unit test of `test_blob_root_and_defaults.py` (spec 0488 S2), on the
+/// function that ports reproto's `_complete_blob_members`
+/// (`descriptor_files`, a blob root); its members, built with Python's
+/// protobuf, are `#@prototext` fixtures made once by its code
+/// (`stash/0488/gen/test_blob_root_and_defaults.py`), the blob assembled as
+/// its `_write_blob` did.
+#[cfg(test)]
+mod test_blob_root_and_defaults {
+    use super::*;
+    use crate::suite_fixtures::{encoded, tmp};
+
+    #[test]
+    fn test_completion_offers_blob_members() {
+        let first = encoded(
+            "blob_root/first.pb",
+            "c77e19e18ba49e0ed386e71e52ea1a726913a1c069ddc3416778afc602324996",
+        );
+        let second = encoded(
+            "blob_root/second.pb",
+            "3450fac04dfbfbf7d33428b9e66887d798dbd3dc33f7d499b24682b8daa3b3fd",
+        );
+        let blob = tmp("test_completion_offers_blob_members").join("blob");
+        let body = [first, second].join(&0u8);
+        std::fs::write(
+            &blob,
+            [b"HEADER\x00".as_slice(), &body, b"\x00FOOTER"].concat(),
+        )
+        .unwrap();
+        let roots = std::slice::from_ref(&blob);
+        assert_eq!(descriptor_files("", roots), ["extra/second.pb", "first.pb"]);
+        assert_eq!(descriptor_files("extra/", roots), ["extra/second.pb"]);
+    }
+}

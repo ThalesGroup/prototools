@@ -735,3 +735,204 @@ fn edition_defaults(descriptor: &FileDescriptorProto<'_>) -> EditionDefaults {
     }
     table
 }
+
+/// The unit tests of `test_feature_resolution.py` (spec 0488 S2), T1 to T7,
+/// on the functions that port reproto's `build_edition_defaults`
+/// (`edition_defaults`, here) and `resolve_features` (`features::resolve`,
+/// one feature at a time: a `ResolvedFeatures` is the six of
+/// `Feature::ALL`); names lower-cased (`test_T1_` is `test_t1_`). "The
+/// built-in descriptor.proto", Python protobuf's in the original, is the
+/// one protoback reads its features from, the release's
+/// (`prototext_upb::DESCRIPTOR_SET`). A `FeatureSet` the original built is
+/// its bytes here; T6's and T7's descriptors, built with Python's protobuf,
+/// are `#@prototext` fixtures made once by its code
+/// (`stash/0488/gen/test_feature_resolution.py`).
+#[cfg(test)]
+mod test_feature_resolution {
+    use super::*;
+    use crate::features::{
+        resolve, Feature, FIELD_PRESENCE_IMPLICIT, REPEATED_FIELD_ENCODING_PACKED,
+    };
+    use crate::suite_fixtures::encoded;
+    use prototext_upb::descriptor_access::{FeatureSet, FileDescriptorSet};
+    use prototext_upb::{DynamicMessage, Pool};
+
+    /// `FieldPresence.UNKNOWN`, `EXPLICIT`; `RepeatedFieldEncoding.EXPANDED`.
+    const FIELD_PRESENCE_UNKNOWN: i32 = 0;
+    const FIELD_PRESENCE_EXPLICIT: i32 = 1;
+    const REPEATED_FIELD_ENCODING_EXPANDED: i32 = 2;
+
+    // Edition numbers (google.protobuf.Edition).
+    const EDITION_LEGACY: i32 = 900;
+    const EDITION_PROTO3: i32 = 999;
+    const EDITION_2023: i32 = 1000;
+
+    fn decode(type_name: &str, bytes: &[u8]) -> DynamicMessage {
+        let def = Pool::vendored().get_message_by_name(type_name).unwrap();
+        DynamicMessage::decode(&def, bytes).unwrap()
+    }
+
+    /// The built-in descriptor.proto's table.
+    fn builtin_table() -> EditionDefaults {
+        let set = decode(
+            "google.protobuf.FileDescriptorSet",
+            prototext_upb::DESCRIPTOR_SET,
+        );
+        let file = FileDescriptorSet(set.as_ref())
+            .file()
+            .into_iter()
+            .find(|f| f.name() == b"google/protobuf/descriptor.proto")
+            .unwrap();
+        edition_defaults(&file)
+    }
+
+    /// A fixture's bare FileDescriptorProto's table.
+    fn fixture_table(name: &str, sha256: &str) -> EditionDefaults {
+        let msg = decode(
+            "google.protobuf.FileDescriptorProto",
+            &encoded(name, sha256),
+        );
+        edition_defaults(&FileDescriptorProto(msg.as_ref()))
+    }
+
+    /// A FeatureSet setting field_presence (field 1) to `value`.
+    fn presence(value: u8) -> DynamicMessage {
+        decode("google.protobuf.FeatureSet", &[0x08, value])
+    }
+
+    fn resolved(
+        table: &EditionDefaults,
+        feature: Feature,
+        edition: i32,
+        sets: &[Option<&DynamicMessage>],
+    ) -> i32 {
+        let sets: Vec<Option<FeatureSet<'_>>> = sets
+            .iter()
+            .map(|m| m.map(|m| FeatureSet(m.as_ref())))
+            .collect();
+        resolve(table, feature, edition, &sets)
+    }
+
+    fn defaults(table: &EditionDefaults, name: &str) -> Vec<(i32, String)> {
+        match table.get(name) {
+            Some(EditionDefault::Defaults(d)) => d.clone(),
+            _ => panic!("{name}: no defaults"),
+        }
+    }
+
+    /// The built-in descriptor's table, not empty, with field_presence's and
+    /// repeated_field_encoding's defaults, LEGACY's and 2023's among them.
+    #[test]
+    fn test_t1_real_descriptor_builds_table() {
+        let table = builtin_table();
+        assert!(
+            !table.is_empty(),
+            "edition_defaults table must not be empty"
+        );
+        assert!(table.contains_key("field_presence"));
+        assert!(table.contains_key("repeated_field_encoding"));
+        let editions: Vec<i32> = defaults(&table, "field_presence")
+            .iter()
+            .map(|(e, _)| *e)
+            .collect();
+        assert!(
+            editions.contains(&EDITION_LEGACY),
+            "field_presence must have EDITION_LEGACY default"
+        );
+        assert!(
+            editions.contains(&EDITION_2023),
+            "field_presence must have EDITION_2023 default"
+        );
+    }
+
+    /// No override: the edition defaults.
+    #[test]
+    fn test_t2_default_lookup() {
+        let table = builtin_table();
+        let fp = |e| resolved(&table, Feature::FieldPresence, e, &[]);
+        let rfe = |e| resolved(&table, Feature::RepeatedFieldEncoding, e, &[]);
+        assert_eq!(fp(EDITION_LEGACY), FIELD_PRESENCE_EXPLICIT);
+        assert_eq!(fp(EDITION_PROTO3), FIELD_PRESENCE_IMPLICIT);
+        assert_eq!(fp(EDITION_2023), FIELD_PRESENCE_EXPLICIT);
+        assert_eq!(rfe(EDITION_LEGACY), REPEATED_FIELD_ENCODING_EXPANDED);
+        assert_eq!(rfe(EDITION_2023), REPEATED_FIELD_ENCODING_PACKED);
+        // Below all defaults (edition 0): unknown.
+        assert_eq!(fp(0), FIELD_PRESENCE_UNKNOWN);
+    }
+
+    /// An explicit field_presence = IMPLICIT overrides the 2023 default.
+    #[test]
+    fn test_t3_explicit_override_wins() {
+        let table = builtin_table();
+        let fs = presence(2);
+        assert_eq!(
+            resolved(&table, Feature::FieldPresence, EDITION_2023, &[Some(&fs)]),
+            FIELD_PRESENCE_IMPLICIT
+        );
+    }
+
+    /// A field's FeatureSet overrides its file's.
+    #[test]
+    fn test_t4_finer_wins_over_coarser() {
+        let table = builtin_table();
+        let (file_fs, field_fs) = (presence(2), presence(1));
+        let fp = |sets: &[Option<&DynamicMessage>]| {
+            resolved(&table, Feature::FieldPresence, EDITION_2023, sets)
+        };
+        assert_eq!(
+            fp(&[Some(&file_fs), Some(&field_fs)]),
+            FIELD_PRESENCE_EXPLICIT
+        );
+        assert_eq!(fp(&[Some(&file_fs)]), FIELD_PRESENCE_IMPLICIT);
+    }
+
+    /// Levels without a FeatureSet are skipped: all six features as bare.
+    #[test]
+    fn test_t5_none_levels_skipped() {
+        let table = builtin_table();
+        for f in Feature::ALL {
+            assert_eq!(
+                resolved(&table, f, EDITION_2023, &[None, None, None]),
+                resolved(&table, f, EDITION_2023, &[]),
+                "{}",
+                f.name()
+            );
+        }
+    }
+
+    /// A descriptor without FeatureSet: an empty table.
+    #[test]
+    fn test_t6_empty_variant_returns_empty_table() {
+        let table = fixture_table(
+            "feature_resolution/no_featureset.pb",
+            "75aabac3c5c27a961e04c734ba1a3b701daf2c0d80fd76af5f1ba52c757d6faf",
+        );
+        assert!(table.is_empty());
+    }
+
+    /// A synthetic descriptor: field_presence's enum FIRST = 1, SECOND = 2;
+    /// edition 900 defaults to FIRST, 1000 to SECOND.
+    #[test]
+    fn test_t7_synthetic_descriptor() {
+        let table = fixture_table(
+            "feature_resolution/synthetic.pb",
+            "f1b36fc1d4b09cdc65f93055bc2a2a76d7e4e47d3d2204c447c39e9fd534fa45",
+        );
+        assert_eq!(
+            defaults(&table, "field_presence"),
+            [
+                (EDITION_LEGACY, "FIRST".to_string()),
+                (EDITION_2023, "SECOND".to_string())
+            ]
+        );
+        let Some(EditionDefault::Numbers(numbers)) = table.get("_enum_field_presence") else {
+            panic!("no _enum_field_presence");
+        };
+        assert_eq!(numbers.get("FIRST"), Some(&1));
+        assert_eq!(numbers.get("SECOND"), Some(&2));
+        let fp = |e| resolved(&table, Feature::FieldPresence, e, &[]);
+        assert_eq!(fp(900), 1);
+        assert_eq!(fp(1000), 2);
+        assert_eq!(fp(0), 0);
+    }
+}

@@ -309,3 +309,115 @@ mod tests {
         assert_eq!(posix_str("///x"), "/x");
     }
 }
+
+/// The unit tests of `test_path_patterns.py` (spec 0488 S2): U2 on
+/// `PathPatterns` (reproto's `load.PathPatterns`), U3 on `fqdn_match`
+/// (`phases.fqdn_match`); names lower-cased (`test_U2_` is `test_u2_`). The
+/// original's `Fqdn("path:…")` is the string itself here.
+#[cfg(test)]
+mod test_path_patterns {
+    use super::*;
+
+    fn patterns(p: &[&str]) -> PathPatterns {
+        PathPatterns::new(&p.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn test_u2_partition_literal_vs_glob() {
+        let pp = patterns(&["foo/bar.pb", "foo/*.pb", "foo?.pb", "foo[0].pb"]);
+        assert_eq!(pp.literals, BTreeSet::from(["foo/bar.pb".to_string()]));
+        let globs: BTreeSet<&str> = pp.globs.iter().map(String::as_str).collect();
+        assert_eq!(globs, BTreeSet::from(["foo/*.pb", "foo?.pb", "foo[0].pb"]));
+    }
+
+    #[test]
+    fn test_u2_literal_matches_exact_string_only() {
+        let pp = patterns(&["foo/bar.pb"]);
+        assert!(pp.matches("foo/bar.pb"));
+        assert!(!pp.matches("foo/barx.pb"));
+        assert!(!pp.matches("foo/ba"));
+        assert!(!pp.matches("foo/bar.pbx"));
+    }
+
+    #[test]
+    fn test_u2_glob_matches_via_fqdn_match() {
+        let pp = patterns(&["foo/*.pb"]);
+        assert!(pp.matches("foo/bar.pb"));
+        assert!(!pp.matches("foo/sub/bar.pb"), "* must not cross /");
+    }
+
+    #[test]
+    fn test_u2_empty_pattern_set_matches_nothing() {
+        assert!(!patterns(&[]).matches("anything.pb"));
+    }
+
+    #[test]
+    fn test_u3_doublestar_matches_top_level_and_nested() {
+        assert!(fqdn_match("path:**/*~2.pb", "path:foo~2.pb"));
+        assert!(fqdn_match("path:**/*~2.pb", "path:bar/foo~2.pb"));
+    }
+
+    #[test]
+    fn test_u3_bare_star_matches_only_top_level() {
+        assert!(fqdn_match("path:*~2.pb", "path:foo~2.pb"));
+        assert!(!fqdn_match("path:*~2.pb", "path:bar/foo~2.pb"));
+    }
+}
+
+/// The unit tests of `test_prune_seed_patterns.py` (spec 0488 S2), T2's and
+/// T5's, on `fqdn_match` (reproto's `phases.fqdn_match`); names
+/// lower-cased. reproto's `fqdn_matches_any` was `any(fqdn_match(p, s) for
+/// p in patterns)`, which protoback writes where it needs it: its test is
+/// that `any`.
+#[cfg(test)]
+mod test_prune_seed_patterns {
+    use super::*;
+
+    /// `*` does not cross `/`; `**` does (file: FQDNs use `/`).
+    #[test]
+    fn test_t2_star_does_not_cross_slash() {
+        assert!(!fqdn_match("file:subdir/*", "file:subdir/nested/foo.proto"));
+        assert!(fqdn_match("file:subdir/**", "file:subdir/nested/foo.proto"));
+        assert!(fqdn_match("file:subdir/*", "file:subdir/foo.proto"));
+    }
+
+    #[test]
+    fn test_t5_fqdn_match_exact() {
+        assert!(fqdn_match("file:foo.proto", "file:foo.proto"));
+        assert!(!fqdn_match("file:foo.proto", "file:bar.proto"));
+    }
+
+    #[test]
+    fn test_t5_fqdn_match_star() {
+        assert!(fqdn_match("file:dir/*.proto", "file:dir/foo.proto"));
+        assert!(!fqdn_match("file:dir/*.proto", "file:dir/sub/foo.proto"));
+    }
+
+    #[test]
+    fn test_t5_fqdn_match_doublestar() {
+        assert!(fqdn_match("file:dir/**", "file:dir/sub/foo.proto"));
+        assert!(fqdn_match("file:dir/**", "file:dir/foo.proto"));
+    }
+
+    /// `.` in desc: names is treated as `/` for matching.
+    #[test]
+    fn test_t5_fqdn_match_desc_dot_notation() {
+        assert!(fqdn_match("desc:my.pkg.*", "desc:.my.pkg.MyMsg"));
+        assert!(!fqdn_match("desc:my.pkg.*", "desc:.my.pkg.sub.MyMsg"));
+        assert!(fqdn_match("desc:my.pkg.**", "desc:.my.pkg.sub.MyMsg"));
+    }
+
+    #[test]
+    fn test_t5_fqdn_match_prefix_mismatch() {
+        assert!(!fqdn_match("file:foo.proto", "desc:foo.proto"));
+    }
+
+    #[test]
+    fn test_t5_fqdn_matches_any() {
+        let patterns = ["file:a.proto", "file:b*"];
+        let any = |s: &str| patterns.iter().any(|p| fqdn_match(p, s));
+        assert!(any("file:a.proto"));
+        assert!(any("file:baz.proto"));
+        assert!(!any("file:c.proto"));
+    }
+}

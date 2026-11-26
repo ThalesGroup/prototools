@@ -405,7 +405,7 @@ print('\n'.join(lines[:$N_EXTRA]))
   } ''
     set -euo pipefail
 
-    FIXTURES="${trackedSource { root = ../tests/custom/fixtures; fileset = ../tests/custom/fixtures; }}"
+    FIXTURES="${trackedSource { root = ../protoback/tests/fixtures; fileset = ../protoback/tests/fixtures; }}"
     PB=$TMPDIR/pb
     mkdir -p "$PB"
 

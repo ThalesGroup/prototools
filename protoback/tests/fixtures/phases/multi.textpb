@@ -1,0 +1,91 @@
+file {
+  name: "phone_number.proto"
+  package: "tutorial"
+  message_type {
+    name: "PhoneNumber"
+    field {
+      name: "number"
+      number: 1
+      label: LABEL_OPTIONAL
+      type: TYPE_STRING
+      json_name: "number"
+    }
+    field {
+      name: "type"
+      number: 2
+      label: LABEL_OPTIONAL
+      type: TYPE_ENUM
+      type_name: ".tutorial.PhoneNumber.PhoneType"
+      json_name: "type"
+    }
+    enum_type {
+      name: "PhoneType"
+      value {
+        name: "PHONE_TYPE_UNSPECIFIED"
+        number: 0
+      }
+      value {
+        name: "PHONE_TYPE_MOBILE"
+        number: 1
+      }
+      value {
+        name: "PHONE_TYPE_HOME"
+        number: 2
+      }
+      value {
+        name: "PHONE_TYPE_WORK"
+        number: 3
+      }
+    }
+  }
+  syntax: "proto3"
+}
+file {
+  name: "address_book.proto"
+  package: "tutorial"
+  dependency: "phone_number.proto"
+  message_type {
+    name: "Person"
+    field {
+      name: "name"
+      number: 1
+      label: LABEL_OPTIONAL
+      type: TYPE_STRING
+      json_name: "name"
+    }
+    field {
+      name: "id"
+      number: 2
+      label: LABEL_OPTIONAL
+      type: TYPE_INT32
+      json_name: "id"
+    }
+    field {
+      name: "email"
+      number: 3
+      label: LABEL_OPTIONAL
+      type: TYPE_STRING
+      json_name: "email"
+    }
+    field {
+      name: "phones"
+      number: 4
+      label: LABEL_REPEATED
+      type: TYPE_MESSAGE
+      type_name: ".tutorial.PhoneNumber"
+      json_name: "phones"
+    }
+  }
+  message_type {
+    name: "AddressBook"
+    field {
+      name: "people"
+      number: 1
+      label: LABEL_REPEATED
+      type: TYPE_MESSAGE
+      type_name: ".tutorial.Person"
+      json_name: "people"
+    }
+  }
+  syntax: "proto3"
+}

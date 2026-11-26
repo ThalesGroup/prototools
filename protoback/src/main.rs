@@ -37,6 +37,8 @@ mod run;
 mod schema_db;
 mod scoring;
 mod select;
+#[cfg(test)]
+mod suite_fixtures;
 mod topology;
 mod variant;
 
@@ -1004,5 +1006,86 @@ fn py_str(p: &Path) -> String {
         ".".into()
     } else {
         s.display().to_string()
+    }
+}
+
+/// The unit tests of `test_filter_config.py` (spec 0488 S2), U1, on the
+/// function that ports reproto's `filter_config.load` (`filter_config`);
+/// names lower-cased. reproto raised `ValueError`, matched by
+/// `pytest.raises(match=…)`; protoback returns the message, matched so.
+#[cfg(test)]
+mod test_filter_config {
+    use super::*;
+    use crate::suite_fixtures::tmp;
+
+    fn load(test: &str, text: &str) -> Result<FilterConfig, String> {
+        let p = tmp(test).join("filter.yaml");
+        std::fs::write(&p, text).unwrap();
+        filter_config(&p)
+    }
+
+    fn error(test: &str, text: &str) -> String {
+        match load(test, text) {
+            Ok(_) => panic!("{test}: no error"),
+            Err(e) => e,
+        }
+    }
+
+    #[test]
+    fn test_u1_load_valid_both_keys() {
+        let c = load(
+            "test_u1_load_valid_both_keys",
+            "seed:\n  - file:foo.proto\nprune:\n  - file:bar.proto\n",
+        )
+        .unwrap();
+        assert_eq!(c.seeds, ["file:foo.proto"]);
+        assert_eq!(c.prunes, ["file:bar.proto"]);
+    }
+
+    #[test]
+    fn test_u1_load_only_seed_key() {
+        let c = load("test_u1_load_only_seed_key", "seed:\n  - file:foo.proto\n").unwrap();
+        assert_eq!(c.seeds, ["file:foo.proto"]);
+        assert!(c.prunes.is_empty());
+    }
+
+    #[test]
+    fn test_u1_load_empty_file() {
+        let c = load("test_u1_load_empty_file", "").unwrap();
+        assert!(c.seeds.is_empty() && c.prunes.is_empty());
+    }
+
+    /// A typo: 'prunes', not 'prune'.
+    #[test]
+    fn test_u1_load_unknown_key() {
+        let e = error("test_u1_load_unknown_key", "prunes:\n  - file:bar.proto\n");
+        assert!(e.contains("unknown filter-config key"), "{e}");
+    }
+
+    #[test]
+    fn test_u1_load_not_a_mapping() {
+        let e = error("test_u1_load_not_a_mapping", "- foo\n- bar\n");
+        assert!(e.contains("must be a YAML mapping"), "{e}");
+    }
+
+    #[test]
+    fn test_u1_load_seed_not_a_list() {
+        let e = error("test_u1_load_seed_not_a_list", "seed: file:foo.proto\n");
+        assert!(e.contains("'seed' must be a list of strings"), "{e}");
+    }
+
+    #[test]
+    fn test_u1_load_seed_list_non_string_item() {
+        let e = error(
+            "test_u1_load_seed_list_non_string_item",
+            "seed:\n  - foo: bar\n",
+        );
+        assert!(e.contains("'seed' must be a list of strings"), "{e}");
+    }
+
+    #[test]
+    fn test_u1_load_malformed_yaml() {
+        let e = error("test_u1_load_malformed_yaml", "seed: [unterminated\n");
+        assert!(e.contains("invalid YAML"), "{e}");
     }
 }

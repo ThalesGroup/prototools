@@ -641,3 +641,444 @@ mod tests {
         );
     }
 }
+
+/// The unit tests of `test_split_fdps.py` (spec 0488 S2), on the function
+/// that ports reproto's `split_fdps` (spec 0065). reproto took the data and
+/// the file's extension, which settled text against binary; protoback
+/// takes `Contents`, which `read` makes text or binary by the extension:
+/// the tiebreaker tests are on `read`. A `ValueError` is `None`. The
+/// original's binary inputs, sets and files of names alone, are their
+/// bytes, built here.
+#[cfg(test)]
+mod test_split_fdps {
+    use super::*;
+    use crate::suite_fixtures::{fixture, protoc, tmp, tools};
+    use prototext_upb::descriptor_access::FileDescriptorProto;
+    use prototext_upb::{DynamicMessage, Pool};
+
+    /// A length-delimited field 1 holding `payload`.
+    fn field1(payload: &[u8]) -> Vec<u8> {
+        assert!(payload.len() < 0x80);
+        [&[0x0a, payload.len() as u8][..], payload].concat()
+    }
+
+    /// `_make_binary_fdp`: a FileDescriptorProto of `name` alone.
+    fn binary_fdp(name: &str) -> Vec<u8> {
+        field1(name.as_bytes())
+    }
+
+    /// `_make_binary_fds`: a set of such files.
+    fn binary_fds(names: &[&str]) -> Vec<u8> {
+        names.iter().flat_map(|n| field1(&binary_fdp(n))).collect()
+    }
+
+    fn text(src: &str) -> Vec<(String, Fragment)> {
+        split_fdps(&Contents::Text(src.to_string())).unwrap()
+    }
+
+    fn names(result: &[(String, Fragment)]) -> Vec<&str> {
+        result.iter().map(|(n, _)| n.as_str()).collect()
+    }
+
+    fn interior(f: &Fragment) -> &str {
+        match f {
+            Fragment::Text(t) => t,
+            Fragment::Binary(_) => panic!("a binary fragment"),
+        }
+    }
+
+    #[test]
+    fn test_two_file_blocks() {
+        let r = text(r#"file { name: "a.proto" } file { name: "b.proto" }"#);
+        assert_eq!(names(&r), ["a.proto", "b.proto"]);
+    }
+
+    #[test]
+    fn test_three_file_blocks() {
+        let r =
+            text(r#"file { name: "a.proto" } file { name: "b.proto" } file { name: "c.proto" }"#);
+        assert_eq!(names(&r), ["a.proto", "b.proto", "c.proto"]);
+    }
+
+    #[test]
+    fn test_entry_wrapper() {
+        let r = text(r#"entry { file { name: "a.proto" } file { name: "b.proto" } }"#);
+        assert_eq!(names(&r), ["a.proto", "b.proto"]);
+    }
+
+    #[test]
+    fn test_colon_syntax() {
+        let r = text(r#"file: { name: "a.proto" } file: { name: "b.proto" }"#);
+        assert_eq!(r.len(), 2);
+        assert_eq!(r[0].0, "a.proto");
+    }
+
+    #[test]
+    fn test_angle_delimiters() {
+        let r = text(r#"file < name: "a.proto" > file < name: "b.proto" >"#);
+        assert_eq!(names(&r), ["a.proto", "b.proto"]);
+    }
+
+    /// The interior is exactly what was between the braces.
+    #[test]
+    fn test_interior_verbatim() {
+        let r = text("file { name: \"a.proto\"\n  package: \"foo\" # a comment\n}");
+        assert_eq!(r.len(), 1);
+        let i = interior(&r[0].1);
+        for s in [r#"package: "foo""#, "# a comment", r#"name: "a.proto""#] {
+            assert!(i.contains(s), "{s}: {i}");
+        }
+    }
+
+    #[test]
+    fn test_nested_message_verbatim() {
+        let r = text(
+            r#"file { name: "a.proto" message_type { name: "Msg" field { name: "f" number: 1 } } }"#,
+        );
+        assert_eq!(r.len(), 1);
+        let i = interior(&r[0].1);
+        assert!(i.contains("message_type") && i.contains("field"), "{i}");
+    }
+
+    #[test]
+    fn test_string_with_braces() {
+        let r = text(r#"file { name: "a.proto" options { java_package: "com.{example}" } }"#);
+        assert_eq!(r.len(), 1);
+        assert!(interior(&r[0].1).contains("com.{example}"));
+    }
+
+    /// A bare FileDescriptorProto: one fragment, the whole source.
+    #[test]
+    fn test_bare_fdp() {
+        let r = text("name: \"a.proto\"\npackage: \"foo\"");
+        assert_eq!(names(&r), ["a.proto"]);
+        interior(&r[0].1);
+    }
+
+    #[test]
+    fn test_single_file_block() {
+        let r = text(r#"file { name: "a.proto" }"#);
+        assert_eq!(names(&r), ["a.proto"]);
+    }
+
+    #[test]
+    fn test_two_fdps() {
+        let r = split_fdps(&Contents::Binary(binary_fds(&["a.proto", "b.proto"]))).unwrap();
+        let ns = names(&r);
+        assert!(ns.contains(&"a.proto") && ns.contains(&"b.proto"), "{ns:?}");
+        let def = Pool::vendored()
+            .get_message_by_name("google.protobuf.FileDescriptorProto")
+            .unwrap();
+        for (_, f) in &r {
+            let Fragment::Binary(b) = f else {
+                panic!("a text fragment")
+            };
+            let m = DynamicMessage::decode(&def, b).unwrap();
+            let name = String::from_utf8_lossy(FileDescriptorProto(m.as_ref()).name()).into_owned();
+            assert!(ns.contains(&name.as_str()), "{name}");
+        }
+    }
+
+    #[test]
+    fn test_binary_bare_fdp() {
+        let r = split_fdps(&Contents::Binary(binary_fdp("a.proto"))).unwrap();
+        assert_eq!(names(&r), ["a.proto"]);
+        assert!(matches!(r[0].1, Fragment::Binary(_)));
+    }
+
+    /// `content` written as `name` and read as protoback reads it.
+    fn read_as(test: &str, name: &str, content: &[u8]) -> Contents {
+        let p = tmp(test).join(name);
+        std::fs::write(&p, content).unwrap();
+        read(&p).unwrap()
+    }
+
+    #[test]
+    fn test_text_extension_prefers_text() {
+        let c = read_as(
+            "test_text_extension_prefers_text",
+            "a.textpb",
+            br#"file { name: "a.proto" }"#,
+        );
+        assert!(matches!(split_fdps(&c).unwrap()[0].1, Fragment::Text(_)));
+    }
+
+    #[test]
+    fn test_binary_extension_prefers_binary() {
+        let c = read_as(
+            "test_binary_extension_prefers_binary",
+            "a.pb",
+            &binary_fds(&["a.proto"]),
+        );
+        assert!(matches!(split_fdps(&c).unwrap()[0].1, Fragment::Binary(_)));
+    }
+
+    #[test]
+    fn test_unrecognisable_raises() {
+        assert!(split_fdps(&Contents::Binary(b"\x00\x01\x02\x03garbage".to_vec())).is_none());
+    }
+
+    #[test]
+    fn test_empty_bytes_raises() {
+        assert!(split_fdps(&Contents::Binary(Vec::new())).is_none());
+    }
+
+    /// A real fixture, compiled by protoc.
+    #[test]
+    fn test_address_book_binary() {
+        if !tools(&["protoc"]) {
+            return;
+        }
+        let pb = tmp("test_address_book_binary").join("address_book.pb");
+        protoc([
+            format!("-I{}", fixture("").display()),
+            format!("--descriptor_set_out={}", pb.display()),
+            fixture("address_book.proto").display().to_string(),
+        ]);
+        let r = split_fdps(&Contents::Binary(std::fs::read(&pb).unwrap())).unwrap();
+        assert!(!r.is_empty());
+        assert!(r.iter().all(|(n, _)| n.ends_with(".proto")));
+    }
+}
+
+/// The unit tests of `test_load.py` (spec 0488 S2), on the function that
+/// ports reproto's `load_from_path` (specs 0148, 0149). The warnings it
+/// logged are read from the record of what `Events` printed; a text file's
+/// package, which reproto parsed, from the text it keeps until the input is
+/// read (spec 0427 S3).
+#[cfg(test)]
+mod test_load {
+    use super::*;
+    use crate::suite_fixtures::tmp;
+
+    /// `load_from_path` under `roots` for `rel`, `pruned` and `seeds` its
+    /// path patterns: the files, the warnings printed, the path-seeded
+    /// files.
+    fn load(
+        roots: &[PathBuf],
+        rel: &str,
+        pruned: &[&str],
+        seeds: &[&str],
+    ) -> (
+        Vec<QualFile>,
+        Vec<String>,
+        std::collections::BTreeSet<String>,
+    ) {
+        let strings = |p: &[&str]| p.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let (pruned, seeds) = (
+            PathPatterns::new(&strings(pruned)),
+            PathPatterns::new(&strings(seeds)),
+        );
+        let mut events = Events::new(false);
+        events.record();
+        let (mut blobs, mut seeded) = (HashMap::default(), std::collections::BTreeSet::new());
+        let mut ctx = LoadCtx {
+            pruned_paths: &pruned,
+            path_seeds: &seeds,
+            events: &mut events,
+            blobs: &mut blobs,
+            path_seed_fqdns: &mut seeded,
+            plugin: None,
+            importing: false,
+        };
+        let files = load_from_path(&mut ctx, roots, Path::new(rel));
+        let warnings = events
+            .lines
+            .iter()
+            .filter_map(|l| l.strip_prefix("warning | "))
+            .map(String::from)
+            .collect();
+        (files, warnings, seeded)
+    }
+
+    /// Roots `a` and `b` under the test's directory, `files` written in
+    /// them as (root, path, text).
+    fn roots(test: &str, files: &[(&str, &str, &str)]) -> (PathBuf, PathBuf) {
+        let dir = tmp(test);
+        for (root, path, text) in files {
+            let p = dir.join(root).join(path);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, text).unwrap();
+        }
+        let (a, b) = (dir.join("a"), dir.join("b"));
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        (a, b)
+    }
+
+    fn package(qf: &QualFile) -> &str {
+        let t = qf.text.as_deref().unwrap_or("");
+        ["pkg_a", "pkg_b", "pkg_1", "pkg_2"]
+            .into_iter()
+            .find(|p| t.contains(&format!("package: \"{p}\"")))
+            .unwrap_or("")
+    }
+
+    /// G1: every -I root is scanned for a directory-shaped argument.
+    #[test]
+    fn test_directory_seed_arg_loads_from_every_root() {
+        let (a, b) = roots(
+            "test_directory_seed_arg_loads_from_every_root",
+            &[
+                ("a", "foo.textpb", "name: \"foo.proto\"\n"),
+                ("b", "bar.textpb", "name: \"bar.proto\"\n"),
+            ],
+        );
+        let (files, warnings, _) = load(&[a, b], ".", &[], &[]);
+        let mut names: Vec<&str> = files.iter().map(|f| f.name.as_str()).collect();
+        names.sort();
+        assert_eq!(names, ["bar.proto", "foo.proto"]);
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    /// G2, G3: a name across roots: the first wins, W7.
+    #[test]
+    fn test_same_name_across_roots_shadows_and_warns() {
+        let (a, b) = roots(
+            "test_same_name_across_roots_shadows_and_warns",
+            &[
+                (
+                    "a",
+                    "foo.textpb",
+                    "name: \"foo.proto\"\npackage: \"pkg_a\"\n",
+                ),
+                (
+                    "b",
+                    "foo.textpb",
+                    "name: \"foo.proto\"\npackage: \"pkg_b\"\n",
+                ),
+            ],
+        );
+        let (files, warnings, _) = load(&[a.clone(), b.clone()], ".", &[], &[]);
+        assert_eq!(files.len(), 1);
+        assert_eq!(
+            package(&files[0]),
+            "pkg_a",
+            "first root (-I order) must win"
+        );
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        let w = &warnings[0];
+        assert!(w.contains("foo.proto"), "{w}");
+        assert!(
+            w.contains(&a.join("foo.textpb").display().to_string()),
+            "{w}"
+        );
+        assert!(
+            w.contains(&b.join("foo.textpb").display().to_string()),
+            "{w}"
+        );
+        assert!(w.starts_with("Warning [W7]:"), "{w}");
+    }
+
+    /// G4: within one root too.
+    #[test]
+    fn test_same_name_within_one_root_shadows_and_warns() {
+        let (a, _) = roots(
+            "test_same_name_within_one_root_shadows_and_warns",
+            &[
+                (
+                    "a",
+                    "foo.textpb",
+                    "name: \"foo.proto\"\npackage: \"pkg_1\"\n",
+                ),
+                (
+                    "a",
+                    "foo_copy.textpb",
+                    "name: \"foo.proto\"\npackage: \"pkg_2\"\n",
+                ),
+            ],
+        );
+        let (files, warnings, _) = load(&[a], ".", &[], &[]);
+        assert_eq!(files.len(), 1);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+    }
+
+    /// N2: a single file stops at the first root, no other probed, no W7.
+    #[test]
+    fn test_single_file_seed_arg_stops_at_first_root_no_warning() {
+        let (a, b) = roots(
+            "test_single_file_seed_arg_stops_at_first_root_no_warning",
+            &[
+                (
+                    "a",
+                    "foo.textpb",
+                    "name: \"foo.proto\"\npackage: \"pkg_a\"\n",
+                ),
+                (
+                    "b",
+                    "foo.textpb",
+                    "name: \"foo.proto\"\npackage: \"pkg_b\"\n",
+                ),
+            ],
+        );
+        let (files, warnings, _) = load(&[a, b], "foo.textpb", &[], &[]);
+        assert_eq!(files.len(), 1);
+        assert_eq!(package(&files[0]), "pkg_a");
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    const NESTED: &[(&str, &str, &str)] = &[
+        (
+            "a",
+            "nested/foo.textpb",
+            "name: \"foo.proto\"\npackage: \"pkg_a\"\n",
+        ),
+        (
+            "b",
+            "other/foo.textpb",
+            "name: \"foo.proto\"\npackage: \"pkg_b\"\n",
+        ),
+    ];
+
+    /// G3: prune-by-path settles a name two paths share: root_a's pruned,
+    /// root_b's survives, no W7.
+    #[test]
+    fn test_g3_prune_by_path_disambiguates_duplicate_name() {
+        let (a, b) = roots("test_g3_prune_by_path_disambiguates_duplicate_name", NESTED);
+        let (files, warnings, _) = load(&[a, b], ".", &["nested/foo.textpb"], &[]);
+        assert_eq!(files.len(), 1);
+        assert_eq!(
+            package(&files[0]),
+            "pkg_b",
+            "root_a's candidate was pruned by path; root_b's survives"
+        );
+        assert!(
+            warnings.is_empty(),
+            "only one physical candidate remains: no W7"
+        );
+    }
+
+    /// The same, the roots reversed.
+    #[test]
+    fn test_g3_prune_by_path_disambiguation_independent_of_root_order() {
+        let (a, b) = roots(
+            "test_g3_prune_by_path_disambiguation_independent_of_root_order",
+            NESTED,
+        );
+        let (files, warnings, _) = load(&[b, a], ".", &["nested/foo.textpb"], &[]);
+        assert_eq!(files.len(), 1);
+        assert_eq!(package(&files[0]), "pkg_b");
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    /// G6: a bare path pattern matches alike under every root.
+    #[test]
+    fn test_g6_bare_path_pattern_matches_under_every_root() {
+        let (a, b) = roots(
+            "test_g6_bare_path_pattern_matches_under_every_root",
+            &[
+                ("a", "pkg/thing_a.textpb", "name: \"thing_a.proto\"\n"),
+                ("b", "pkg/thing_b.textpb", "name: \"thing_b.proto\"\n"),
+            ],
+        );
+        let (_, _, seeded) = load(&[a, b], ".", &[], &["pkg/*.textpb"]);
+        let want: std::collections::BTreeSet<String> = ["file:thing_a.proto", "file:thing_b.proto"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            seeded, want,
+            "a bare glob must match whichever -I root a candidate is under"
+        );
+    }
+}

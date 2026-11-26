@@ -17,6 +17,7 @@ pub(crate) mod pyfmt;
 mod repair;
 mod repaired;
 mod sci;
+mod syntax;
 mod text;
 
 use std::path::{Path, PathBuf};

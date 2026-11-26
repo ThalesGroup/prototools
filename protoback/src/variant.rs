@@ -606,3 +606,62 @@ impl Variant {
         }
     }
 }
+
+/// The unit tests of `test_variant.py` (spec 0488 S2), on the built-in
+/// variant (`Variant::load(None)`, reproto's `variant.load()`): the tools'
+/// data, variant files gone (spec 0447 S8). reproto's root was a package's
+/// resources; protoback's, its embedded data (`Root::Builtin`).
+#[cfg(test)]
+mod test_variant {
+    use super::*;
+
+    const EDITION_KINDS: &[&str] = &[
+        "EnumOptions",
+        "EnumValueOptions",
+        "ExtensionRangeOptions",
+        "FieldOptions",
+        "FileOptions",
+        "MessageOptions",
+        "MethodOptions",
+        "ServiceOptions",
+    ];
+
+    /// The edition orphans every variant has.
+    fn has_edition_orphans(v: &Variant) -> bool {
+        let has = |kind: &str, name: &str| {
+            v.orphans
+                .get(kind)
+                .is_some_and(|o| o.iter().any(|x| x == name))
+        };
+        EDITION_KINDS
+            .iter()
+            .all(|k| has(k, "features") && has(k, "feature_support"))
+            && has("ExtensionRangeOptions", "verification")
+    }
+
+    #[test]
+    fn test_load_returns_the_builtin_defaults() {
+        let v = Variant::load(None).unwrap();
+        assert_eq!(v.descriptor_proto, "google/protobuf/descriptor.proto");
+        assert!(v.well_known.is_empty());
+        assert!(v.import_rules.is_empty());
+        assert!(v.namespace_rules.is_empty());
+        assert!(has_edition_orphans(&v), "{:?}", v.orphans);
+    }
+
+    /// The built-in variant: its root, its stem `google-protobuf`, its file
+    /// naming the descriptor.
+    #[test]
+    fn test_builtin_variant_root_and_stem() {
+        let v = Variant::load(None).unwrap();
+        assert_eq!(v.stem, "google-protobuf");
+        assert!(matches!(v.root, Root::Builtin));
+        assert!(BUILTIN_YAML.contains("google/protobuf/descriptor.proto"));
+    }
+
+    /// How the fallbacks are read: the embedded descriptor.pb.
+    #[test]
+    fn test_the_embedded_copies_are_reachable() {
+        assert!(!stock_descriptor_pb().is_empty());
+    }
+}

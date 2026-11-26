@@ -110,13 +110,15 @@ let
   };
 
   # fixtureFilter — admits only files the Rust tests actually need from fixture
-  # directories: .pb, .proto, .yaml, .script, .license, Cargo.lock.  Excludes
+  # directories: .pb, .proto, .textpb, .yaml, .script, .license, Cargo.lock.
+  # .textpb is a FileDescriptorSet as protoc prints it, which protoback reads
+  # as text (spec 0488, `rewrite_collisions/user.textpb`).  Excludes
   # .md, .py, .pyc, .gitignore, __pycache__ and other non-Rust artefacts that
   # would otherwise pollute the hash.  .script is spec 0271's guided walk —
   # `protolens/tests/batch_script.rs` runs tests/fixtures/anomalies.script over
   # tests/fixtures/anomalies.pb, so the test cannot pass without it.
   fixtureFilter = dir: pkgs.lib.fileset.fileFilter
-    (f: f.hasExt "pb" || f.hasExt "proto" || f.hasExt "yaml"
+    (f: f.hasExt "pb" || f.hasExt "proto" || f.hasExt "textpb" || f.hasExt "yaml"
         || f.hasExt "script" || f.hasExt "license")
     dir;
 
@@ -165,6 +167,9 @@ let
         # The adapter protoback runs Python plugins through (spec 0431 S3).
         ./protoback/src/plugin/adapter.py
         (fixtureFilter ./prototext/fixtures)
+        # The fixtures protoback's tests compile with protoc (spec 0488 S4),
+        # which customDb compiles too.
+        (fixtureFilter ./protoback/tests/fixtures)
         (fixtureFilter ./prototext-graph/tests/fixtures)
         (fixtureFilter ./tests/fixtures)
         # fdp-scan's regression corpus (spec 0448 S8): the layouts and their

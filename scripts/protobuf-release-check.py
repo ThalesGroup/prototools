@@ -21,8 +21,9 @@ import sys
 # Other packages whose own builds take another protobuf (spec 0462 N1),
 # by pname, with the reason.
 ALLOWED: dict[str, str] = {
-    # buf was one until reproto's tests, which ran it, were retired (spec
-    # 0487).
+    # Gone with reproto's tests (spec 0487), back with their port, which
+    # runs it in rustTests (spec 0488 S5).
+    "buf": "nixpkgs' buf, built against its nixpkgs' protobuf: its own build",
 }
 
 CPP = re.compile(r"^protobuf-(\d[\d.]*)\.drv$")

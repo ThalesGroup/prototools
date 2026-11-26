@@ -578,3 +578,222 @@ impl Events {
         (!hit.is_empty()).then(|| hit.join(", "))
     }
 }
+
+/// The unit tests of `test_warnings.py` (spec 0488 S2), on the collector
+/// that ports reproto's `WarningCollector`; names lower-cased. The original
+/// captured what the collector logged during a call or a flush; here, the
+/// record of what it printed (`lines`, its `warning | ` entries), over the
+/// same span. Its two W2 tests, on `flush`'s closing hint, which goes to
+/// the console unrecorded, are command-line tests
+/// (`tests/suite/test_warnings.rs`).
+///
+/// reproto's `w5` had no caller left but these tests: every missing
+/// dependency went through `w1`, summarized under W5, as in protoback,
+/// which has no `w5`. A test's `w5` is `w1` here, which gives the W5 line;
+/// `w5`'s detailed line ("missing dependency file:…"), which nothing gives
+/// any more, is reproto-only (`test_w3_detailed_fires_immediately`).
+#[cfg(test)]
+mod test_warnings {
+    use super::*;
+
+    fn collector(detailed: bool) -> Events {
+        let mut c = Events::new(detailed);
+        c.record();
+        c
+    }
+
+    /// The warning lines `f` printed.
+    fn printed(c: &mut Events, f: impl FnOnce(&mut Events)) -> Vec<String> {
+        let from = c.lines.len();
+        f(c);
+        c.lines[from..]
+            .iter()
+            .filter_map(|l| l.strip_prefix("warning | "))
+            .map(String::from)
+            .collect()
+    }
+
+    fn flushed(c: &mut Events) -> Vec<String> {
+        printed(c, Events::flush)
+    }
+
+    fn position(lines: &[String], text: &str) -> usize {
+        lines
+            .iter()
+            .position(|l| l.contains(text))
+            .unwrap_or_else(|| panic!("{text}: {lines:?}"))
+    }
+
+    /// Squashed flush: W5, then W4, then W6, each with its count.
+    #[test]
+    fn test_w1_squashed_flush_order_and_occurrences() {
+        let mut c = collector(false);
+        c.w1("dep.proto");
+        c.w4(".pkg.Type");
+        c.w4(".pkg.Type"); // second occurrence of same key
+        c.w6("W6", "f.proto", "field 'x'", "Couldn't find Extension 42");
+        let lines = flushed(&mut c);
+        let (w5, w4, w6) = (
+            position(&lines, "missing dependency file:dep.proto"),
+            position(&lines, "unresolvable type .pkg.Type"),
+            position(&lines, "Couldn't find Extension 42"),
+        );
+        assert!(
+            w5 < w4 && w4 < w6,
+            "Flush order must be W5, W4, W6: {lines:?}"
+        );
+        assert!(lines[w5].contains("(1 occurrence)"));
+        assert!(lines[w4].contains("(2 occurrences)"));
+        assert!(lines[w6].contains("(1 occurrence)"));
+    }
+
+    /// Detailed mode: each event printed at once.
+    #[test]
+    fn test_w3_detailed_fires_immediately() {
+        let mut c = collector(true);
+        let w4 = printed(&mut c, |c| c.w4(".pkg.Type"));
+        assert!(
+            w4.iter().any(|l| l.contains("unresolvable type .pkg.Type")),
+            "{w4:?}"
+        );
+        let w6 = printed(&mut c, |c| {
+            c.w6("W6", "f.proto", "field 'x'", "Couldn't find Extension 1")
+        });
+        assert!(
+            w6.iter().any(|l| l.contains("Couldn't find Extension 1")),
+            "{w6:?}"
+        );
+    }
+
+    /// Detailed mode: flush adds nothing.
+    #[test]
+    fn test_w3_detailed_flush_is_noop() {
+        let mut c = collector(true);
+        c.w4(".pkg.Type"); // already printed; flush must not repeat it
+        let lines = flushed(&mut c);
+        assert!(
+            !lines.iter().any(|l| l.contains("unresolvable type")),
+            "{lines:?}"
+        );
+    }
+
+    /// W1 feeds W5's counter: one line, three occurrences, no W1 line.
+    #[test]
+    fn test_w4_w1_merges_into_w5_counter() {
+        let mut c = collector(false);
+        c.w1("missing.proto");
+        c.w1("missing.proto");
+        c.w1("missing.proto");
+        let lines = flushed(&mut c);
+        let w5: Vec<&String> = lines
+            .iter()
+            .filter(|l| l.contains("missing dependency file:missing.proto"))
+            .collect();
+        assert_eq!(
+            w5.len(),
+            1,
+            "Exactly one squashed line for the merged key: {lines:?}"
+        );
+        assert!(w5[0].contains("(3 occurrences)"), "{w5:?}");
+        assert!(
+            !lines
+                .iter()
+                .any(|l| l.contains("missing file 'missing.proto'")),
+            "No separate W1 line"
+        );
+    }
+
+    /// A pruned file: no W5, no W1, squashed.
+    #[test]
+    fn test_w5_suppression_squashed() {
+        let mut c = collector(false);
+        c.register_pruned_file("pruned.proto");
+        c.w1("pruned.proto");
+        c.w1("pruned.proto");
+        let lines = flushed(&mut c);
+        assert!(
+            !lines.iter().any(|l| l.contains("pruned.proto")),
+            "{lines:?}"
+        );
+    }
+
+    /// A pruned file: nothing printed, detailed either.
+    #[test]
+    fn test_w5_suppression_detailed() {
+        let mut c = collector(true);
+        c.register_pruned_file("pruned.proto");
+        let mut lines = printed(&mut c, |c| c.w1("pruned.proto"));
+        lines.extend(printed(&mut c, |c| c.w1("pruned.proto")));
+        assert!(
+            !lines.iter().any(|l| l.contains("pruned.proto")),
+            "{lines:?}"
+        );
+    }
+
+    /// W3 is printed at once in squashed mode, and not again by flush.
+    #[test]
+    fn test_w6_w3_immediate_squashed() {
+        let mut c = collector(false);
+        let now = printed(&mut c, |c| c.w3("some w3 message"));
+        assert!(now.iter().any(|l| l.contains("some w3 message")), "{now:?}");
+        let lines = flushed(&mut c);
+        assert!(
+            !lines.iter().any(|l| l.contains("some w3 message")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn test_w6_w3_immediate_detailed() {
+        let mut c = collector(true);
+        let now = printed(&mut c, |c| c.w3("another w3 message"));
+        assert!(
+            now.iter().any(|l| l.contains("another w3 message")),
+            "{now:?}"
+        );
+    }
+
+    /// W7 (spec 0148), a file of the same name under two -I roots: printed
+    /// at once, one line, not again by flush.
+    #[test]
+    fn test_w9_w7_immediate_squashed() {
+        let mut c = collector(false);
+        let now = printed(&mut c, |c| {
+            c.w7("foo.proto", "path/b/foo.textpb", "path/a/foo.textpb")
+        });
+        assert_eq!(now.len(), 1, "{now:?}");
+        let line = &now[0];
+        assert!(line.starts_with("Warning [W7]:"), "{line}");
+        for s in ["path/b/foo.textpb", "file:foo.proto", "path/a/foo.textpb"] {
+            assert!(line.contains(s), "{s}: {line}");
+        }
+        assert!(
+            flushed(&mut c).is_empty(),
+            "flush() must not repeat the W7 line"
+        );
+    }
+
+    #[test]
+    fn test_w7_empty_flush() {
+        let mut c = collector(false);
+        assert!(flushed(&mut c).is_empty());
+    }
+
+    /// Several W5 keys, sorted.
+    #[test]
+    fn test_w8_w5_alphabetical_sort() {
+        let mut c = collector(false);
+        c.w1("z/z.proto");
+        c.w1("a/a.proto");
+        let lines = flushed(&mut c);
+        let w5: Vec<&String> = lines
+            .iter()
+            .filter(|l| l.contains("missing dependency"))
+            .collect();
+        assert_eq!(w5.len(), 2, "{lines:?}");
+        assert!(
+            w5[0].contains("a/a.proto") && w5[1].contains("z/z.proto"),
+            "{w5:?}"
+        );
+    }
+}

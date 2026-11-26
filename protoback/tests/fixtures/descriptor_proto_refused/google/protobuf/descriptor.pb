@@ -1,0 +1,2291 @@
+#@ prototext: protoc
+file {  #@ repeated FileDescriptorProto = 1
+ name: "google/protobuf/descriptor.proto"  #@ string = 1
+ package: "google.protobuf"  #@ string = 2
+ message_type {  #@ repeated DescriptorProto = 4
+  name: "FileDescriptorSet"  #@ string = 1
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "file"  #@ string = 1
+   number: 1  #@ int32 = 3
+   label: LABEL_REPEATED  #@ Label(3) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.FileDescriptorProto"  #@ string = 6
+   json_name: "file"  #@ string = 10
+  }
+  extension_range {  #@ repeated ExtensionRange = 5
+   start: 536000000  #@ int32 = 1
+   end: 536000001  #@ int32 = 2
+  }
+ }
+ message_type {  #@ repeated DescriptorProto = 4
+  name: "FileDescriptorProto"  #@ string = 1
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "name"  #@ string = 1
+   number: 1  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_STRING  #@ Type(9) = 5
+   type_name: ""  #@ string = 6
+   json_name: "name"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "package"  #@ string = 1
+   number: 2  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_STRING  #@ Type(9) = 5
+   json_name: "package"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "dependency"  #@ string = 1
+   number: 3  #@ int32 = 3
+   label: LABEL_REPEATED  #@ Label(3) = 4
+   type: TYPE_STRING  #@ Type(9) = 5
+   json_name: "dependency"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "public_dependency"  #@ string = 1
+   number: 10  #@ int32 = 3
+   label: LABEL_REPEATED  #@ Label(3) = 4
+   type: TYPE_INT32  #@ Type(5) = 5
+   json_name: "publicDependency"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "weak_dependency"  #@ string = 1
+   number: 11  #@ int32 = 3
+   label: LABEL_REPEATED  #@ Label(3) = 4
+   type: TYPE_INT32  #@ Type(5) = 5
+   json_name: "weakDependency"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "option_dependency"  #@ string = 1
+   number: 15  #@ int32 = 3
+   label: LABEL_REPEATED  #@ Label(3) = 4
+   type: TYPE_STRING  #@ Type(9) = 5
+   json_name: "optionDependency"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "message_type"  #@ string = 1
+   number: 4  #@ int32 = 3
+   label: LABEL_REPEATED  #@ Label(3) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.DescriptorProto"  #@ string = 6
+   json_name: "messageType"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "enum_type"  #@ string = 1
+   number: 5  #@ int32 = 3
+   label: LABEL_REPEATED  #@ Label(3) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.EnumDescriptorProto"  #@ string = 6
+   json_name: "enumType"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "service"  #@ string = 1
+   number: 6  #@ int32 = 3
+   label: LABEL_REPEATED  #@ Label(3) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.ServiceDescriptorProto"  #@ string = 6
+   json_name: "service"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "extension"  #@ string = 1
+   number: 7  #@ int32 = 3
+   label: LABEL_REPEATED  #@ Label(3) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.FieldDescriptorProto"  #@ string = 6
+   json_name: "extension"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "options"  #@ string = 1
+   number: 8  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.FileOptions"  #@ string = 6
+   json_name: "options"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "source_code_info"  #@ string = 1
+   number: 9  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.SourceCodeInfo"  #@ string = 6
+   json_name: "sourceCodeInfo"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "syntax"  #@ string = 1
+   number: 12  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_STRING  #@ Type(9) = 5
+   json_name: "syntax"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "edition"  #@ string = 1
+   number: 14  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_ENUM  #@ Type(14) = 5
+   type_name: ".google.protobuf.Edition"  #@ string = 6
+   json_name: "edition"  #@ string = 10
+  }
+ }
+ message_type {  #@ repeated DescriptorProto = 4
+  name: "DescriptorProto"  #@ string = 1
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "name"  #@ string = 1
+   number: 1  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_STRING  #@ Type(9) = 5
+   json_name: "name"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "field"  #@ string = 1
+   number: 2  #@ int32 = 3
+   label: LABEL_REPEATED  #@ Label(3) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.FieldDescriptorProto"  #@ string = 6
+   json_name: "field"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "extension"  #@ string = 1
+   number: 6  #@ int32 = 3
+   label: LABEL_REPEATED  #@ Label(3) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.FieldDescriptorProto"  #@ string = 6
+   json_name: "extension"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "nested_type"  #@ string = 1
+   number: 3  #@ int32 = 3
+   label: LABEL_REPEATED  #@ Label(3) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.DescriptorProto"  #@ string = 6
+   json_name: "nestedType"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "enum_type"  #@ string = 1
+   number: 4  #@ int32 = 3
+   label: LABEL_REPEATED  #@ Label(3) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.EnumDescriptorProto"  #@ string = 6
+   json_name: "enumType"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "extension_range"  #@ string = 1
+   number: 5  #@ int32 = 3
+   label: LABEL_REPEATED  #@ Label(3) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.DescriptorProto.ExtensionRange"  #@ string = 6
+   json_name: "extensionRange"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "oneof_decl"  #@ string = 1
+   number: 8  #@ int32 = 3
+   label: LABEL_REPEATED  #@ Label(3) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.OneofDescriptorProto"  #@ string = 6
+   json_name: "oneofDecl"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "options"  #@ string = 1
+   number: 7  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.MessageOptions"  #@ string = 6
+   json_name: "options"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "reserved_range"  #@ string = 1
+   number: 9  #@ int32 = 3
+   label: LABEL_REPEATED  #@ Label(3) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.DescriptorProto.ReservedRange"  #@ string = 6
+   json_name: "reservedRange"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "reserved_name"  #@ string = 1
+   number: 10  #@ int32 = 3
+   label: LABEL_REPEATED  #@ Label(3) = 4
+   type: TYPE_STRING  #@ Type(9) = 5
+   json_name: "reservedName"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "visibility"  #@ string = 1
+   number: 11  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_ENUM  #@ Type(14) = 5
+   type_name: ".google.protobuf.SymbolVisibility"  #@ string = 6
+   json_name: "visibility"  #@ string = 10
+  }
+  nested_type {  #@ repeated DescriptorProto = 3
+   name: "ExtensionRange"  #@ string = 1
+   field {  #@ repeated FieldDescriptorProto = 2
+    name: "start"  #@ string = 1
+    number: 1  #@ int32 = 3
+    label: LABEL_OPTIONAL  #@ Label(1) = 4
+    type: TYPE_INT32  #@ Type(5) = 5
+    json_name: "start"  #@ string = 10
+   }
+   field {  #@ repeated FieldDescriptorProto = 2
+    name: "end"  #@ string = 1
+    number: 2  #@ int32 = 3
+    label: LABEL_OPTIONAL  #@ Label(1) = 4
+    type: TYPE_INT32  #@ Type(5) = 5
+    json_name: "end"  #@ string = 10
+   }
+   field {  #@ repeated FieldDescriptorProto = 2
+    name: "options"  #@ string = 1
+    number: 3  #@ int32 = 3
+    label: LABEL_OPTIONAL  #@ Label(1) = 4
+    type: TYPE_MESSAGE  #@ Type(11) = 5
+    type_name: ".google.protobuf.ExtensionRangeOptions"  #@ string = 6
+    json_name: "options"  #@ string = 10
+   }
+  }
+  nested_type {  #@ repeated DescriptorProto = 3
+   name: "ReservedRange"  #@ string = 1
+   field {  #@ repeated FieldDescriptorProto = 2
+    name: "start"  #@ string = 1
+    number: 1  #@ int32 = 3
+    label: LABEL_OPTIONAL  #@ Label(1) = 4
+    type: TYPE_INT32  #@ Type(5) = 5
+    json_name: "start"  #@ string = 10
+   }
+   field {  #@ repeated FieldDescriptorProto = 2
+    name: "end"  #@ string = 1
+    number: 2  #@ int32 = 3
+    label: LABEL_OPTIONAL  #@ Label(1) = 4
+    type: TYPE_INT32  #@ Type(5) = 5
+    json_name: "end"  #@ string = 10
+   }
+  }
+ }
+ message_type {  #@ repeated DescriptorProto = 4
+  name: "ExtensionRangeOptions"  #@ string = 1
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "uninterpreted_option"  #@ string = 1
+   number: 999  #@ int32 = 3
+   label: LABEL_REPEATED  #@ Label(3) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.UninterpretedOption"  #@ string = 6
+   json_name: "uninterpretedOption"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "declaration"  #@ string = 1
+   number: 2  #@ int32 = 3
+   label: LABEL_REPEATED  #@ Label(3) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.ExtensionRangeOptions.Declaration"  #@ string = 6
+   options {  #@ FieldOptions = 8
+    retention: RETENTION_SOURCE  #@ OptionRetention(2) = 17
+   }
+   json_name: "declaration"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "features"  #@ string = 1
+   number: 50  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.FeatureSet"  #@ string = 6
+   json_name: "features"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "verification"  #@ string = 1
+   number: 3  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_ENUM  #@ Type(14) = 5
+   type_name: ".google.protobuf.ExtensionRangeOptions.VerificationState"  #@ string = 6
+   default_value: "UNVERIFIED"  #@ string = 7
+   options {  #@ FieldOptions = 8
+    retention: RETENTION_SOURCE  #@ OptionRetention(2) = 17
+   }
+   json_name: "verification"  #@ string = 10
+  }
+  nested_type {  #@ repeated DescriptorProto = 3
+   name: "Declaration"  #@ string = 1
+   field {  #@ repeated FieldDescriptorProto = 2
+    name: "number"  #@ string = 1
+    number: 1  #@ int32 = 3
+    label: LABEL_OPTIONAL  #@ Label(1) = 4
+    type: TYPE_INT32  #@ Type(5) = 5
+    json_name: "number"  #@ string = 10
+   }
+   field {  #@ repeated FieldDescriptorProto = 2
+    name: "full_name"  #@ string = 1
+    number: 2  #@ int32 = 3
+    label: LABEL_OPTIONAL  #@ Label(1) = 4
+    type: TYPE_STRING  #@ Type(9) = 5
+    json_name: "fullName"  #@ string = 10
+   }
+   field {  #@ repeated FieldDescriptorProto = 2
+    name: "type"  #@ string = 1
+    number: 3  #@ int32 = 3
+    label: LABEL_OPTIONAL  #@ Label(1) = 4
+    type: TYPE_STRING  #@ Type(9) = 5
+    json_name: "type"  #@ string = 10
+   }
+   field {  #@ repeated FieldDescriptorProto = 2
+    name: "reserved"  #@ string = 1
+    number: 5  #@ int32 = 3
+    label: LABEL_OPTIONAL  #@ Label(1) = 4
+    type: TYPE_BOOL  #@ Type(8) = 5
+    json_name: "reserved"  #@ string = 10
+   }
+   field {  #@ repeated FieldDescriptorProto = 2
+    name: "repeated"  #@ string = 1
+    number: 6  #@ int32 = 3
+    label: LABEL_OPTIONAL  #@ Label(1) = 4
+    type: TYPE_BOOL  #@ Type(8) = 5
+    json_name: "repeated"  #@ string = 10
+   }
+   reserved_range {  #@ repeated ReservedRange = 9
+    start: 4  #@ int32 = 1
+    end: 5  #@ int32 = 2
+   }
+  }
+  enum_type {  #@ repeated EnumDescriptorProto = 4
+   name: "VerificationState"  #@ string = 1
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "DECLARATION"  #@ string = 1
+    number: 0  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "UNVERIFIED"  #@ string = 1
+    number: 1  #@ int32 = 2
+   }
+  }
+  extension_range {  #@ repeated ExtensionRange = 5
+   start: 990  #@ int32 = 1
+   end: 999  #@ int32 = 2
+  }
+  extension_range {  #@ repeated ExtensionRange = 5
+   start: 1000  #@ int32 = 1
+   end: 536870912  #@ int32 = 2
+  }
+ }
+ message_type {  #@ repeated DescriptorProto = 4
+  name: "FieldDescriptorProto"  #@ string = 1
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "name"  #@ string = 1
+   number: 1  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_STRING  #@ Type(9) = 5
+   json_name: "name"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "number"  #@ string = 1
+   number: 3  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_INT32  #@ Type(5) = 5
+   json_name: "number"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "label"  #@ string = 1
+   number: 4  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_ENUM  #@ Type(14) = 5
+   type_name: ".google.protobuf.FieldDescriptorProto.Label"  #@ string = 6
+   json_name: "label"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "type"  #@ string = 1
+   number: 5  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_ENUM  #@ Type(14) = 5
+   type_name: ".google.protobuf.FieldDescriptorProto.Type"  #@ string = 6
+   json_name: "type"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "type_name"  #@ string = 1
+   number: 6  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_STRING  #@ Type(9) = 5
+   json_name: "typeName"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "extendee"  #@ string = 1
+   number: 2  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_STRING  #@ Type(9) = 5
+   json_name: "extendee"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "default_value"  #@ string = 1
+   number: 7  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_STRING  #@ Type(9) = 5
+   json_name: "defaultValue"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "oneof_index"  #@ string = 1
+   number: 9  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_INT32  #@ Type(5) = 5
+   json_name: "oneofIndex"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "json_name"  #@ string = 1
+   number: 10  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_STRING  #@ Type(9) = 5
+   json_name: "jsonName"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "options"  #@ string = 1
+   number: 8  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.FieldOptions"  #@ string = 6
+   json_name: "options"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "proto3_optional"  #@ string = 1
+   number: 17  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_BOOL  #@ Type(8) = 5
+   json_name: "proto3Optional"  #@ string = 10
+  }
+  enum_type {  #@ repeated EnumDescriptorProto = 4
+   name: "Type"  #@ string = 1
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "TYPE_DOUBLE"  #@ string = 1
+    number: 1  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "TYPE_FLOAT"  #@ string = 1
+    number: 2  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "TYPE_INT64"  #@ string = 1
+    number: 3  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "TYPE_UINT64"  #@ string = 1
+    number: 4  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "TYPE_INT32"  #@ string = 1
+    number: 5  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "TYPE_FIXED64"  #@ string = 1
+    number: 6  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "TYPE_FIXED32"  #@ string = 1
+    number: 7  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "TYPE_BOOL"  #@ string = 1
+    number: 8  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "TYPE_STRING"  #@ string = 1
+    number: 9  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "TYPE_GROUP"  #@ string = 1
+    number: 10  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "TYPE_MESSAGE"  #@ string = 1
+    number: 11  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "TYPE_BYTES"  #@ string = 1
+    number: 12  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "TYPE_UINT32"  #@ string = 1
+    number: 13  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "TYPE_ENUM"  #@ string = 1
+    number: 14  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "TYPE_SFIXED32"  #@ string = 1
+    number: 15  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "TYPE_SFIXED64"  #@ string = 1
+    number: 16  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "TYPE_SINT32"  #@ string = 1
+    number: 17  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "TYPE_SINT64"  #@ string = 1
+    number: 18  #@ int32 = 2
+   }
+  }
+  enum_type {  #@ repeated EnumDescriptorProto = 4
+   name: "Label"  #@ string = 1
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "LABEL_OPTIONAL"  #@ string = 1
+    number: 1  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "LABEL_REPEATED"  #@ string = 1
+    number: 3  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "LABEL_REQUIRED"  #@ string = 1
+    number: 2  #@ int32 = 2
+   }
+  }
+ }
+ message_type {  #@ repeated DescriptorProto = 4
+  name: "OneofDescriptorProto"  #@ string = 1
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "name"  #@ string = 1
+   number: 1  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_STRING  #@ Type(9) = 5
+   json_name: "name"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "options"  #@ string = 1
+   number: 2  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.OneofOptions"  #@ string = 6
+   json_name: "options"  #@ string = 10
+  }
+ }
+ message_type {  #@ repeated DescriptorProto = 4
+  name: "EnumDescriptorProto"  #@ string = 1
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "name"  #@ string = 1
+   number: 1  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_STRING  #@ Type(9) = 5
+   json_name: "name"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "value"  #@ string = 1
+   number: 2  #@ int32 = 3
+   label: LABEL_REPEATED  #@ Label(3) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.EnumValueDescriptorProto"  #@ string = 6
+   json_name: "value"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "options"  #@ string = 1
+   number: 3  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.EnumOptions"  #@ string = 6
+   json_name: "options"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "reserved_range"  #@ string = 1
+   number: 4  #@ int32 = 3
+   label: LABEL_REPEATED  #@ Label(3) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.EnumDescriptorProto.EnumReservedRange"  #@ string = 6
+   json_name: "reservedRange"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "reserved_name"  #@ string = 1
+   number: 5  #@ int32 = 3
+   label: LABEL_REPEATED  #@ Label(3) = 4
+   type: TYPE_STRING  #@ Type(9) = 5
+   json_name: "reservedName"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "visibility"  #@ string = 1
+   number: 6  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_ENUM  #@ Type(14) = 5
+   type_name: ".google.protobuf.SymbolVisibility"  #@ string = 6
+   json_name: "visibility"  #@ string = 10
+  }
+  nested_type {  #@ repeated DescriptorProto = 3
+   name: "EnumReservedRange"  #@ string = 1
+   field {  #@ repeated FieldDescriptorProto = 2
+    name: "start"  #@ string = 1
+    number: 1  #@ int32 = 3
+    label: LABEL_OPTIONAL  #@ Label(1) = 4
+    type: TYPE_INT32  #@ Type(5) = 5
+    json_name: "start"  #@ string = 10
+   }
+   field {  #@ repeated FieldDescriptorProto = 2
+    name: "end"  #@ string = 1
+    number: 2  #@ int32 = 3
+    label: LABEL_OPTIONAL  #@ Label(1) = 4
+    type: TYPE_INT32  #@ Type(5) = 5
+    json_name: "end"  #@ string = 10
+   }
+  }
+ }
+ message_type {  #@ repeated DescriptorProto = 4
+  name: "EnumValueDescriptorProto"  #@ string = 1
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "name"  #@ string = 1
+   number: 1  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_STRING  #@ Type(9) = 5
+   json_name: "name"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "number"  #@ string = 1
+   number: 2  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_INT32  #@ Type(5) = 5
+   json_name: "number"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "options"  #@ string = 1
+   number: 3  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.EnumValueOptions"  #@ string = 6
+   json_name: "options"  #@ string = 10
+  }
+ }
+ message_type {  #@ repeated DescriptorProto = 4
+  name: "ServiceDescriptorProto"  #@ string = 1
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "name"  #@ string = 1
+   number: 1  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_STRING  #@ Type(9) = 5
+   json_name: "name"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "method"  #@ string = 1
+   number: 2  #@ int32 = 3
+   label: LABEL_REPEATED  #@ Label(3) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.MethodDescriptorProto"  #@ string = 6
+   json_name: "method"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "options"  #@ string = 1
+   number: 3  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.ServiceOptions"  #@ string = 6
+   json_name: "options"  #@ string = 10
+  }
+  reserved_range {  #@ repeated ReservedRange = 9
+   start: 4  #@ int32 = 1
+   end: 5  #@ int32 = 2
+  }
+  reserved_name: "stream"  #@ repeated string = 10
+ }
+ message_type {  #@ repeated DescriptorProto = 4
+  name: "MethodDescriptorProto"  #@ string = 1
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "name"  #@ string = 1
+   number: 1  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_STRING  #@ Type(9) = 5
+   json_name: "name"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "input_type"  #@ string = 1
+   number: 2  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_STRING  #@ Type(9) = 5
+   json_name: "inputType"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "output_type"  #@ string = 1
+   number: 3  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_STRING  #@ Type(9) = 5
+   json_name: "outputType"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "options"  #@ string = 1
+   number: 4  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.MethodOptions"  #@ string = 6
+   json_name: "options"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "client_streaming"  #@ string = 1
+   number: 5  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_BOOL  #@ Type(8) = 5
+   default_value: "false"  #@ string = 7
+   json_name: "clientStreaming"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "server_streaming"  #@ string = 1
+   number: 6  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_BOOL  #@ Type(8) = 5
+   default_value: "false"  #@ string = 7
+   json_name: "serverStreaming"  #@ string = 10
+  }
+ }
+ message_type {  #@ repeated DescriptorProto = 4
+  name: "FileOptions"  #@ string = 1
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "java_package"  #@ string = 1
+   number: 1  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_STRING  #@ Type(9) = 5
+   json_name: "javaPackage"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "java_outer_classname"  #@ string = 1
+   number: 8  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_STRING  #@ Type(9) = 5
+   json_name: "javaOuterClassname"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "java_multiple_files"  #@ string = 1
+   number: 10  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_BOOL  #@ Type(8) = 5
+   default_value: "false"  #@ string = 7
+   options {  #@ FieldOptions = 8
+    feature_support {  #@ FeatureSupport = 22
+     edition_introduced: EDITION_PROTO2  #@ Edition(998) = 1
+     edition_removed: EDITION_2024  #@ Edition(1001) = 4
+     removal_error: "This behavior is enabled by default in editions 2024 and above. To disable it, you can set `features.(pb.java).nest_in_file_class = YES` on individual messages, enums, or services."  #@ string = 5
+    }
+   }
+   json_name: "javaMultipleFiles"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "java_generate_equals_and_hash"  #@ string = 1
+   number: 20  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_BOOL  #@ Type(8) = 5
+   options {  #@ FieldOptions = 8
+    deprecated: true  #@ bool = 3
+   }
+   json_name: "javaGenerateEqualsAndHash"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "java_string_check_utf8"  #@ string = 1
+   number: 27  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_BOOL  #@ Type(8) = 5
+   default_value: "false"  #@ string = 7
+   json_name: "javaStringCheckUtf8"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "optimize_for"  #@ string = 1
+   number: 9  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_ENUM  #@ Type(14) = 5
+   type_name: ".google.protobuf.FileOptions.OptimizeMode"  #@ string = 6
+   default_value: "SPEED"  #@ string = 7
+   json_name: "optimizeFor"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "go_package"  #@ string = 1
+   number: 11  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_STRING  #@ Type(9) = 5
+   json_name: "goPackage"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "cc_generic_services"  #@ string = 1
+   number: 16  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_BOOL  #@ Type(8) = 5
+   default_value: "false"  #@ string = 7
+   json_name: "ccGenericServices"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "java_generic_services"  #@ string = 1
+   number: 17  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_BOOL  #@ Type(8) = 5
+   default_value: "false"  #@ string = 7
+   json_name: "javaGenericServices"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "py_generic_services"  #@ string = 1
+   number: 18  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_BOOL  #@ Type(8) = 5
+   default_value: "false"  #@ string = 7
+   json_name: "pyGenericServices"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "deprecated"  #@ string = 1
+   number: 23  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_BOOL  #@ Type(8) = 5
+   default_value: "false"  #@ string = 7
+   json_name: "deprecated"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "cc_enable_arenas"  #@ string = 1
+   number: 31  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_BOOL  #@ Type(8) = 5
+   default_value: "true"  #@ string = 7
+   options {  #@ FieldOptions = 8
+    feature_support {  #@ FeatureSupport = 22
+     removal_error: "cc_enable_arenas is enabled by default in every edition and overrides are ignored.This option is removed in editions 2026 and above."  #@ string = 5
+     edition_removed: EDITION_2026  #@ Edition(1002) = 4
+    }
+   }
+   json_name: "ccEnableArenas"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "objc_class_prefix"  #@ string = 1
+   number: 36  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_STRING  #@ Type(9) = 5
+   json_name: "objcClassPrefix"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "csharp_namespace"  #@ string = 1
+   number: 37  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_STRING  #@ Type(9) = 5
+   json_name: "csharpNamespace"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "swift_prefix"  #@ string = 1
+   number: 39  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_STRING  #@ Type(9) = 5
+   json_name: "swiftPrefix"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "php_class_prefix"  #@ string = 1
+   number: 40  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_STRING  #@ Type(9) = 5
+   json_name: "phpClassPrefix"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "php_namespace"  #@ string = 1
+   number: 41  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_STRING  #@ Type(9) = 5
+   json_name: "phpNamespace"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "php_metadata_namespace"  #@ string = 1
+   number: 44  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_STRING  #@ Type(9) = 5
+   json_name: "phpMetadataNamespace"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "ruby_package"  #@ string = 1
+   number: 45  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_STRING  #@ Type(9) = 5
+   json_name: "rubyPackage"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "features"  #@ string = 1
+   number: 50  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.FeatureSet"  #@ string = 6
+   json_name: "features"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "uninterpreted_option"  #@ string = 1
+   number: 999  #@ int32 = 3
+   label: LABEL_REPEATED  #@ Label(3) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.UninterpretedOption"  #@ string = 6
+   json_name: "uninterpretedOption"  #@ string = 10
+  }
+  enum_type {  #@ repeated EnumDescriptorProto = 4
+   name: "OptimizeMode"  #@ string = 1
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "SPEED"  #@ string = 1
+    number: 1  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "CODE_SIZE"  #@ string = 1
+    number: 2  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "LITE_RUNTIME"  #@ string = 1
+    number: 3  #@ int32 = 2
+   }
+  }
+  extension_range {  #@ repeated ExtensionRange = 5
+   start: 990  #@ int32 = 1
+   end: 999  #@ int32 = 2
+  }
+  extension_range {  #@ repeated ExtensionRange = 5
+   start: 1000  #@ int32 = 1
+   end: 536870912  #@ int32 = 2
+  }
+  reserved_range {  #@ repeated ReservedRange = 9
+   start: 42  #@ int32 = 1
+   end: 43  #@ int32 = 2
+  }
+  reserved_range {  #@ repeated ReservedRange = 9
+   start: 38  #@ int32 = 1
+   end: 39  #@ int32 = 2
+  }
+  reserved_name: "php_generic_services"  #@ repeated string = 10
+ }
+ message_type {  #@ repeated DescriptorProto = 4
+  name: "MessageOptions"  #@ string = 1
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "message_set_wire_format"  #@ string = 1
+   number: 1  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_BOOL  #@ Type(8) = 5
+   default_value: "false"  #@ string = 7
+   json_name: "messageSetWireFormat"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "no_standard_descriptor_accessor"  #@ string = 1
+   number: 2  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_BOOL  #@ Type(8) = 5
+   default_value: "false"  #@ string = 7
+   json_name: "noStandardDescriptorAccessor"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "deprecated"  #@ string = 1
+   number: 3  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_BOOL  #@ Type(8) = 5
+   default_value: "false"  #@ string = 7
+   json_name: "deprecated"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "map_entry"  #@ string = 1
+   number: 7  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_BOOL  #@ Type(8) = 5
+   json_name: "mapEntry"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "deprecated_legacy_json_field_conflicts"  #@ string = 1
+   number: 11  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_BOOL  #@ Type(8) = 5
+   options {  #@ FieldOptions = 8
+    deprecated: true  #@ bool = 3
+   }
+   json_name: "deprecatedLegacyJsonFieldConflicts"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "features"  #@ string = 1
+   number: 12  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.FeatureSet"  #@ string = 6
+   json_name: "features"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "uninterpreted_option"  #@ string = 1
+   number: 999  #@ int32 = 3
+   label: LABEL_REPEATED  #@ Label(3) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.UninterpretedOption"  #@ string = 6
+   json_name: "uninterpretedOption"  #@ string = 10
+  }
+  extension_range {  #@ repeated ExtensionRange = 5
+   start: 990  #@ int32 = 1
+   end: 999  #@ int32 = 2
+  }
+  extension_range {  #@ repeated ExtensionRange = 5
+   start: 1000  #@ int32 = 1
+   end: 536870912  #@ int32 = 2
+  }
+  reserved_range {  #@ repeated ReservedRange = 9
+   start: 4  #@ int32 = 1
+   end: 5  #@ int32 = 2
+  }
+  reserved_range {  #@ repeated ReservedRange = 9
+   start: 5  #@ int32 = 1
+   end: 6  #@ int32 = 2
+  }
+  reserved_range {  #@ repeated ReservedRange = 9
+   start: 6  #@ int32 = 1
+   end: 7  #@ int32 = 2
+  }
+  reserved_range {  #@ repeated ReservedRange = 9
+   start: 8  #@ int32 = 1
+   end: 9  #@ int32 = 2
+  }
+  reserved_range {  #@ repeated ReservedRange = 9
+   start: 9  #@ int32 = 1
+   end: 10  #@ int32 = 2
+  }
+ }
+ message_type {  #@ repeated DescriptorProto = 4
+  name: "FieldOptions"  #@ string = 1
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "ctype"  #@ string = 1
+   number: 1  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_ENUM  #@ Type(14) = 5
+   type_name: ".google.protobuf.FieldOptions.CType"  #@ string = 6
+   default_value: "STRING"  #@ string = 7
+   json_name: "ctype"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "packed"  #@ string = 1
+   number: 2  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_BOOL  #@ Type(8) = 5
+   json_name: "packed"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "jstype"  #@ string = 1
+   number: 6  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_ENUM  #@ Type(14) = 5
+   type_name: ".google.protobuf.FieldOptions.JSType"  #@ string = 6
+   default_value: "JS_NORMAL"  #@ string = 7
+   json_name: "jstype"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "lazy"  #@ string = 1
+   number: 5  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_BOOL  #@ Type(8) = 5
+   default_value: "false"  #@ string = 7
+   json_name: "lazy"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "unverified_lazy"  #@ string = 1
+   number: 15  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_BOOL  #@ Type(8) = 5
+   default_value: "false"  #@ string = 7
+   json_name: "unverifiedLazy"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "deprecated"  #@ string = 1
+   number: 3  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_BOOL  #@ Type(8) = 5
+   default_value: "false"  #@ string = 7
+   json_name: "deprecated"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "weak"  #@ string = 1
+   number: 10  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_BOOL  #@ Type(8) = 5
+   default_value: "false"  #@ string = 7
+   options {  #@ FieldOptions = 8
+    deprecated: true  #@ bool = 3
+   }
+   json_name: "weak"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "debug_redact"  #@ string = 1
+   number: 16  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_BOOL  #@ Type(8) = 5
+   default_value: "false"  #@ string = 7
+   json_name: "debugRedact"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "retention"  #@ string = 1
+   number: 17  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_ENUM  #@ Type(14) = 5
+   type_name: ".google.protobuf.FieldOptions.OptionRetention"  #@ string = 6
+   json_name: "retention"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "targets"  #@ string = 1
+   number: 19  #@ int32 = 3
+   label: LABEL_REPEATED  #@ Label(3) = 4
+   type: TYPE_ENUM  #@ Type(14) = 5
+   type_name: ".google.protobuf.FieldOptions.OptionTargetType"  #@ string = 6
+   json_name: "targets"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "edition_defaults"  #@ string = 1
+   number: 20  #@ int32 = 3
+   label: LABEL_REPEATED  #@ Label(3) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.FieldOptions.EditionDefault"  #@ string = 6
+   json_name: "editionDefaults"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "features"  #@ string = 1
+   number: 21  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.FeatureSet"  #@ string = 6
+   json_name: "features"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "feature_support"  #@ string = 1
+   number: 22  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.FieldOptions.FeatureSupport"  #@ string = 6
+   json_name: "featureSupport"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "uninterpreted_option"  #@ string = 1
+   number: 999  #@ int32 = 3
+   label: LABEL_REPEATED  #@ Label(3) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.UninterpretedOption"  #@ string = 6
+   json_name: "uninterpretedOption"  #@ string = 10
+  }
+  nested_type {  #@ repeated DescriptorProto = 3
+   name: "EditionDefault"  #@ string = 1
+   field {  #@ repeated FieldDescriptorProto = 2
+    name: "edition"  #@ string = 1
+    number: 3  #@ int32 = 3
+    label: LABEL_OPTIONAL  #@ Label(1) = 4
+    type: TYPE_ENUM  #@ Type(14) = 5
+    type_name: ".google.protobuf.Edition"  #@ string = 6
+    json_name: "edition"  #@ string = 10
+   }
+   field {  #@ repeated FieldDescriptorProto = 2
+    name: "value"  #@ string = 1
+    number: 2  #@ int32 = 3
+    label: LABEL_OPTIONAL  #@ Label(1) = 4
+    type: TYPE_STRING  #@ Type(9) = 5
+    json_name: "value"  #@ string = 10
+   }
+  }
+  nested_type {  #@ repeated DescriptorProto = 3
+   name: "FeatureSupport"  #@ string = 1
+   field {  #@ repeated FieldDescriptorProto = 2
+    name: "edition_introduced"  #@ string = 1
+    number: 1  #@ int32 = 3
+    label: LABEL_OPTIONAL  #@ Label(1) = 4
+    type: TYPE_ENUM  #@ Type(14) = 5
+    type_name: ".google.protobuf.Edition"  #@ string = 6
+    json_name: "editionIntroduced"  #@ string = 10
+   }
+   field {  #@ repeated FieldDescriptorProto = 2
+    name: "edition_deprecated"  #@ string = 1
+    number: 2  #@ int32 = 3
+    label: LABEL_OPTIONAL  #@ Label(1) = 4
+    type: TYPE_ENUM  #@ Type(14) = 5
+    type_name: ".google.protobuf.Edition"  #@ string = 6
+    json_name: "editionDeprecated"  #@ string = 10
+   }
+   field {  #@ repeated FieldDescriptorProto = 2
+    name: "deprecation_warning"  #@ string = 1
+    number: 3  #@ int32 = 3
+    label: LABEL_OPTIONAL  #@ Label(1) = 4
+    type: TYPE_STRING  #@ Type(9) = 5
+    json_name: "deprecationWarning"  #@ string = 10
+   }
+   field {  #@ repeated FieldDescriptorProto = 2
+    name: "edition_removed"  #@ string = 1
+    number: 4  #@ int32 = 3
+    label: LABEL_OPTIONAL  #@ Label(1) = 4
+    type: TYPE_ENUM  #@ Type(14) = 5
+    type_name: ".google.protobuf.Edition"  #@ string = 6
+    json_name: "editionRemoved"  #@ string = 10
+   }
+   field {  #@ repeated FieldDescriptorProto = 2
+    name: "removal_error"  #@ string = 1
+    number: 5  #@ int32 = 3
+    label: LABEL_OPTIONAL  #@ Label(1) = 4
+    type: TYPE_STRING  #@ Type(9) = 5
+    json_name: "removalError"  #@ string = 10
+   }
+  }
+  enum_type {  #@ repeated EnumDescriptorProto = 4
+   name: "CType"  #@ string = 1
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "STRING"  #@ string = 1
+    number: 0  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "CORD"  #@ string = 1
+    number: 1  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "STRING_PIECE"  #@ string = 1
+    number: 2  #@ int32 = 2
+   }
+  }
+  enum_type {  #@ repeated EnumDescriptorProto = 4
+   name: "JSType"  #@ string = 1
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "JS_NORMAL"  #@ string = 1
+    number: 0  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "JS_STRING"  #@ string = 1
+    number: 1  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "JS_NUMBER"  #@ string = 1
+    number: 2  #@ int32 = 2
+   }
+  }
+  enum_type {  #@ repeated EnumDescriptorProto = 4
+   name: "OptionRetention"  #@ string = 1
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "RETENTION_UNKNOWN"  #@ string = 1
+    number: 0  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "RETENTION_RUNTIME"  #@ string = 1
+    number: 1  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "RETENTION_SOURCE"  #@ string = 1
+    number: 2  #@ int32 = 2
+   }
+  }
+  enum_type {  #@ repeated EnumDescriptorProto = 4
+   name: "OptionTargetType"  #@ string = 1
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "TARGET_TYPE_UNKNOWN"  #@ string = 1
+    number: 0  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "TARGET_TYPE_FILE"  #@ string = 1
+    number: 1  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "TARGET_TYPE_EXTENSION_RANGE"  #@ string = 1
+    number: 2  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "TARGET_TYPE_MESSAGE"  #@ string = 1
+    number: 3  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "TARGET_TYPE_FIELD"  #@ string = 1
+    number: 4  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "TARGET_TYPE_ONEOF"  #@ string = 1
+    number: 5  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "TARGET_TYPE_ENUM"  #@ string = 1
+    number: 6  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "TARGET_TYPE_ENUM_ENTRY"  #@ string = 1
+    number: 7  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "TARGET_TYPE_SERVICE"  #@ string = 1
+    number: 8  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "TARGET_TYPE_METHOD"  #@ string = 1
+    number: 9  #@ int32 = 2
+   }
+  }
+  extension_range {  #@ repeated ExtensionRange = 5
+   start: 990  #@ int32 = 1
+   end: 999  #@ int32 = 2
+  }
+  extension_range {  #@ repeated ExtensionRange = 5
+   start: 1000  #@ int32 = 1
+   end: 536870912  #@ int32 = 2
+  }
+  reserved_range {  #@ repeated ReservedRange = 9
+   start: 4  #@ int32 = 1
+   end: 5  #@ int32 = 2
+  }
+  reserved_range {  #@ repeated ReservedRange = 9
+   start: 18  #@ int32 = 1
+   end: 19  #@ int32 = 2
+  }
+ }
+ message_type {  #@ repeated DescriptorProto = 4
+  name: "OneofOptions"  #@ string = 1
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "features"  #@ string = 1
+   number: 1  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.FeatureSet"  #@ string = 6
+   json_name: "features"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "uninterpreted_option"  #@ string = 1
+   number: 999  #@ int32 = 3
+   label: LABEL_REPEATED  #@ Label(3) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.UninterpretedOption"  #@ string = 6
+   json_name: "uninterpretedOption"  #@ string = 10
+  }
+  extension_range {  #@ repeated ExtensionRange = 5
+   start: 990  #@ int32 = 1
+   end: 999  #@ int32 = 2
+  }
+  extension_range {  #@ repeated ExtensionRange = 5
+   start: 1000  #@ int32 = 1
+   end: 536870912  #@ int32 = 2
+  }
+ }
+ message_type {  #@ repeated DescriptorProto = 4
+  name: "EnumOptions"  #@ string = 1
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "allow_alias"  #@ string = 1
+   number: 2  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_BOOL  #@ Type(8) = 5
+   json_name: "allowAlias"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "deprecated"  #@ string = 1
+   number: 3  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_BOOL  #@ Type(8) = 5
+   default_value: "false"  #@ string = 7
+   json_name: "deprecated"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "deprecated_legacy_json_field_conflicts"  #@ string = 1
+   number: 6  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_BOOL  #@ Type(8) = 5
+   options {  #@ FieldOptions = 8
+    deprecated: true  #@ bool = 3
+   }
+   json_name: "deprecatedLegacyJsonFieldConflicts"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "features"  #@ string = 1
+   number: 7  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.FeatureSet"  #@ string = 6
+   json_name: "features"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "uninterpreted_option"  #@ string = 1
+   number: 999  #@ int32 = 3
+   label: LABEL_REPEATED  #@ Label(3) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.UninterpretedOption"  #@ string = 6
+   json_name: "uninterpretedOption"  #@ string = 10
+  }
+  extension_range {  #@ repeated ExtensionRange = 5
+   start: 990  #@ int32 = 1
+   end: 999  #@ int32 = 2
+  }
+  extension_range {  #@ repeated ExtensionRange = 5
+   start: 1000  #@ int32 = 1
+   end: 536870912  #@ int32 = 2
+  }
+  reserved_range {  #@ repeated ReservedRange = 9
+   start: 5  #@ int32 = 1
+   end: 6  #@ int32 = 2
+  }
+ }
+ message_type {  #@ repeated DescriptorProto = 4
+  name: "EnumValueOptions"  #@ string = 1
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "deprecated"  #@ string = 1
+   number: 1  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_BOOL  #@ Type(8) = 5
+   default_value: "false"  #@ string = 7
+   json_name: "deprecated"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "features"  #@ string = 1
+   number: 2  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.FeatureSet"  #@ string = 6
+   json_name: "features"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "debug_redact"  #@ string = 1
+   number: 3  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_BOOL  #@ Type(8) = 5
+   default_value: "false"  #@ string = 7
+   json_name: "debugRedact"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "feature_support"  #@ string = 1
+   number: 4  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.FieldOptions.FeatureSupport"  #@ string = 6
+   json_name: "featureSupport"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "uninterpreted_option"  #@ string = 1
+   number: 999  #@ int32 = 3
+   label: LABEL_REPEATED  #@ Label(3) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.UninterpretedOption"  #@ string = 6
+   json_name: "uninterpretedOption"  #@ string = 10
+  }
+  extension_range {  #@ repeated ExtensionRange = 5
+   start: 990  #@ int32 = 1
+   end: 999  #@ int32 = 2
+  }
+  extension_range {  #@ repeated ExtensionRange = 5
+   start: 1000  #@ int32 = 1
+   end: 536870912  #@ int32 = 2
+  }
+ }
+ message_type {  #@ repeated DescriptorProto = 4
+  name: "ServiceOptions"  #@ string = 1
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "features"  #@ string = 1
+   number: 34  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.FeatureSet"  #@ string = 6
+   json_name: "features"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "deprecated"  #@ string = 1
+   number: 33  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_BOOL  #@ Type(8) = 5
+   default_value: "false"  #@ string = 7
+   json_name: "deprecated"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "uninterpreted_option"  #@ string = 1
+   number: 999  #@ int32 = 3
+   label: LABEL_REPEATED  #@ Label(3) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.UninterpretedOption"  #@ string = 6
+   json_name: "uninterpretedOption"  #@ string = 10
+  }
+  extension_range {  #@ repeated ExtensionRange = 5
+   start: 990  #@ int32 = 1
+   end: 999  #@ int32 = 2
+  }
+  extension_range {  #@ repeated ExtensionRange = 5
+   start: 1000  #@ int32 = 1
+   end: 536870912  #@ int32 = 2
+  }
+ }
+ message_type {  #@ repeated DescriptorProto = 4
+  name: "MethodOptions"  #@ string = 1
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "deprecated"  #@ string = 1
+   number: 33  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_BOOL  #@ Type(8) = 5
+   default_value: "false"  #@ string = 7
+   json_name: "deprecated"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "idempotency_level"  #@ string = 1
+   number: 34  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_ENUM  #@ Type(14) = 5
+   type_name: ".google.protobuf.MethodOptions.IdempotencyLevel"  #@ string = 6
+   default_value: "IDEMPOTENCY_UNKNOWN"  #@ string = 7
+   json_name: "idempotencyLevel"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "features"  #@ string = 1
+   number: 35  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.FeatureSet"  #@ string = 6
+   json_name: "features"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "uninterpreted_option"  #@ string = 1
+   number: 999  #@ int32 = 3
+   label: LABEL_REPEATED  #@ Label(3) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.UninterpretedOption"  #@ string = 6
+   json_name: "uninterpretedOption"  #@ string = 10
+  }
+  enum_type {  #@ repeated EnumDescriptorProto = 4
+   name: "IdempotencyLevel"  #@ string = 1
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "IDEMPOTENCY_UNKNOWN"  #@ string = 1
+    number: 0  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "NO_SIDE_EFFECTS"  #@ string = 1
+    number: 1  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "IDEMPOTENT"  #@ string = 1
+    number: 2  #@ int32 = 2
+   }
+  }
+  extension_range {  #@ repeated ExtensionRange = 5
+   start: 990  #@ int32 = 1
+   end: 999  #@ int32 = 2
+  }
+  extension_range {  #@ repeated ExtensionRange = 5
+   start: 1000  #@ int32 = 1
+   end: 536870912  #@ int32 = 2
+  }
+ }
+ message_type {  #@ repeated DescriptorProto = 4
+  name: "UninterpretedOption"  #@ string = 1
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "name"  #@ string = 1
+   number: 2  #@ int32 = 3
+   label: LABEL_REPEATED  #@ Label(3) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.UninterpretedOption.NamePart"  #@ string = 6
+   json_name: "name"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "identifier_value"  #@ string = 1
+   number: 3  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_STRING  #@ Type(9) = 5
+   json_name: "identifierValue"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "positive_int_value"  #@ string = 1
+   number: 4  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_UINT64  #@ Type(4) = 5
+   json_name: "positiveIntValue"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "negative_int_value"  #@ string = 1
+   number: 5  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_INT64  #@ Type(3) = 5
+   json_name: "negativeIntValue"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "double_value"  #@ string = 1
+   number: 6  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_DOUBLE  #@ Type(1) = 5
+   json_name: "doubleValue"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "string_value"  #@ string = 1
+   number: 7  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_BYTES  #@ Type(12) = 5
+   json_name: "stringValue"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "aggregate_value"  #@ string = 1
+   number: 8  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_STRING  #@ Type(9) = 5
+   json_name: "aggregateValue"  #@ string = 10
+  }
+  nested_type {  #@ repeated DescriptorProto = 3
+   name: "NamePart"  #@ string = 1
+   field {  #@ repeated FieldDescriptorProto = 2
+    name: "name_part"  #@ string = 1
+    number: 1  #@ int32 = 3
+    label: LABEL_REQUIRED  #@ Label(2) = 4
+    type: TYPE_STRING  #@ Type(9) = 5
+    json_name: "namePart"  #@ string = 10
+   }
+   field {  #@ repeated FieldDescriptorProto = 2
+    name: "is_extension"  #@ string = 1
+    number: 2  #@ int32 = 3
+    label: LABEL_REQUIRED  #@ Label(2) = 4
+    type: TYPE_BOOL  #@ Type(8) = 5
+    json_name: "isExtension"  #@ string = 10
+   }
+  }
+ }
+ message_type {  #@ repeated DescriptorProto = 4
+  name: "FeatureSet"  #@ string = 1
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "field_presence"  #@ string = 1
+   number: 1  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_ENUM  #@ Type(14) = 5
+   type_name: ".google.protobuf.FeatureSet.FieldPresence"  #@ string = 6
+   options {  #@ FieldOptions = 8
+    retention: RETENTION_RUNTIME  #@ OptionRetention(1) = 17
+    targets: TARGET_TYPE_FIELD  #@ repeated OptionTargetType(4) = 19
+    targets: TARGET_TYPE_FILE  #@ repeated OptionTargetType(1) = 19
+    edition_defaults {  #@ repeated EditionDefault = 20
+     value: "EXPLICIT"  #@ string = 2
+     edition: EDITION_LEGACY  #@ Edition(900) = 3
+    }
+    edition_defaults {  #@ repeated EditionDefault = 20
+     value: "IMPLICIT"  #@ string = 2
+     edition: EDITION_PROTO3  #@ Edition(999) = 3
+    }
+    edition_defaults {  #@ repeated EditionDefault = 20
+     value: "EXPLICIT"  #@ string = 2
+     edition: EDITION_2023  #@ Edition(1000) = 3
+    }
+    feature_support {  #@ FeatureSupport = 22
+     edition_introduced: EDITION_2023  #@ Edition(1000) = 1
+    }
+   }
+   json_name: "fieldPresence"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "enum_type"  #@ string = 1
+   number: 2  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_ENUM  #@ Type(14) = 5
+   type_name: ".google.protobuf.FeatureSet.EnumType"  #@ string = 6
+   options {  #@ FieldOptions = 8
+    retention: RETENTION_RUNTIME  #@ OptionRetention(1) = 17
+    targets: TARGET_TYPE_ENUM  #@ repeated OptionTargetType(6) = 19
+    targets: TARGET_TYPE_FILE  #@ repeated OptionTargetType(1) = 19
+    edition_defaults {  #@ repeated EditionDefault = 20
+     value: "CLOSED"  #@ string = 2
+     edition: EDITION_LEGACY  #@ Edition(900) = 3
+    }
+    edition_defaults {  #@ repeated EditionDefault = 20
+     value: "OPEN"  #@ string = 2
+     edition: EDITION_PROTO3  #@ Edition(999) = 3
+    }
+    feature_support {  #@ FeatureSupport = 22
+     edition_introduced: EDITION_2023  #@ Edition(1000) = 1
+    }
+   }
+   json_name: "enumType"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "repeated_field_encoding"  #@ string = 1
+   number: 3  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_ENUM  #@ Type(14) = 5
+   type_name: ".google.protobuf.FeatureSet.RepeatedFieldEncoding"  #@ string = 6
+   options {  #@ FieldOptions = 8
+    retention: RETENTION_RUNTIME  #@ OptionRetention(1) = 17
+    targets: TARGET_TYPE_FIELD  #@ repeated OptionTargetType(4) = 19
+    targets: TARGET_TYPE_FILE  #@ repeated OptionTargetType(1) = 19
+    edition_defaults {  #@ repeated EditionDefault = 20
+     value: "EXPANDED"  #@ string = 2
+     edition: EDITION_LEGACY  #@ Edition(900) = 3
+    }
+    edition_defaults {  #@ repeated EditionDefault = 20
+     value: "PACKED"  #@ string = 2
+     edition: EDITION_PROTO3  #@ Edition(999) = 3
+    }
+    feature_support {  #@ FeatureSupport = 22
+     edition_introduced: EDITION_2023  #@ Edition(1000) = 1
+    }
+   }
+   json_name: "repeatedFieldEncoding"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "utf8_validation"  #@ string = 1
+   number: 4  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_ENUM  #@ Type(14) = 5
+   type_name: ".google.protobuf.FeatureSet.Utf8Validation"  #@ string = 6
+   options {  #@ FieldOptions = 8
+    retention: RETENTION_RUNTIME  #@ OptionRetention(1) = 17
+    targets: TARGET_TYPE_FIELD  #@ repeated OptionTargetType(4) = 19
+    targets: TARGET_TYPE_FILE  #@ repeated OptionTargetType(1) = 19
+    edition_defaults {  #@ repeated EditionDefault = 20
+     value: "NONE"  #@ string = 2
+     edition: EDITION_LEGACY  #@ Edition(900) = 3
+    }
+    edition_defaults {  #@ repeated EditionDefault = 20
+     value: "VERIFY"  #@ string = 2
+     edition: EDITION_PROTO3  #@ Edition(999) = 3
+    }
+    feature_support {  #@ FeatureSupport = 22
+     edition_introduced: EDITION_2023  #@ Edition(1000) = 1
+    }
+   }
+   json_name: "utf8Validation"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "message_encoding"  #@ string = 1
+   number: 5  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_ENUM  #@ Type(14) = 5
+   type_name: ".google.protobuf.FeatureSet.MessageEncoding"  #@ string = 6
+   options {  #@ FieldOptions = 8
+    retention: RETENTION_RUNTIME  #@ OptionRetention(1) = 17
+    targets: TARGET_TYPE_FIELD  #@ repeated OptionTargetType(4) = 19
+    targets: TARGET_TYPE_FILE  #@ repeated OptionTargetType(1) = 19
+    edition_defaults {  #@ repeated EditionDefault = 20
+     value: "LENGTH_PREFIXED"  #@ string = 2
+     edition: EDITION_LEGACY  #@ Edition(900) = 3
+    }
+    feature_support {  #@ FeatureSupport = 22
+     edition_introduced: EDITION_2023  #@ Edition(1000) = 1
+    }
+   }
+   json_name: "messageEncoding"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "json_format"  #@ string = 1
+   number: 6  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_ENUM  #@ Type(14) = 5
+   type_name: ".google.protobuf.FeatureSet.JsonFormat"  #@ string = 6
+   options {  #@ FieldOptions = 8
+    retention: RETENTION_RUNTIME  #@ OptionRetention(1) = 17
+    targets: TARGET_TYPE_MESSAGE  #@ repeated OptionTargetType(3) = 19
+    targets: TARGET_TYPE_ENUM  #@ repeated OptionTargetType(6) = 19
+    targets: TARGET_TYPE_FILE  #@ repeated OptionTargetType(1) = 19
+    edition_defaults {  #@ repeated EditionDefault = 20
+     value: "LEGACY_BEST_EFFORT"  #@ string = 2
+     edition: EDITION_LEGACY  #@ Edition(900) = 3
+    }
+    edition_defaults {  #@ repeated EditionDefault = 20
+     value: "ALLOW"  #@ string = 2
+     edition: EDITION_PROTO3  #@ Edition(999) = 3
+    }
+    feature_support {  #@ FeatureSupport = 22
+     edition_introduced: EDITION_2023  #@ Edition(1000) = 1
+    }
+   }
+   json_name: "jsonFormat"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "enforce_naming_style"  #@ string = 1
+   number: 7  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_ENUM  #@ Type(14) = 5
+   type_name: ".google.protobuf.FeatureSet.EnforceNamingStyle"  #@ string = 6
+   options {  #@ FieldOptions = 8
+    retention: RETENTION_SOURCE  #@ OptionRetention(2) = 17
+    targets: TARGET_TYPE_FILE  #@ repeated OptionTargetType(1) = 19
+    targets: TARGET_TYPE_EXTENSION_RANGE  #@ repeated OptionTargetType(2) = 19
+    targets: TARGET_TYPE_MESSAGE  #@ repeated OptionTargetType(3) = 19
+    targets: TARGET_TYPE_FIELD  #@ repeated OptionTargetType(4) = 19
+    targets: TARGET_TYPE_ONEOF  #@ repeated OptionTargetType(5) = 19
+    targets: TARGET_TYPE_ENUM  #@ repeated OptionTargetType(6) = 19
+    targets: TARGET_TYPE_ENUM_ENTRY  #@ repeated OptionTargetType(7) = 19
+    targets: TARGET_TYPE_SERVICE  #@ repeated OptionTargetType(8) = 19
+    targets: TARGET_TYPE_METHOD  #@ repeated OptionTargetType(9) = 19
+    edition_defaults {  #@ repeated EditionDefault = 20
+     value: "STYLE_LEGACY"  #@ string = 2
+     edition: EDITION_LEGACY  #@ Edition(900) = 3
+    }
+    edition_defaults {  #@ repeated EditionDefault = 20
+     value: "STYLE2024"  #@ string = 2
+     edition: EDITION_2024  #@ Edition(1001) = 3
+    }
+    edition_defaults {  #@ repeated EditionDefault = 20
+     value: "STYLE2026"  #@ string = 2
+     edition: EDITION_2026  #@ Edition(1002) = 3
+    }
+    feature_support {  #@ FeatureSupport = 22
+     edition_introduced: EDITION_2024  #@ Edition(1001) = 1
+    }
+   }
+   json_name: "enforceNamingStyle"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "default_symbol_visibility"  #@ string = 1
+   number: 8  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_ENUM  #@ Type(14) = 5
+   type_name: ".google.protobuf.FeatureSet.VisibilityFeature.DefaultSymbolVisibility"  #@ string = 6
+   options {  #@ FieldOptions = 8
+    retention: RETENTION_SOURCE  #@ OptionRetention(2) = 17
+    targets: TARGET_TYPE_FILE  #@ repeated OptionTargetType(1) = 19
+    edition_defaults {  #@ repeated EditionDefault = 20
+     value: "EXPORT_ALL"  #@ string = 2
+     edition: EDITION_LEGACY  #@ Edition(900) = 3
+    }
+    edition_defaults {  #@ repeated EditionDefault = 20
+     value: "EXPORT_TOP_LEVEL"  #@ string = 2
+     edition: EDITION_2024  #@ Edition(1001) = 3
+    }
+    edition_defaults {  #@ repeated EditionDefault = 20
+     value: "STRICT"  #@ string = 2
+     edition: EDITION_2026  #@ Edition(1002) = 3
+    }
+    feature_support {  #@ FeatureSupport = 22
+     edition_introduced: EDITION_2024  #@ Edition(1001) = 1
+    }
+   }
+   json_name: "defaultSymbolVisibility"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "enforce_proto_limits"  #@ string = 1
+   number: 9  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_ENUM  #@ Type(14) = 5
+   type_name: ".google.protobuf.FeatureSet.ProtoLimitsFeature.EnforceProtoLimits"  #@ string = 6
+   options {  #@ FieldOptions = 8
+    retention: RETENTION_SOURCE  #@ OptionRetention(2) = 17
+    targets: TARGET_TYPE_ENUM  #@ repeated OptionTargetType(6) = 19
+    targets: TARGET_TYPE_MESSAGE  #@ repeated OptionTargetType(3) = 19
+    targets: TARGET_TYPE_FIELD  #@ repeated OptionTargetType(4) = 19
+    targets: TARGET_TYPE_ONEOF  #@ repeated OptionTargetType(5) = 19
+    edition_defaults {  #@ repeated EditionDefault = 20
+     value: "LEGACY_NO_EXPLICIT_LIMITS"  #@ string = 2
+     edition: EDITION_LEGACY  #@ Edition(900) = 3
+    }
+    edition_defaults {  #@ repeated EditionDefault = 20
+     value: "PROTO_LIMITS2026"  #@ string = 2
+     edition: EDITION_2026  #@ Edition(1002) = 3
+    }
+    feature_support {  #@ FeatureSupport = 22
+     edition_introduced: EDITION_2026  #@ Edition(1002) = 1
+    }
+   }
+   json_name: "enforceProtoLimits"  #@ string = 10
+  }
+  nested_type {  #@ repeated DescriptorProto = 3
+   name: "VisibilityFeature"  #@ string = 1
+   enum_type {  #@ repeated EnumDescriptorProto = 4
+    name: "DefaultSymbolVisibility"  #@ string = 1
+    value {  #@ repeated EnumValueDescriptorProto = 2
+     name: "DEFAULT_SYMBOL_VISIBILITY_UNKNOWN"  #@ string = 1
+     number: 0  #@ int32 = 2
+    }
+    value {  #@ repeated EnumValueDescriptorProto = 2
+     name: "EXPORT_ALL"  #@ string = 1
+     number: 1  #@ int32 = 2
+    }
+    value {  #@ repeated EnumValueDescriptorProto = 2
+     name: "EXPORT_TOP_LEVEL"  #@ string = 1
+     number: 2  #@ int32 = 2
+    }
+    value {  #@ repeated EnumValueDescriptorProto = 2
+     name: "LOCAL_ALL"  #@ string = 1
+     number: 3  #@ int32 = 2
+    }
+    value {  #@ repeated EnumValueDescriptorProto = 2
+     name: "STRICT"  #@ string = 1
+     number: 4  #@ int32 = 2
+    }
+   }
+   reserved_range {  #@ repeated ReservedRange = 9
+    start: 1  #@ int32 = 1
+    end: 536870912  #@ int32 = 2
+   }
+  }
+  nested_type {  #@ repeated DescriptorProto = 3
+   name: "ProtoLimitsFeature"  #@ string = 1
+   enum_type {  #@ repeated EnumDescriptorProto = 4
+    name: "EnforceProtoLimits"  #@ string = 1
+    value {  #@ repeated EnumValueDescriptorProto = 2
+     name: "PROTO_LIMITS_UNKNOWN"  #@ string = 1
+     number: 0  #@ int32 = 2
+    }
+    value {  #@ repeated EnumValueDescriptorProto = 2
+     name: "LEGACY_NO_EXPLICIT_LIMITS"  #@ string = 1
+     number: 1  #@ int32 = 2
+    }
+    value {  #@ repeated EnumValueDescriptorProto = 2
+     name: "PROTO_LIMITS2026"  #@ string = 1
+     number: 2  #@ int32 = 2
+    }
+   }
+  }
+  enum_type {  #@ repeated EnumDescriptorProto = 4
+   name: "FieldPresence"  #@ string = 1
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "FIELD_PRESENCE_UNKNOWN"  #@ string = 1
+    number: 0  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "EXPLICIT"  #@ string = 1
+    number: 1  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "IMPLICIT"  #@ string = 1
+    number: 2  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "LEGACY_REQUIRED"  #@ string = 1
+    number: 3  #@ int32 = 2
+   }
+  }
+  enum_type {  #@ repeated EnumDescriptorProto = 4
+   name: "EnumType"  #@ string = 1
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "ENUM_TYPE_UNKNOWN"  #@ string = 1
+    number: 0  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "OPEN"  #@ string = 1
+    number: 1  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "CLOSED"  #@ string = 1
+    number: 2  #@ int32 = 2
+   }
+  }
+  enum_type {  #@ repeated EnumDescriptorProto = 4
+   name: "RepeatedFieldEncoding"  #@ string = 1
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "REPEATED_FIELD_ENCODING_UNKNOWN"  #@ string = 1
+    number: 0  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "PACKED"  #@ string = 1
+    number: 1  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "EXPANDED"  #@ string = 1
+    number: 2  #@ int32 = 2
+   }
+  }
+  enum_type {  #@ repeated EnumDescriptorProto = 4
+   name: "Utf8Validation"  #@ string = 1
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "UTF8_VALIDATION_UNKNOWN"  #@ string = 1
+    number: 0  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "VERIFY"  #@ string = 1
+    number: 2  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "NONE"  #@ string = 1
+    number: 3  #@ int32 = 2
+   }
+   reserved_range {  #@ repeated EnumReservedRange = 4
+    start: 1  #@ int32 = 1
+    end: 1  #@ int32 = 2
+   }
+  }
+  enum_type {  #@ repeated EnumDescriptorProto = 4
+   name: "MessageEncoding"  #@ string = 1
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "MESSAGE_ENCODING_UNKNOWN"  #@ string = 1
+    number: 0  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "LENGTH_PREFIXED"  #@ string = 1
+    number: 1  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "DELIMITED"  #@ string = 1
+    number: 2  #@ int32 = 2
+   }
+  }
+  enum_type {  #@ repeated EnumDescriptorProto = 4
+   name: "JsonFormat"  #@ string = 1
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "JSON_FORMAT_UNKNOWN"  #@ string = 1
+    number: 0  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "ALLOW"  #@ string = 1
+    number: 1  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "LEGACY_BEST_EFFORT"  #@ string = 1
+    number: 2  #@ int32 = 2
+   }
+  }
+  enum_type {  #@ repeated EnumDescriptorProto = 4
+   name: "EnforceNamingStyle"  #@ string = 1
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "ENFORCE_NAMING_STYLE_UNKNOWN"  #@ string = 1
+    number: 0  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "STYLE2024"  #@ string = 1
+    number: 1  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "STYLE_LEGACY"  #@ string = 1
+    number: 2  #@ int32 = 2
+   }
+   value {  #@ repeated EnumValueDescriptorProto = 2
+    name: "STYLE2026"  #@ string = 1
+    number: 3  #@ int32 = 2
+   }
+  }
+  extension_range {  #@ repeated ExtensionRange = 5
+   start: 1000  #@ int32 = 1
+   end: 9995  #@ int32 = 2
+  }
+  extension_range {  #@ repeated ExtensionRange = 5
+   start: 9995  #@ int32 = 1
+   end: 10000  #@ int32 = 2
+  }
+  extension_range {  #@ repeated ExtensionRange = 5
+   start: 10000  #@ int32 = 1
+   end: 10001  #@ int32 = 2
+  }
+  reserved_range {  #@ repeated ReservedRange = 9
+   start: 999  #@ int32 = 1
+   end: 1000  #@ int32 = 2
+  }
+ }
+ message_type {  #@ repeated DescriptorProto = 4
+  name: "FeatureSetDefaults"  #@ string = 1
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "defaults"  #@ string = 1
+   number: 1  #@ int32 = 3
+   label: LABEL_REPEATED  #@ Label(3) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.FeatureSetDefaults.FeatureSetEditionDefault"  #@ string = 6
+   json_name: "defaults"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "minimum_edition"  #@ string = 1
+   number: 4  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_ENUM  #@ Type(14) = 5
+   type_name: ".google.protobuf.Edition"  #@ string = 6
+   json_name: "minimumEdition"  #@ string = 10
+  }
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "maximum_edition"  #@ string = 1
+   number: 5  #@ int32 = 3
+   label: LABEL_OPTIONAL  #@ Label(1) = 4
+   type: TYPE_ENUM  #@ Type(14) = 5
+   type_name: ".google.protobuf.Edition"  #@ string = 6
+   json_name: "maximumEdition"  #@ string = 10
+  }
+  nested_type {  #@ repeated DescriptorProto = 3
+   name: "FeatureSetEditionDefault"  #@ string = 1
+   field {  #@ repeated FieldDescriptorProto = 2
+    name: "edition"  #@ string = 1
+    number: 3  #@ int32 = 3
+    label: LABEL_OPTIONAL  #@ Label(1) = 4
+    type: TYPE_ENUM  #@ Type(14) = 5
+    type_name: ".google.protobuf.Edition"  #@ string = 6
+    json_name: "edition"  #@ string = 10
+   }
+   field {  #@ repeated FieldDescriptorProto = 2
+    name: "overridable_features"  #@ string = 1
+    number: 4  #@ int32 = 3
+    label: LABEL_OPTIONAL  #@ Label(1) = 4
+    type: TYPE_MESSAGE  #@ Type(11) = 5
+    type_name: ".google.protobuf.FeatureSet"  #@ string = 6
+    json_name: "overridableFeatures"  #@ string = 10
+   }
+   field {  #@ repeated FieldDescriptorProto = 2
+    name: "fixed_features"  #@ string = 1
+    number: 5  #@ int32 = 3
+    label: LABEL_OPTIONAL  #@ Label(1) = 4
+    type: TYPE_MESSAGE  #@ Type(11) = 5
+    type_name: ".google.protobuf.FeatureSet"  #@ string = 6
+    json_name: "fixedFeatures"  #@ string = 10
+   }
+   reserved_range {  #@ repeated ReservedRange = 9
+    start: 1  #@ int32 = 1
+    end: 2  #@ int32 = 2
+   }
+   reserved_range {  #@ repeated ReservedRange = 9
+    start: 2  #@ int32 = 1
+    end: 3  #@ int32 = 2
+   }
+   reserved_name: "features"  #@ repeated string = 10
+  }
+ }
+ message_type {  #@ repeated DescriptorProto = 4
+  name: "SourceCodeInfo"  #@ string = 1
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "location"  #@ string = 1
+   number: 1  #@ int32 = 3
+   label: LABEL_REPEATED  #@ Label(3) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.SourceCodeInfo.Location"  #@ string = 6
+   json_name: "location"  #@ string = 10
+  }
+  nested_type {  #@ repeated DescriptorProto = 3
+   name: "Location"  #@ string = 1
+   field {  #@ repeated FieldDescriptorProto = 2
+    name: "path"  #@ string = 1
+    number: 1  #@ int32 = 3
+    label: LABEL_REPEATED  #@ Label(3) = 4
+    type: TYPE_INT32  #@ Type(5) = 5
+    options {  #@ FieldOptions = 8
+     packed: true  #@ bool = 2
+    }
+    json_name: "path"  #@ string = 10
+   }
+   field {  #@ repeated FieldDescriptorProto = 2
+    name: "span"  #@ string = 1
+    number: 2  #@ int32 = 3
+    label: LABEL_REPEATED  #@ Label(3) = 4
+    type: TYPE_INT32  #@ Type(5) = 5
+    options {  #@ FieldOptions = 8
+     packed: true  #@ bool = 2
+    }
+    json_name: "span"  #@ string = 10
+   }
+   field {  #@ repeated FieldDescriptorProto = 2
+    name: "leading_comments"  #@ string = 1
+    number: 3  #@ int32 = 3
+    label: LABEL_OPTIONAL  #@ Label(1) = 4
+    type: TYPE_STRING  #@ Type(9) = 5
+    json_name: "leadingComments"  #@ string = 10
+   }
+   field {  #@ repeated FieldDescriptorProto = 2
+    name: "trailing_comments"  #@ string = 1
+    number: 4  #@ int32 = 3
+    label: LABEL_OPTIONAL  #@ Label(1) = 4
+    type: TYPE_STRING  #@ Type(9) = 5
+    json_name: "trailingComments"  #@ string = 10
+   }
+   field {  #@ repeated FieldDescriptorProto = 2
+    name: "leading_detached_comments"  #@ string = 1
+    number: 6  #@ int32 = 3
+    label: LABEL_REPEATED  #@ Label(3) = 4
+    type: TYPE_STRING  #@ Type(9) = 5
+    json_name: "leadingDetachedComments"  #@ string = 10
+   }
+  }
+  extension_range {  #@ repeated ExtensionRange = 5
+   start: 536000000  #@ int32 = 1
+   end: 536000001  #@ int32 = 2
+  }
+ }
+ message_type {  #@ repeated DescriptorProto = 4
+  name: "GeneratedCodeInfo"  #@ string = 1
+  field {  #@ repeated FieldDescriptorProto = 2
+   name: "annotation"  #@ string = 1
+   number: 1  #@ int32 = 3
+   label: LABEL_REPEATED  #@ Label(3) = 4
+   type: TYPE_MESSAGE  #@ Type(11) = 5
+   type_name: ".google.protobuf.GeneratedCodeInfo.Annotation"  #@ string = 6
+   json_name: "annotation"  #@ string = 10
+  }
+  nested_type {  #@ repeated DescriptorProto = 3
+   name: "Annotation"  #@ string = 1
+   field {  #@ repeated FieldDescriptorProto = 2
+    name: "path"  #@ string = 1
+    number: 1  #@ int32 = 3
+    label: LABEL_REPEATED  #@ Label(3) = 4
+    type: TYPE_INT32  #@ Type(5) = 5
+    options {  #@ FieldOptions = 8
+     packed: true  #@ bool = 2
+    }
+    json_name: "path"  #@ string = 10
+   }
+   field {  #@ repeated FieldDescriptorProto = 2
+    name: "source_file"  #@ string = 1
+    number: 2  #@ int32 = 3
+    label: LABEL_OPTIONAL  #@ Label(1) = 4
+    type: TYPE_STRING  #@ Type(9) = 5
+    json_name: "sourceFile"  #@ string = 10
+   }
+   field {  #@ repeated FieldDescriptorProto = 2
+    name: "begin"  #@ string = 1
+    number: 3  #@ int32 = 3
+    label: LABEL_OPTIONAL  #@ Label(1) = 4
+    type: TYPE_INT32  #@ Type(5) = 5
+    json_name: "begin"  #@ string = 10
+   }
+   field {  #@ repeated FieldDescriptorProto = 2
+    name: "end"  #@ string = 1
+    number: 4  #@ int32 = 3
+    label: LABEL_OPTIONAL  #@ Label(1) = 4
+    type: TYPE_INT32  #@ Type(5) = 5
+    json_name: "end"  #@ string = 10
+   }
+   field {  #@ repeated FieldDescriptorProto = 2
+    name: "semantic"  #@ string = 1
+    number: 5  #@ int32 = 3
+    label: LABEL_OPTIONAL  #@ Label(1) = 4
+    type: TYPE_ENUM  #@ Type(14) = 5
+    type_name: ".google.protobuf.GeneratedCodeInfo.Annotation.Semantic"  #@ string = 6
+    json_name: "semantic"  #@ string = 10
+   }
+   enum_type {  #@ repeated EnumDescriptorProto = 4
+    name: "Semantic"  #@ string = 1
+    value {  #@ repeated EnumValueDescriptorProto = 2
+     name: "NONE"  #@ string = 1
+     number: 0  #@ int32 = 2
+    }
+    value {  #@ repeated EnumValueDescriptorProto = 2
+     name: "SET"  #@ string = 1
+     number: 1  #@ int32 = 2
+    }
+    value {  #@ repeated EnumValueDescriptorProto = 2
+     name: "ALIAS"  #@ string = 1
+     number: 2  #@ int32 = 2
+    }
+   }
+  }
+ }
+ enum_type {  #@ repeated EnumDescriptorProto = 5
+  name: "Edition"  #@ string = 1
+  value {  #@ repeated EnumValueDescriptorProto = 2
+   name: "EDITION_UNKNOWN"  #@ string = 1
+   number: 0  #@ int32 = 2
+  }
+  value {  #@ repeated EnumValueDescriptorProto = 2
+   name: "EDITION_LEGACY"  #@ string = 1
+   number: 900  #@ int32 = 2
+  }
+  value {  #@ repeated EnumValueDescriptorProto = 2
+   name: "EDITION_PROTO2"  #@ string = 1
+   number: 998  #@ int32 = 2
+  }
+  value {  #@ repeated EnumValueDescriptorProto = 2
+   name: "EDITION_PROTO3"  #@ string = 1
+   number: 999  #@ int32 = 2
+  }
+  value {  #@ repeated EnumValueDescriptorProto = 2
+   name: "EDITION_2023"  #@ string = 1
+   number: 1000  #@ int32 = 2
+  }
+  value {  #@ repeated EnumValueDescriptorProto = 2
+   name: "EDITION_2024"  #@ string = 1
+   number: 1001  #@ int32 = 2
+  }
+  value {  #@ repeated EnumValueDescriptorProto = 2
+   name: "EDITION_2026"  #@ string = 1
+   number: 1002  #@ int32 = 2
+  }
+  value {  #@ repeated EnumValueDescriptorProto = 2
+   name: "EDITION_UNSTABLE"  #@ string = 1
+   number: 9999  #@ int32 = 2
+  }
+  value {  #@ repeated EnumValueDescriptorProto = 2
+   name: "EDITION_1_TEST_ONLY"  #@ string = 1
+   number: 1  #@ int32 = 2
+  }
+  value {  #@ repeated EnumValueDescriptorProto = 2
+   name: "EDITION_2_TEST_ONLY"  #@ string = 1
+   number: 2  #@ int32 = 2
+  }
+  value {  #@ repeated EnumValueDescriptorProto = 2
+   name: "EDITION_99997_TEST_ONLY"  #@ string = 1
+   number: 99997  #@ int32 = 2
+  }
+  value {  #@ repeated EnumValueDescriptorProto = 2
+   name: "EDITION_99998_TEST_ONLY"  #@ string = 1
+   number: 99998  #@ int32 = 2
+  }
+  value {  #@ repeated EnumValueDescriptorProto = 2
+   name: "EDITION_99999_TEST_ONLY"  #@ string = 1
+   number: 99999  #@ int32 = 2
+  }
+  value {  #@ repeated EnumValueDescriptorProto = 2
+   name: "EDITION_MAX"  #@ string = 1
+   number: 2147483647  #@ int32 = 2
+  }
+ }
+ enum_type {  #@ repeated EnumDescriptorProto = 5
+  name: "SymbolVisibility"  #@ string = 1
+  value {  #@ repeated EnumValueDescriptorProto = 2
+   name: "VISIBILITY_UNSET"  #@ string = 1
+   number: 0  #@ int32 = 2
+  }
+  value {  #@ repeated EnumValueDescriptorProto = 2
+   name: "VISIBILITY_LOCAL"  #@ string = 1
+   number: 1  #@ int32 = 2
+  }
+  value {  #@ repeated EnumValueDescriptorProto = 2
+   name: "VISIBILITY_EXPORT"  #@ string = 1
+   number: 2  #@ int32 = 2
+  }
+ }
+ options {  #@ FileOptions = 8
+  java_package: "com.google.protobuf"  #@ string = 1
+  java_outer_classname: "DescriptorProtos"  #@ string = 8
+  optimize_for: SPEED  #@ OptimizeMode(1) = 9
+  go_package: "google.golang.org/protobuf/types/descriptorpb"  #@ string = 11
+  cc_enable_arenas: true  #@ bool = 31
+  objc_class_prefix: "GPB"  #@ string = 36
+  csharp_namespace: "Google.Protobuf.Reflection"  #@ string = 37
+ }
+}

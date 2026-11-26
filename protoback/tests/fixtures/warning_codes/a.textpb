@@ -1,0 +1,20 @@
+file {
+  name: "a.proto"
+  package: "a"
+  dependency: "b.proto"
+  message_type {
+    name: "A"
+    field {
+      name: "b"
+      number: 1
+      label: LABEL_OPTIONAL
+      type: TYPE_MESSAGE
+      type_name: ".b.B"
+      json_name: "b"
+    }
+  }
+  options {
+    no_such_option: 1
+    99: 5
+  }
+}

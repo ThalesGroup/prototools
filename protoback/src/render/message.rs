@@ -15,16 +15,16 @@ use super::file::{anomaly, extend_blocks, features_block, Ctx};
 use super::names::{scope_name, type_name, type_ref, Mode};
 use super::options::Options;
 use super::pyfmt::{bytes_default, float_repr, json_dumps, render_bytes};
+use super::syntax;
 use super::text::{Block, Line, LineType, MAX_LINE_LENGTH, TAB_SIZE};
 use super::{text, Def};
 use crate::features::{
-    self, Feature, FIELD_PRESENCE_IMPLICIT, FIELD_PRESENCE_LEGACY_REQUIRED,
-    MESSAGE_ENCODING_DELIMITED, REPEATED_FIELD_ENCODING_PACKED,
+    self, Feature, FIELD_PRESENCE_LEGACY_REQUIRED, REPEATED_FIELD_ENCODING_PACKED,
 };
 use crate::graph::{Kind, TypeRef};
 
-const LABEL_REQUIRED: i32 = 2;
-const LABEL_REPEATED: i32 = 3;
+pub(super) const LABEL_REQUIRED: i32 = 2;
+pub(super) const LABEL_REPEATED: i32 = 3;
 const TYPE_GROUP: i32 = 10;
 const TYPE_MESSAGE: i32 = 11;
 const TYPE_ENUM: i32 = 14;
@@ -122,31 +122,6 @@ fn py_float(s: &str) -> Option<f64> {
     }
 }
 
-/// `packed_option`: `true`, `false`, or nothing.
-fn packed_option(
-    ctx: &Ctx<'_, '_>,
-    has: bool,
-    effective: bool,
-    editions: bool,
-) -> Option<&'static str> {
-    let v = if effective { "true" } else { "false" };
-    if editions {
-        if has {
-            return Some(v);
-        }
-        if ctx.target == "proto2" {
-            return effective.then_some("true");
-        }
-        return None;
-    }
-    if has {
-        return Some(v);
-    }
-    if ctx.syntax == ctx.target {
-        return None;
-    }
-    effective.then_some("true")
-}
 /// `globals.FIELD_NUM_MAX`.
 const FIELD_NUM_MAX: i32 = 536_870_911;
 
@@ -225,43 +200,6 @@ fn field_feature(
     ))
 }
 
-/// `field_label`.
-fn field_label(
-    ctx: &Ctx<'_, '_>,
-    f: &FieldDescriptorProto<'_>,
-    is_oneof: bool,
-    presence: Option<i32>,
-) -> &'static str {
-    if is_oneof {
-        return "";
-    }
-    if f.label() == LABEL_REPEATED {
-        return "repeated ";
-    }
-    if ctx.editions_target() {
-        return "";
-    }
-    if let Some(p) = presence {
-        // An editions file written as proto2: presence picks the label.
-        return if p == FIELD_PRESENCE_LEGACY_REQUIRED {
-            "required "
-        } else {
-            "optional "
-        };
-    }
-    if ctx.proto3() {
-        if f.label() == LABEL_REQUIRED {
-            return "";
-        }
-        return if f.proto3_optional() { "optional " } else { "" };
-    }
-    if f.label() == LABEL_REQUIRED {
-        "required "
-    } else {
-        "optional "
-    }
-}
-
 /// A field's type name (`ReFieldDescriptorProto.type_ref`): a scalar's
 /// own, else the name protoc resolves back to the type from `scope` (the
 /// message the field is in), among types only (spec 0434).
@@ -335,10 +273,7 @@ pub fn field(ctx: &Ctx<'_, '_>, fd: usize, depth: usize, is_oneof: bool) -> Bloc
 
     let presence = field_feature(ctx, msg, &f, Feature::FieldPresence);
     let encoding = field_feature(ctx, msg, &f, Feature::MessageEncoding);
-    let allow_groups = match encoding {
-        Some(e) => e == MESSAGE_ENCODING_DELIMITED,
-        None => ctx.proto2_or_editions(),
-    };
+    let allow_groups = syntax::allow_groups(&ctx.target, encoding);
     // A group, or an editions DELIMITED field with its synthetic group
     // (under --force-proto2-output).
     let editions_group = node.editions_group;
@@ -358,7 +293,7 @@ pub fn field(ctx: &Ctx<'_, '_>, fd: usize, depth: usize, is_oneof: bool) -> Bloc
                     depth,
                 ));
             }
-            let mut s = field_label(ctx, &f, is_oneof, presence).to_string();
+            let mut s = syntax::field_label(&ctx.target, &f, is_oneof, presence).to_string();
             if !is_group_field || !allow_groups {
                 if f.r#type() == TYPE_GROUP {
                     ctx.warn("C2", format!(
@@ -535,11 +470,7 @@ pub fn field_binary(ctx: &Ctx<'_, '_>, fd: usize) -> Option<FieldBinary> {
     let parent = shared.graph.nodes[fd].parent.unwrap_or(ctx.file);
     let msg = (shared.graph.nodes[parent].kind == Kind::Message).then_some(parent);
     let presence = field_feature(ctx, msg, &f, Feature::FieldPresence);
-    let keep_default = f.has_default_value()
-        && match presence {
-            Some(p) => p != FIELD_PRESENCE_IMPLICIT,
-            None => !ctx.proto3(),
-        };
+    let keep_default = syntax::should_render_default(&ctx.target, &f, presence);
     let default_ok = !keep_default || default_value(&f, 0).is_ok();
     let packed = if default_ok {
         let p = packing(ctx, &f, msg, presence);
@@ -592,11 +523,7 @@ fn field_options(
     depth: usize,
 ) -> Result<Block, ()> {
     let mut opt_block = Block::new();
-    let render_default = f.has_default_value()
-        && match presence {
-            Some(p) => p != FIELD_PRESENCE_IMPLICIT,
-            None => !ctx.proto3(),
-        };
+    let render_default = syntax::should_render_default(&ctx.target, f, presence);
     if render_default {
         opt_block.extend(default_value(f, depth + 1)?);
     } else if ctx.proto3() && f.has_default_value() {
@@ -624,7 +551,13 @@ fn field_options(
     let options = f.options();
     let p = packing(ctx, f, msg, presence);
     if p.packable || p.has {
-        if let Some(v) = packed_option(ctx, p.has, p.effective, presence.is_some()) {
+        if let Some(v) = syntax::packed_option(
+            &ctx.target,
+            &ctx.syntax,
+            p.has,
+            p.effective,
+            presence.is_some(),
+        ) {
             opt_block.push(Line::code(format!("packed = {v},"), depth + 1));
         }
     }
@@ -721,13 +654,11 @@ pub(super) fn synthetic_oneofs(
                 .iter()
                 .filter(|f| f.has_oneof_index() && f.oneof_index() == idx as i32)
                 .collect();
-            if members.len() != 1 {
-                return false;
-            }
-            match field_feature(ctx, Some(msg), members[0], Feature::FieldPresence) {
-                Some(p) => text(o.name()).starts_with('_') && p == FIELD_PRESENCE_IMPLICIT,
-                None => members[0].proto3_optional(),
-            }
+            let presence = match members[..] {
+                [member] => field_feature(ctx, Some(msg), member, Feature::FieldPresence),
+                _ => None,
+            };
+            syntax::is_synthetic_oneof(&text(o.name()), &members, presence)
         })
         .collect()
 }

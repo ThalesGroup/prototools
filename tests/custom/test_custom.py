@@ -5,7 +5,7 @@
 """Test harness for the prototext auto-inference pipeline against the custom DB.
 
 The custom DB covers fixture types (mockup.*, test.*, tutorial.*) compiled from
-the custom fixtures (tests/custom/fixtures), plus the opentelemetry-proto corpus.
+the custom fixtures (protoback/tests/fixtures), plus the opentelemetry-proto corpus.
 
 Pipeline per test:
   1. Session fixture: read CUSTOM_DB env var → .desc path.

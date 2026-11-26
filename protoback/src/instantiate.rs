@@ -470,3 +470,126 @@ impl Walk<'_> {
         }
     }
 }
+
+/// The unit tests of `test_instantiate.py` (spec 0488 S2), on the functions
+/// that port reproto's `generate_instance` and `load_pool`. The schemas its
+/// code built with Python's protobuf are `#@prototext` fixtures, made once
+/// by that code (`stash/0488/gen/test_edition_names_and_instantiate.py`),
+/// written as `.desc` here as the original wrote them.
+#[cfg(test)]
+mod test_instantiate {
+    use super::*;
+    use crate::suite_fixtures::{encoded, tmp};
+
+    /// `_schema`: a proto2 file, a map of string keys, a singular and a
+    /// repeated group.
+    fn schema(test: &str) -> PathBuf {
+        let path = tmp(test).join("inst.desc");
+        let sha = "b6c5a886f00832d0b529633f476019d5a2ceae106d9f2187b7a27a7b8bc6f9e8";
+        std::fs::write(&path, encoded("instantiate/inst.pb", sha)).unwrap();
+        path
+    }
+
+    fn options(seed: i64, max_repeated: i64) -> Options {
+        Options {
+            seed,
+            max_depth: 4,
+            max_repeated,
+        }
+    }
+
+    fn varint(b: &[u8], i: &mut usize) -> u64 {
+        let (mut n, mut shift) = (0u64, 0);
+        loop {
+            let c = b[*i];
+            *i += 1;
+            n |= u64::from(c & 0x7f) << shift;
+            if c & 0x80 == 0 {
+                return n;
+            }
+            shift += 7;
+        }
+    }
+
+    /// The length-delimited records of `field` at the top level, in order.
+    fn entries(wire: &[u8], field: u64) -> Vec<&[u8]> {
+        let (mut out, mut i) = (Vec::new(), 0);
+        while i < wire.len() {
+            let tag = varint(wire, &mut i);
+            match tag & 7 {
+                0 => {
+                    varint(wire, &mut i);
+                }
+                2 => {
+                    let n = varint(wire, &mut i) as usize;
+                    if tag >> 3 == field {
+                        out.push(&wire[i..i + n]);
+                    }
+                    i += n;
+                }
+                1 => i += 8,
+                5 => i += 4,
+                _ => {}
+            }
+        }
+        out
+    }
+
+    fn string_field(record: &[u8], field: u64) -> Vec<u8> {
+        entries(record, field)
+            .first()
+            .map(|v| v.to_vec())
+            .unwrap_or_default()
+    }
+
+    /// upb's deterministic order for string keys: ascending, but a key that
+    /// is a prefix of another after it (its comparator negates memcmp, not
+    /// the length tie-break, and its encoder writes the sorted entries back
+    /// to front).
+    fn upb_order(a: &[u8], b: &[u8]) -> std::cmp::Ordering {
+        let common = a.len().min(b.len());
+        if a[..common] != b[..common] {
+            return a[..common].cmp(&b[..common]);
+        }
+        b.len().cmp(&a.len())
+    }
+
+    #[test]
+    fn test_map_entries_are_in_upbs_deterministic_order() {
+        let pool = load_pool(&schema("test_map_entries_are_in_upbs_deterministic_order")).unwrap();
+        let wire = generate_instance("inst.M", &pool, &options(3, 8)).unwrap();
+        let def = pool.get_message_by_name("inst.M").unwrap();
+        DynamicMessage::decode(&def, &wire).unwrap();
+        assert!(
+            entries(&wire, 1).len() >= 2,
+            "the test needs a map of several keys"
+        );
+        let keys: Vec<Vec<u8>> = entries(&wire, 1)
+            .iter()
+            .map(|e| string_field(e, 1))
+            .collect();
+        let mut sorted = keys.clone();
+        sorted.sort_by(|a, b| upb_order(a, b));
+        assert_eq!(keys, sorted);
+    }
+
+    #[test]
+    fn test_a_singular_group_is_set() {
+        let pool = load_pool(&schema("test_a_singular_group_is_set")).unwrap();
+        let wire = generate_instance("inst.M", &pool, &options(3, 3)).unwrap();
+        // Field 2, wire type 3 (start group): tag 0x13.
+        assert!(wire.contains(&0x13));
+    }
+
+    /// A set's own descriptor.proto, not a vendored one (spec 0432 S3):
+    /// its Edition enum, one value more than the original's protobuf's.
+    #[test]
+    fn test_the_sets_own_descriptor_proto_is_used() {
+        let path = tmp("test_the_sets_own_descriptor_proto_is_used").join("own.desc");
+        let sha = "1a66d6f35e716ebe7db0080db4e9512dfac08290c01279ed8ee8b08a6c62b476";
+        std::fs::write(&path, encoded("instantiate/own.pb", sha)).unwrap();
+        let pool = load_pool(&path).unwrap();
+        let edition = pool.get_enum_by_name("google.protobuf.Edition").unwrap();
+        assert!(edition.values().any(|v| v.name() == "EDITION_TEST_EXTRA"));
+    }
+}

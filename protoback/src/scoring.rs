@@ -179,6 +179,13 @@ fn message(
     }
 }
 
+/// `fd_is_packed`: a field declared packed, repeated, of a packable type,
+/// packed by its syntax or its resolved encoding (spec 0371 S1).
+fn fd_is_packed(f: &Field) -> bool {
+    let packable = !matches!(f.kind(), Kind::Message(_) | Kind::String | Kind::Bytes);
+    f.cardinality() == Cardinality::Repeated && packable && f.is_packed()
+}
+
 /// `_scoring_kind`, `_field_label` and `fd_is_packed`: one field's entry.
 fn field(c: &Collect<'_>, f: &Field) -> FieldSpec {
     let mut child = None;
@@ -218,10 +225,7 @@ fn field(c: &Collect<'_>, f: &Field) -> FieldSpec {
         Cardinality::Repeated => FieldLabel::Repeated,
         Cardinality::Optional => FieldLabel::Optional,
     };
-    // Declared packed: repeated, of a packable type, packed by its syntax
-    // or its resolved encoding (spec 0371 S1).
-    let packable = !matches!(f.kind(), Kind::Message(_) | Kind::String | Kind::Bytes);
-    let packed = label == FieldLabel::Repeated && packable && f.is_packed();
+    let packed = fd_is_packed(f);
     FieldSpec {
         number: f.number(),
         ty,
@@ -241,16 +245,17 @@ fn field(c: &Collect<'_>, f: &Field) -> FieldSpec {
 const MAX_FIELD_NUMBER: i64 = 536_870_911;
 
 fn canonical_extension_ranges(m: &Message) -> Vec<(u32, u32)> {
-    let mut spans: Vec<(i64, i64)> = m
-        .extension_ranges()
-        .iter()
-        .filter(|r| r.end > r.start)
-        .map(|r| {
-            (
-                i64::from(r.start),
-                (i64::from(r.end) - 1).min(MAX_FIELD_NUMBER),
-            )
-        })
+    canonical_ranges(m.extension_ranges().iter().map(|r| (r.start, r.end)))
+}
+
+/// The canonicalization itself, on half-open `(start, end)` ranges: apart
+/// from the message they are read from, so that its tests can give it
+/// ranges no descriptor pool would hold (spec 0488).
+fn canonical_ranges(ranges: impl IntoIterator<Item = (i32, i32)>) -> Vec<(u32, u32)> {
+    let mut spans: Vec<(i64, i64)> = ranges
+        .into_iter()
+        .filter(|&(start, end)| end > start)
+        .map(|(start, end)| (i64::from(start), (i64::from(end) - 1).min(MAX_FIELD_NUMBER)))
         .filter(|&(start, end)| start <= end)
         .collect();
     spans.sort_unstable();
@@ -265,4 +270,178 @@ fn canonical_extension_ranges(m: &Message) -> Vec<(u32, u32)> {
         .into_iter()
         .map(|(s, e)| (s as u32, e as u32))
         .collect()
+}
+
+/// The unit tests of `test_emit_extension_ranges.py` (spec 0488 S2), on the
+/// canonicalization that ports reproto's `_canonical_extension_ranges`,
+/// given the half-open ranges its stand-in descriptor carried: inputs
+/// protoc cannot produce, which no descriptor pool would hold.
+#[cfg(test)]
+mod test_emit_extension_ranges {
+    use super::*;
+
+    /// `extensions 10000` arrives as the half-open (10000, 10001).
+    #[test]
+    fn test_end_is_exclusive() {
+        assert_eq!(canonical_ranges([(10000, 10001)]), [(10000, 10000)]);
+    }
+
+    #[test]
+    fn test_overlapping_ranges_merge() {
+        assert_eq!(
+            canonical_ranges([(1000, 2001), (1500, 3001)]),
+            [(1000, 3000)]
+        );
+    }
+
+    /// The merge takes the max of the two ends, not the later one.
+    #[test]
+    fn test_a_contained_range_does_not_shrink_its_container() {
+        assert_eq!(
+            canonical_ranges([(1000, 5001), (2000, 3001)]),
+            [(1000, 5000)]
+        );
+    }
+
+    #[test]
+    fn test_degenerate_ranges_are_dropped() {
+        assert_eq!(canonical_ranges([(1000, 1000), (5000, 4000)]), []);
+    }
+
+    /// Merging stops at a genuine gap, or distinct sets would collide.
+    #[test]
+    fn test_disjoint_non_adjacent_ranges_survive_separately() {
+        assert_eq!(
+            canonical_ranges([(3000, 4001), (1000, 2001)]),
+            [(1000, 2000), (3000, 4000)]
+        );
+    }
+
+    #[test]
+    fn test_no_ranges_is_the_empty_list() {
+        assert_eq!(canonical_ranges([]), []);
+    }
+
+    /// A message set may declare extensions no tag can carry at all.
+    #[test]
+    fn test_a_range_past_the_largest_field_number_is_dropped() {
+        assert_eq!(
+            canonical_ranges([(4, 1000), (600_000_000, 2_147_483_647)]),
+            [(4, 999)]
+        );
+    }
+}
+
+/// The unit tests of `test_fd_is_packed.py` (spec 0488 S2), on
+/// `fd_is_packed` over the declaration matrix (spec 0371 S1, S2); its
+/// files, built with Python's protobuf, written here as text.
+#[cfg(test)]
+mod test_fd_is_packed {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    /// A file of `syntax` (and `edition`), message `M` of `fields`, in a
+    /// pool: each field's `fd_is_packed`.
+    fn packed(syntax: &str, edition: &str, fields: &str) -> BTreeMap<String, bool> {
+        let pkg = format!("m{syntax}");
+        let text = format!(
+            "name: \"m_{syntax}.proto\" package: \"{pkg}\" syntax: \"{syntax}\" {edition} message_type {{ name: \"M\" {fields} }}"
+        );
+        let bytes = prototext_upb::text_format::parse_descriptor(&text, false).unwrap();
+        let pool = prototext_upb::Pool::with_descriptor_proto();
+        pool.add_file(&bytes).unwrap();
+        let m = pool.get_message_by_name(&format!("{pkg}.M")).unwrap();
+        m.fields()
+            .map(|f| (f.name().to_string(), fd_is_packed(&f)))
+            .collect()
+    }
+
+    /// `_field`: repeated unless said, with `packed`, another option, or a
+    /// repeated_field_encoding.
+    fn field(name: &str, number: u32, ty: &str, extra: &str) -> String {
+        let label = if extra.contains("OPTIONAL") {
+            ""
+        } else {
+            "label: LABEL_REPEATED "
+        };
+        let extra = extra.replace("OPTIONAL", "label: LABEL_OPTIONAL");
+        format!("field {{ name: \"{name}\" number: {number} type: {ty} {label}{extra} }} ")
+    }
+
+    fn want(pairs: &[(&str, bool)]) -> BTreeMap<String, bool> {
+        pairs.iter().map(|(n, b)| (n.to_string(), *b)).collect()
+    }
+
+    #[test]
+    fn test_proto2() {
+        let fields = [
+            field("default", 1, "TYPE_INT32", ""),
+            field("packed", 2, "TYPE_INT32", "options { packed: true }"),
+            field("strings", 3, "TYPE_STRING", ""),
+            field("single", 4, "TYPE_INT32", "OPTIONAL"),
+        ]
+        .concat();
+        assert_eq!(
+            packed("proto2", "", &fields),
+            want(&[
+                ("default", false),
+                ("packed", true),
+                ("strings", false),
+                ("single", false)
+            ])
+        );
+    }
+
+    /// The proto3 field carrying another option, present but silent
+    /// (prost-reflect's section 1 case), is packed.
+    #[test]
+    fn test_proto3() {
+        let fields = [
+            field("default", 1, "TYPE_INT32", ""),
+            field("unpacked", 2, "TYPE_INT32", "options { packed: false }"),
+            field(
+                "with_option",
+                3,
+                "TYPE_INT32",
+                "options { deprecated: false }",
+            ),
+            field("strings", 4, "TYPE_STRING", ""),
+            field("single", 5, "TYPE_INT32", "OPTIONAL"),
+        ]
+        .concat();
+        assert_eq!(
+            packed("proto3", "", &fields),
+            want(&[
+                ("default", true),
+                ("unpacked", false),
+                ("with_option", true),
+                ("strings", false),
+                ("single", false)
+            ])
+        );
+    }
+
+    #[test]
+    fn test_editions() {
+        let fields = [
+            field("default", 1, "TYPE_INT32", ""),
+            field(
+                "expanded",
+                2,
+                "TYPE_INT32",
+                "options { features { repeated_field_encoding: EXPANDED } }",
+            ),
+            field(
+                "packed",
+                3,
+                "TYPE_INT32",
+                "options { features { repeated_field_encoding: PACKED } }",
+            ),
+        ]
+        .concat();
+        assert_eq!(
+            packed("editions", "edition: EDITION_2023", &fields),
+            want(&[("default", true), ("expanded", false), ("packed", true)])
+        );
+    }
 }

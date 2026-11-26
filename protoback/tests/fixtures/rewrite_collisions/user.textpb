@@ -1,0 +1,18 @@
+file {
+  name: "user.proto"
+  package: "user"
+  message_type {
+    name: "U"
+    field {
+      name: "x"
+      number: 1
+      label: LABEL_OPTIONAL
+      type: TYPE_INT32
+      json_name: "x"
+    }
+  }
+  options {
+    java_package: "com.example.user"
+    java_generate_equals_and_hash: true
+  }
+}

@@ -216,7 +216,29 @@ let
     # git-seriate's end-to-end tests check every tree they make with
     # `git fsck --strict` (spec 0452 G5), and sign with ssh-keygen and an
     # ssh-agent of their own (spec 0463); without them, they skip.
-    nativeBuildInputs = protocArgs.nativeBuildInputs ++ [ pkgs.gitMinimal pkgs.openssh ];
+    # protoback's suite (spec 0488) also normalizes what it renders with buf,
+    # and reads its schema DBs with prototext: the binary this same `cargo
+    # test --workspace` builds for prototext's own tests, on PATH by the time
+    # the tests run. PROTOBACK_SUITE_REQUIRE_TOOLS makes a missing tool a
+    # failure here, where a downstream `cargo test` skips (D4, S5).
+    nativeBuildInputs = protocArgs.nativeBuildInputs ++ [ pkgs.gitMinimal pkgs.openssh buf ];
+    # --fdp-plugin's plugins are Python, given Python protobuf's
+    # descriptors: the interpreter protoback runs them with.
+    PROTOBACK_PYTHON = "${pythonPkgs.python.withPackages (ps: [ ps.protobuf ])}/bin/python3";
+    preCheck = ''
+      export PATH="''${CARGO_TARGET_DIR:-$PWD/target}/quick:$PATH"
+      export PROTOBACK_SUITE_REQUIRE_TOOLS=1
+    '';
+    # The suite again, every binary set it gives protoback as protoc's text
+    # (spec 0427's second run, ported by spec 0488): its binary, built
+    # above, run with PROTOBACK_SUITE_VIA_TEXT.
+    postCheck = ''
+      suites=( "''${CARGO_TARGET_DIR:-$PWD/target}"/quick/deps/suite-* )
+      suites=( "''${suites[@]/%*.d/}" )
+      suites=( ''${suites[@]} )
+      [ ''${#suites[@]} -eq 1 ] || { echo "expected one suite binary: ''${suites[*]}" >&2; exit 1; }
+      PROTOBACK_SUITE_VIA_TEXT=1 "''${suites[0]}"
+    '';
     CARGO_PROFILE  = "quick";
     cargoArtifacts = depsCacheTests;
     cargoExtraArgs = workspaceArgs;
