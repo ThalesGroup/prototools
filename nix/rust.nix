@@ -15,13 +15,15 @@
 #     │                                                                    │
 #     ├──[cargoClippy, cargoArtifacts=depsCache]──▶  rustClippy            │
 #     │                                                                    │
-#     ├──[cargoTest, cargoArtifacts=depsCache]──▶  rustTests  (a ci leaf)  │
-#     │                                                                    │
-#     └──[buildPackage, cargoArtifacts=depsCache]──▶  workspaceBuild
-#            │  one `cargo build --release --workspace`
-#            ├──▶  prototext            (copied out, completions, man page)
-#            ├──▶  protolens           (copied out, completions, man page)
-#            └──▶  prototextCodec, fdpScanLib, prototextGraphLib  (maturin's wheels)
+#     └──[mkCargoDerivation, cargoArtifacts=depsCache]──▶  workspaceArtifacts
+#            │  one `cargo build --workspace`, its target installed
+#            │
+#            ├──[cargoTest]──▶  rustTests  (a ci leaf; compiles test code only)
+#            │
+#            └──[buildPackage]──▶  workspaceBuild  (the stubs checked, the wheels)
+#                   ├──▶  prototext            (copied out, completions, man page)
+#                   ├──▶  protolens           (copied out, completions, man page)
+#                   └──▶  prototextCodec, fdpScanLib, prototextGraphLib  (maturin's wheels)
 #
 # Every shipped crate embeds the WKT scoring graph committed under
 # prototext/wkt/prebuilt/ (S2); default.nix's wkt-prebuilt-check keeps that
@@ -50,6 +52,32 @@ let
   # pyo3 crates are included: PYO3_PYTHON is set in commonArgs so every
   # sandbox can compile prototext_codec_lib without a separate dep cache.
   workspaceArgs = "--no-default-features --workspace";
+
+  # A compilation meant to be reused, redone, fails the build (spec 0491
+  # S3): `cargo <command>`, its JSON messages read as they come, and the
+  # first unit that `unexpected` (a jq condition on a compiler-artifact
+  # message) selects among those compiled, not found fresh, stops it,
+  # named. A flag, an environment variable or a source path that differs
+  # from the layers below recompiles silently otherwise, and the build
+  # costs twice again; stopping at the first keeps a drift's failure to
+  # seconds. (jq leaves at its first match; cargo, its output closed,
+  # stops.) Needs jq.
+  reuseGuard = { who, command, unexpected }: ''
+    status=0
+    again=$(cargoWithProfile ${command} --message-format json-render-diagnostics \
+      | jq -n -r 'first(inputs | select(.reason == "compiler-artifact"
+          and .fresh == false and (${unexpected})))
+        | "\(.target.name) (\(.target.kind | join(",")), \(.package_id))"'
+      exit "''${PIPESTATUS[0]}") || status=$?
+    if [ -n "$again" ]; then
+      echo "${who} compiled again what the layers below had compiled (spec 0491 S3):" >&2
+      echo "  $again" >&2
+      echo "and was stopped there. Its flags or environment differ from theirs:" \
+           "rebuild with CARGO_LOG=cargo::core::compiler::fingerprint=info to see why." >&2
+      exit 1
+    fi
+    [ "$status" -eq 0 ] || exit "$status"
+  '';
 
   # Every build embeds the WKT scoring graph committed under
   # prototext/wkt/prebuilt/, which prototext's build.rs copies with no feature
@@ -194,10 +222,15 @@ let
   #
   # In the build's own profile (spec 0490 S1): a world's tests test the
   # world's artifacts, release ones in the release world, `quick` ones in
-  # the quick world (`ci-quick`). depsCache is built with crane's check
-  # pass, which compiles the test-only dependencies too: the tests need no
-  # dependency layer of their own. (Spec 0485's split gate, the tests in
+  # the quick world (`ci-quick`). (Spec 0485's split gate, the tests in
   # `quick` under a release build, went with 0490.)
+  #
+  # On the products' compilation (spec 0491): from workspaceArtifacts,
+  # whose libraries and binaries cargo reuses, the flags being the same; it
+  # compiles only what is test-only by nature, each library again with
+  # cfg(test), the test targets and the examples. The guard first in
+  # preCheck fails when it compiles anything else of the workspace, so that
+  # a flag drifting between the two cannot silently double the work again.
 
   rustTests = crane.cargoTest (protocArgs // profileArgs // {
     src            = workspaceSrc;
@@ -210,11 +243,20 @@ let
     # test --workspace` builds for prototext's own tests, on PATH by the time
     # the tests run. PROTOBACK_SUITE_REQUIRE_TOOLS makes a missing tool a
     # failure here, where a downstream `cargo test` skips (D4, S5).
-    nativeBuildInputs = protocArgs.nativeBuildInputs ++ [ pkgs.gitMinimal pkgs.openssh buf ];
+    nativeBuildInputs = protocArgs.nativeBuildInputs ++ [ pkgs.gitMinimal pkgs.openssh buf pkgs.jq ];
     # --fdp-plugin's plugins are Python, given Python protobuf's
     # descriptors: the interpreter protoback runs them with.
     PROTOBACK_PYTHON = "${pythonPkgs.python.withPackages (ps: [ ps.protobuf ])}/bin/python3";
     preCheck = ''
+      # The test build first, alone: what it compiles must be test-only,
+      # cfg(test) units, test targets and examples (which `cargo build`
+      # never builds). Every other unit, the dependencies' included, comes
+      # fresh from workspaceArtifacts and depsCache below it.
+      ${reuseGuard {
+        who        = "The test build";
+        command    = "test ${workspaceArgs} --no-run";
+        unexpected = ''.profile.test == false and (.target.kind | index("example") | not)'';
+      }}
       export PATH="''${CARGO_TARGET_DIR:-$PWD/target}/${cargoProfile}:$PATH"
       export PROTOBACK_SUITE_REQUIRE_TOOLS=1
     '';
@@ -228,7 +270,7 @@ let
       [ ''${#suites[@]} -eq 1 ] || { echo "expected one suite binary: ''${suites[*]}" >&2; exit 1; }
       PROTOBACK_SUITE_VIA_TEXT=1 "''${suites[0]}"
     '';
-    cargoArtifacts = depsCache;
+    cargoArtifacts = workspaceArtifacts;
     cargoExtraArgs = workspaceArgs;
     # No terminal variable: a test that depends on the color depth sets
     # it itself (spec 0410 S1), so the suite passes in nixpkgs's sandbox
@@ -399,11 +441,15 @@ let
   # over the committed stub that maturin packages (spec 0409 S2), and a
   # stale committed stub fails the build.
   #
-  # doInstallCargoArtifacts = false: nothing builds on top of it, and an
-  # installed target.tar.zst (with `.prev` pointing at depsCache and the
-  # vendored registry) would enter the closure of whatever copies from it
-  # (spec 0374 S2). Crane's postInstall hook strips the vendored sources'
-  # store paths rustc embeds as panic locations, for the same reason.
+  # The compilation itself is workspaceArtifacts', which installs its target
+  # for the tests too (spec 0491); this build starts from it, and its
+  # `cargo build` finds everything fresh. doInstallCargoArtifacts = false
+  # here: an installed target.tar.zst (with `.prev` pointing at the layers
+  # below and the vendored registry) would enter the closure of whatever
+  # copies from it (spec 0374 S2), so it stays in workspaceArtifacts, which
+  # nothing copies from. Crane's postInstall hook strips the vendored
+  # sources' store paths rustc embeds as panic locations, for the same
+  # reason.
   # ---------------------------------------------------------------------------
   maturinArgs =
     if canRun
@@ -433,14 +479,29 @@ let
   maturinProfile =
     if cargoProfile == "release" then "--release" else "--profile ${cargoProfile}";
 
+  # The workspace compiled once (spec 0491 S1), its target installed: what
+  # workspaceBuild copies the products from and the tests build on.
+  workspaceArtifacts = crane.mkCargoDerivation (protocArgs // profileArgs // {
+    src                     = workspaceSrc;
+    pname                   = "prototools-workspace-artifacts";
+    cargoArtifacts          = depsCache;
+    buildPhaseCargoCommand  = "cargoWithProfile build ${workspaceArgs}";
+    doInstallCargoArtifacts = true;
+  });
+
   workspaceBuild = crane.buildPackage (protocArgs // profileArgs // {
     src                                = workspaceSrc;
     pname                              = "prototools-workspace";
-    nativeBuildInputs                  = protocArgs.nativeBuildInputs ++ [ pkgs.maturin ];
-    cargoArtifacts                     = depsCache;
+    nativeBuildInputs                  = protocArgs.nativeBuildInputs ++ [ pkgs.maturin pkgs.jq ];
+    cargoArtifacts                     = workspaceArtifacts;
     doCheck                            = false;
     doInstallCargoArtifacts            = false;
-    buildPhaseCargoCommand             = "cargoWithProfile build ${workspaceArgs}";
+    # workspaceArtifacts' build, found entirely fresh: nothing compiled.
+    buildPhaseCargoCommand             = reuseGuard {
+      who        = "workspaceBuild";
+      command    = "build ${workspaceArgs}";
+      unexpected = "true";
+    };
     doNotPostBuildInstallCargoBinaries = true;
     installPhaseCommand                = ''
       mkdir -p $out/bin $out/wheels
