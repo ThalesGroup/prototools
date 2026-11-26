@@ -721,7 +721,7 @@ let
   # output (each depends on this one expression); not by the user shell,
   # whose hook builds bounded, nor without the `boundHint` argument (a
   # downstream importing this file), nor under PROTOTOOLS_QUIET
-  # (scripts/ci, the workflow).
+  # (scripts/check, the workflow).
   buildHint =
     if !boundHint || builtins.getEnv "PROTOTOOLS_QUIET" != "" then null
     else builtins.trace ''
@@ -979,15 +979,16 @@ let
     python3 ${./prototools-complete/tests/tab_completion.py} bin | tee $out
   '';
 
-  # nix.yml and scripts/ci run the same Nix steps in the same order (spec
-  # 0485 S7): the commands of nix.yml's `run:` steps that name nix-build,
-  # nix-instantiate or scripts/, its matrix target written CI_TARGET,
-  # against `scripts/ci --list-steps`. A step added to one alone fails ci.
+  # nix.yml and `scripts/check --release` run the same Nix steps in the
+  # same order (specs 0485 S7, 0490 S4): the commands of nix.yml's `run:`
+  # steps that name nix-build, nix-instantiate or scripts/, its matrix
+  # target written CI_TARGET, against `scripts/check --list-steps`. A step
+  # added to one alone fails ci.
   ciWorkflowCheck = pkgs.runCommand "ci-workflow-check" {
     strictDeps = true;
     nativeBuildInputs = [ (pkgs.python3.withPackages (ps: [ ps.pyyaml ])) ];
   } ''
-    bash ${./scripts/ci} --list-steps > script-steps
+    bash ${./scripts/check} --list-steps > script-steps
     python3 -I - ${./.github/workflows/nix.yml} script-steps <<'EOF'
     import re, sys, yaml
     workflow = yaml.safe_load(open(sys.argv[1]))
@@ -999,13 +1000,13 @@ let
             if re.search(r"nix-build|nix-instantiate|scripts/", run):
                 theirs.append(run.replace("''${{ matrix.ci-target }}", "CI_TARGET"))
     if theirs != ours:
-        print("nix.yml and scripts/ci do not run the same steps (spec 0485 S7):",
+        print("nix.yml and scripts/check do not run the same steps (spec 0485 S7):",
               file=sys.stderr)
-        for label, steps in (("nix.yml", theirs), ("scripts/ci", ours)):
+        for label, steps in (("nix.yml", theirs), ("scripts/check", ours)):
             print(f"  {label}:", file=sys.stderr)
             for s in steps:
                 print(f"    {s}", file=sys.stderr)
-        print("Add the step to both: nix.yml's steps, and nix_steps in scripts/ci.",
+        print("Add the step to both: nix.yml's steps, and nix_steps in scripts/check.",
               file=sys.stderr)
         sys.exit(1)
     EOF
@@ -1050,6 +1051,11 @@ builtins.mapAttrs
   python-ruff          = python.pythonRuff;
   ci                   = ci;
   ci-no-clippy         = ci-no-clippy;
+  # The quick world's ci (spec 0490 S2): this file at cargoProfile =
+  # "quick", the arguments it was given kept; the optimistic run before a
+  # push, `scripts/check --nix`.
+  ci-quick             = if cargoProfile == "quick" then ci
+                         else (import ./default.nix (args // { cargoProfile = "quick"; })).ci;
   full-tests           = full-tests;
   googleapis-pbs       = python.googleapisPbs;
   googleapis-db        = python.googleapisDb;

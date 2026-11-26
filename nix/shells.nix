@@ -21,8 +21,9 @@
 #               _hook_python     — writes python.env, pyrightconfig.json, ruff.toml
 #               _hook_rust       — writes rust-toolchain.toml; rustup toolchain
 #                                  install
-#               _hook_cargo      — cargo build --release -p prototext / -p
-#                                  protolens / -p protoscan (guarded); runs after _hook_rust
+#               _hook_cargo      — cargo build --profile quick -p prototext /
+#                                  -p protolens / -p protoscan (guarded; the
+#                                  quick world, spec 0490 S3); runs after _hook_rust
 #               _hook_man        — generates man pages into man/man1/
 #               _hook_nvim       — writes .nvim/nvim/init.lua (desert + proto
 #                                  LSP via buf); exports XDG_CONFIG_HOME, and
@@ -150,7 +151,7 @@ in
       rustfmt
       clippy
       reuse
-      # The staged nixpkgs recipes' formatter, which scripts/ci's preflight
+      # The staged nixpkgs recipes' formatter, which scripts/check's preflight
       # runs as nixpkgs-staging-check does (spec 0485 S6).
       nixfmt
       gh
@@ -226,7 +227,7 @@ in
       # ── Named hook functions ───────────────────────────────────────────────
 
       _hook_env() {
-        echo "[hook] env: NIXSHELL_REPO, PROTOTEXT_{DESCRIPTOR,WKT}_SET, PROTOTEXT_ANOMALIES_BLOB, PYO3_PYTHON, PYO3_ENVIRONMENT_SIGNATURE, PATH, PYTHONPATH, TELEPROMPT_LIBREADLINE"
+        echo "[hook] env: NIXSHELL_REPO, PROTOTEXT_{DESCRIPTOR,WKT}_SET, PROTOTEXT_ANOMALIES_BLOB, PYO3_PYTHON, PYO3_ENVIRONMENT_SIGNATURE, PROTOTOOLS_CARGO_PROFILE, PATH, PYTHONPATH, TELEPROMPT_LIBREADLINE; check"
         # Detected by ~/.claude/hooks/claude-hook-post-edit-lint to confirm
         # that the active nix-shell belongs to this repo.
         export NIXSHELL_REPO="${repoRoot}"
@@ -270,11 +271,24 @@ in
         # As maturin sets it, so that a cargo build and maturin share
         # pyo3's crates (spec 0477 S3).
         export PYO3_ENVIRONMENT_SIGNATURE="${pyo3EnvironmentSignature}"
-        export PATH="${repoRoot}/bin:${pythonBin}/bin:${repoRoot}/target/release:$PATH"
+        # The quick world (spec 0490 S3): the working tree's builds in
+        # target/quick/, which bin/'s wrappers run.
+        export PROTOTOOLS_CARGO_PROFILE=quick
+        export PATH="${repoRoot}/bin:${pythonBin}/bin:${repoRoot}/target/quick:$PATH"
         # `devOnlyPyDeps` is appended rather than folded into lintDeps:
         # that list is also what pythonLint runs with, and nothing that runs
-        # under `ci` needs a terminal emulator.
-        export PYTHONPATH="${pythonPkgs.makePythonPath (lintDeps ++ devOnlyPyDeps)}:$PYTHONPATH"
+        # under `ci` needs a terminal emulator. The pyo3 extensions the
+        # working tree deploys (scripts/deploy-extensions, spec 0490 S5)
+        # first: one not deployed falls through to Nix's build.
+        export PYTHONPATH="${repoRoot}/target/python:${pythonPkgs.makePythonPath (lintDeps ++ devOnlyPyDeps)}:$PYTHONPATH"
+        # The modest setting (spec 0490 S6), off by default here, the
+        # development cycle fast: PROTOTOOLS_MODEST=1 bounds cargo's builds,
+        # this hook's and scripts/check's.
+        if [ "''${PROTOTOOLS_MODEST:-}" = 1 ]; then
+          export CARGO_BUILD_JOBS=2
+        fi
+        # `check`, `check --nix`, `check --release` (spec 0490 S4).
+        check() { "${repoRoot}/scripts/check" "$@"; }
       }
 
       _hook_python() {
@@ -312,7 +326,7 @@ with open('pyrightconfig.json', 'w') as f:
         # dependency crate must also trigger a rebuild. Uses `find -newer`
         # (not `-nt` on the directory itself) so content edits to existing
         # files are detected, not just files being added/removed.
-        local bin="$PWD/target/release/prototext"
+        local bin="$PWD/target/quick/prototext"
         local watch=(prototext/src prototext-core/src prototext-graph/src prototext-upb/src
                      prototext-schema/src prototext/Cargo.toml prototext-core/Cargo.toml
                      prototext-graph/Cargo.toml prototext-upb/Cargo.toml Cargo.lock)
@@ -328,8 +342,8 @@ with open('pyrightconfig.json', 'w') as f:
           done
         fi
         if [[ "$stale" -eq 1 ]]; then
-          echo "[hook] cargo: cargo build --release -p prototext"
-          cargo build --release --locked -p prototext
+          echo "[hook] cargo: cargo build --profile quick -p prototext"
+          cargo build --profile quick --locked -p prototext
         else
           echo "[hook] cargo: prototext binary up to date — skipping"
         fi
@@ -340,7 +354,7 @@ with open('pyrightconfig.json', 'w') as f:
         # upb alone (specs 0415 N1, 0417 S2).
         if cargo metadata --offline --no-deps --format-version 1 2>/dev/null \
             | grep -c '"name":"prototext-lens"' >/dev/null; then
-          local bin2="$PWD/target/release/protolens"
+          local bin2="$PWD/target/quick/protolens"
           local watch2=(protolens/src prototext-core/src prototext-graph/src prototext-upb/src
                         prototools-affinity/src
                         protolens/Cargo.toml prototext-core/Cargo.toml prototext-graph/Cargo.toml
@@ -357,8 +371,8 @@ with open('pyrightconfig.json', 'w') as f:
             done
           fi
           if [[ "$stale2" -eq 1 ]]; then
-            echo "[hook] cargo: cargo build --release -p prototext-lens"
-            cargo build --release --locked -p prototext-lens
+            echo "[hook] cargo: cargo build --profile quick -p prototext-lens"
+            cargo build --profile quick --locked -p prototext-lens
           else
             echo "[hook] cargo: protolens binary up to date — skipping"
           fi
@@ -368,7 +382,7 @@ with open('pyrightconfig.json', 'w') as f:
 
         # Same staleness guard for protoscan (spec 0407): its scanner,
         # fdp-scan, scores against prototext's embedded graph.
-        local bin3="$PWD/target/release/protoscan"
+        local bin3="$PWD/target/quick/protoscan"
         local watch3=(protoscan/src fdp-scan/src prototext/src prototext-core/src
                       prototext-graph/src prototext-upb/src prototools-complete/src
                       protoscan/Cargo.toml fdp-scan/Cargo.toml Cargo.lock)
@@ -384,8 +398,8 @@ with open('pyrightconfig.json', 'w') as f:
           done
         fi
         if [[ "$stale3" -eq 1 ]]; then
-          echo "[hook] cargo: cargo build --release -p protoscan"
-          cargo build --release --locked -p protoscan
+          echo "[hook] cargo: cargo build --profile quick -p protoscan"
+          cargo build --profile quick --locked -p protoscan
         else
           echo "[hook] cargo: protoscan binary up to date — skipping"
         fi

@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 #
-# Thin wrapper — delegates to the compiled protoscan binary in target/release/
-# (a Rust binary since spec 0407, built by the dev-shell's cargo hook).
+# Thin wrapper — delegates to the compiled protoscan binary of the working
+# tree's build (a Rust binary since spec 0407, built by the dev-shell's cargo
+# hook): target/quick/, the development cycle's world (spec 0490 S3), or
+# another profile's with PROTOTOOLS_CARGO_PROFILE (release: target/release/).
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-exec "$REPO_ROOT/target/release/protoscan" "$@"
+exec "$REPO_ROOT/target/${PROTOTOOLS_CARGO_PROFILE:-quick}/protoscan" "$@"

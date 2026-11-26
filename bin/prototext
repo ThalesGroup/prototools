@@ -2,7 +2,9 @@
 # SPDX-FileCopyrightText: 2026 THALES CLOUD SECURISE SAS
 # SPDX-License-Identifier: MIT
 #
-# Thin wrapper — delegates to the compiled prototext binary in target/release/.
+# Thin wrapper — delegates to the compiled prototext binary of the working
+# tree's build: target/quick/, the development cycle's world (spec 0490 S3),
+# or another profile's with PROTOTOOLS_CARGO_PROFILE (release: target/release/).
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-exec "$REPO_ROOT/target/release/prototext" "$@"
+exec "$REPO_ROOT/target/${PROTOTOOLS_CARGO_PROFILE:-quick}/prototext" "$@"

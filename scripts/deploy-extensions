@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# scripts/deploy-extensions — the pyo3 extensions, built from the working
+# tree and deployed where the dev shell's Python finds them first (spec
+# 0490 S5), so that pytest never tests stale Rust.
+#
+# Usage:
+#   scripts/deploy-extensions [--profile PROFILE] [--if-stale]
+#
+#   --profile   cargo's profile, default quick (the development cycle's
+#               world)
+#   --if-stale  deploy only when a Rust source is newer than a deployed
+#               module (how `scripts/check` calls it)
+#
+# Each extension's crate is built as a cdylib (`cargo rustc --lib
+# --crate-type cdylib`, as the crates' manifests say a module is built),
+# and its Python package directory (its __init__.py, its stub) copied to
+# target/python/<package>/ with the module in it, named with the
+# interpreter's extension suffix. The dev shell puts target/python/ first
+# on PYTHONPATH: an extension not deployed falls through to Nix's build.
+set -euo pipefail
+
+repo=$(cd "$(dirname "$0")/.." && pwd)
+profile=quick if_stale=0
+while [ $# -gt 0 ]; do
+  case $1 in
+    --profile)  profile=${2:?--profile needs a value}; shift ;;
+    --if-stale) if_stale=1 ;;
+    -h|--help)  sed -n '2,/^set -eu/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
+    *) echo "scripts/deploy-extensions: unknown argument $1 (see --help)" >&2; exit 2 ;;
+  esac
+  shift
+done
+
+# crate directory, package (the crate's [lib] name and Python package)
+extensions=(
+  "prototext-pyo3 prototext_codec_lib"
+  "fdp-scan-pyo3 fdp_scan_lib"
+  "prototext-graph-pyo3 prototext_graph_lib"
+)
+out=$repo/target/python
+suffix=$(python3 -c 'import sysconfig; print(sysconfig.get_config_var("EXT_SUFFIX"))')
+cd "$repo"
+
+if [ "$if_stale" = 1 ]; then
+  stale=0
+  for e in "${extensions[@]}"; do
+    read -r dir package <<< "$e"
+    module=$out/$package/$package$suffix
+    # Any Rust source or manifest of the workspace newer than the module:
+    # an extension depends on most of the workspace.
+    if [ ! -e "$module" ] || [ -n "$(find . -path ./target -prune -o \
+        \( -name '*.rs' -o -name Cargo.toml -o -name Cargo.lock \) -newer "$module" -print -quit)" ]; then
+      stale=1
+      break
+    fi
+  done
+  [ "$stale" = 1 ] || exit 0
+fi
+
+for e in "${extensions[@]}"; do
+  read -r dir package <<< "$e"
+  echo "deploy-extensions: $package ($profile)"
+  cargo rustc --profile "$profile" --locked -p "$package" --lib --crate-type cdylib --quiet
+  rm -rf "${out:?}/$package"
+  mkdir -p "$out/$package"
+  cp "$dir/$package"/*.py "$dir/$package"/*.pyi "$out/$package/"
+  cp "target/$profile/lib$package.so" "$out/$package/$package$suffix"
+done

@@ -15,7 +15,7 @@
 #     │                                                                    │
 #     ├──[cargoClippy, cargoArtifacts=depsCache]──▶  rustClippy            │
 #     │                                                                    │
-#     ├──[cargoTest, profile quick]──▶  rustTests  (a ci leaf)              │
+#     ├──[cargoTest, cargoArtifacts=depsCache]──▶  rustTests  (a ci leaf)  │
 #     │                                                                    │
 #     └──[buildPackage, cargoArtifacts=depsCache]──▶  workspaceBuild
 #            │  one `cargo build --release --workspace`
@@ -192,25 +192,14 @@ let
   # failing test fails `ci` without blocking the packages.
   # ---------------------------------------------------------------------------
   #
-  # The `quick` profile (Cargo.toml): release codegen without LTO and with 16
-  # codegen units (spec 0401 S8). The tests compile in a third of the time,
-  # and leave the cores to workspaceBuild and clippy, which run alongside;
-  # with `release` the three LTO builds starved each other. It needs its own
-  # dependency cache, since a profile is part of every artifact's identity;
-  # under cargoProfile = "quick", depsCache is that cache already, and the
-  # tests take it (spec 0485 S2): one dependency build fewer.
-  depsCacheTests = if cargoProfile == "quick" then depsCache else crane.buildDepsOnly (protocArgs // {
-    src             = workspaceSrc;
-    pname           = "prototools-deps-tests";
-    CARGO_PROFILE   = "quick";
-    cargoExtraArgs  = workspaceArgs;
-    # Only what cargoTest compiles: no check or build pass.
-    cargoCheckCommand = "true";
-    cargoBuildCommand = "true";
-    postPatch       = "";
-  });
+  # In the build's own profile (spec 0490 S1): a world's tests test the
+  # world's artifacts, release ones in the release world, `quick` ones in
+  # the quick world (`ci-quick`). depsCache is built with crane's check
+  # pass, which compiles the test-only dependencies too: the tests need no
+  # dependency layer of their own. (Spec 0485's split gate, the tests in
+  # `quick` under a release build, went with 0490.)
 
-  rustTests = crane.cargoTest (protocArgs // {
+  rustTests = crane.cargoTest (protocArgs // profileArgs // {
     src            = workspaceSrc;
     pname          = "prototools-tests";
     # git-seriate's end-to-end tests check every tree they make with
@@ -226,21 +215,20 @@ let
     # descriptors: the interpreter protoback runs them with.
     PROTOBACK_PYTHON = "${pythonPkgs.python.withPackages (ps: [ ps.protobuf ])}/bin/python3";
     preCheck = ''
-      export PATH="''${CARGO_TARGET_DIR:-$PWD/target}/quick:$PATH"
+      export PATH="''${CARGO_TARGET_DIR:-$PWD/target}/${cargoProfile}:$PATH"
       export PROTOBACK_SUITE_REQUIRE_TOOLS=1
     '';
     # The suite again, every binary set it gives protoback as protoc's text
     # (spec 0427's second run, ported by spec 0488): its binary, built
     # above, run with PROTOBACK_SUITE_VIA_TEXT.
     postCheck = ''
-      suites=( "''${CARGO_TARGET_DIR:-$PWD/target}"/quick/deps/suite-* )
+      suites=( "''${CARGO_TARGET_DIR:-$PWD/target}"/${cargoProfile}/deps/suite-* )
       suites=( "''${suites[@]/%*.d/}" )
       suites=( ''${suites[@]} )
       [ ''${#suites[@]} -eq 1 ] || { echo "expected one suite binary: ''${suites[*]}" >&2; exit 1; }
       PROTOBACK_SUITE_VIA_TEXT=1 "''${suites[0]}"
     '';
-    CARGO_PROFILE  = "quick";
-    cargoArtifacts = depsCacheTests;
+    cargoArtifacts = depsCache;
     cargoExtraArgs = workspaceArgs;
     # No terminal variable: a test that depends on the color depth sets
     # it itself (spec 0410 S1), so the suite passes in nixpkgs's sandbox
@@ -254,11 +242,10 @@ let
   # `cargo test` (nixpkgs' check phase, a crates.io user) skips it and
   # needs no rustfmt. It runs here, with the toolchain's rustfmt, which
   # lays the generated code out as rustFmt checks it.
-  descriptorAccessCheck = crane.cargoTest (protocArgs // {
+  descriptorAccessCheck = crane.cargoTest (protocArgs // profileArgs // {
     src                = workspaceSrc;
     pname              = "prototext-upb-descriptor-access";
-    CARGO_PROFILE      = "quick";
-    cargoArtifacts     = depsCacheTests;
+    cargoArtifacts     = depsCache;
     cargoExtraArgs     = "-p prototext-upb --test descriptor_access";
     cargoTestExtraArgs = "-- --ignored";
     nativeBuildInputs  = protocArgs.nativeBuildInputs ++ [ pkgs.rustfmt ];

@@ -108,44 +108,22 @@ nix-shell          # user shell — all tools on PATH
 
 ### Building with Nix
 
-Three ways to build, by what the build is for:
+To use the tools, enter the shell, which builds them at low parallelism
+(so that a modest machine stays usable) and puts them on your `PATH`:
 
-- **To use the tools, while working on something else:** what ships, but
-  a few cores at a time, so that the machine stays usable. Slower, the
-  same result.
+```shell
+nix-shell
+```
 
-  ```shell
-  nix-build -A prototools --max-jobs 1 --cores 2
-  ```
+Or build them without a shell:
 
-  `--cores` bounds the compilers running at once (and with them the memory
-  peak), `--max-jobs` the builds; `max-jobs` and `cores` in `nix.conf` set
-  them once and for all. `nix-build` reminds you of this command when it
-  starts (`PROTOTOOLS_QUIET=1` hides it).
+```shell
+nix-build -A prototools --max-jobs 1 --cores 2
+```
 
-  `nix-shell` builds the tools it puts on your `PATH` this way already,
-  `--max-jobs 1 --cores 2`, as the same derivations as `nix-build`'s: what
-  one built, the other reuses. It roots them in the checkout, as
-  `result-user-shell` (garbage collections keep them; `rm
-  result-user-shell` frees them), and says when it builds, with its log
-  beside the link, `result-user-shell.log`.
-  On a large machine, set `PROTOTOOLS_BUILD_FLAGS` to the flags to use
-  instead, for example
-  `PROTOTOOLS_BUILD_FLAGS="--max-jobs auto --cores 0" nix-shell`.
-- **To release, or check what ships:** the default `release` profile,
-  with thin LTO.
-
-  ```shell
-  scripts/ci              # in the dev shell: the CI, cheap checks first
-  ```
-- **To develop:** the `quick` profile, without LTO across crates: several
-  times faster to build, the code a little slower. The tests build in
-  `quick` either way.
-
-  ```shell
-  nix-build -A ci --argstr cargoProfile quick
-  scripts/ci --preflight  # after an edit: a minute, no build
-  ```
+[`BUILDING.md`](BUILDING.md) has the rest: the release and quick worlds,
+the bounds for a modest machine, the development shell, and how to check
+a change.
 
 ## License
 

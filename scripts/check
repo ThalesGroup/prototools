@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+# scripts/check — the development loop and the local CI (spec 0490 S4), in
+# three modes, each stopping at its first failing step, cheapest first:
+#
+#   check            the quick world, in the working tree, incremental:
+#                    the preflight (cargo fmt, ruff, nixfmt, REUSE, the
+#                    evaluation, the protobuf-release check), then clippy,
+#                    the Rust tests, pyright and pytest, with ci's options
+#                    at `--profile quick`; the pyo3 extensions deployed
+#                    first when stale (scripts/deploy-extensions)
+#   check --nix      the quick world's CI, `nix-build -A ci-quick`, after
+#                    the preflight: the optimistic run before a push
+#   check --release  the release world's CI: nix.yml's Nix steps in
+#                    nix.yml's order, after the preflight (spec 0485 S6)
+#
+# Usage:
+#   scripts/check [--nix | --release | --preflight] [--staging]
+#                 [--target ci|ci-no-clippy] [--max-jobs N] [--cores N]
+#   scripts/check --release --list-steps
+#
+#   --preflight   the preflight alone: seconds, no build
+#   --staging     with --release, also build the staged nixpkgs recipes
+#   --target      with --release, the ci target (nix.yml's
+#                 matrix.ci-target), default ci
+#   --max-jobs, --cores   Nix's, default 2 and 6 (--nix, --release)
+#   --list-steps  print the Nix steps nix.yml must also run, in order, and
+#                 exit: what the ci-workflow check compares (spec 0485 S7)
+#
+# PROTOTOOLS_MODEST=1 bounds every build it starts (spec 0490 S6): cargo
+# at two jobs, Nix at --max-jobs 1 --cores 2.
+#
+# A check added to ci is added here in the same change. Runs inside the
+# repository's own dev shell, whose tools it uses (`check` there is a
+# function calling it). The log goes to /tmp/<repo>-check-<timestamp>.log,
+# its path printed first, to follow with `tail -f`.
+set -uo pipefail
+
+repo=$(cd "$(dirname "$0")/.." && pwd)
+
+# nix.yml's steps, as nix.yml spells them (CI_TARGET for its
+# ${{ matrix.ci-target }}): the ci-workflow check compares this list with
+# nix.yml's, so a step added to one must be added to the other.
+nix_steps() {
+  cat <<'STEPS'
+nix-instantiate -A CI_TARGET --option allow-import-from-derivation false > /dev/null
+scripts/protobuf-release-check
+nix-build -A rust-fmt
+nix-build -A CI_TARGET
+nix-build -A pypi
+nix-build -A crates-io
+STEPS
+}
+
+mode=loop staging=0 target=ci max_jobs=2 cores=6
+while [ $# -gt 0 ]; do
+  case $1 in
+    --nix)        mode=nix ;;
+    --release)    mode=release ;;
+    --preflight)  mode=preflight ;;
+    --staging)    staging=1 ;;
+    --target)     target=${2:?--target needs a value}; shift ;;
+    --max-jobs)   max_jobs=${2:?--max-jobs needs a value}; shift ;;
+    --cores)      cores=${2:?--cores needs a value}; shift ;;
+    --list-steps) nix_steps; exit 0 ;;
+    -h|--help)    sed -n '2,/^set -uo/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
+    *) echo "scripts/check: unknown argument $1 (see --help)" >&2; exit 2 ;;
+  esac
+  shift
+done
+
+if [ "${NIXSHELL_REPO:-}" != "$repo" ]; then
+  echo "scripts/check: run it inside this repository's dev shell, whose tools it uses:" >&2
+  echo "  cd $repo && nix-shell dev-shell.nix" >&2
+  exit 2
+fi
+
+if [ "${PROTOTOOLS_MODEST:-}" = 1 ]; then
+  max_jobs=1 cores=2
+  export CARGO_BUILD_JOBS=2
+fi
+# Its builds have their bounds (--max-jobs, --cores): no hint how to bound
+# them (spec 0489 S2).
+export PROTOTOOLS_QUIET=1
+
+log=/tmp/$(basename "$repo")-check-$(date +%Y%m%d-%H%M%S).log
+echo "scripts/check: log $log"
+exec > >(tee "$log") 2>&1
+
+cd "$repo"
+start=$SECONDS
+
+# One step: its name, then its command. Checked on its own exit status,
+# not through `set -e` across a pipe (spec 0485 S6, the 0487 incident).
+step() {
+  local name=$1 t=$SECONDS
+  shift
+  echo "== $name"
+  if "$@"; then
+    echo "== $name: ok ($((SECONDS - t)) s)"
+  else
+    echo "== $name: FAILED"
+    echo "scripts/check: stopped at '$name' after $((SECONDS - start)) s; log $log"
+    exit 1
+  fi
+}
+
+# One of nix_steps' lines, run: CI_TARGET is the target, and a nix-build
+# takes the build limits and no out-link.
+nix_step() {
+  local cmd=${1//CI_TARGET/$target}
+  case $cmd in
+    nix-build*) cmd="$cmd --max-jobs $max_jobs --cores $cores --no-out-link" ;;
+  esac
+  step "$cmd" sh -c "$cmd"
+}
+
+mapfile -t steps < <(nix_steps)
+
+# ── Preflight: seconds, no build ─────────────────────────────────────────
+# The local checks, which a ci member or a workflow step runs much later,
+# then nix.yml's own cheap steps: those before its first nix-build.
+step "cargo fmt" cargo fmt --all -- --check
+# The repository's Python, as pythonRuff lints it: attic/ and docs/ left out.
+step "ruff" sh -c 'ruff check --no-cache $(git ls-files "*.py" | grep -vE "^(attic|docs)/")'
+step "nixfmt (staged recipes)" sh -c 'nixfmt --check $(git ls-files "nixpkgs/pkgs/*.nix")'
+step "reuse lint" sh -c 'reuse lint > /dev/null || reuse lint'
+i=0
+while [ $i -lt ${#steps[@]} ] && [[ ${steps[$i]} != nix-build* ]]; do
+  nix_step "${steps[$i]}"
+  i=$((i + 1))
+done
+if [ "$mode" = preflight ]; then
+  echo "== preflight passed ($((SECONDS - start)) s)"
+  exit 0
+fi
+
+case $mode in
+  loop)
+    # ── The loop: ci's checks, in the working tree, at --profile quick ───
+    # As rustClippy and rustTests run them (nix/rust.nix): the workspace,
+    # no default features; the tests' external tools required, and the
+    # protoback suite run again via text, as rustTests does.
+    step "cargo clippy" cargo clippy --profile quick --locked --no-default-features --workspace -- -D warnings
+    step "cargo test" env PROTOBACK_SUITE_REQUIRE_TOOLS=1 PROTOBACK_PYTHON="$(command -v python3)" \
+      cargo test --profile quick --locked --no-default-features --workspace
+    step "protoback suite, via text" env PROTOBACK_SUITE_REQUIRE_TOOLS=1 PROTOBACK_SUITE_VIA_TEXT=1 \
+      PROTOBACK_PYTHON="$(command -v python3)" \
+      cargo test --profile quick --locked --no-default-features -p protoback --test suite
+    step "deploy-extensions (if stale)" scripts/deploy-extensions --if-stale
+    # The deployed extensions first, whatever shell runs this: Python never
+    # tests Nix's build of them, which may be of older Rust.
+    export PYTHONPATH="$repo/target/python:${PYTHONPATH:-}"
+    step "pyright" pyright
+    step "pytest" pytest -p no:cacheprovider -x prototext-pyo3/tests fdp-scan-pyo3/tests
+    echo "== CHECK PASSED ($((SECONDS - start)) s)"
+    ;;
+  nix)
+    # ── The quick world's CI, on the tracked files ───────────────────────
+    untracked=$(git ls-files --others --exclude-standard)
+    if [ -n "$untracked" ]; then
+      echo "scripts/check: untracked, so out of the Nix sources (git add -N to include):"
+      printf '  %s\n' $untracked
+    fi
+    nix_step "nix-build -A ci-quick"
+    echo "== CI-QUICK PASSED ($((SECONDS - start)) s)"
+    ;;
+  release)
+    # ── The release world's CI: nix.yml's remaining steps, in its order ──
+    while [ $i -lt ${#steps[@]} ]; do
+      nix_step "${steps[$i]}"
+      i=$((i + 1))
+    done
+    if [ "$staging" = 1 ]; then
+      nix_step "nix-build -A nixpkgs-staging"
+    fi
+    echo "== CI PASSED ($((SECONDS - start)) s)"
+    ;;
+esac

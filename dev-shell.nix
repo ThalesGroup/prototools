@@ -2,4 +2,6 @@
 #
 # SPDX-License-Identifier: MIT
 
-(import ./default.nix {}).dev-shell
+# The quick world (spec 0490 S3): the development cycle's, every input
+# built at cargoProfile = "quick", as ci-quick's.
+(import ./default.nix { cargoProfile = "quick"; }).dev-shell
