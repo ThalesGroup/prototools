@@ -57,6 +57,10 @@ if [ "${NIXSHELL_REPO:-}" != "$repo" ]; then
   exit 2
 fi
 
+# Its builds have their bounds (--max-jobs, --cores): no hint how to bound
+# them (spec 0489 S2).
+export PROTOTOOLS_QUIET=1
+
 log=/tmp/$(basename "$repo")-ci-$(date +%Y%m%d-%H%M%S).log
 echo "scripts/ci: log $log"
 exec > >(tee "$log") 2>&1

@@ -639,7 +639,7 @@ let
     inherit (rust) prototext protolens protoback;
     inherit (python) lintDeps lintSettings;
     inherit (rust) protoscan pyo3EnvironmentSignature;
-    inherit wktDb;
+    inherit wktDb userShellTools;
     # The demos' inputs — the googleapis database, the grpconf stage, the
     # life binaries — are not passed: each demo has its own shell
     # (spec 0394, demoShells below).
@@ -703,6 +703,28 @@ let
     paths  = [ rust.prototext rust.protolens rust.protoback rust.protoscan
                rust.gitSeriate rust.gitSeriateFdp wktDb ];
   };
+
+  # The user shell's tools, which its hook builds itself, bounded (spec
+  # 0489 S1): the derivations nix-build builds, so that either reuses the
+  # other's; no more than the shell had.
+  userShellTools = pkgs.symlinkJoin {
+    name   = "prototools-user-shell-tools";
+    paths  = [ rust.prototext rust.protolens rust.protoback rust.protoscan wktDb ];
+  };
+
+  # Spec 0489 S2: how to bound a build, said once per evaluation of an
+  # output (each depends on this one expression); not by the user shell,
+  # whose hook builds bounded, nor under PROTOTOOLS_QUIET (scripts/ci, the
+  # workflow, the shell's hook).
+  boundHint =
+    if builtins.getEnv "PROTOTOOLS_QUIET" != "" then null
+    else builtins.trace ''
+      prototools: on a machine with little memory, bound the build:
+        nix-build -A prototools --max-jobs 1 --cores 2
+      (README, "Building with Nix"; PROTOTOOLS_QUIET=1 hides this)'' null;
+  # Outputs that do not say it: the user shell (S2), and the protobuf
+  # release, which downstream builds import as data.
+  unhinted = [ "user-shell" "protobufRelease" ];
 
   # Fails when a store path whose name contains one of `deny` enters the
   # closure of `roots` (spec 0374 S2). Names, not paths, so a leak is caught
@@ -996,6 +1018,8 @@ let
   ];
 
 in
+builtins.mapAttrs
+  (name: value: if builtins.elem name unhinted then value else builtins.seq boundHint value)
 {
   default              = ci;
   # Spec 0461: the protobuf release, for downstream builds.
@@ -1033,6 +1057,7 @@ in
   inherit grehack2026;
   prototools-closure-check = prototoolsClosureCheck;
   user-shell           = shells.user-shell;
+  user-shell-tools     = userShellTools;
   dev-shell            = shells.dev-shell;
   release-shell        = releaseShell;
   grehack2026-shell    = demoShells.grehack2026-shell;

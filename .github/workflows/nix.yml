@@ -16,6 +16,10 @@ jobs:
     name: CI (${{ matrix.os }})
     if: github.repository == 'douzebis/prototools'
     runs-on: ${{ matrix.os }}
+    # The CI's builds have their bounds: no hint how to bound them (spec
+    # 0489 S2).
+    env:
+      PROTOTOOLS_QUIET: 1
     strategy:
       matrix:
         include:

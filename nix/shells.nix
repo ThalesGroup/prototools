@@ -4,7 +4,8 @@
 
 # nix/shells.nix — user-shell and dev-shell definitions.
 #
-# user-shell: plain shell with prototext, protolens, protoback, protoscan installed.
+# user-shell: plain shell with prototext, protolens, protoback, protoscan,
+#             which its hook builds at low parallelism (spec 0489 S1).
 #             Activated by `nix-shell` (via shell.nix).
 #
 # dev-shell:  full development environment with Cargo, Rust tools, Python
@@ -44,6 +45,7 @@
 , protoscan
 , wktDb             # well-known-types schema DB; carries the PROTOTEXT_DESCRIPTOR_SET setup-hook
 , buf               # narrow-pinned buf (newer than the main nixpkgs pin's 1.59.0; see default.nix)
+, userShellTools    # the user shell's tools, which its hook realises (spec 0489 S1)
 }:
 
 let
@@ -63,21 +65,61 @@ in
   user-shell = pkgs.mkShell {
     name = "prototools-user";
 
-    # wktDb contributes no binary — nix-shell sources each build input's
-    # setup-hook, and its is what exports PROTOTEXT_DESCRIPTOR_SET
-    # (spec 0228 S5), so no shellHook line is needed for it.
-    buildInputs = [ prototext protolens protoback protoscan wktDb ];
-
-    shellHook = ''
+    # The tools are not inputs: the hook realises them itself, with Nix's
+    # flags, at low parallelism unless PROTOTOOLS_BUILD_FLAGS says otherwise
+    # (spec 0489 S1); Nix reads its own --max-jobs and --cores before any
+    # expression, so only a command line can lower them. The derivation is
+    # `nix-build -A user-shell-tools`'s: either reuses what the other built.
+    # Its paths are given to the hook as text, their context discarded, so
+    # that nix-shell itself builds nothing, and the hook evaluates nothing
+    # (`nix-store --realise`): one evaluation, as before.
+    shellHook = let
+      drv = builtins.unsafeDiscardStringContext userShellTools.drvPath;
+      out = builtins.unsafeDiscardStringContext userShellTools.outPath;
+    in ''
       old_opts=$(set +o)
-      set -euo pipefail
+      set -uo pipefail
 
       export NIXSHELL_REPO="${repoRoot}"
-      export MANPATH="${prototext}/share/man:${protolens}/share/man:${protoback}/share/man:${protoscan}/share/man:''${MANPATH:-}"
-      source ${prototext}/share/bash-completion/completions/prototext.bash
-      source ${protolens}/share/bash-completion/completions/protolens.bash
-      source ${protoback}/share/bash-completion/completions/protoback.bash
-      source ${protoscan}/share/bash-completion/completions/protoscan.bash
+      _prototools_tools() {
+        local drv="${drv}" out="${out}" nix_store="" d
+        local -a flags
+        # The system's Nix, which `nix-shell --pure` leaves off PATH, before
+        # the pinned one.
+        for d in "$(dirname "$(command -v nix-store 2>/dev/null || echo /none/x)")" \
+            /run/current-system/sw/bin "$HOME/.nix-profile/bin" /nix/var/nix/profiles/default/bin; do
+          if [ -x "$d/nix-store" ]; then nix_store="$d/nix-store"; break; fi
+        done
+        nix_store=''${nix_store:-${pkgs.nix}/bin/nix-store}
+        read -ra flags <<< "''${PROTOTOOLS_BUILD_FLAGS:---max-jobs 1 --cores 2}"
+        # The root at the checkout's root, as `nix-build -o` makes one, so
+        # that a garbage collection keeps the tools and the checkout shows
+        # what holds them (deleting the checkout frees them); the log of a
+        # build beside it. Both ignored by git (`/result-*`).
+        local root="$NIXSHELL_REPO/result-user-shell" log="$NIXSHELL_REPO/result-user-shell.log"
+        if [ ! -d "$out" ]; then
+          echo "prototools: building the shell's tools (''${flags[*]}): the first entry takes a while." >&2
+          echo "prototools: log: $log" >&2
+        fi
+        if ! "$nix_store" --realise "$drv" --add-root "$root" "''${flags[@]}" \
+            > /dev/null 2> >(tee "$log" >&2) || [ ! -d "$out" ]; then
+          echo "prototools: the tools did not build (log: $log); the shell has none. Retry with:" >&2
+          echo "  nix-build $NIXSHELL_REPO -A user-shell-tools -o $root ''${flags[*]}" >&2
+          return
+        fi
+        export PATH="$out/bin:$PATH"
+        export MANPATH="$out/share/man:''${MANPATH:-}"
+        # The database's own path, as its setup-hook gave it: its sidecars
+        # beside it.
+        PROTOTEXT_DESCRIPTOR_SET=$(readlink -f "$out/share/prototools/wkt.desc")
+        export PROTOTEXT_DESCRIPTOR_SET
+        local c
+        for c in "$out"/share/bash-completion/completions/*.bash; do
+          source "$c"
+        done
+      }
+      _prototools_tools
+      unset -f _prototools_tools
 
       [[ "$old_opts" == *"set -o errexit"*  ]] && set -e || set +e
       [[ "$old_opts" == *"set -o nounset"*  ]] && set -u || set +u

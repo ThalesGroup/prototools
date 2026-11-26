@@ -120,7 +120,18 @@ Three ways to build, by what the build is for:
 
   `--cores` bounds the compilers running at once (and with them the memory
   peak), `--max-jobs` the builds; `max-jobs` and `cores` in `nix.conf` set
-  them once and for all.
+  them once and for all. `nix-build` reminds you of this command when it
+  starts (`PROTOTOOLS_QUIET=1` hides it).
+
+  `nix-shell` builds the tools it puts on your `PATH` this way already,
+  `--max-jobs 1 --cores 2`, as the same derivations as `nix-build`'s: what
+  one built, the other reuses. It roots them in the checkout, as
+  `result-user-shell` (garbage collections keep them; `rm
+  result-user-shell` frees them), and says when it builds, with its log
+  beside the link, `result-user-shell.log`.
+  On a large machine, set `PROTOTOOLS_BUILD_FLAGS` to the flags to use
+  instead, for example
+  `PROTOTOOLS_BUILD_FLAGS="--max-jobs auto --cores 0" nix-shell`.
 - **To release, or check what ships:** the default `release` profile,
   with thin LTO.
 
