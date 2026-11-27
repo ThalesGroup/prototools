@@ -188,9 +188,11 @@ fn a_walk_stopped_by_a_manual_commit_is_a_refusal_saying_why() {
     let (ok, _, err) = git_seriate(&repo, &["forget", "--into", "main", "--reason", "x", "s2"]);
     assert!(!ok);
     assert!(!err.contains("internal error"), "{err}");
-    assert!(err.contains("cannot forget s2"), "{err}");
+    assert!(err.contains("cannot forget 1 snapshot(s)"), "{err}");
+    assert!(err.contains("(s2)"), "{err}");
     assert!(err.contains("the walk stops at"), "{err}");
     assert!(err.contains("no seriate.itemPattern is set"), "{err}");
+    assert!(err.contains("to let the history's rewrites pass"), "{err}");
     assert_eq!(git(&repo, &["rev-parse", "main"]), old);
     assert!(ref_exists(&repo, "refs/heads/s2"));
 }

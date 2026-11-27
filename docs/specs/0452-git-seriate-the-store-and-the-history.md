@@ -229,7 +229,7 @@ legacy reader, the commit is a manual commit.
      ```
      warning: settle stopped at 1a2b3c4d ('docs: release notes'), which changes README.md:
      no seriate.itemPattern is set, so every file counts as a snapshot file.
-     Set one (git config seriate.itemPattern '*.txt') to let settle pass over hand-made commits.
+     Set one (git config seriate.itemPattern '*.txt') to let the history's rewrites pass over hand-made commits.
      ```
 4. **The sort.** The tail's snapshots and the candidates, sorted by
    `seriation` with the comparator, versions read as canonical stored

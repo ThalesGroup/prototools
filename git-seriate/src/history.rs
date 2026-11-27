@@ -232,9 +232,19 @@ fn settle_with(
                 || "the history can't be rewritten that far down".to_string(),
                 |w| w.replacen("settle stopped at", "the walk stops at", 1),
             );
+        // A glob can reach thousands: a count, then the first few.
+        const SHOWN: usize = 5;
+        let named = out_of_reach[..out_of_reach.len().min(SHOWN)].join(", ");
+        let more = out_of_reach.len().saturating_sub(SHOWN);
+        let more = if more > 0 {
+            format!(" and {more} more")
+        } else {
+            String::new()
+        };
         return Err(Error::Refused(format!(
-            "cannot forget {}, below where the history can be rewritten: {why}",
-            out_of_reach.join(", ")
+            "cannot forget {} snapshot(s), below where the history can be rewritten \
+             ({named}{more}): {why}",
+            out_of_reach.len()
         )));
     }
 
@@ -687,7 +697,7 @@ fn walk(
                         w.push_str(
                             ":\nno seriate.itemPattern is set, so every file counts as a \
                              snapshot file.\nSet one (git config seriate.itemPattern '*.txt') \
-                             to let settle pass over hand-made commits.",
+                             to let the history's rewrites pass over hand-made commits.",
                         );
                     }
                     report.warnings.push(w);
