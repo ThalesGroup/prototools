@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0495 — extract makes atomic snapshots
 
-Status: draft
+Status: draft (S2, S3 and S4 implemented on 2026-11-27; S5's provenance
+        with 0494 S3, S8 to come)
 App: git-seriate, git-seriate-fdp
 Refs: docs/specs/0494-extract-records-the-evidence.md
         (the origins and provenance the parts are cut by and recorded in),
@@ -61,6 +62,15 @@ same each time; a split, once made, is redone only by extracting again
   unframed: they are the executable's own build, and stay in its rest.
 - **N4.** Splitting by registrant (a Go module other than the build's
   own): after the hints are recorded (0494), and measured.
+- **N5.** Splitting container members: the right grain depends on the
+  kind of container, a packaging convention (a jar is one build, its
+  classes its members; a wheel is one; a zip of loose descriptor files is
+  one bundle; a release tarball's executables are each one), and
+  recognizing the kind needs the archive's bounds and member list, which
+  today's origins don't give (fdp-scan finds zip members by their local
+  headers, so an origin names a member, not its archive). Until fdp-scan
+  reads containers as such (a spec of its own: the central directory, the
+  members, the kinds they reveal), container members stay in the rest.
 
 ## Specification
 
@@ -75,29 +85,29 @@ same each time; a split, once made, is redone only by extracting again
   | something looks wrong | `advise`, reported | the sort's report and the snapshots' contents (S8) |
 
 - **S2. The parts of an input,** each a snapshot:
-  1. **each container member holding descriptors,** a zip or gzip member
-     found inside the input (its origin chain, 0494 S1), its own parts in
-     turn;
-  2. **each framed set** in a buffer: a chain of framed records, each
-     frame starting where the previous record ends (spec 0496); a record
-     whose decoded `name` repeats within a chain starts another set (a
-     file's `name` appears once in a set);
-  3. **the rest:** the copies of the buffer in no set, one part.
+  1. **each framed set** in a buffer (the input, or a container member
+     inside it): a chain of two framed records or more, each frame starting
+     where the previous record ends and declaring that record's length
+     (spec 0496); a record whose decoded `name` repeats within a chain
+     starts another set (a file's `name` appears once in a set);
+  2. **the rest:** every copy in no set, container members' included
+     (N5), one part.
 
   `--split none` keeps the input whole, as today. A part with nothing in
-  it is no snapshot.
+  it is no snapshot. An input with no set gives one snapshot, as today,
+  byte for byte.
 - **S3. Grouping:** `extract --as-one IDENTITY FILE…` makes one snapshot of
   several inputs (or `--files-from FILE`, `-` for standard input, for more
-  than a command line holds: a runfiles tree of thousands of modules), the caller's statement that they are one build; each
-  copy's origin starts with its input's path in the group, and S2 applies
-  to the group as to one input.
-- **S4. A part's identity:** its input's (or group's) identity, then
-  `!` and the part: the member's chain (`zip@7340032!assets/api.binpb`),
-  `set@<start>` for a framed set, nothing more for the rest. As a ref
-  name: every byte git refuses in one (`~ ^ : ? * [ \`, a space, a control
-  byte, `..`, `@{`, a component starting with `.` or ending with `.lock`),
-  and `%`, percent-encoded; a name past 200 bytes, its last component
-  replaced by a 12-digit hash of it, the whole part in the block.
+  than a command line holds: a runfiles tree of thousands of modules), the
+  caller's statement that they are one build; each copy's origin starts
+  with its input's path in the group, and S2 applies to each input of the
+  group.
+- **S4. A part's identity:** its input's (or group's) identity, then `!`
+  and the set's label: `set@<start>`, the offset of its first record,
+  after the chain of the member it lies in (`gzip@271!set@14811251`),
+  and after the input's path in a group. The rest keeps the input's
+  identity. A label is made a valid ref name as an input's path is (spec
+  0453 S5: what git refuses replaced by `_`).
 - **S5. A part's block:** its input's group, so that what to extract again
   stays known; `source.provenance` (0494 S3), then the part,
   `{part: container|set|rest, at: <chain or range>}`. Its build time: a
@@ -121,10 +131,8 @@ same each time; a split, once made, is redone only by extracting again
 
 ## Open questions
 
-- **Q1.** Container members that are one build with their host (a jar
-  packed into a binary built at the same revision): split anyway, as S2
-  does; they sort next to their host. To confirm on a measured case that
-  this costs nothing.
+- **Q1.** The grain of each kind of container (N5): to measure on real
+  cases once fdp-scan reads containers as such.
 - **Q2.** A part's upper-bound time in phase 1: deferred. In the measured
   case the bundles agreed copy for copy with their host's compiled
   copies, options set aside: built at the host's revision, by a bundler
@@ -132,19 +140,34 @@ same each time; a split, once made, is redone only by extracting again
 
 ## Test plan
 
-1. An input with descriptors of its own and in a zip member: two
-   snapshots, `<input>` and `<input>!zip@N!<member>`, each with its block.
-2. Two framed sets back to back, then copies in no set: three snapshots,
-   two `set@<start>` and the rest; a repeated `name` in one chain: two
-   sets.
+1. Two framed sets back to back, then copies in no set: three snapshots,
+   two `<input>!set@<start>` and the rest as `<input>`; a repeated `name`
+   in one chain: two sets.
+2. An input with no set: one snapshot, byte for byte as before; a single
+   framed record: no set.
 3. `--split none`: one snapshot, as today.
 4. `--as-one` over three single-file inputs: one snapshot, each copy's
-   origin starting with its input's path.
-5. A member name with `~`, a space and `..`: its identity escaped, a valid
-   ref name; a long one hashed, the whole part in the block.
-6. S5: a sentinel entry time ignored, a plausible one taken, the choice
-   recorded.
+   origin starting with its input's path; `--files-from` the same.
+5. A set inside a gzip member: its identity after the member's chain.
+6. S5's member times: with fdp-scan's containers (N5).
 
 ## Measured outcome
 
-Filled in at implementation.
+S2 to S4, implemented. The extractor marks each item's set
+(`Extracted::sets`): a chain of two framed records or more, read with
+fdp-scan's `frame_at`, split again at a repeated path. `extract` writes
+each set as `<identity>!set@<start>`, after the member's chain inside one,
+and the rest under the input's identity, every part then taking the input
+as its group; a record entry about one item goes with that item's part.
+An input with no set is written as before. `--split none` keeps an input
+whole; `--as-one ID` and `--files-from FILE` (`-` for standard input) make
+one snapshot of several inputs, each origin, set label and record key
+after its input's path. The tests of the test plan pass, items 1 to 5.
+
+An input embedding a `FileDescriptorSet` is split too: prototext's binary,
+which embeds the well-known types' set, gives the set as a snapshot of
+its own, beside its rest.
+
+Still to come: S5's provenance and the part in the block (with 0494 S3);
+a member's own build time (with fdp-scan's containers, N5); S8's reports
+in `advise`.

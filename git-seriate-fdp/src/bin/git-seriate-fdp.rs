@@ -50,8 +50,22 @@ enum Fdp {
         /// is needed (unpack with `mkdir r.git && tar xf FILE -C r.git`).
         #[arg(long, value_name = "FILE")]
         tar_out: Option<PathBuf>,
+        /// `sets`: each framed set an input embeds is a snapshot of its own,
+        /// `<input>!set@<start>`, the rest keeping the input's identity;
+        /// `none`: each input whole (spec 0495 S2).
+        #[arg(long, value_name = "HOW", default_value = "sets",
+              value_parser = ["sets", "none"])]
+        split: String,
+        /// One snapshot of every file, named ID: the files are one build,
+        /// such as a runfiles tree's modules (spec 0495 S3).
+        #[arg(long, value_name = "ID", conflicts_with = "id")]
+        as_one: Option<String>,
+        /// The files to scan, one per line, from FILE, or standard input for
+        /// -: for more than a command line holds.
+        #[arg(long, value_name = "FILE")]
+        files_from: Option<PathBuf>,
         /// The executables, libraries or other files to scan.
-        #[arg(required = true)]
+        #[arg(required_unless_present = "files_from")]
         files: Vec<PathBuf>,
     },
     /// What each FILE tells about where its descriptors come from, beyond
@@ -102,7 +116,10 @@ fn main() -> ExitCode {
                 increasing_field_numbers,
                 inflate,
                 tar_out,
-                files,
+                split,
+                as_one,
+                files_from,
+                mut files,
             ) = match command {
                 Fdp::Hints { files } => {
                     for file in files {
@@ -151,6 +168,9 @@ fn main() -> ExitCode {
                     increasing_field_numbers,
                     inflate,
                     tar_out,
+                    split,
+                    as_one,
+                    files_from,
                     files,
                 } => (
                     id,
@@ -161,9 +181,25 @@ fn main() -> ExitCode {
                     increasing_field_numbers,
                     inflate,
                     tar_out,
+                    split,
+                    as_one,
+                    files_from,
                     files,
                 ),
             };
+            if let Some(list) = &files_from {
+                let text = if list.as_os_str() == "-" {
+                    std::io::read_to_string(std::io::stdin())?
+                } else {
+                    std::fs::read_to_string(list).map_err(|e| {
+                        Error::Io(std::io::Error::new(
+                            e.kind(),
+                            format!("{}: {e}", list.display()),
+                        ))
+                    })?
+                };
+                files.extend(text.lines().filter(|l| !l.is_empty()).map(PathBuf::from));
+            }
             let metadata = metadata
                 .into_iter()
                 .map(|kv| match kv.split_once('=') {
@@ -179,6 +215,8 @@ fn main() -> ExitCode {
                 metadata,
                 increasing_field_numbers,
                 inflate,
+                no_split: split == "none",
+                as_one,
             };
             let mut warnings = Vec::new();
             let mut archive = git_seriate::archive::Archive::new();
@@ -202,6 +240,14 @@ fn main() -> ExitCode {
                     println!("{line}");
                 }
             };
+            // An input's parts (spec 0495): its rest may hold nothing while
+            // its sets were written, so "no descriptor" only for an input
+            // none of whose parts was.
+            let found: std::collections::HashSet<std::path::PathBuf> = outcomes
+                .iter()
+                .filter(|o| !matches!(o.added, Added::Nothing))
+                .map(|o| o.file.clone())
+                .collect();
             for o in outcomes {
                 match o.added {
                     Added::Written { branch, rejected } => {
@@ -211,7 +257,10 @@ fn main() -> ExitCode {
                         say(format!("added {branch}"));
                     }
                     Added::Unchanged { branch } => say(format!("unchanged {branch}")),
-                    Added::Nothing => say(format!("{}: no descriptor", o.file.display())),
+                    Added::Nothing if !found.contains(&o.file) => {
+                        say(format!("{}: no descriptor", o.file.display()));
+                    }
+                    Added::Nothing => {}
                 }
             }
             Ok(())

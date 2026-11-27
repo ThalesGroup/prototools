@@ -74,15 +74,26 @@ fn collect(
     // its range, after the members it was found in.
     let top = fdp_scan::Origin::default();
     let within = origin.unwrap_or(&top);
-    out.items
-        .extend(explained.found.iter().filter_map(|&(start, end)| {
-            Some(Item {
-                path: path_of(start)?,
-                bytes: data[start..end].to_vec(),
-                record: Vec::new(),
-                origin: Some(within.text(None, start, end)),
-            })
+    let records: Vec<(usize, usize, String)> = explained
+        .found
+        .iter()
+        .filter_map(|&(start, end)| Some((start, end, path_of(start)?)))
+        .collect();
+    // Each item's set (spec 0495 S2), labelled after the member it lies in.
+    let chain = within.chain(None);
+    let sets = framed_sets(data, &records);
+    for ((start, end, path), set) in records.into_iter().zip(sets) {
+        out.items.push(Item {
+            path,
+            bytes: data[start..end].to_vec(),
+            record: Vec::new(),
+            origin: Some(within.text(None, start, end)),
+        });
+        out.sets.push(set.map(|first| match chain.as_str() {
+            "" => format!("set@{first}"),
+            chain => format!("{chain}!set@{first}"),
         }));
+    }
     out.rejected
         .extend(explained.rejected.iter().map(|r| Rejection {
             name: r.name.clone(),
@@ -112,6 +123,49 @@ fn collect(
                 ),
             ))
         }));
+}
+
+/// The framed sets among a buffer's `records` (spec 0495 S2), in order:
+/// for each record, the start of its set's first record, `None` for a
+/// record in no set. A set is a chain of two records or more, each framed
+/// where the previous one ends, the frame declaring its length (the frames
+/// fdp-scan already reads, spec 0496); a path repeating within a chain
+/// starts another set, a file appearing once in a set.
+fn framed_sets(data: &[u8], records: &[(usize, usize, String)]) -> Vec<Option<usize>> {
+    let mut sets = vec![None; records.len()];
+    let mut mark = |from: usize, to: usize| {
+        if to - from >= 2 {
+            for set in &mut sets[from..to] {
+                *set = Some(records[from].0);
+            }
+        }
+    };
+    let mut first = 0;
+    while first < records.len() {
+        let mut last = first;
+        while last + 1 < records.len() {
+            let (_, end, _) = records[last];
+            let (start, next_end, _) = records[last + 1];
+            if fdp_scan::frame_at(data, end, start) != Some(next_end - start) {
+                break;
+            }
+            last += 1;
+        }
+        let mut from = first;
+        let mut seen = std::collections::HashSet::new();
+        for (offset, (_, _, path)) in records[first..=last].iter().enumerate() {
+            if !seen.insert(path.as_str()) {
+                let k = first + offset;
+                mark(from, k);
+                from = k;
+                seen.clear();
+                seen.insert(path.as_str());
+            }
+        }
+        mark(from, last + 1);
+        first = last + 1;
+    }
+    sets
 }
 
 /// The scanner's refusal reasons, as the block records them.
@@ -167,13 +221,204 @@ pub struct Options {
     /// Look into zip and gzip members (spec 0480 S8), within the default
     /// limits.
     pub inflate: bool,
+    /// Keep each input whole: no set made a snapshot of its own (`--split
+    /// none`, spec 0495 S2).
+    pub no_split: bool,
+    /// One snapshot of every file, under this identity (`--as-one`, spec
+    /// 0495 S3): the caller's statement that they are one build.
+    pub as_one: Option<String>,
 }
 
-/// What extracting one file did.
+/// What extracting did: one per snapshot written, an input's rest and its
+/// sets each one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outcome {
     pub file: PathBuf,
     pub added: Added,
+}
+
+/// An input's rendered items, by part (spec 0495 S2): the rest, and each
+/// set, with the refusals and record entries that go with each.
+#[derive(Default)]
+struct Parts {
+    rest: Vec<Item>,
+    rejected: Vec<Rejection>,
+    record: Vec<(String, String)>,
+    /// Each set, in the order found.
+    sets: Vec<Set>,
+}
+
+/// A framed set of an input (spec 0495 S2), a snapshot of its own.
+struct Set {
+    /// `set@<start>`, after the chain of the member it lies in.
+    label: String,
+    items: Vec<Item>,
+    /// The record entries about its items.
+    record: Vec<(String, String)>,
+}
+
+impl Parts {
+    /// What `found` holds, rendered by `kit`: an item the renderer refuses
+    /// is a refusal. A record entry about one item (`<key> <path>`) goes
+    /// with that item's part; the others with the rest.
+    fn of(kit: &Kit, found: Extracted, split: bool) -> Parts {
+        let mut parts = Parts {
+            rejected: found.rejected,
+            ..Parts::default()
+        };
+        let labels = found.sets.into_iter().chain(std::iter::repeat(None));
+        let mut path_set: std::collections::HashMap<String, usize> = Default::default();
+        for (item, label) in found.items.into_iter().zip(labels) {
+            let text = match kit.renderer.render(&item.path, &item.bytes) {
+                Ok(text) => text,
+                Err(e) => {
+                    parts.rejected.push(Rejection {
+                        name: item.path,
+                        reason: format!("render: {e}"),
+                    });
+                    continue;
+                }
+            };
+            let rendered = Item {
+                path: item.path,
+                bytes: text,
+                record: item.record,
+                origin: item.origin,
+            };
+            match label.filter(|_| split) {
+                None => parts.rest.push(rendered),
+                Some(label) => {
+                    let at = match parts.sets.iter().position(|set| set.label == label) {
+                        Some(at) => at,
+                        None => {
+                            parts.sets.push(Set {
+                                label,
+                                items: Vec::new(),
+                                record: Vec::new(),
+                            });
+                            parts.sets.len() - 1
+                        }
+                    };
+                    path_set.insert(rendered.path.clone(), at);
+                    parts.sets[at].items.push(rendered);
+                }
+            }
+        }
+        for (key, value) in found.record {
+            let about = key.split_once(' ').and_then(|(_, path)| path_set.get(path));
+            match about {
+                Some(&at) => parts.sets[at].record.push((key, value)),
+                None => parts.record.push((key, value)),
+            }
+        }
+        parts
+    }
+
+    /// These parts as one input of a group (spec 0495 S3): each origin,
+    /// set label, record key and refusal after the input's path.
+    fn within(mut self, input: &str) -> Parts {
+        let prefix = |items: &mut Vec<Item>| {
+            for item in items {
+                item.origin = item.origin.take().map(|o| format!("{input}!{o}"));
+            }
+        };
+        prefix(&mut self.rest);
+        for set in &mut self.sets {
+            set.label = format!("{input}!{}", set.label);
+            prefix(&mut set.items);
+            for (key, _) in &mut set.record {
+                *key = format!("{input}: {key}");
+            }
+        }
+        for (key, _) in &mut self.record {
+            *key = format!("{input}: {key}");
+        }
+        for r in &mut self.rejected {
+            r.name = format!("{input}: {}", r.name);
+        }
+        self
+    }
+
+    fn absorb(&mut self, other: Parts) {
+        self.rest.extend(other.rest);
+        self.rejected.extend(other.rejected);
+        self.record.extend(other.record);
+        self.sets.extend(other.sets);
+    }
+
+    /// Each part written as a snapshot: the rest under `identity`, as an
+    /// input with no set is written today; each set under
+    /// `<identity>!<label>`. When there are sets, every part takes the
+    /// input as its group, so that what to extract again stays known.
+    fn write(
+        self,
+        sink: &mut store::Sink,
+        identity: &str,
+        build_time: i64,
+        options: &Options,
+        file: &Path,
+    ) -> Result<Vec<Outcome>, Error> {
+        let group = if self.sets.is_empty() {
+            options.group.clone()
+        } else {
+            options.group.clone().or_else(|| Some(identity.to_string()))
+        };
+        let source = |identity: String| Source {
+            identity,
+            build_time,
+            order_hint: options.order_hint,
+            group: group.clone(),
+            metadata: options.metadata.clone(),
+        };
+        // Refusals alone are kept, as a record-only snapshot.
+        let mut record = self.record;
+        if self.rest.is_empty() && record.is_empty() && !self.rejected.is_empty() {
+            record.push(("refused".into(), self.rejected.len().to_string()));
+        }
+        let mut outcomes = vec![Outcome {
+            file: file.to_path_buf(),
+            added: store::add_to(
+                sink,
+                NewSnapshot {
+                    source: source(identity.to_string()),
+                    items: self.rest,
+                    rejected: self.rejected,
+                    record,
+                },
+            )?,
+        }];
+        for Set {
+            label,
+            items,
+            record,
+        } in self.sets
+        {
+            let label: Vec<String> = label.split('/').map(ref_component).collect();
+            outcomes.push(Outcome {
+                file: file.to_path_buf(),
+                added: store::add_to(
+                    sink,
+                    NewSnapshot {
+                        source: source(format!("{identity}!{}", label.join("/"))),
+                        items,
+                        rejected: Vec::new(),
+                        record,
+                    },
+                )?,
+            });
+        }
+        Ok(outcomes)
+    }
+}
+
+/// A file's path as it prefixes origins in a group: `%`, `!` and `;`
+/// escaped, as fdp-scan escapes a member's name (spec 0480 S6).
+fn input_label(file: &Path) -> String {
+    file.display()
+        .to_string()
+        .replace('%', "%25")
+        .replace('!', "%21")
+        .replace(';', "%3B")
 }
 
 /// Extract each of `files` as a snapshot (spec 0453 S5). Warnings go to
@@ -210,6 +455,11 @@ pub fn extract_files_into(
             "--id names one file's snapshot: give one file".into(),
         ));
     }
+    if options.id.is_some() && options.as_one.is_some() {
+        return Err(Error::Refused(
+            "--id and --as-one both name the snapshot: give one".into(),
+        ));
+    }
     let schema = Schema::of(repo)?;
     let extractor = FdpExtractor {
         schema: &schema,
@@ -240,53 +490,30 @@ pub fn extract_files_into(
         }
     }
     let mut outcomes = Vec::new();
+    // `--as-one`: every input's parts gathered, written once (spec 0495 S3).
+    let mut group = options.as_one.as_ref().map(|_| Parts::default());
     for (file, &time) in files.iter().zip(&times) {
         let bytes = std::fs::read(file)?;
-        let found = extractor.extract(&bytes);
-        let mut rejected = found.rejected;
-        let mut items = Vec::new();
-        for item in found.items {
-            match kit.renderer.render(&item.path, &item.bytes) {
-                Ok(text) => items.push(Item {
-                    path: item.path,
-                    bytes: text,
-                    record: item.record,
-                    origin: item.origin,
-                }),
-                Err(e) => rejected.push(Rejection {
-                    name: item.path,
-                    reason: format!("render: {e}"),
-                }),
+        let parts = Parts::of(kit, extractor.extract(&bytes), !options.no_split);
+        match &mut group {
+            Some(group) => group.absorb(parts.within(&input_label(file))),
+            None => {
+                let identity = match &options.id {
+                    Some(id) => id.clone(),
+                    None => identity_of(file),
+                };
+                let build_time = options.build_time.unwrap_or(time);
+                outcomes.extend(parts.write(sink, &identity, build_time, options, file)?);
             }
         }
-        // Refusals alone are kept, as a record-only snapshot.
-        let mut record = found.record;
-        if items.is_empty() && record.is_empty() && !rejected.is_empty() {
-            record.push(("refused".into(), rejected.len().to_string()));
-        }
-        let identity = match &options.id {
-            Some(id) => id.clone(),
-            None => identity_of(file),
-        };
-        let added = store::add_to(
-            sink,
-            NewSnapshot {
-                source: Source {
-                    identity,
-                    build_time: options.build_time.unwrap_or(time),
-                    order_hint: options.order_hint,
-                    group: options.group.clone(),
-                    metadata: options.metadata.clone(),
-                },
-                items,
-                rejected,
-                record,
-            },
-        )?;
-        outcomes.push(Outcome {
-            file: file.clone(),
-            added,
-        });
+    }
+    if let (Some(group), Some(identity)) = (group, &options.as_one) {
+        // One build: its time the latest of its inputs', unless given.
+        let build_time = options
+            .build_time
+            .or_else(|| times.iter().copied().max())
+            .unwrap_or(0);
+        outcomes.extend(group.write(sink, identity, build_time, options, Path::new(identity))?);
     }
     Ok(outcomes)
 }

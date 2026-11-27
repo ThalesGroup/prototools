@@ -569,10 +569,15 @@ fn a_framed_descriptor_ends_at_its_frame() {
         &mut Vec::new(),
     )
     .unwrap();
-    let block = git_seriate::store::list_with(&r, None)
-        .unwrap()
-        .remove(0)
-        .block;
+    // The two records are a set (spec 0495 S2): its snapshot the only one,
+    // the input's rest being empty; the frame cut's entry goes with it.
+    let listed = git_seriate::store::list_with(&r, None).unwrap();
+    let a_start = 64 + field(1, a).len() - a.len();
+    assert_eq!(
+        listed.iter().map(|l| l.branch.as_str()).collect::<Vec<_>>(),
+        [format!("x!set@{a_start}")]
+    );
+    let block = &listed[0].block;
     // `executable` puts 64 bytes before the message.
     let (start, end) = (64 + b_start, 64 + b_end);
     assert_eq!(block.evidence[&item_path_of(b)], format!("{start}..{end}"));
@@ -582,5 +587,182 @@ fn a_framed_descriptor_ends_at_its_frame() {
             format!("frame-cut {}", item_path_of(b)),
             format!("{start}..{end}, read on to {}", 64 + message.len())
         )]
+    );
+}
+
+/// The snapshots `options` makes of `files`, as (identity, group, paths),
+/// sorted by identity.
+fn snapshots_of(
+    files: &[PathBuf],
+    options: &ExtractOptions,
+) -> Vec<(String, Option<String>, Vec<String>)> {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_, r) = repo(tmp.path());
+    let kit = kit(&r).unwrap();
+    extract_files(&r, &kit, files, options, &mut Vec::new()).unwrap();
+    let mut out: Vec<_> = git_seriate::store::list_with(&r, None)
+        .unwrap()
+        .into_iter()
+        .map(|l| {
+            (
+                l.branch,
+                l.block.source.group,
+                l.block.contents.unwrap_or_default(),
+            )
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+fn sorted(mut paths: Vec<String>) -> Vec<String> {
+    paths.sort();
+    paths
+}
+
+/// Spec 0495 S2: two framed sets back to back, then copies in no set: a
+/// snapshot per set, `x!set@<start>`, and the rest as `x`, all with `x` as
+/// their group. A path repeating within a chain starts another set; a set
+/// of one record is no set.
+#[test]
+fn framed_sets_are_snapshots_of_their_own() {
+    let stock = stock_files();
+    let (a, b, c, d, e) = (&stock[0], &stock[1], &stock[2], &stock[3], &stock[4]);
+    // The same path as a, another content.
+    let a2 = other_flavor(a);
+    // A chain of a, b and a2, a2 repeating a's path: a set of a and b, then
+    // a2 alone, which falls to the rest.
+    let mut first = field(1, a);
+    first.extend(field(1, b));
+    first.extend(field(1, &a2));
+    let mut second = field(1, c);
+    second.extend(field(1, d));
+    let tmp = tempfile::tempdir().unwrap();
+    let file = executable(tmp.path(), "x", &[&first, &second, e], None);
+    let options = ExtractOptions {
+        id: Some("x".into()),
+        build_time: Some(1_700_000_000),
+        ..ExtractOptions::default()
+    };
+    let first_at = 64 + field(1, a).len() - a.len();
+    let second_at = 64 + first.len() + 64 + field(1, c).len() - c.len();
+    let x = Some("x".to_string());
+    assert_eq!(
+        snapshots_of(std::slice::from_ref(&file), &options),
+        [
+            (
+                "x".to_string(),
+                x.clone(),
+                sorted(vec![item_path_of(e), item_path_of(&a2)])
+            ),
+            (
+                format!("x!set@{first_at}"),
+                x.clone(),
+                sorted(vec![item_path_of(a), item_path_of(b)])
+            ),
+            (
+                format!("x!set@{second_at}"),
+                x,
+                sorted(vec![item_path_of(c), item_path_of(d)])
+            ),
+        ]
+    );
+    // `--split none`: the input whole, as before.
+    let whole = snapshots_of(
+        std::slice::from_ref(&file),
+        &ExtractOptions {
+            no_split: true,
+            ..options.clone()
+        },
+    );
+    assert_eq!(whole.len(), 1);
+    assert_eq!(whole[0].0, "x");
+    assert_eq!(whole[0].1, None);
+}
+
+/// Spec 0495 S2: an input with no set is one snapshot, as before; so is a
+/// single framed record.
+#[test]
+fn an_input_with_no_set_is_one_snapshot_as_before() {
+    let stock = stock_files();
+    let tmp = tempfile::tempdir().unwrap();
+    let file = executable(tmp.path(), "x", &[&stock[0], &field(1, &stock[1])], None);
+    let snapshots = snapshots_of(
+        std::slice::from_ref(&file),
+        &ExtractOptions {
+            id: Some("x".into()),
+            build_time: Some(1_700_000_000),
+            ..ExtractOptions::default()
+        },
+    );
+    assert_eq!(
+        snapshots,
+        [(
+            "x".to_string(),
+            None,
+            sorted(vec![item_path_of(&stock[0]), item_path_of(&stock[1])])
+        )]
+    );
+}
+
+/// Spec 0495 S3: `--as-one` makes one snapshot of several inputs, each
+/// copy's origin after its input's path.
+#[test]
+fn as_one_makes_one_snapshot_of_several_inputs() {
+    let stock = stock_files();
+    let tmp = tempfile::tempdir().unwrap();
+    let files: Vec<PathBuf> = (0..3)
+        .map(|i| executable(tmp.path(), &format!("m{i}"), &[&stock[i]], None))
+        .collect();
+    let dir = tempfile::tempdir().unwrap();
+    let (_, r) = repo(dir.path());
+    let kit = kit(&r).unwrap();
+    extract_files(
+        &r,
+        &kit,
+        &files,
+        &ExtractOptions {
+            as_one: Some("tree".into()),
+            build_time: Some(1_700_000_000),
+            ..ExtractOptions::default()
+        },
+        &mut Vec::new(),
+    )
+    .unwrap();
+    let listed = git_seriate::store::list_with(&r, None).unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].branch, "tree");
+    for (i, file) in files.iter().enumerate() {
+        let path = item_path_of(&stock[i]);
+        assert_eq!(
+            listed[0].block.evidence[&path],
+            format!("{}!64..{}", file.display(), 64 + stock[i].len())
+        );
+    }
+}
+
+/// Spec 0495 S4: a set inside a gzip member, named after the member's chain.
+#[test]
+fn a_set_in_a_member_is_named_after_its_chain() {
+    let stock = stock_files();
+    let (a, b) = (&stock[0], &stock[1]);
+    let mut set = field(1, a);
+    set.extend(field(1, b));
+    let member = gzip(&set);
+    let tmp = tempfile::tempdir().unwrap();
+    let file = executable(tmp.path(), "x", &[&member], None);
+    let snapshots = snapshots_of(
+        std::slice::from_ref(&file),
+        &ExtractOptions {
+            id: Some("x".into()),
+            build_time: Some(1_700_000_000),
+            inflate: true,
+            ..ExtractOptions::default()
+        },
+    );
+    let at = field(1, a).len() - a.len();
+    assert_eq!(
+        snapshots.iter().map(|s| s.0.as_str()).collect::<Vec<_>>(),
+        [format!("x!gzip@64!set@{at}")]
     );
 }

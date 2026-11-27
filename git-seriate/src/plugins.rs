@@ -19,6 +19,11 @@ pub struct Extracted {
     pub rejected: Vec<Rejection>,
     /// What the extractor wants kept beside them, shown, never interpreted.
     pub record: Vec<(String, String)>,
+    /// The set of its input each item belongs to (spec 0495 S2), parallel
+    /// to `items`: a label such as `set@<start>`, each set a snapshot of
+    /// its own; `None` for the rest, which keeps the input's identity.
+    /// Empty when the extractor tells no set apart.
+    pub sets: Vec<Option<String>>,
 }
 
 /// How an item is stored in the tree, and back.

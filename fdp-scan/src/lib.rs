@@ -407,8 +407,10 @@ fn score_candidate_with(
 /// ending at `start`: a tag of wire type 2 (length-delimited), then a varint
 /// length. Read forwards, from where the previous record ended: read
 /// backwards from `start`, a varint's continuation bytes (0x80 and above)
-/// can't be told from the bytes before it.
-fn frame_at(data: &[u8], at: usize, start: usize) -> Option<usize> {
+/// can't be told from the bytes before it. Public for the sets a caller
+/// tells apart by their frames (git-seriate-fdp, spec 0495 S2): two records
+/// are chained when a frame at the first's end declares the second's length.
+pub fn frame_at(data: &[u8], at: usize, start: usize) -> Option<usize> {
     let (tag, tag_len) = decode_varint(data.get(at..start)?)?;
     let (length, length_len) = decode_varint(&data[at + tag_len..start])?;
     (tag & 7 == 2 && tag >> 3 != 0 && at + tag_len + length_len == start)
