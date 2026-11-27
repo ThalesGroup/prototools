@@ -16,17 +16,17 @@ Refs: docs/specs/0452-git-seriate-the-store-and-the-history.md
         (origins: S6's text),
       docs/specs/0492-extraction-hints-what-an-executable-tells-beyond-its-descriptors.md
         (the registrants recorded),
-      docs/specs/0495-units-derived-from-evidence-and-directives.md
-        (what reads this evidence)
+      docs/specs/0495-extract-makes-atomic-snapshots.md
+        (the atomic snapshots this evidence lets `extract` make)
 
 ## Background
 
 A snapshot is to be atomic relative to its source repository: one source,
-one revision (spec 0495). Deciding that is not `extract`'s: the decision
-can need the caller's knowledge, and must be possible again later, as
-evidence and knowledge improve, without the original inputs, which a
-downstream may no longer hold. So `extract` observes and records; units
-are derived afterwards (0495). What isn't recorded can't be used later.
+one revision. `extract` makes it so, from the input's structure (spec
+0495): an embedded container, a framed set, the rest. That needs the
+evidence of where each copy was found, and the evidence stays useful
+afterwards: to check a split, to analyze a history, and, should a better
+rule come, to split again. What isn't recorded can't be used later.
 
 Today a snapshot records an origin only for a descriptor found inside a
 container member, as one `record` entry per file (spec 0480 S8): nothing
@@ -44,12 +44,12 @@ the block already lists in `contents`.
 - **G3.** Compact: each copy's evidence where its path already is.
 - **G4.** Histories that mix formats: blocks of format 1 readable forever,
   new ones written in format 2, one history holding both.
-- **G5.** An input extracted again, by a newer extractor, replaces its
-  earlier observation, recorded as such.
+- **G5.** Extracting an input again goes through `forget` (spec 0497):
+  never a silent replacement.
 
 ## Non-goals
 
-- **N1.** Splitting or grouping: spec 0495, from this evidence.
+- **N1.** Splitting or grouping: spec 0495, which reads this evidence.
 - **N2.** A migration of format-1 blocks: they stay as written; an
   in-place migration, if ever, as an option of its own.
 
@@ -90,17 +90,10 @@ the block already lists in `contents`.
   reader takes format 1 and 2 blocks alike, a history may hold both, and
   a writing command refuses only a block of a format above the ones it
   knows (amending spec 0452 S4, which refused the repository).
-- **S6. Extracting again:** adding a snapshot whose identity exists with
-  another commit (refused by spec 0452 S3) replaces it when the new
-  observation's extractor is one the history's record names, and is a
-  newer version of the old one's, or the same with other options, or
-  another named extractor: the snapshot's ref moves, the new block
-  records `replaces: <commit>`, and `settle` takes the new one at its next
-  run. The replaced commit stays reachable, at
-  `refs/seriate/replaced/<identity>/<n>`, `n` counting the replacements,
-  so that `replaces` can be checked. An extractor the record doesn't
-  name, an older version, or the same name, version and options with
-  another result, is refused as before.
+- **S6. Extracting again** an input already stored: its snapshots are
+  forgotten first (`git seriate forget`, spec 0497), then extracted as new
+  ones. The store's rule stays: one identity, one commit, another refused
+  (spec 0452 S3).
 
 ## Test plan
 
@@ -113,12 +106,7 @@ the block already lists in `contents`.
    map with `by: go:<package>`.
 5. A history of a format-1 snapshot and a format-2 one: read, settled;
    a build knowing format 1 only refusing to write the second.
-6. The same input extracted again by a newer version of a named
-   extractor: the ref moved, `replaces` recorded, the old commit at
-   `refs/seriate/replaced/<identity>/1`; with other options: replaced too;
-   by an extractor the record doesn't name, or by the same version and
-   options: refused.
-7. `--layer` facts absent from `source.metadata`.
+6. `--layer` facts absent from `source.metadata`.
 
 ## Measured outcome
 
@@ -130,4 +118,5 @@ one without format 1, byte for byte as before, so existing snapshots and
 their history commits are unchanged. `compact` drops a removed path's
 evidence; a snapshot rebuilt from its history commit gets its origins back
 from the block, and is the same commit. An input extracted before gives,
-extracted again, another commit, which spec 0452 still refuses until S6.
+extracted again, another commit, which spec 0452 refuses: forget it first
+(S6).
