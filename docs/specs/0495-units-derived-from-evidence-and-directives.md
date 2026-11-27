@@ -76,7 +76,7 @@ edits a snapshot or a history commit by hand.
   | this directory is a unit of its own | the caller: `split` directive | paths it knows (`third_party/…`, a vendored package) |
   | this split is wrong | the caller: `keep` directive | its review, the sort's report |
   | these copies come from another source | the evidence | a copy's registrant (0494 S1): a Go module other than the build's own, a C++ library's Bazel repository other than the build's |
-  | these copies are a set embedded in raw bytes | the evidence | contiguity: adjacent ranges (0494 S1) whose copies the build's own don't explain; its rule from Q1's measurement |
+  | these copies are a set embedded in raw bytes | the evidence | framing (S3a): a chain of framed records, a repeated `name` starting another set |
   | what neither caught | `settle`, reported | the straddles left after the sort; phase 3's votes against build time |
 
 - **S2. The directives,** `units.yaml` in the history's record
@@ -99,17 +99,28 @@ edits a snapshot or a history commit by hand.
   directive is a new record; the next `settle` recomputes the units.
 - **S3. Deriving the units,** before the sort: group the snapshots
   `group` names; within each build, split off the copies whose registrant
-  names another source, then the sets embedded in raw bytes (contiguity),
+  names another source, then the sets embedded in raw bytes (S3a),
   then the paths `split` names, unless `keep` says otherwise; the rest of
   a build, one unit.
 - **S4. A unit's identity and record:** a group's name, or a snapshot's
   identity, then `!<part>` for a part split off (a module, a repository, a
   path). Its history commit's block names its constituents: the snapshots,
   and which part of each.
+- **S3a. Sets in raw bytes, by framing:** a set is a chain of framed
+  records, each frame starting where the previous record ends (spec 0496:
+  the frames, read and verified by the scanner), recorded among the
+  evidence (0494); a set ends where the chain breaks, whatever the gap
+  after it, and a record whose decoded `name` repeats within a chain
+  starts another set (a file's `name` appears once in a set; its
+  `dependency` strings, options and the producer's data around the set
+  are not `name`s). Records outside any chain (generated code embeds one
+  descriptor per file, unframed) form no set.
 - **S5. A unit's build time:** a zip member's entry time (0494 S2) where
   plausible, later than the known sentinels (the DOS epoch 1980-01-01,
   the Unix epoch, 2010-01-01) and not later than its input's; else its
-  inputs' latest, an upper bound; which one, recorded.
+  inputs' latest, an upper bound; which one, recorded. A unit split off
+  keeps its host's build time, unless a directive gives it another:
+  splitting changes containment, not time.
 - **S6. Format-1 snapshots** carry no evidence: only directives apply to
   them, and without any, each is a unit as today.
 - **S7. `settle --explain`** lists the units derived, with what made each
@@ -126,16 +137,20 @@ edits a snapshot or a history commit by hand.
 
 ## Open questions
 
-- **Q1.** Contiguity's rule, the first split a downstream needs: its
-  embedded schema bundles sit in raw bytes, not in container members
-  (several bundles clustered within 3 MB of a 4 GB archive, each copy
-  once, the compiled copies recurring once per executable). To measure on
-  0494's ranges, there and on a synthetic bundle in a synthetic
-  executable: where each set starts and ends, and whether fdp-scan's
-  order cuts (spec 0449) fall at those bounds.
-- **Q2.** A unit's upper-bound time in phase 1: deferred until a
-  measurement shows a need (phase 3's window already compares an
-  embedded set with its input's neighbors).
+- **Q1.** *Answered, measured downstream* on a database client embedding
+  eleven schema bundles in raw bytes (0494's ranges): within each bundle,
+  consecutive records are chained, each frame starting where the previous
+  record ends; a bundle ends where the chain breaks, after gaps of 115
+  bytes to 2.2 KB, so a cut by gap size fails and a cut by framing
+  doesn't; nine of the bundles start again on the same few files, which a
+  repeated `name` finds. Hence S3a. The measurement also found the
+  scanner reading past each bundle's last record, which spec 0496 fixes.
+- **Q2.** A unit's upper-bound time in phase 1: still deferred. In the
+  measured case the bundles agreed copy for copy with their host's
+  compiled copies, options set aside: built at the host's revision, by a
+  bundler that strips options, so inheriting the host's time was right.
+  Copies of one input that differ only in options are a lossy producer,
+  not another revision.
 
 ## Test plan
 
