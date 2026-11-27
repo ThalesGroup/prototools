@@ -92,7 +92,7 @@ fn history(root: &Path, snapshots: &[&[(&str, &str)]]) -> PathBuf {
 }
 
 fn subjects(repo: &Path) -> String {
-    git(repo, &["log", "--reverse", "--format=%s", "main"])
+    git(repo, &["log", "--reverse", "--format=%s", "main/default"])
 }
 
 /// f.txt grows; s2 changes nothing; s3 rewrites g.txt; s4 is after the
@@ -115,14 +115,14 @@ fn cutoff() -> String {
 fn level_1_keeps_a_sources_only_record() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = history(tmp.path(), GROWING);
-    let tip = git(&repo, &["rev-parse", "main"]);
+    let tip = git(&repo, &["rev-parse", "main/default"]);
     let out = git_seriate(&repo, &["compact", "--into", "main", "--cutoff", &cutoff()]);
     assert!(out.contains("dropped 0, reduced 0, converted 0"), "{out}");
     assert_eq!(
         subjects(&repo),
         "Snapshot s0\nSnapshot s1\nSnapshot s2\nSnapshot s3\nSnapshot s4\n"
     );
-    assert_eq!(git(&repo, &["rev-parse", "main"]), tip);
+    assert_eq!(git(&repo, &["rev-parse", "main/default"]), tip);
 }
 
 /// Level 1 drops a manual commit that changes nothing, and the second copy
@@ -134,10 +134,20 @@ fn level_1_drops_empty_manual_commits_and_second_copies() {
     repeat_tip(&repo);
     let note = git(
         &repo,
-        &["commit-tree", "main^{tree}", "-p", "main", "-m", "A note"],
+        &[
+            "commit-tree",
+            "main/default^{tree}",
+            "-p",
+            "main/default",
+            "-m",
+            "A note",
+        ],
     );
-    git(&repo, &["update-ref", "refs/heads/main", note.trim()]);
-    let tree = git(&repo, &["rev-parse", "main^{tree}"]);
+    git(
+        &repo,
+        &["update-ref", "refs/heads/main/default", note.trim()],
+    );
+    let tree = git(&repo, &["rev-parse", "main/default^{tree}"]);
 
     let out = git_seriate(
         &repo,
@@ -148,7 +158,7 @@ fn level_1_drops_empty_manual_commits_and_second_copies() {
     assert!(out.contains("('A note'): changes nothing"), "{out}");
     assert!(out.contains("dropped 2, reduced 0, converted 0"), "{out}");
     assert_eq!(subjects(&repo), "Snapshot s0\nSnapshot s1\n");
-    assert_eq!(git(&repo, &["rev-parse", "main^{tree}"]), tree);
+    assert_eq!(git(&repo, &["rev-parse", "main/default^{tree}"]), tree);
     // s1's first copy stays, and so does its snapshot.
     assert!(!out.contains("delete snapshot"), "{out}");
     git(
@@ -164,7 +174,7 @@ fn level_1_drops_empty_manual_commits_and_second_copies() {
 fn compact_refuses_one_identity_with_two_blocks() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = history(tmp.path(), &GROWING[..2]);
-    let message = git(&repo, &["log", "-1", "--format=%B", "main"]);
+    let message = git(&repo, &["log", "-1", "--format=%B", "main/default"]);
     let other = message.replace(
         &format!("build_time: {}", T0 + DAY),
         &format!("build_time: {}", T0 + 2 * DAY),
@@ -174,14 +184,17 @@ fn compact_refuses_one_identity_with_two_blocks() {
         &repo,
         &[
             "commit-tree",
-            "main^{tree}",
+            "main/default^{tree}",
             "-p",
-            "main",
+            "main/default",
             "-m",
             other.trim_end(),
         ],
     );
-    git(&repo, &["update-ref", "refs/heads/main", commit.trim()]);
+    git(
+        &repo,
+        &["update-ref", "refs/heads/main/default", commit.trim()],
+    );
 
     let mut command = Command::new(env!("CARGO_BIN_EXE_git-seriate"));
     isolated(&mut command, &repo);
@@ -201,7 +214,7 @@ fn compact_refuses_one_identity_with_two_blocks() {
 fn level_2_drops_what_is_made_again_later() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = history(tmp.path(), GROWING);
-    let tree = git(&repo, &["rev-parse", "main^{tree}"]);
+    let tree = git(&repo, &["rev-parse", "main/default^{tree}"]);
     let out = git_seriate(
         &repo,
         &[
@@ -222,7 +235,7 @@ fn level_2_drops_what_is_made_again_later() {
     );
     // s0 and s1 change only what s3 changes again; s2 changes nothing.
     assert_eq!(subjects(&repo), "Snapshot s3\nSnapshot s4\n");
-    assert_eq!(git(&repo, &["rev-parse", "main^{tree}"]), tree);
+    assert_eq!(git(&repo, &["rev-parse", "main/default^{tree}"]), tree);
 
     // Their snapshot branches go with them, so settle doesn't put them
     // back; the others stay.
@@ -292,7 +305,7 @@ fn level_3_reduces_snapshots_to_what_reaches_the_cutoff() {
             &[("f.txt", "a\nb\nc\n")],
         ],
     );
-    let tree = git(&repo, &["rev-parse", "main^{tree}"]);
+    let tree = git(&repo, &["rev-parse", "main/default^{tree}"]);
     let cutoff = (T0 + DAY + DAY / 2).to_string();
     let out = git_seriate(
         &repo,
@@ -302,8 +315,8 @@ fn level_3_reduces_snapshots_to_what_reaches_the_cutoff() {
     );
     assert!(out.contains("reduce "), "{out}");
     assert!(out.contains("dropped 0, reduced 1"), "{out}");
-    assert_eq!(git(&repo, &["rev-parse", "main^{tree}"]), tree);
-    let first = git(&repo, &["rev-list", "--max-parents=0", "main"]);
+    assert_eq!(git(&repo, &["rev-parse", "main/default^{tree}"]), tree);
+    let first = git(&repo, &["rev-list", "--max-parents=0", "main/default"]);
     let message = git(&repo, &["log", "-1", "--format=%B", first.trim()]);
     let block = Block::read(&message).unwrap().unwrap();
     assert!(block.reduced);
@@ -318,7 +331,7 @@ fn level_3_reduces_snapshots_to_what_reaches_the_cutoff() {
 fn a_dry_run_lists_and_writes_nothing() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = history(tmp.path(), GROWING);
-    let before = git(&repo, &["rev-parse", "main"]);
+    let before = git(&repo, &["rev-parse", "main/default"]);
     let objects = git(&repo, &["count-objects", "-v"]);
     let out = git_seriate(
         &repo,
@@ -333,38 +346,44 @@ fn a_dry_run_lists_and_writes_nothing() {
             "--dry-run",
         ],
     );
-    assert!(out.contains("would compact main: dropped 3"), "{out}");
-    assert_eq!(git(&repo, &["rev-parse", "main"]), before);
+    assert!(
+        out.contains("would compact main/default: dropped 3"),
+        "{out}"
+    );
+    assert_eq!(git(&repo, &["rev-parse", "main/default"]), before);
     assert_eq!(git(&repo, &["count-objects", "-v"]), objects);
-    assert!(git(&repo, &["branch", "--list", "main-*"]).is_empty());
+    assert!(git(&repo, &["branch", "--list", "main/default-*"]).is_empty());
 }
 
 #[test]
 fn nothing_to_drop_moves_nothing() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = history(tmp.path(), &GROWING[..2]);
-    let before = git(&repo, &["rev-parse", "main"]);
+    let before = git(&repo, &["rev-parse", "main/default"]);
     let out = git_seriate(&repo, &["compact", "--into", "main", "--cutoff", &cutoff()]);
     assert!(out.contains("dropped 0, reduced 0, converted 0"), "{out}");
-    assert_eq!(git(&repo, &["rev-parse", "main"]), before);
+    assert_eq!(git(&repo, &["rev-parse", "main/default"]), before);
 }
 
 /// Stores the snapshot at `main`'s tip again, on top of itself: a commit
 /// with the same block and tree as its parent.
 fn repeat_tip(repo: &Path) {
-    let message = git(repo, &["log", "-1", "--format=%B", "main"]);
+    let message = git(repo, &["log", "-1", "--format=%B", "main/default"]);
     let commit = git(
         repo,
         &[
             "commit-tree",
-            "main^{tree}",
+            "main/default^{tree}",
             "-p",
-            "main",
+            "main/default",
             "-m",
             message.trim_end(),
         ],
     );
-    git(repo, &["update-ref", "refs/heads/main", commit.trim()]);
+    git(
+        repo,
+        &["update-ref", "refs/heads/main/default", commit.trim()],
+    );
 }
 
 /// A manual commit on `main` that adds `path`, anchored to `anchor`.
@@ -403,7 +422,7 @@ fn anchored_commit(repo: &Path, path: &str, anchor: &str) {
         );
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     };
-    run(&["read-tree", "main"]);
+    run(&["read-tree", "main/default"]);
     run(&[
         "update-index",
         "--add",
@@ -412,8 +431,8 @@ fn anchored_commit(repo: &Path, path: &str, anchor: &str) {
     ]);
     let tree = run(&["write-tree"]);
     let message = format!("Add {path} by hand\n\nSnapshot-Anchor: {anchor}");
-    let commit = run(&["commit-tree", &tree, "-p", "main", "-m", &message]);
-    git(repo, &["update-ref", "refs/heads/main", &commit]);
+    let commit = run(&["commit-tree", &tree, "-p", "main/default", "-m", &message]);
+    git(repo, &["update-ref", "refs/heads/main/default", &commit]);
 }
 
 fn after_everything() -> String {

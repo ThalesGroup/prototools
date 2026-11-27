@@ -116,7 +116,8 @@ pub fn date(t: &Value) -> String {
 /// What to do.
 #[derive(Debug, Clone, Default)]
 pub struct Options {
-    /// The history branch; the current branch when `None`.
+    /// The history, or one of its lineages, `H/L` (spec 0499): the
+    /// current branch's when `None`.
     pub into: Option<String>,
     /// Where to write `fixups.yaml` and `STATUS.md`.
     pub out: Option<PathBuf>,
@@ -341,14 +342,8 @@ pub fn actions_text(result: &Value, wording: &dyn Wording) -> String {
 
 /// The history's descriptors and sources (spec 0454 S2).
 pub fn read(repo: &gix::Repository, kit: &Kit, into: Option<&str>) -> Result<Input, Error> {
-    let branch = match into {
-        Some(b) => b.to_string(),
-        None => repo
-            .head_name()
-            .map_err(|e| Error::Git(e.to_string()))?
-            .map(|n| n.shorten().to_string())
-            .ok_or_else(|| Error::Refused("HEAD is detached: give --into".into()))?,
-    };
+    // One line of versions: a lineage's branch (spec 0499 S5).
+    let branch = git_seriate::history::resolve_lineage_branch(repo, into)?;
     let head = tip(repo, &branch_ref(&branch)?)?
         .ok_or_else(|| Error::Refused(format!("no branch {branch:?}")))?;
     let pattern = git_seriate::plugins::Pattern(

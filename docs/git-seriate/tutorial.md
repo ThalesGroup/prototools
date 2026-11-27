@@ -85,12 +85,21 @@ recorded and shown, never used to sort.
 
 ```console
 $ git seriate settle --dry-run
-would settle main: kept 0, wrote 4 snapshot(s), replayed 0 commit(s)
+would settle main/default: kept 0, wrote 4 snapshot(s), replayed 0 commit(s)
 $ git seriate settle
-main is checked out: run 'git read-tree -m -u main' to bring the index and work tree to it, keeping local changes
-settled main: kept 0, wrote 4 snapshot(s), replayed 0 commit(s)
-$ git read-tree -m -u main
+HEAD named main, unborn: it names main/default now, a lineage of main
+main/default is checked out: run 'git read-tree -m -u main/default' to bring the index and work tree to it, keeping local changes
+settled main/default: kept 0, wrote 4 snapshot(s), replayed 0 commit(s)
+recorded in refs/seriate/histories/main
+$ git read-tree -m -u main/default
 ```
+
+The history `main` is a branch per **lineage**, `main/<lineage>`: one
+line of versions per producer (section 7 says when you need more than
+one). Every snapshot nobody says otherwise of is in `default`, so this
+one has a single branch, `main/default`; HEAD, which named `main` and
+had no commit yet, now names it. `refs/seriate/histories/main` records
+the lineages and their tips: one hash for the whole history.
 
 `settle` never touches your index or work tree; when the branch it
 rewrites is checked out, it prints the command that brings them over,
@@ -117,7 +126,7 @@ phase 2 order hints: skipped
 phase 3 containment: 1 move(s), 6 comparison(s), 2 ordered; edge score -4; interleaving score 0
   move rack-a: 0 -> 1, +1; now between rack-b and rack-e
 phase 4 interleaving: 0 move(s); edge score -4; interleaving score 0
-would settle main: kept 0, wrote 4 snapshot(s), replayed 0 commit(s)
+would settle main/default: kept 0, wrote 4 snapshot(s), replayed 0 commit(s)
 ```
 
 Phase 1 orders the snapshots by build time; phase 3 moves those whose
@@ -183,9 +192,10 @@ again:
 $ git seriate add ../found/rack-d
 added rack-d
 $ git seriate settle
-main is checked out: run 'git read-tree -m -u main-1 main' to bring the index and work tree to it, keeping local changes
-settled main: kept 3, wrote 1 snapshot(s), replayed 0 commit(s); previous tip saved as main-1
-$ git read-tree -m -u main-1 main
+main/default is checked out: run 'git read-tree -m -u main/default-1 main/default' to bring the index and work tree to it, keeping local changes
+settled main/default: kept 3, wrote 1 snapshot(s), replayed 0 commit(s); previous tip saved as main/default-1
+recorded in refs/seriate/histories/main
+$ git read-tree -m -u main/default-1 main/default
 $ git log --format='%cs %s'
 2026-04-15 Snapshot rack-d
 2026-11-22 Explain where the files come from
@@ -199,9 +209,9 @@ $ git log --format='%cs %s'
 new snapshot's build time, less a **settling window** of 60 days
 (`--settling-days`), or from `--cutoff DATE`; `--no-cutoff` re-sorts it
 all. Below the first change, commits are kept as they are ("kept 3").
-Whenever the branch moves, its previous tip is kept as `main-N`, the
-lowest `N` free: nothing is lost, and `git branch -D main-1` removes it
-when you no longer need it.
+Whenever a lineage's branch moves, its previous tip is kept as
+`main/default-N`, the lowest `N` free: nothing is lost, and `git branch
+-D main/default-1` removes it when you no longer need it.
 
 ## 4. Compacting the old part
 
@@ -221,7 +231,7 @@ level 1 keeps it:
 
 ```console
 $ git seriate compact --cutoff 2026-04-01 --dry-run
-would compact main: dropped 0, reduced 0, converted 0
+would compact main/default: dropped 0, reduced 0, converted 0
 ```
 
 Level 2 gives up records for a shorter history; `--dry-run` names each
@@ -235,7 +245,7 @@ drop 0912a3bc ('Snapshot rack-e'): changes nothing; the only record of "rack-e" 
 delete snapshot rack-a: its last commit is dropped
 delete snapshot rack-b: its last commit is dropped
 delete snapshot rack-e: its last commit is dropped
-would compact main: dropped 3, reduced 0, converted 0
+would compact main/default: dropped 3, reduced 0, converted 0
 $ git seriate compact --cutoff 2026-04-01 --level 2
 drop 2b3f522a ('Snapshot rack-b'): every change it makes is made again later
 drop ce9a19df ('Snapshot rack-a'): every change it makes is made again later
@@ -243,7 +253,7 @@ drop 0912a3bc ('Snapshot rack-e'): changes nothing; the only record of "rack-e" 
 delete snapshot rack-a: its last commit is dropped
 delete snapshot rack-b: its last commit is dropped
 delete snapshot rack-e: its last commit is dropped
-compacted main: dropped 3, reduced 0, converted 0; previous tip saved as main-2
+compacted main/default: dropped 3, reduced 0, converted 0; previous tip saved as main/default-2
 $ git log --format='%cs %s'
 2026-04-15 Snapshot rack-d
 2026-11-22 Explain where the files come from
@@ -255,7 +265,7 @@ versions never reach it. The tree at the cutoff, and every commit after
 it, stay the same: the files you have checked out don't change. The
 snapshots of what was dropped go too; left, the next `settle`
 would take them for new snapshots and put them back. The previous tip,
-`main-2`, keeps everything until you delete it.
+`main/default-2`, keeps everything until you delete it.
 
 ## 5. Snapshots, and other repositories
 
@@ -291,7 +301,12 @@ OTHER-REPO` copies another repository's snapshots into this one, to be
 settled here: several people can extract on their side and merge the
 results in one history. A repository made before snapshots moved out of
 the branches (spec 0499) is read too; your own is moved once with `git
-seriate migrate`, which every other command asks for.
+seriate migrate`, which every other command asks for: `git seriate
+migrate main` also turns the history `main` into `main/default`, the
+former branch kept under `refs/seriate/migrated/`, or, with `--into
+NEW`, writes `NEW/default` and leaves `main` as it is, for a branch a
+server won't let you delete.
+
 
 ## 6. Descriptors embedded in executables
 
@@ -313,7 +328,7 @@ $ git seriate-fdp settle
 $ git seriate-fdp extract ../builds/shopd-v3
 added builds/shopd-v3
 $ git seriate-fdp settle
-$ git ls-tree -r --name-only main
+$ git ls-tree -r --name-only main/default
 shop/customer.pb
 shop/order.pb
 shop/people.pb
@@ -395,6 +410,35 @@ $ git config seriate.fdpRoot google.protobuf.FileDescriptorProto
 It is a repository setting, not a flag: every command must read and write
 the files alike.
 
+## 7. Producers and lineages
+
+Two producers of one file break the sort's assumptions when one of them
+transforms it: say a bundler that embeds copies of your schemas in
+`shopd`, their options dropped. `extract` keeps such an embedded set
+apart, as a snapshot of its own (`builds/shopd-v3!set@<offset>`), but on
+one line its stripped copy always sits inside the span of the full one,
+which comes before it in older builds and after it in later ones.
+
+Say which snapshots that producer made, once they are extracted, and the
+next `settle` sorts them on a line of their own, `main/bundler`, beside
+`main/default`:
+
+```console
+$ git seriate-fdp list
+$ git seriate-fdp lineage set bundler 'builds/shopd-v3!set@1024'
+$ git seriate-fdp settle
+```
+
+`lineage set` says what moved (`default -> bundler`), `settle` the same
+of the history (`main/default -> main/bundler`), rewriting `main/default`
+without the set, its previous tip saved as ever. git-seriate never
+guesses a lineage from the files' contents: you know your producers, it
+doesn't. `lineage set --from FILE` takes one `<identity> <lineage>` per
+line, `lineage unset` puts snapshots back in `default`, and `lineage
+list` shows the statements, which `refs/seriate/lineages` keeps, a
+commit per change. Combining the lineages' tips into one schema is yours
+to do.
+
 ## Settings
 
 | Setting | What |
@@ -405,5 +449,5 @@ the files alike.
 | `commit.gpgSign`, `gpg.format = ssh`, `user.signingKey` | sign them, with an SSH key |
 
 The design is in specs 0450 (the overview), 0451 (the sort), 0452 (the
-store and the history), 0453 (`git seriate-fdp`) and 0454 (`advise`),
-under [`docs/specs/`](../specs/).
+store and the history), 0453 (`git seriate-fdp`), 0454 (`advise`) and
+0499 (lineages), under [`docs/specs/`](../specs/).

@@ -4,7 +4,7 @@
 
 //! `settle`: the history rebuilt in sorted order (spec 0452 S5).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use gix::bstr::ByteSlice;
 use gix::object::tree::EntryKind;
@@ -12,7 +12,7 @@ use gix::refs::transaction::PreviousValue;
 use gix::ObjectId;
 
 use crate::format::Block;
-use crate::layout::snapshot_ref;
+use crate::layout::{lineage_branch, record_ref, snapshot_ref, DEFAULT_LINEAGE};
 use crate::plugins::{Canonicalizer, ItemPaths, Renderer};
 pub(crate) use crate::sign::Signer;
 use crate::store::{self, branch_ref, tip};
@@ -117,32 +117,19 @@ pub struct Change {
     pub new: Option<(EntryKind, ObjectId)>,
 }
 
-/// The history branch `into` names, or the current one.
-fn history_branch(repo: &gix::Repository, into: Option<&String>) -> Result<String, Error> {
-    match into {
-        Some(b) => Ok(b.clone()),
-        None => repo
-            .head_name()
-            .map_err(Error::git)?
-            .map(|n| n.shorten().to_string())
-            .ok_or_else(|| Error::Refused("HEAD is detached: give --into".into())),
-    }
-}
-
-/// Settle a history branch (spec 0452 S5).
-pub fn settle(repo: &gix::Repository, options: &Options) -> Result<Report, Error> {
-    settle_with(repo, options, &HashSet::new())
-}
-
-/// [`settle`], the snapshots of `forget` left out of the history (spec
-/// 0497): with any, no new snapshot is settled, and each must be in the
-/// re-sorted region.
+/// One lineage's branch settled (spec 0452 S5), with `candidates`, the new
+/// snapshots to sort in, and the snapshots of `forget` left out of it
+/// (spec 0497): with any, no new snapshot is settled, and each must be in
+/// the re-sorted region.
 fn settle_with(
     repo: &gix::Repository,
+    branch: &str,
     options: &Options,
+    candidate_ids: &[String],
     forget: &HashSet<String>,
+    signer: &Signer,
 ) -> Result<Report, Error> {
-    let branch = history_branch(repo, options.into.as_ref())?;
+    let branch = branch.to_string();
     let ref_name = branch_ref(&branch)?;
     let old_tip = tip(repo, &ref_name)?;
     let mut report = Report {
@@ -159,22 +146,14 @@ fn settle_with(
     let by_branch: HashMap<&str, &store::Listed> =
         listed.iter().map(|l| (l.identity.as_str(), l)).collect();
     let mut candidates: Vec<&store::Listed> = Vec::new();
-    if options.branches.is_empty() {
-        candidates.extend(
-            listed
-                .iter()
-                .filter(|l| l.block.contents.is_some() && !in_history.contains(&l.identity)),
-        );
-    } else {
-        for b in &options.branches {
-            match by_branch.get(b.as_str()) {
-                Some(l) if l.block.contents.is_some() => {
-                    if !in_history.contains(b) {
-                        candidates.push(l);
-                    }
+    for b in candidate_ids {
+        match by_branch.get(b.as_str()) {
+            Some(l) if l.block.contents.is_some() => {
+                if !in_history.contains(b) {
+                    candidates.push(l);
                 }
-                _ => return Err(Error::Refused(format!("{b:?} is not a snapshot"))),
             }
+            _ => return Err(Error::Refused(format!("{b:?} is not a snapshot"))),
         }
     }
 
@@ -340,7 +319,6 @@ fn settle_with(
     // 6. The commits.
     let committer = committer(repo, options.dry_run)?;
     let author_identity = author_identity(repo).unwrap_or_else(|| committer.clone());
-    let signer = Signer::from_config(repo)?;
     let mut parent = plan.base;
     let mut parent_tree = match parent {
         Some(id) => commit_tree(repo, id)?,
@@ -447,9 +425,574 @@ fn settle_with(
     Ok(report)
 }
 
+// ── Histories of lineages (spec 0499) ────────────────────────────────────────
+
+/// A history as laid out since spec 0499 (S2): a branch per lineage,
+/// `<history>/<lineage>`, and its record, `refs/seriate/histories/<history>`,
+/// whose tree lists the lineages and their tips as of the last command that
+/// wrote it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct History {
+    pub name: String,
+    /// The record's commit; `None` for a history not yet written.
+    pub record: Option<ObjectId>,
+    /// Lineage → its branch's tip, now.
+    pub tips: BTreeMap<String, ObjectId>,
+    /// Lineage → its tip as the record has it.
+    pub recorded: BTreeMap<String, ObjectId>,
+    /// The statements' record the record routed by.
+    pub statements: Option<ObjectId>,
+}
+
+impl History {
+    /// The branch of `lineage`.
+    pub fn branch(&self, lineage: &str) -> String {
+        lineage_branch(&self.name, lineage)
+    }
+}
+
+/// The history `into` names, else the current branch's: `H`, or a lineage
+/// branch `H/L` of a history `H`. A history of before spec 0499, a branch
+/// of its own name, is refused, naming `migrate`.
+pub fn resolve_history(repo: &gix::Repository, into: Option<&str>) -> Result<String, Error> {
+    let name = match into {
+        Some(n) => n.to_string(),
+        None => repo
+            .head_name()
+            .map_err(Error::git)?
+            .map(|n| n.shorten().to_string())
+            .ok_or_else(|| Error::Refused("HEAD is detached: give --into".into()))?,
+    };
+    let has_record = |h: &str| -> Result<bool, Error> { Ok(tip(repo, &record_ref(h)?)?.is_some()) };
+    // A lineage branch `H/L` names `H`, its record looked up first: under a
+    // ref file, git can't look a deeper name up.
+    let name = match name.rsplit_once('/') {
+        Some((h, _)) if has_record(h)? => h.to_string(),
+        _ => name,
+    };
+    if !has_record(&name)? && tip(repo, &branch_ref(&name)?)?.is_some() {
+        return Err(Error::Refused(format!(
+            "{name} is a history of before spec 0499, a branch of its own: run `git seriate \
+             migrate {name}` (or `migrate {name} --into NEW` to leave it as it is)"
+        )));
+    }
+    Ok(name)
+}
+
+/// The history `name` (S2): its lineages from its record, their tips from
+/// their branches. A lineage whose branch is gone is refused, naming it.
+pub fn read_history(repo: &gix::Repository, name: &str) -> Result<History, Error> {
+    let mut history = History {
+        name: name.to_string(),
+        ..History::default()
+    };
+    let Some(record) = tip(repo, &record_ref(name)?)? else {
+        return Ok(history);
+    };
+    history.record = Some(record);
+    let tree = commit_tree(repo, record)?;
+    for (path, blob) in files(repo, tree, "")? {
+        let data = repo.find_blob(blob).map_err(Error::git)?;
+        let text = String::from_utf8_lossy(&data.data).into_owned();
+        let bad = || {
+            Error::Refused(format!(
+                "{}: {record}: {path}: unreadable",
+                record_ref(name).map_or_else(|_| name.to_string(), |r| r.as_bstr().to_string())
+            ))
+        };
+        match path.as_str() {
+            "lineages" => {
+                for line in text.lines() {
+                    let (lineage, id) = line.split_once(' ').ok_or_else(bad)?;
+                    let id = ObjectId::from_hex(id.as_bytes()).map_err(|_| bad())?;
+                    history.recorded.insert(lineage.to_string(), id);
+                }
+            }
+            "statements" => {
+                history.statements =
+                    Some(ObjectId::from_hex(text.trim().as_bytes()).map_err(|_| bad())?);
+            }
+            _ => {}
+        }
+    }
+    for lineage in history.recorded.keys() {
+        let branch = history.branch(lineage);
+        let Some(t) = tip(repo, &branch_ref(&branch)?)? else {
+            return Err(Error::Refused(format!(
+                "{branch}, a lineage of {name}'s record, is no branch any more: restore it, \
+                 or settle again from a copy of the history"
+            )));
+        };
+        history.tips.insert(lineage.clone(), t);
+    }
+    Ok(history)
+}
+
+/// The lineage branch `into` names, for a command that reads one line of
+/// versions (`advise`): `H/L`, or `H` when it has one lineage.
+pub fn resolve_lineage_branch(repo: &gix::Repository, into: Option<&str>) -> Result<String, Error> {
+    let name = resolve_history(repo, into)?;
+    let history = read_history(repo, &name)?;
+    if let Some(into) = into {
+        if let Some((h, l)) = into.rsplit_once('/') {
+            if h == name && history.tips.contains_key(l) {
+                return Ok(into.to_string());
+            }
+        }
+    }
+    let lineages: Vec<&String> = history.tips.keys().collect();
+    match lineages[..] {
+        [] => Err(Error::Refused(format!("{name} has no history"))),
+        [one] => Ok(history.branch(one)),
+        _ => Err(Error::Refused(format!(
+            "{name} has {} lineages: give --into {name}/<lineage>, one of {}",
+            lineages.len(),
+            lineages
+                .iter()
+                .map(|l| l.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
+    }
+}
+
+/// The history's record written (S2, S5a) when its lineages' tips, or the
+/// statements routed by, differ from what it records: its tree lists each
+/// lineage and its tip (`lineages`) and the statements' record
+/// (`statements`); its parents, the previous record, every tip and the
+/// statements' record. Returns the new record, if one was written.
+fn write_history_record(
+    repo: &gix::Repository,
+    signer: &Signer,
+    previous: &History,
+    tips: &BTreeMap<String, ObjectId>,
+    statements: Option<ObjectId>,
+    what: &str,
+) -> Result<Option<ObjectId>, Error> {
+    if previous.record.is_some() && previous.recorded == *tips && previous.statements == statements
+    {
+        return Ok(None);
+    }
+    if tips.is_empty() {
+        return Ok(None);
+    }
+    let lineages: String = tips.iter().map(|(l, id)| format!("{l} {id}\n")).collect();
+    let mut entries = vec![(
+        "lineages",
+        repo.write_blob(lineages.as_bytes())
+            .map_err(Error::git)?
+            .detach(),
+    )];
+    if let Some(s) = statements {
+        entries.push((
+            "statements",
+            repo.write_blob(format!("{s}\n").as_bytes())
+                .map_err(Error::git)?
+                .detach(),
+        ));
+    }
+    let tree = repo
+        .write_object(&gix::objs::Tree {
+            entries: entries
+                .into_iter()
+                .map(|(name, oid)| gix::objs::tree::Entry {
+                    mode: EntryKind::Blob.into(),
+                    filename: name.into(),
+                    oid,
+                })
+                .collect(),
+        })
+        .map_err(Error::git)?
+        .detach();
+    let mut parents: Vec<ObjectId> = previous.record.into_iter().collect();
+    for id in tips.values().copied().chain(statements) {
+        if !parents.contains(&id) {
+            parents.push(id);
+        }
+    }
+    let body: String = tips
+        .iter()
+        .map(|(l, id)| format!("{}: {}\n", lineage_branch(&previous.name, l), id))
+        .collect();
+    let message = format!(
+        "History {}: {what}, {} lineage(s)\n\n{body}",
+        previous.name,
+        tips.len()
+    );
+    let id = write_record(repo, signer, tree, parents, message)?;
+    let expected = match previous.record {
+        Some(old) => PreviousValue::MustExistAndMatch(gix::refs::Target::Object(old)),
+        None => PreviousValue::MustNotExist,
+    };
+    store::set_ref(repo, &record_ref(&previous.name)?, expected, id)?;
+    Ok(Some(id))
+}
+
+/// The history's record written after a command that moved its lineages'
+/// branches, from their tips now (`compact`'s).
+pub(crate) fn record_history(
+    repo: &gix::Repository,
+    signer: &Signer,
+    history: &History,
+    what: &str,
+) -> Result<Option<ObjectId>, Error> {
+    let mut tips = BTreeMap::new();
+    for lineage in history.tips.keys() {
+        if let Some(t) = tip(repo, &branch_ref(&history.branch(lineage))?)? {
+            tips.insert(lineage.clone(), t);
+        }
+    }
+    let statements = crate::lineage::read(repo)?.record;
+    write_history_record(repo, signer, history, &tips, statements, what)
+}
+
+/// The snapshot commits of the history from `tip`, along first parents,
+/// newest first: identity, commit, build time.
+fn snapshot_commits(
+    repo: &gix::Repository,
+    tip: ObjectId,
+    legacy: Option<&dyn crate::plugins::LegacyReader>,
+) -> Result<Vec<(String, ObjectId, i64)>, Error> {
+    let mut out = Vec::new();
+    let mut current = Some(tip);
+    while let Some(id) = current {
+        let commit = repo.find_commit(id).map_err(Error::git)?;
+        let decoded = commit.decode().map_err(Error::git)?;
+        if let Ok(Some(block)) = Block::read_with(&decoded.message.to_str_lossy(), legacy) {
+            if block.contents.is_some() {
+                out.push((block.source.identity, id, block.source.build_time));
+            }
+        }
+        current = decoded.parents().next();
+    }
+    Ok(out)
+}
+
+/// What [`settle`] did, or would do with `dry_run`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Settled {
+    pub history: String,
+    /// Each lineage settled, by branch, in order.
+    pub lineages: Vec<Report>,
+    /// Each snapshot moved to another lineage (S3a): identity, from, to.
+    pub moved: Vec<(String, String, String)>,
+    /// Each lineage every snapshot of which moved out: its branch, deleted,
+    /// and the backup keeping its tip.
+    pub emptied: Vec<(String, String)>,
+    /// The history's new record, when one was written.
+    pub record: Option<ObjectId>,
+    pub notes: Vec<String>,
+}
+
+/// Settle a history (spec 0452 S5, 0499 S3): each candidate to the branch
+/// of its lineage as the statements stand, each lineage sorted on its own;
+/// a snapshot whose lineage changed since moved (S3a), its former lineage
+/// rewritten without it as `forget` rewrites, its new one sorting it in;
+/// the history's record then written.
+pub fn settle(repo: &gix::Repository, options: &Options) -> Result<Settled, Error> {
+    let legacy = options.plugins.legacy;
+    let name = resolve_history(repo, options.into.as_deref())?;
+    let history = read_history(repo, &name)?;
+    let statements = crate::lineage::read(repo)?;
+    // One signer for the command: an encrypted key's passphrase asked once.
+    let signer = Signer::from_config(repo)?;
+    let mut out = Settled {
+        history: name.clone(),
+        ..Settled::default()
+    };
+
+    // Each lineage's snapshots; those whose statement now names another.
+    let mut members: BTreeMap<String, Vec<(String, ObjectId, i64)>> = BTreeMap::new();
+    let mut in_any: HashSet<String> = HashSet::new();
+    for (lineage, &t) in &history.tips {
+        let commits = snapshot_commits(repo, t, legacy)?;
+        in_any.extend(commits.iter().map(|(i, _, _)| i.clone()));
+        members.insert(lineage.clone(), commits);
+    }
+    let mut leaving: BTreeMap<String, Vec<(String, ObjectId, i64)>> = BTreeMap::new();
+    let mut arriving: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (lineage, commits) in &members {
+        let mut seen = HashSet::new();
+        for (identity, commit, time) in commits {
+            let to = statements.of(identity);
+            if to != lineage && seen.insert(identity.clone()) {
+                out.moved.push((
+                    identity.clone(),
+                    history.branch(lineage),
+                    history.branch(to),
+                ));
+                leaving.entry(lineage.clone()).or_default().push((
+                    identity.clone(),
+                    *commit,
+                    *time,
+                ));
+                arriving
+                    .entry(to.to_string())
+                    .or_default()
+                    .push(identity.clone());
+            }
+        }
+    }
+
+    // The new snapshots, routed.
+    let listed = store::list_with(repo, legacy)?;
+    let new: Vec<String> = if options.branches.is_empty() {
+        listed
+            .iter()
+            .filter(|l| l.block.contents.is_some() && !in_any.contains(&l.identity))
+            .map(|l| l.identity.clone())
+            .collect()
+    } else {
+        let known: HashSet<&str> = listed
+            .iter()
+            .filter(|l| l.block.contents.is_some())
+            .map(|l| l.identity.as_str())
+            .collect();
+        for b in &options.branches {
+            if !known.contains(b.as_str()) {
+                return Err(Error::Refused(format!("{b:?} is not a snapshot")));
+            }
+        }
+        options
+            .branches
+            .iter()
+            .filter(|b| !in_any.contains(*b))
+            .cloned()
+            .collect()
+    };
+    for identity in new {
+        arriving
+            .entry(statements.of(&identity).to_string())
+            .or_default()
+            .push(identity);
+    }
+
+    // The lineages left: rewritten without what moved out, or emptied.
+    let no_forget = HashSet::new();
+    let mut tips = history.tips.clone();
+    for (lineage, gone) in &leaving {
+        let branch = history.branch(lineage);
+        let set: HashSet<String> = gone.iter().map(|(i, _, _)| i.clone()).collect();
+        // Moved snapshots the store no longer holds: rebuilt from their
+        // history commits first, to be sorted into their new lineage.
+        let present: HashSet<String> = listed.iter().map(|l| l.identity.clone()).collect();
+        for (identity, commit, _) in gone {
+            if !present.contains(identity) {
+                if options.dry_run {
+                    out.notes
+                        .push(format!("would recreate snapshot {identity}"));
+                } else {
+                    recreate_snapshot(repo, *commit, legacy)?;
+                    out.notes.push(format!("recreated snapshot {identity}"));
+                }
+            }
+        }
+        let all: HashSet<&str> = members[lineage]
+            .iter()
+            .map(|(i, _, _)| i.as_str())
+            .collect();
+        if all.iter().all(|i| set.contains(*i)) {
+            let old = history.tips[lineage];
+            let backup = backup_name(repo, &branch)?;
+            if !options.dry_run {
+                store::set_ref(
+                    repo,
+                    &branch_ref(&backup)?,
+                    PreviousValue::MustNotExist,
+                    old,
+                )?;
+                store::delete_ref(repo, branch_ref(&branch)?, old)?;
+            }
+            tips.remove(lineage);
+            out.emptied.push((branch, backup));
+            continue;
+        }
+        let oldest = gone.iter().map(|(_, _, t)| *t).min().expect("one moved");
+        let report = settle_with(
+            repo,
+            &branch,
+            &Options {
+                into: None,
+                cutoff: Cutoff::At(oldest),
+                settling_days: 0,
+                dry_run: options.dry_run,
+                branches: Vec::new(),
+                sort: options.sort.clone(),
+                plugins: copy_plugins(&options.plugins),
+                verify_canon: false,
+            },
+            &[],
+            &set,
+            &signer,
+        )?;
+        out.lineages.push(report);
+    }
+
+    // Each lineage with something to sort in, or every one under an explicit
+    // cutoff.
+    let mut targets: BTreeSet<String> = arriving.keys().cloned().collect();
+    if options.cutoff != Cutoff::Auto {
+        targets.extend(tips.keys().cloned());
+    }
+    for lineage in targets {
+        let branch = history.branch(&lineage);
+        if !options.dry_run {
+            if let Some(note) = point_unborn_head(repo, &name, &branch)? {
+                out.notes.push(note);
+            }
+        }
+        let mut candidates = arriving.get(&lineage).cloned().unwrap_or_default();
+        if options.dry_run {
+            // A moved snapshot the store lacks is only recreated for real.
+            let present: HashSet<&str> = listed.iter().map(|l| l.identity.as_str()).collect();
+            candidates.retain(|c| present.contains(c.as_str()));
+        }
+        if candidates.is_empty() && options.cutoff == Cutoff::Auto {
+            continue;
+        }
+        let report = settle_with(repo, &branch, options, &candidates, &no_forget, &signer)?;
+        out.lineages.push(report);
+    }
+    if out.lineages.is_empty() && out.emptied.is_empty() {
+        out.notes.push("nothing new to settle".into());
+    }
+    if options.dry_run {
+        return Ok(out);
+    }
+
+    // The record.
+    let mut now_tips = BTreeMap::new();
+    for lineage in tips.keys().chain(arriving.keys()) {
+        if let Some(t) = tip(repo, &branch_ref(&history.branch(lineage))?)? {
+            now_tips.insert(lineage.clone(), t);
+        }
+    }
+    out.record = write_history_record(
+        repo,
+        &signer,
+        &history,
+        &now_tips,
+        statements.record,
+        "settle",
+    )?;
+    Ok(out)
+}
+
+/// HEAD, unborn and naming the history `history` itself, pointed at its
+/// lineage branch `branch`: git holds no `H` beside `H/L`, so HEAD would
+/// name a branch that can never be; nothing is checked out yet, so nothing
+/// is lost. A note when it moves.
+fn point_unborn_head(
+    repo: &gix::Repository,
+    history: &str,
+    branch: &str,
+) -> Result<Option<String>, Error> {
+    use gix::refs::transaction::{Change, LogChange, RefEdit, RefLog};
+    let Some(head) = repo.head_name().map_err(Error::git)? else {
+        return Ok(None);
+    };
+    if head.shorten() != history || tip(repo, &head)?.is_some() {
+        return Ok(None);
+    }
+    repo.edit_reference(RefEdit {
+        change: Change::Update {
+            log: LogChange {
+                mode: RefLog::AndReference,
+                force_create_reflog: false,
+                message: "git-seriate: HEAD to the history's lineage".into(),
+            },
+            expected: PreviousValue::Any,
+            new: gix::refs::Target::Symbolic(branch_ref(branch)?),
+        },
+        name: "HEAD".try_into().expect("a valid ref name"),
+        deref: false,
+    })
+    .map_err(Error::git)?;
+    Ok(Some(format!(
+        "HEAD named {history}, unborn: it names {branch} now, a lineage of {history}"
+    )))
+}
+
+/// The lowest free `<branch>-N`, where a branch's previous tip is saved.
+fn backup_name(repo: &gix::Repository, branch: &str) -> Result<String, Error> {
+    for n in 1.. {
+        let candidate = format!("{branch}-{n}");
+        if tip(repo, &branch_ref(&candidate)?)?.is_none() {
+            return Ok(candidate);
+        }
+    }
+    unreachable!("a free name")
+}
+
+/// The same plugins, for another call.
+fn copy_plugins<'a>(p: &Plugins<'a>) -> Plugins<'a> {
+    Plugins {
+        renderer: p.renderer,
+        canonicalizer: p.canonicalizer,
+        item_paths: p.item_paths,
+        comparator: p.comparator,
+        legacy: p.legacy,
+    }
+}
+
+/// The snapshot of the history commit `commit` written back to the store,
+/// from the items the commit lists (spec 0452 S5): the original snapshot's
+/// commit.
+fn recreate_snapshot(
+    repo: &gix::Repository,
+    commit: ObjectId,
+    legacy: Option<&dyn crate::plugins::LegacyReader>,
+) -> Result<(), Error> {
+    let c = repo.find_commit(commit).map_err(Error::git)?;
+    let decoded = c.decode().map_err(Error::git)?;
+    let block = Block::read_with(&decoded.message.to_str_lossy(), legacy)
+        .map_err(|e| Error::Refused(format!("commit {commit}: {e}")))?
+        .ok_or_else(|| Error::Bug(format!("commit {commit}: no block")))?;
+    let s = SnapCommit {
+        id: commit,
+        tree: decoded.tree(),
+        block,
+    };
+    let items = history_items(repo, &s, &mut Trees::default())?;
+    write_back(repo, &s, &items)
+}
+
+/// `items` of history commit `s` added to the store as its snapshot, its
+/// origins back from the block (spec 0494 S1), so that the rebuilt
+/// snapshot is the same commit.
+fn write_back(
+    repo: &gix::Repository,
+    s: &SnapCommit,
+    items: &[(String, ObjectId)],
+) -> Result<(), Error> {
+    let mut snapshot_items = Vec::new();
+    for (path, oid) in items {
+        let blob = repo.find_blob(*oid).map_err(Error::git)?;
+        snapshot_items.push(store::Item {
+            path: path.clone(),
+            bytes: blob.data.clone(),
+            record: Vec::new(),
+            origin: s.block.evidence.get(path).cloned(),
+        });
+    }
+    let mut block = s.block.clone();
+    block.canon_rules.clear();
+    block.renderer.clear();
+    store::add(
+        repo,
+        store::NewSnapshot {
+            source: block.source,
+            items: snapshot_items,
+            rejected: block.rejected,
+            record: block.record,
+        },
+    )?;
+    Ok(())
+}
+
 /// What to forget, and from which history (spec 0497).
 pub struct ForgetOptions<'a> {
-    /// The history branch; the current branch when `None`.
+    /// The history; the current branch's when `None`.
     pub into: Option<String>,
     /// Snapshot identities, or globs of them.
     pub patterns: Vec<String>,
@@ -463,41 +1006,36 @@ pub struct ForgetOptions<'a> {
 /// What [`forget`] did, or would do with `dry_run`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Forgotten {
-    /// The history's rewrite, as `settle` reports one.
-    pub settle: Report,
+    /// Each lineage's rewrite, as `settle` reports one.
+    pub settles: Vec<Report>,
     /// The snapshots forgotten, in the history's order, newest first.
     pub forgotten: Vec<String>,
     /// The decision's record, `refs/seriate/forgotten/<n>`, which keeps them.
     pub record: String,
     /// The snapshots deleted from the store.
     pub deleted: Vec<String>,
+    /// Each lineage every snapshot of which was forgotten: its branch,
+    /// deleted, and the backup keeping its tip.
+    pub emptied: Vec<(String, String)>,
 }
 
-/// Forget snapshots (spec 0497): out of the history, which is rewritten
-/// from the oldest of them as `settle` rewrites it, the previous tip saved;
-/// out of the store, their branches deleted, so that `settle` doesn't put
-/// them back; kept, with the reason, by one record per decision,
+/// Forget snapshots (spec 0497): out of the history, each lineage holding
+/// one rewritten from the oldest of them as `settle` rewrites it, the
+/// previous tip saved; out of the store, so that `settle` doesn't put them
+/// back; kept, with the reason, by one record per decision,
 /// `refs/seriate/forgotten/<n>`: a commit whose parents are the forgotten
 /// snapshots, whose message gives the reason, and whose tree lists them.
 pub fn forget(repo: &gix::Repository, options: &ForgetOptions) -> Result<Forgotten, Error> {
-    let branch = history_branch(repo, options.into.as_ref())?;
-    let Some(old_tip) = tip(repo, &branch_ref(&branch)?)? else {
-        return Err(Error::Refused(format!("{branch} has no history")));
-    };
-    // The history's snapshot commits, along first parents, newest first.
-    let mut snapshots: Vec<(String, ObjectId, i64)> = Vec::new();
-    let mut current = Some(old_tip);
-    while let Some(id) = current {
-        let commit = repo.find_commit(id).map_err(Error::git)?;
-        let decoded = commit.decode().map_err(Error::git)?;
-        if let Ok(Some(block)) =
-            Block::read_with(&decoded.message.to_str_lossy(), options.plugins.legacy)
-        {
-            if block.contents.is_some() {
-                snapshots.push((block.source.identity, id, block.source.build_time));
-            }
-        }
-        current = decoded.parents().next();
+    let legacy = options.plugins.legacy;
+    let name = resolve_history(repo, options.into.as_deref())?;
+    let history = read_history(repo, &name)?;
+    if history.tips.is_empty() {
+        return Err(Error::Refused(format!("{name} has no history")));
+    }
+    let signer = Signer::from_config(repo)?;
+    let mut members: BTreeMap<String, Vec<(String, ObjectId, i64)>> = BTreeMap::new();
+    for (lineage, &t) in &history.tips {
+        members.insert(lineage.clone(), snapshot_commits(repo, t, legacy)?);
     }
     let matches = |identity: &str| {
         options
@@ -506,52 +1044,73 @@ pub fn forget(repo: &gix::Repository, options: &ForgetOptions) -> Result<Forgott
             .any(|p| p == identity || crate::plugins::glob_matches(p, identity))
     };
     for p in &options.patterns {
-        if !snapshots
-            .iter()
+        if !members
+            .values()
+            .flatten()
             .any(|(i, _, _)| i == p || crate::plugins::glob_matches(p, i))
         {
             return Err(Error::Refused(format!(
-                "no snapshot of {branch} matches {p:?}"
+                "no snapshot of {name} matches {p:?}"
             )));
         }
     }
-    let chosen: Vec<&(String, ObjectId, i64)> =
-        snapshots.iter().filter(|(i, _, _)| matches(i)).collect();
-    let set: HashSet<String> = chosen.iter().map(|(i, _, _)| i.clone()).collect();
-    if snapshots.iter().all(|(i, _, _)| set.contains(i)) {
+    if members.values().flatten().all(|(i, _, _)| matches(i)) {
         return Err(Error::Refused(format!(
-            "forgetting every snapshot of {branch} would leave it empty: delete the branch instead"
+            "forgetting every snapshot of {name} would leave it empty: delete its branches \
+             instead"
         )));
     }
-    let oldest = chosen
-        .iter()
-        .map(|(_, _, t)| *t)
-        .min()
-        .expect("one matched");
-    let settle = settle_with(
-        repo,
-        &Options {
-            into: Some(branch.clone()),
-            cutoff: Cutoff::At(oldest),
-            settling_days: 0,
-            dry_run: options.dry_run,
-            branches: Vec::new(),
-            sort: options.sort.clone(),
-            plugins: Plugins {
-                renderer: options.plugins.renderer,
-                canonicalizer: options.plugins.canonicalizer,
-                item_paths: options.plugins.item_paths,
-                comparator: options.plugins.comparator,
-                legacy: options.plugins.legacy,
+    let mut out = Forgotten::default();
+    let mut chosen_all: Vec<(String, ObjectId)> = Vec::new();
+    for (lineage, snapshots) in &members {
+        let chosen: Vec<&(String, ObjectId, i64)> =
+            snapshots.iter().filter(|(i, _, _)| matches(i)).collect();
+        if chosen.is_empty() {
+            continue;
+        }
+        let set: HashSet<String> = chosen.iter().map(|(i, _, _)| i.clone()).collect();
+        let branch = history.branch(lineage);
+        chosen_all.extend(chosen.iter().map(|(i, c, _)| (i.clone(), *c)));
+        // A lineage every snapshot of which goes: emptied, its tip saved.
+        if snapshots.iter().all(|(i, _, _)| set.contains(i)) {
+            let old = history.tips[lineage];
+            let backup = backup_name(repo, &branch)?;
+            if !options.dry_run {
+                store::set_ref(
+                    repo,
+                    &branch_ref(&backup)?,
+                    PreviousValue::MustNotExist,
+                    old,
+                )?;
+                store::delete_ref(repo, branch_ref(&branch)?, old)?;
+            }
+            out.emptied.push((branch, backup));
+            continue;
+        }
+        let oldest = chosen
+            .iter()
+            .map(|(_, _, t)| *t)
+            .min()
+            .expect("one matched");
+        let settle = settle_with(
+            repo,
+            &branch,
+            &Options {
+                into: None,
+                cutoff: Cutoff::At(oldest),
+                settling_days: 0,
+                dry_run: options.dry_run,
+                branches: Vec::new(),
+                sort: options.sort.clone(),
+                plugins: copy_plugins(&options.plugins),
+                verify_canon: false,
             },
-            verify_canon: false,
-        },
-        &set,
-    )?;
-    let mut out = Forgotten {
-        settle,
-        ..Forgotten::default()
-    };
+            &[],
+            &set,
+            &signer,
+        )?;
+        out.settles.push(settle);
+    }
     let record = (1..)
         .map(|n| format!("refs/seriate/forgotten/{n}"))
         .find(|n| {
@@ -565,19 +1124,15 @@ pub fn forget(repo: &gix::Repository, options: &ForgetOptions) -> Result<Forgott
     // commit, which keeps it as well.
     let mut seen = HashSet::new();
     let mut kept: Vec<(String, ObjectId, Option<ObjectId>)> = Vec::new();
-    for (identity, history_commit, _) in chosen {
-        if !seen.insert(identity.as_str()) {
+    for (identity, history_commit) in chosen_all {
+        if !seen.insert(identity.clone()) {
             continue;
         }
-        let branch_tip = tip(repo, &snapshot_ref(identity)?)?;
-        kept.push((
-            identity.clone(),
-            branch_tip.unwrap_or(*history_commit),
-            branch_tip,
-        ));
+        let stored = tip(repo, &snapshot_ref(&identity)?)?;
+        kept.push((identity.clone(), stored.unwrap_or(history_commit), stored));
         out.forgotten.push(identity.clone());
-        if branch_tip.is_some() {
-            out.deleted.push(identity.clone());
+        if stored.is_some() {
+            out.deleted.push(identity);
         }
     }
     if options.dry_run {
@@ -596,7 +1151,7 @@ pub fn forget(repo: &gix::Repository, options: &ForgetOptions) -> Result<Forgott
         committer: signature,
         encoding: None,
         message: format!(
-            "Forgotten from {branch}: {} snapshot(s)\n\nReason: {}\nHistory: {branch}\n",
+            "Forgotten from {name}: {} snapshot(s)\n\nReason: {}\nHistory: {name}\n",
             kept.len(),
             options.reason
         )
@@ -609,11 +1164,97 @@ pub fn forget(repo: &gix::Repository, options: &ForgetOptions) -> Result<Forgott
         .try_into()
         .map_err(|e| Error::Refused(format!("{record:?} is not a valid ref name: {e}")))?;
     store::set_ref(repo, &full, PreviousValue::MustNotExist, id)?;
-    for (identity, _, branch_tip) in &kept {
-        if let Some(t) = branch_tip {
+    for (identity, _, stored) in &kept {
+        if let Some(t) = stored {
             store::delete_snapshot(repo, identity, *t)?;
         }
     }
+    record_history(repo, &signer, &history, "forget")?;
+    Ok(out)
+}
+
+/// What [`migrate_history`] did, or would do with `dry_run`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MigratedHistory {
+    /// The new lineage branch, `<new>/default`.
+    pub branch: String,
+    /// Where the former branch is kept, when migrated in place.
+    pub kept: Option<String>,
+}
+
+/// A history of before spec 0499, the branch `from`, laid out as one (S4):
+/// `NEW/default` with its commits and `NEW`'s record; `from` left as it is
+/// when `into` names `NEW`, else moved in place, its former branch kept
+/// under `refs/seriate/migrated/`.
+pub fn migrate_history(
+    repo: &gix::Repository,
+    from: &str,
+    into: Option<&str>,
+    dry_run: bool,
+) -> Result<MigratedHistory, Error> {
+    let Some(old) = tip(repo, &branch_ref(from)?)? else {
+        return Err(Error::Refused(format!("no branch {from:?}")));
+    };
+    if tip(repo, &record_ref(from)?)?.is_some() {
+        return Err(Error::Refused(format!(
+            "{from} is a history laid out already"
+        )));
+    }
+    let new = into.unwrap_or(from);
+    let branch = lineage_branch(new, DEFAULT_LINEAGE);
+    if into.is_some() {
+        if tip(repo, &record_ref(new)?)?.is_some() || tip(repo, &branch_ref(new)?)?.is_some() {
+            return Err(Error::Refused(format!("{new} exists: give another name")));
+        }
+        let refs = repo.references().map_err(Error::git)?;
+        let prefix = format!("refs/heads/{new}/");
+        if refs
+            .prefixed(prefix.as_str())
+            .map_err(Error::git)?
+            .next()
+            .is_some()
+        {
+            return Err(Error::Refused(format!(
+                "branches under {new}/ exist: give another name"
+            )));
+        }
+    }
+    let mut out = MigratedHistory {
+        branch: branch.clone(),
+        kept: None,
+    };
+    if into.is_none() {
+        out.kept = Some(format!("{}{from}", crate::layout::MIGRATED));
+    }
+    if dry_run {
+        return Ok(out);
+    }
+    if let Some(kept) = &out.kept {
+        let kept = crate::layout::full_name(kept, "migrated history")?;
+        store::set_ref(repo, &kept, PreviousValue::MustNotExist, old)?;
+        // Git holds no `NAME` beside `NAME/default`: the branch goes first.
+        store::delete_ref(repo, branch_ref(from)?, old)?;
+    }
+    store::set_ref(
+        repo,
+        &branch_ref(&branch)?,
+        PreviousValue::MustNotExist,
+        old,
+    )?;
+    let previous = History {
+        name: new.to_string(),
+        ..History::default()
+    };
+    let tips = BTreeMap::from([(DEFAULT_LINEAGE.to_string(), old)]);
+    let statements = crate::lineage::read(repo)?.record;
+    write_history_record(
+        repo,
+        &Signer::from_config(repo)?,
+        &previous,
+        &tips,
+        statements,
+        &format!("migrate {from}"),
+    )?;
     Ok(out)
 }
 
@@ -1014,30 +1655,7 @@ fn sort_input_from_history(
         });
     }
     if !dry_run {
-        let mut snapshot_items = Vec::new();
-        for (path, oid) in &items {
-            let blob = target.find_blob(*oid).map_err(Error::git)?;
-            // Its origin back from the block (spec 0494 S1), so that the
-            // rebuilt snapshot is the same commit.
-            snapshot_items.push(store::Item {
-                path: path.clone(),
-                bytes: blob.data.clone(),
-                record: Vec::new(),
-                origin: s.block.evidence.get(path).cloned(),
-            });
-        }
-        let mut block = s.block.clone();
-        block.canon_rules.clear();
-        block.renderer.clear();
-        store::add(
-            target,
-            store::NewSnapshot {
-                source: block.source,
-                items: snapshot_items,
-                rejected: block.rejected,
-                record: block.record,
-            },
-        )?;
+        write_back(target, s, &items)?;
     }
     let verb = if dry_run {
         "would recreate"
@@ -1611,6 +2229,7 @@ pub(crate) fn one_file_tree(
 /// command (spec 0471), now.
 pub(crate) fn write_record(
     repo: &gix::Repository,
+    signer: &Signer,
     tree: ObjectId,
     parents: Vec<ObjectId>,
     message: String,
@@ -1630,7 +2249,7 @@ pub(crate) fn write_record(
         message: message.into(),
         extra_headers: Vec::new(),
     };
-    let commit = Signer::from_config(repo)?.sign(commit)?;
+    let commit = signer.sign(commit)?;
     Ok(repo.write_object(&commit).map_err(Error::git)?.detach())
 }
 

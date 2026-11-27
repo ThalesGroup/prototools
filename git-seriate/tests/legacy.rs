@@ -77,7 +77,7 @@ fn old_history(repo: &gix::Repository, versions: &[&str]) -> ObjectId {
     let id = parent.unwrap();
     store::set_ref(
         repo,
-        &store::branch_ref("main").unwrap(),
+        &store::branch_ref("main/default").unwrap(),
         gix::refs::transaction::PreviousValue::MustNotExist,
         id,
     )
@@ -88,7 +88,7 @@ fn old_history(repo: &gix::Repository, versions: &[&str]) -> ObjectId {
 fn messages(repo: &gix::Repository) -> Vec<String> {
     let mut out = Vec::new();
     let mut current = repo
-        .find_reference("refs/heads/main")
+        .find_reference("refs/heads/main/default")
         .ok()
         .map(|mut r| r.peel_to_id().unwrap().detach());
     while let Some(id) = current {
@@ -152,7 +152,10 @@ fn an_old_history_is_settled_and_converted() {
     )
     .unwrap();
     let pattern = Pattern(None);
-    let report = history::settle(&repo, &options(&pattern, &Old)).unwrap();
+    let report = history::settle(&repo, &options(&pattern, &Old))
+        .unwrap()
+        .lineages
+        .remove(0);
     assert!(report.moved, "{report:?}");
     let identities: Vec<String> = messages(&repo)
         .iter()
@@ -188,7 +191,8 @@ fn an_old_history_is_settled_and_converted() {
             canonicalizer: &NoRules,
         },
     )
-    .unwrap();
+    .unwrap()
+    .remove(0);
     assert_eq!((report.dropped, report.converted), (0, 2), "{report:?}");
     for m in messages(&repo) {
         assert!(Block::read(&m).unwrap().is_some(), "not converted: {m}");

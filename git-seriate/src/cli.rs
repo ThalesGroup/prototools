@@ -194,11 +194,18 @@ enum Command<E: Subcommand> {
         action: LineageAction,
     },
     /// Move a repository of before spec 0499 to its layout: its snapshot
-    /// branches under refs/seriate/snapshots/.
+    /// branches under refs/seriate/snapshots/, then HISTORY, if given, to a
+    /// history of lineages, HISTORY/default.
     Migrate {
+        /// Write the history as NEW/default instead, leaving HISTORY as it
+        /// is: for a branch that can't be deleted (protected on a server).
+        #[arg(long, value_name = "NEW", requires = "history")]
+        into: Option<String>,
         /// Show what would be moved, and write nothing.
         #[arg(long)]
         dry_run: bool,
+        /// A history of before spec 0499, a branch.
+        history: Option<String>,
     },
 }
 
@@ -535,39 +542,60 @@ fn dispatch<E: Subcommand>(
                 },
                 verify_canon,
             };
-            let report = history::settle(&repo, &options)?;
-            for w in &report.warnings {
-                eprintln!("warning: {w}");
-            }
-            for n in &report.notes {
+            let settled = history::settle(&repo, &options)?;
+            for n in &settled.notes {
                 eprintln!("{n}");
             }
-            for r in &report.replayed {
-                println!("replay {r}");
+            let verb = if dry_run { "would move" } else { "moved" };
+            for (identity, from, to) in &settled.moved {
+                println!("{verb} {identity}: {from} -> {to}");
             }
-            if stats {
-                eprint!("{}", sort_stats(&report));
+            for (branch, backup) in &settled.emptied {
+                let verb = if dry_run { "would empty" } else { "emptied" };
+                println!("{verb} {branch}: every snapshot of it moved; its tip saved as {backup}");
             }
-            let verb = if dry_run { "would settle" } else { "settled" };
-            println!(
-                "{verb} {}: kept {}, wrote {} snapshot(s), replayed {} commit(s){}",
-                report.branch,
-                report.kept,
-                report.written.len(),
-                report.replayed.len(),
-                report
-                    .backup
-                    .as_ref()
-                    .map_or(String::new(), |b| format!("; previous tip saved as {b}"))
-            );
-            if !report.false_markers.is_empty() {
-                for f in &report.false_markers {
+            let mut false_markers = Vec::new();
+            for report in &settled.lineages {
+                for w in &report.warnings {
+                    eprintln!("warning: {w}");
+                }
+                for n in &report.notes {
+                    eprintln!("{n}");
+                }
+                for r in &report.replayed {
+                    println!("replay {r}");
+                }
+                if stats {
+                    eprint!("{}", sort_stats(report));
+                }
+                let verb = if dry_run { "would settle" } else { "settled" };
+                println!(
+                    "{verb} {}: kept {}, wrote {} snapshot(s), replayed {} commit(s){}",
+                    report.branch,
+                    report.kept,
+                    report.written.len(),
+                    report.replayed.len(),
+                    report
+                        .backup
+                        .as_ref()
+                        .map_or(String::new(), |b| format!("; previous tip saved as {b}"))
+                );
+                false_markers.extend(report.false_markers.iter().cloned());
+            }
+            if settled.record.is_some() {
+                println!(
+                    "recorded in {}",
+                    crate::layout::record_ref(&settled.history)?.as_bstr()
+                );
+            }
+            if !false_markers.is_empty() {
+                for f in &false_markers {
                     eprintln!("not canonical: {f}");
                 }
                 return Err(Error::Refused(format!(
                     "{} item(s) of the history are not what their commit's canon_rules and \
                      renderer claim",
-                    report.false_markers.len()
+                    false_markers.len()
                 )));
             }
         }
@@ -577,6 +605,7 @@ fn dispatch<E: Subcommand>(
             dry_run,
             identities,
         } => {
+            let into_name = into.clone();
             let pattern = repo
                 .config_snapshot()
                 .string("seriate.itemPattern")
@@ -600,12 +629,13 @@ fn dispatch<E: Subcommand>(
                     },
                 },
             )?;
-            let report = &forgotten.settle;
-            for w in &report.warnings {
-                eprintln!("warning: {w}");
-            }
-            for n in &report.notes {
-                eprintln!("{n}");
+            for report in &forgotten.settles {
+                for w in &report.warnings {
+                    eprintln!("warning: {w}");
+                }
+                for n in &report.notes {
+                    eprintln!("{n}");
+                }
             }
             let verb = if dry_run { "would forget" } else { "forgot" };
             for identity in &forgotten.forgotten {
@@ -615,27 +645,35 @@ fn dispatch<E: Subcommand>(
                 let verb = if dry_run { "would delete" } else { "deleted" };
                 println!("{verb} its snapshot {b}");
             }
-            println!(
-                "{} {}: kept {}, rewrote {} snapshot(s), replayed {} commit(s){}",
-                if dry_run { "would rewrite" } else { "rewrote" },
-                report.branch,
-                report.kept,
-                report.written.len(),
-                report.replayed.len(),
-                report
-                    .backup
-                    .as_ref()
-                    .map_or(String::new(), |b| format!("; previous tip saved as {b}"))
-            );
+            for (branch, backup) in &forgotten.emptied {
+                let verb = if dry_run { "would empty" } else { "emptied" };
+                println!(
+                    "{verb} {branch}: every snapshot of it forgotten; its tip saved as {backup}"
+                );
+            }
+            for report in &forgotten.settles {
+                println!(
+                    "{} {}: kept {}, rewrote {} snapshot(s), replayed {} commit(s){}",
+                    if dry_run { "would rewrite" } else { "rewrote" },
+                    report.branch,
+                    report.kept,
+                    report.written.len(),
+                    report.replayed.len(),
+                    report
+                        .backup
+                        .as_ref()
+                        .map_or(String::new(), |b| format!("; previous tip saved as {b}"))
+                );
+            }
             let kept = if dry_run {
                 "would be kept by"
             } else {
                 "kept by"
             };
             println!("{kept} {}", forgotten.record);
+            let history = history::resolve_history(&repo, into_name.as_deref())?;
             println!(
-                "next: extract their replacements, if any, then settle, before sharing {}",
-                report.branch
+                "next: extract their replacements, if any, then settle, before sharing {history}"
             );
         }
         Command::Compact {
@@ -655,30 +693,31 @@ fn dispatch<E: Subcommand>(
                 renderer: kit.renderer.as_ref(),
                 canonicalizer: kit.canonicalizer.as_ref(),
             };
-            let report = crate::compact::compact(&repo, &options, &plugins)?;
-            for a in &report.actions {
-                println!("{a}");
+            for report in crate::compact::compact(&repo, &options, &plugins)? {
+                for a in &report.actions {
+                    println!("{a}");
+                }
+                for w in &report.warnings {
+                    eprintln!("warning: {w}");
+                }
+                let verb = if dry_run {
+                    "would compact"
+                } else {
+                    "compacted"
+                };
+                println!(
+                    "{verb} {}: dropped {}, reduced {}, converted {}, marked {}{}",
+                    report.branch,
+                    report.dropped,
+                    report.reduced,
+                    report.converted,
+                    report.marked,
+                    report
+                        .backup
+                        .as_ref()
+                        .map_or(String::new(), |b| format!("; previous tip saved as {b}"))
+                );
             }
-            for w in &report.warnings {
-                eprintln!("warning: {w}");
-            }
-            let verb = if dry_run {
-                "would compact"
-            } else {
-                "compacted"
-            };
-            println!(
-                "{verb} {}: dropped {}, reduced {}, converted {}, marked {}{}",
-                report.branch,
-                report.dropped,
-                report.reduced,
-                report.converted,
-                report.marked,
-                report
-                    .backup
-                    .as_ref()
-                    .map_or(String::new(), |b| format!("; previous tip saved as {b}"))
-            );
         }
         Command::List { record_only } => {
             for listed in store::list_with(&repo, kit.legacy.as_deref())? {
@@ -704,7 +743,11 @@ fn dispatch<E: Subcommand>(
             }
         }
         Command::Lineage { action } => lineage(&repo, action, kit)?,
-        Command::Migrate { dry_run } => {
+        Command::Migrate {
+            into,
+            dry_run,
+            history,
+        } => {
             let moved = crate::layout::migrate_snapshots(&repo, dry_run, kit.legacy.as_deref())?;
             let verb = if dry_run { "would move" } else { "moved" };
             println!(
@@ -712,6 +755,15 @@ fn dispatch<E: Subcommand>(
                 moved.len(),
                 crate::layout::SNAPSHOTS
             );
+            if let Some(h) = history {
+                let done = history::migrate_history(&repo, &h, into.as_deref(), dry_run)?;
+                let verb = if dry_run { "would write" } else { "wrote" };
+                println!("{verb} history {h} as {}", done.branch);
+                match &done.kept {
+                    Some(kept) => println!("its former branch kept as {kept}"),
+                    None => println!("{h} left as it is"),
+                }
+            }
         }
     }
     Ok(())

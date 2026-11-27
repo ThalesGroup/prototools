@@ -207,6 +207,6 @@ fn tar_out_is_the_repository() {
             String::from_utf8_lossy(&out.stderr)
         );
     }
-    let trees = |r: &Path| git(r, &["log", "--format=%T", "main"]);
+    let trees = |r: &Path| git(r, &["log", "--format=%T", "main/default"]);
     assert_eq!(trees(&unpacked), trees(&repo));
 }

@@ -154,7 +154,7 @@ fn the_corpora_settle_as_the_existing_implementation_does() {
         add_corpus(&repo, name, |_| true);
         let (ok, _, err) = git_seriate(&repo, &["settle", "--into", "main"]);
         assert!(ok, "{name}: {err}");
-        let onego = history(&repo, "main");
+        let onego = history(&repo, "main/default");
         assert_eq!(onego, expected, "{name}: one go");
         git(&repo, &["fsck", "--full", "--strict", "--no-dangling"]);
 
@@ -173,7 +173,11 @@ fn the_corpora_settle_as_the_existing_implementation_does() {
         assert!(ok, "{name}: {err}");
         let (ok, _, err) = git_seriate(&repo, &["settle", "--into", "main"]);
         assert!(ok, "{name}: {err}");
-        assert_eq!(history(&repo, "main"), expected, "{name}: in halves");
+        assert_eq!(
+            history(&repo, "main/default"),
+            expected,
+            "{name}: in halves"
+        );
     }
 }
 
@@ -248,7 +252,7 @@ fn nothing_new_writes_nothing() {
     let (ok, out, err) = git_seriate(&repo, &["settle", "--into", "main"]);
     assert!(ok, "{err}");
     assert!(out.contains("wrote 3 snapshot(s)"), "{out}");
-    let before = git(&repo, &["rev-parse", "main"]);
+    let before = git(&repo, &["rev-parse", "main/default"]);
 
     let (ok, _, err) = git_seriate(&repo, &["settle", "--into", "main"]);
     assert!(ok);
@@ -257,9 +261,9 @@ fn nothing_new_writes_nothing() {
     let (ok, out, err) = git_seriate(&repo, &["settle", "--into", "main", "--no-cutoff"]);
     assert!(ok, "{err}");
     assert!(out.contains("kept 3, wrote 0"), "{out}");
-    assert_eq!(git(&repo, &["rev-parse", "main"]), before);
+    assert_eq!(git(&repo, &["rev-parse", "main/default"]), before);
     assert!(
-        git(&repo, &["branch", "--list", "main-*"]).is_empty(),
+        git(&repo, &["branch", "--list", "main/default-*"]).is_empty(),
         "no backup"
     );
 }
@@ -273,25 +277,28 @@ fn a_manual_commit_follows_its_anchor() {
     // s0 and s2 first; notes after s2; then s1, built between them.
     let (ok, _, err) = git_seriate(&repo, &["settle", "--into", "main", "s0", "s2"]);
     assert!(ok, "{err}");
-    manual_commit(&repo, "main", "NOTES.md", "notes\n", "docs: notes");
+    manual_commit(&repo, "main/default", "NOTES.md", "notes\n", "docs: notes");
     let (ok, out, err) = git_seriate(&repo, &["settle", "--into", "main", "--no-cutoff"]);
     assert!(ok, "{err}");
     assert!(out.contains("replay "), "{out}");
-    assert!(out.contains("previous tip saved as main-1"), "{out}");
-    let subjects = git(&repo, &["log", "--reverse", "--format=%s", "main"]);
+    assert!(
+        out.contains("previous tip saved as main/default-1"),
+        "{out}"
+    );
+    let subjects = git(&repo, &["log", "--reverse", "--format=%s", "main/default"]);
     assert_eq!(
         subjects,
         "Snapshot s0\nSnapshot s1\nSnapshot s2\ndocs: notes\n"
     );
-    let message = git(&repo, &["log", "-1", "--format=%B", "main"]);
+    let message = git(&repo, &["log", "-1", "--format=%B", "main/default"]);
     assert!(message.contains("Snapshot-Anchor: s2"), "{message}");
-    let tip = git(&repo, &["rev-parse", "main"]);
+    let tip = git(&repo, &["rev-parse", "main/default"]);
 
     // Again: the recorded anchor keeps it where it is.
     let (ok, out, err) = git_seriate(&repo, &["settle", "--into", "main", "--no-cutoff"]);
     assert!(ok, "{err}");
     assert!(out.contains("wrote 0"), "{out}");
-    assert_eq!(git(&repo, &["rev-parse", "main"]), tip);
+    assert_eq!(git(&repo, &["rev-parse", "main/default"]), tip);
     git(&repo, &["fsck", "--full", "--strict", "--no-dangling"]);
 }
 
@@ -302,13 +309,13 @@ fn a_manual_commit_on_an_item_path_stops_the_walk() {
     small(&repo);
     let (ok, _, err) = git_seriate(&repo, &["settle", "--into", "main", "s1", "s2"]);
     assert!(ok, "{err}");
-    manual_commit(&repo, "main", "README.md", "hi\n", "docs: readme");
+    manual_commit(&repo, "main/default", "README.md", "hi\n", "docs: readme");
     // No pattern: README.md counts as an item, and the warning says so.
     let (ok, _, err) = git_seriate(&repo, &["settle", "--into", "main"]);
     assert!(ok, "{err}");
     assert!(err.contains("settle stopped at"), "{err}");
     assert!(err.contains("no seriate.itemPattern is set"), "{err}");
-    let subjects = git(&repo, &["log", "--reverse", "--format=%s", "main"]);
+    let subjects = git(&repo, &["log", "--reverse", "--format=%s", "main/default"]);
     assert_eq!(
         subjects, "Snapshot s1\nSnapshot s2\ndocs: readme\nSnapshot s0\n",
         "below the stop nothing moves; s0 goes on top"
@@ -323,7 +330,7 @@ fn a_dry_run_writes_nothing() {
     let (ok, out, err) = git_seriate(&repo, &["settle", "--into", "main", "--dry-run"]);
     assert!(ok, "{err}");
     assert!(out.contains("would settle main"), "{out}");
-    assert!(git(&repo, &["branch", "--list", "main"]).is_empty());
+    assert!(git(&repo, &["branch", "--list", "main/default"]).is_empty());
     let objects = git(&repo, &["count-objects", "-v"]);
     let (ok, _, _) = git_seriate(&repo, &["settle", "--into", "main", "--dry-run"]);
     assert!(ok);
@@ -354,7 +361,7 @@ fn commits_are_signed_when_git_is_configured_to() {
     small(&repo);
     let (ok, _, err) = git_seriate(&repo, &["settle", "--into", "main"]);
     assert!(ok, "{err}");
-    let commit = git(&repo, &["cat-file", "commit", "main"]);
+    let commit = git(&repo, &["cat-file", "commit", "main/default"]);
     assert!(
         commit.contains("gpgsig -----BEGIN SSH SIGNATURE-----"),
         "{commit}"
@@ -371,7 +378,7 @@ fn commits_are_signed_when_git_is_configured_to() {
             allowed.to_str().unwrap(),
         ],
     );
-    git(&repo, &["verify-commit", "main"]);
+    git(&repo, &["verify-commit", "main/default"]);
 }
 
 // ── Signing in-process (spec 0463) ───────────────────────────────────────────
@@ -475,11 +482,11 @@ fn signs_like_ssh_keygen_with_a_key_file() {
     // No ssh-keygen on its PATH: signed in-process, or not at all.
     let (ok, _, err) = git_seriate_env(&repo, &["settle", "--into", "main"], &[("PATH", "")]);
     assert!(ok, "{err}");
-    for id in git(&repo, &["rev-list", "main"]).lines() {
+    for id in git(&repo, &["rev-list", "main/default"]).lines() {
         let (sig, payload) = signature_and_payload(&git(&repo, &["cat-file", "commit", id]));
         assert_eq!(sig, ssh_keygen_signs(&key, &payload, &[]), "commit {id}");
     }
-    verify_all(&repo, "main", &key.with_extension("pub"));
+    verify_all(&repo, "main/default", &key.with_extension("pub"));
 }
 
 /// An `ssh-agent` of the test's, stopped when dropped.
@@ -563,11 +570,11 @@ fn signs_through_the_agent() {
         let env = [sock, ("PATH", "")];
         let (ok, _, err) = git_seriate_env(&repo, &["settle", "--into", "main"], &env);
         assert!(ok, "{kind}: {err}");
-        verify_all(&repo, "main", &public);
+        verify_all(&repo, "main/default", &public);
         // RSA (PKCS #1 v1.5) and Ed25519 are deterministic: ssh-keygen,
         // through the same agent, writes the same.
         if kind != "ecdsa" {
-            for id in git(&repo, &["rev-list", "main"]).lines() {
+            for id in git(&repo, &["rev-list", "main/default"]).lines() {
                 let (sig, payload) =
                     signature_and_payload(&git(&repo, &["cat-file", "commit", id]));
                 assert_eq!(
@@ -616,7 +623,7 @@ fn an_unencrypted_key_file_is_used_before_the_agent() {
     let (ok, _, err) = git_seriate_env(&repo, &["settle", "--into", "main"], &env);
     assert!(ok, "{err}");
     assert_eq!(asked.load(Ordering::SeqCst), 0, "the agent was asked");
-    verify_all(&repo, "main", &key.with_extension("pub"));
+    verify_all(&repo, "main/default", &key.with_extension("pub"));
 }
 
 /// Spec 0472 S1, 2: an encrypted key file the agent holds is signed through
@@ -661,7 +668,7 @@ fn an_encrypted_or_rsa_key_file_goes_to_the_agent() {
         let (ok, _, err) = git_seriate_env(&repo, &["settle", "--into", "main"], &env);
         assert!(ok, "{kind}: {err}");
         assert!(!asked.exists(), "{kind}: a passphrase was asked for");
-        verify_all(&repo, "main", &key.with_extension("pub"));
+        verify_all(&repo, "main/default", &key.with_extension("pub"));
     }
 }
 
@@ -697,7 +704,7 @@ fn an_encrypted_key_asks_once() {
     let (ok, _, err) = git_seriate_env(&repo, &["settle", "--into", "main"], &env);
     assert!(!ok);
     assert!(err.contains("bad passphrase"), "{err}");
-    assert!(git(&repo, &["branch", "--list", "main"]).is_empty());
+    assert!(git(&repo, &["branch", "--list", "main/default"]).is_empty());
 
     // The right one: asked for once, for every commit.
     std::fs::remove_file(&count).unwrap();
@@ -705,14 +712,14 @@ fn an_encrypted_key_asks_once() {
     let (ok, _, err) = git_seriate_env(&repo, &["settle", "--into", "main"], &env);
     assert!(ok, "{err}");
     assert!(
-        git(&repo, &["rev-list", "--count", "main"])
+        git(&repo, &["rev-list", "--count", "main/default"])
             .trim()
             .parse::<u32>()
             .unwrap()
             > 1
     );
     assert_eq!(std::fs::read_to_string(&count).unwrap().lines().count(), 1);
-    verify_all(&repo, "main", &key.with_extension("pub"));
+    verify_all(&repo, "main/default", &key.with_extension("pub"));
 }
 
 /// Runs the `git ...` command a checked-out note names, in `repo`.
@@ -744,7 +751,11 @@ fn the_checked_out_note_names_a_command_that_works() {
     // Unborn: no previous tip.
     let (ok, _, err) = git_seriate(&repo, &["settle"]);
     assert!(ok, "{err}");
-    assert_eq!(run_note(&repo, &err), "git read-tree -m -u main");
+    assert_eq!(run_note(&repo, &err), "git read-tree -m -u main/default");
+    assert!(
+        err.contains("HEAD named main, unborn: it names main/default now"),
+        "{err}"
+    );
     assert_eq!(git(&repo, &["status", "--porcelain"]), "?? local.txt\n");
     assert_eq!(
         std::fs::read_to_string(repo.join("f.txt")).unwrap(),
@@ -781,7 +792,10 @@ fn the_checked_out_note_names_a_command_that_works() {
     .unwrap();
     let (ok, _, err) = git_seriate(&repo, &["settle"]);
     assert!(ok, "{err}");
-    assert_eq!(run_note(&repo, &err), "git read-tree -m -u main-1 main");
+    assert_eq!(
+        run_note(&repo, &err),
+        "git read-tree -m -u main/default-1 main/default"
+    );
     assert_eq!(
         git(&repo, &["status", "--porcelain"]),
         " M notes.md\n?? local.txt\n"
@@ -828,7 +842,10 @@ fn stats_name_each_move_of_the_sort() {
     }
     let (ok, out, err) = git_seriate(&repo, &["settle", "--into", "main", "--dry-run", "--stats"]);
     assert!(ok, "{err}");
-    assert!(out.contains("would settle main: kept 0, wrote 3"), "{out}");
+    assert!(
+        out.contains("would settle main/default: kept 0, wrote 3"),
+        "{out}"
+    );
     assert!(err.contains("sort: 3 snapshot(s)\n"), "{err}");
     assert!(
         err.contains("phase 1 build time: 2 position(s) changed\n"),

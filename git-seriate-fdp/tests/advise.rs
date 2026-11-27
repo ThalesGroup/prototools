@@ -254,10 +254,10 @@ fn a_manual_files_age_survives_a_rewrite() {
         );
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     };
-    git(&["read-tree", "main"]);
+    git(&["read-tree", "main/default"]);
     git(&["add", "m.pb"]);
     let tree = git(&["write-tree"]);
-    let parent = git(&["rev-parse", "main"]);
+    let parent = git(&["rev-parse", "main/default"]);
     let commit = git(&[
         "commit-tree",
         &tree,
@@ -266,7 +266,7 @@ fn a_manual_files_age_survives_a_rewrite() {
         "-m",
         "Add m by hand for commit ad33254f9b",
     ]);
-    git(&["update-ref", "refs/heads/main", &commit]);
+    git(&["update-ref", "refs/heads/main/default", &commit]);
 
     let age = |r: &gix::Repository| {
         let input = advise::read(r, &kit, Some("main")).unwrap();
@@ -296,7 +296,8 @@ fn a_manual_files_age_survives_a_rewrite() {
             canonicalizer: kit.canonicalizer.as_ref(),
         },
     )
-    .unwrap();
+    .unwrap()
+    .remove(0);
     assert_eq!(report.dropped, 1, "{report:?}");
     assert_eq!(age(&r), before);
     let (_, text) = advise_text(&r, &kit, &into_main());

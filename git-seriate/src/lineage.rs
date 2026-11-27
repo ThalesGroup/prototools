@@ -145,8 +145,13 @@ pub fn state(
         "Lineages: {command}, {} snapshot(s)\n\n{body}",
         out.changed.len()
     );
-    let id =
-        crate::history::write_record(repo, tree, current.record.into_iter().collect(), message)?;
+    let id = crate::history::write_record(
+        repo,
+        &crate::history::Signer::from_config(repo)?,
+        tree,
+        current.record.into_iter().collect(),
+        message,
+    )?;
     let expected = match current.record {
         Some(old) => PreviousValue::MustExistAndMatch(gix::refs::Target::Object(old)),
         None => PreviousValue::MustNotExist,

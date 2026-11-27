@@ -123,10 +123,14 @@ fn settle(repo: &gix::Repository, renderer: &Counting, dry_run: bool, verify: bo
         },
     )
     .unwrap()
+    // One lineage: its report, or none when nothing was settled.
+    .lineages
+    .pop()
+    .unwrap_or_default()
 }
 
 fn tip(repo: &gix::Repository) -> gix::ObjectId {
-    repo.find_reference("refs/heads/main")
+    repo.find_reference("refs/heads/main/default")
         .unwrap()
         .peel_to_id()
         .unwrap()
@@ -177,13 +181,17 @@ fn git(repo: &gix::Repository, args: &[&str], stdin: Option<&str>) -> String {
 /// `main`'s tip replaced by a commit of `tree` and `message`, on the same
 /// parent.
 fn replace_tip(repo: &gix::Repository, tree: &str, message: &str) {
-    let parent = git(repo, &["rev-parse", "main^"], None);
+    let parent = git(repo, &["rev-parse", "main/default^"], None);
     let commit = git(repo, &["commit-tree", tree, "-p", &parent], Some(message));
-    git(repo, &["update-ref", "refs/heads/main", &commit], None);
+    git(
+        repo,
+        &["update-ref", "refs/heads/main/default", &commit],
+        None,
+    );
 }
 
 fn tip_message(repo: &gix::Repository) -> String {
-    git(repo, &["log", "-1", "--format=%B", "main"], None)
+    git(repo, &["log", "-1", "--format=%B", "main/default"], None)
 }
 
 #[test]
@@ -253,7 +261,7 @@ fn legacy_histories_are_canonicalized_and_compact_marks_them() {
     // The tip as written before spec 0464: no renderer's version.
     let mut block = blocks(&repo).remove(0);
     block.renderer.clear();
-    let tree = git(&repo, &["rev-parse", "main^{tree}"], None);
+    let tree = git(&repo, &["rev-parse", "main/default^{tree}"], None);
     let message = tip_message(&repo);
     let subject = message.split("\n\n").next().unwrap();
     replace_tip(&repo, &tree, &format!("{subject}\n\n{}", block.message()));
@@ -281,7 +289,8 @@ fn legacy_histories_are_canonicalized_and_compact_marks_them() {
             canonicalizer: &Lower,
         },
     )
-    .unwrap();
+    .unwrap()
+    .remove(0);
     assert_eq!(report.marked, 1, "{report:?}");
     assert!(blocks(&repo)
         .iter()

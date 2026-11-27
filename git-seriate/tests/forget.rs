@@ -138,7 +138,7 @@ fn three(root: &Path) -> PathBuf {
     let (ok, _, err) = git_seriate(&repo, &["settle", "--into", "main", "--no-cutoff"]);
     assert!(ok, "{err}");
     assert_eq!(
-        subjects(&repo, "main"),
+        subjects(&repo, "main/default"),
         ["Snapshot s1", "Snapshot s2", "Snapshot s3"]
     );
     repo
@@ -183,8 +183,8 @@ fn a_walk_stopped_by_a_manual_commit_is_a_refusal_saying_why() {
     // manual commit at the tip stops the walk, above the snapshot to forget.
     let tmp = tempfile::tempdir().unwrap();
     let repo = three(tmp.path());
-    manual_commit(&repo, "main", "README.md", "notes\n", "docs");
-    let old = git(&repo, &["rev-parse", "main"]);
+    manual_commit(&repo, "main/default", "README.md", "notes\n", "docs");
+    let old = git(&repo, &["rev-parse", "main/default"]);
     let (ok, _, err) = git_seriate(&repo, &["forget", "--into", "main", "--reason", "x", "s2"]);
     assert!(!ok);
     assert!(!err.contains("internal error"), "{err}");
@@ -193,7 +193,7 @@ fn a_walk_stopped_by_a_manual_commit_is_a_refusal_saying_why() {
     assert!(err.contains("the walk stops at"), "{err}");
     assert!(err.contains("no seriate.itemPattern is set"), "{err}");
     assert!(err.contains("to let the history's rewrites pass"), "{err}");
-    assert_eq!(git(&repo, &["rev-parse", "main"]), old);
+    assert_eq!(git(&repo, &["rev-parse", "main/default"]), old);
     assert!(ref_exists(&repo, "refs/seriate/snapshots/s2"));
 }
 
@@ -207,13 +207,13 @@ fn a_manual_commit_whose_anchor_is_forgotten_keeps_its_place() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = three(tmp.path());
     git(&repo, &["config", "seriate.itemPattern", "*.txt"]);
-    manual_commit(&repo, "main", "README.md", "1\n", "docs A");
+    manual_commit(&repo, "main/default", "README.md", "1\n", "docs A");
     add(&repo, "s4", 4_000_000, &[("d.txt", "4\n")]);
     let (ok, _, err) = git_seriate(&repo, &["settle", "--into", "main"]);
     assert!(ok, "{err}");
-    manual_commit(&repo, "main", "README.md", "2\n", "docs B");
+    manual_commit(&repo, "main/default", "README.md", "2\n", "docs B");
     assert_eq!(
-        subjects(&repo, "main"),
+        subjects(&repo, "main/default"),
         [
             "Snapshot s1",
             "Snapshot s2",
@@ -231,17 +231,20 @@ fn a_manual_commit_whose_anchor_is_forgotten_keeps_its_place() {
     assert!(!err.contains("now replayed before"), "{err}");
     assert!(err.contains("replayed after 's3'"), "{err}");
     assert_eq!(
-        subjects(&repo, "main"),
+        subjects(&repo, "main/default"),
         ["Snapshot s1", "Snapshot s3", "docs A", "docs B"]
     );
-    assert_eq!(file_at(&repo, "main", "README.md").as_deref(), Some("2\n"));
+    assert_eq!(
+        file_at(&repo, "main/default", "README.md").as_deref(),
+        Some("2\n")
+    );
 }
 
 #[test]
 fn a_forgotten_snapshot_leaves_the_history_and_the_store() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = three(tmp.path());
-    let old = git(&repo, &["rev-parse", "main"]);
+    let old = git(&repo, &["rev-parse", "main/default"]);
     let s2 = git(&repo, &["rev-parse", "refs/seriate/snapshots/s2"]);
     let (ok, out, err) = git_seriate(
         &repo,
@@ -259,13 +262,22 @@ fn a_forgotten_snapshot_leaves_the_history_and_the_store() {
     assert!(out.contains("kept by refs/seriate/forgotten/1\n"), "{out}");
     assert!(out.contains("next: extract their replacements"), "{out}");
     // The history without it, its files' versions back to the ones below.
-    assert_eq!(subjects(&repo, "main"), ["Snapshot s1", "Snapshot s3"]);
-    assert_eq!(file_at(&repo, "main", "a.txt").as_deref(), Some("1\n"));
-    assert_eq!(file_at(&repo, "main", "b.txt"), None);
-    assert_eq!(file_at(&repo, "main", "c.txt").as_deref(), Some("3\n"));
+    assert_eq!(
+        subjects(&repo, "main/default"),
+        ["Snapshot s1", "Snapshot s3"]
+    );
+    assert_eq!(
+        file_at(&repo, "main/default", "a.txt").as_deref(),
+        Some("1\n")
+    );
+    assert_eq!(file_at(&repo, "main/default", "b.txt"), None);
+    assert_eq!(
+        file_at(&repo, "main/default", "c.txt").as_deref(),
+        Some("3\n")
+    );
     // The previous tip saved; the branch gone; the snapshot kept by the
     // decision's record, with why, and listed in its tree.
-    assert_eq!(git(&repo, &["rev-parse", "main-1"]), old);
+    assert_eq!(git(&repo, &["rev-parse", "main/default-1"]), old);
     assert!(!ref_exists(&repo, "refs/seriate/snapshots/s2"));
     let record = "refs/seriate/forgotten/1";
     assert_eq!(git(&repo, &["rev-parse", &format!("{record}^1")]), s2);
@@ -297,10 +309,13 @@ fn a_forgotten_snapshot_is_added_again_the_normal_way() {
     let (ok, _, err) = git_seriate(&repo, &["settle", "--into", "main", "--no-cutoff"]);
     assert!(ok, "{err}");
     assert_eq!(
-        subjects(&repo, "main"),
+        subjects(&repo, "main/default"),
         ["Snapshot s1", "Snapshot s2", "Snapshot s3"]
     );
-    assert_eq!(file_at(&repo, "main", "b.txt").as_deref(), Some("22\n"));
+    assert_eq!(
+        file_at(&repo, "main/default", "b.txt").as_deref(),
+        Some("22\n")
+    );
     // Forgotten again: the second decision, its own record.
     let (ok, out, err) = git_seriate(
         &repo,
@@ -320,7 +335,7 @@ fn one_decision_one_record_for_every_snapshot_it_forgets() {
     );
     assert!(ok, "{err}");
     assert!(out.contains("kept by refs/seriate/forgotten/1\n"), "{out}");
-    assert_eq!(subjects(&repo, "main"), ["Snapshot s1"]);
+    assert_eq!(subjects(&repo, "main/default"), ["Snapshot s1"]);
     let parents = git(
         &repo,
         &["log", "-1", "--format=%P", "refs/seriate/forgotten/1"],
@@ -333,7 +348,7 @@ fn one_decision_one_record_for_every_snapshot_it_forgets() {
 fn a_dry_run_lists_and_writes_nothing() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = three(tmp.path());
-    let old = git(&repo, &["rev-parse", "main"]);
+    let old = git(&repo, &["rev-parse", "main/default"]);
     let (ok, out, err) = git_seriate(
         &repo,
         &[
@@ -349,7 +364,7 @@ fn a_dry_run_lists_and_writes_nothing() {
     assert!(ok, "{err}");
     assert!(out.contains("would forget s2"), "{out}");
     assert!(out.contains("would delete its snapshot s2"), "{out}");
-    assert_eq!(git(&repo, &["rev-parse", "main"]), old);
+    assert_eq!(git(&repo, &["rev-parse", "main/default"]), old);
     assert!(ref_exists(&repo, "refs/seriate/snapshots/s2"));
     assert!(!ref_exists(&repo, "refs/seriate/forgotten/1"));
 }
@@ -383,7 +398,7 @@ fn prune_is_what_drop_was_and_drop_says_so() {
     assert!(err.contains("drop is now prune"), "{err}");
     // Pruned, not forgotten: the history still holds them.
     assert_eq!(
-        subjects(&repo, "main"),
+        subjects(&repo, "main/default"),
         ["Snapshot s1", "Snapshot s2", "Snapshot s3"]
     );
 }

@@ -162,7 +162,7 @@ fn a_tool_authored_snapshot_is_authored_by_the_user() {
     add(&repo, "s0", 0, 10, "a\n");
     add(&repo, "s1", 1, 11, "a\nb\n");
     settle(&repo);
-    let history = authors(&repo, "main");
+    let history = authors(&repo, "main/default");
     assert_eq!(history.len(), 2);
     for (author, date, _) in &history {
         assert_eq!(author, "Settler <settler@example.com>");
@@ -189,7 +189,7 @@ fn a_snapshots_author_is_kept() {
     );
     settle(&repo);
     assert_eq!(
-        authors(&repo, "main")[0].0,
+        authors(&repo, "main/default")[0].0,
         "Alice <alice@example.com>",
         "a snapshot's own author"
     );
@@ -203,9 +203,9 @@ fn a_rewrite_re_authors_only_the_authorless() {
     settle(&repo);
     // The tip as settled before 0471: no author; a manual commit by Bob on
     // top.
-    reauthor_tip(&repo, "refs/heads/main", "git-seriate", "");
-    let tree = git(&repo, &["rev-parse", "main^{tree}"], &[], "");
-    let tip = git(&repo, &["rev-parse", "main"], &[], "");
+    reauthor_tip(&repo, "refs/heads/main/default", "git-seriate", "");
+    let tree = git(&repo, &["rev-parse", "main/default^{tree}"], &[], "");
+    let tip = git(&repo, &["rev-parse", "main/default"], &[], "");
     let bob = git(
         &repo,
         &["commit-tree", &tree, "-p", &tip],
@@ -215,13 +215,18 @@ fn a_rewrite_re_authors_only_the_authorless() {
         ],
         "docs: a note\n",
     );
-    git(&repo, &["update-ref", "refs/heads/main", &bob], &[], "");
-    assert_eq!(authors(&repo, "main")[1].0, "git-seriate <>");
+    git(
+        &repo,
+        &["update-ref", "refs/heads/main/default", &bob],
+        &[],
+        "",
+    );
+    assert_eq!(authors(&repo, "main/default")[1].0, "git-seriate <>");
 
     // A snapshot built before them all: every commit re-sorted, replayed.
     add(&repo, "s0", 0, 10, "");
     settle(&repo);
-    let history = authors(&repo, "main");
+    let history = authors(&repo, "main/default");
     let by_subject = |s: &str| history.iter().find(|h| h.2.contains(s)).unwrap().clone();
     assert_eq!(by_subject("docs: a note").0, "Bob <bob@example.com>");
     for id in ["s0", "s1", "s2"] {
@@ -233,7 +238,7 @@ fn a_rewrite_re_authors_only_the_authorless() {
     // compact, rewriting: s2's commit as written before 0464 and 0471 (no
     // renderer, no author), under Bob's note; compact marks it, so rewrites
     // it: the user its author, Bob kept.
-    let s2 = git(&repo, &["rev-parse", "main~1"], &[], "");
+    let s2 = git(&repo, &["rev-parse", "main/default~1"], &[], "");
     let message: String = git(&repo, &["log", "-1", "--format=%B", &s2], &[], "")
         .lines()
         .filter(|l| !l.starts_with("renderer:") && !l.starts_with("  \"generic\""))
@@ -244,9 +249,9 @@ fn a_rewrite_re_authors_only_the_authorless() {
         &repo,
         &[
             "commit-tree",
-            &git(&repo, &["rev-parse", "main~1^{tree}"], &[], ""),
+            &git(&repo, &["rev-parse", "main/default~1^{tree}"], &[], ""),
             "-p",
-            &git(&repo, &["rev-parse", "main~2"], &[], ""),
+            &git(&repo, &["rev-parse", "main/default~2"], &[], ""),
         ],
         &[
             ("GIT_AUTHOR_NAME", "git-seriate"),
@@ -259,7 +264,7 @@ fn a_rewrite_re_authors_only_the_authorless() {
         &repo,
         &[
             "commit-tree",
-            &git(&repo, &["rev-parse", "main^{tree}"], &[], ""),
+            &git(&repo, &["rev-parse", "main/default^{tree}"], &[], ""),
             "-p",
             &old,
         ],
@@ -269,8 +274,13 @@ fn a_rewrite_re_authors_only_the_authorless() {
         ],
         "docs: a note\n",
     );
-    git(&repo, &["update-ref", "refs/heads/main", &note], &[], "");
-    assert_eq!(authors(&repo, "main")[1].0, "git-seriate <>");
+    git(
+        &repo,
+        &["update-ref", "refs/heads/main/default", &note],
+        &[],
+        "",
+    );
+    assert_eq!(authors(&repo, "main/default")[1].0, "git-seriate <>");
     identity();
     let report = compact::compact(
         &repo,
@@ -286,9 +296,10 @@ fn a_rewrite_re_authors_only_the_authorless() {
             canonicalizer: &NoRules,
         },
     )
-    .unwrap();
+    .unwrap()
+    .remove(0);
     assert_eq!(report.marked, 1, "{report:?}");
-    let history = authors(&repo, "main");
+    let history = authors(&repo, "main/default");
     assert_eq!(history[0].0, "Bob <bob@example.com>", "{history:?}");
     assert_eq!(history[1].0, "Settler <settler@example.com>", "{history:?}");
     assert_eq!(history[1].1, 12, "its date kept: {history:?}");

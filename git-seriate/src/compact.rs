@@ -39,7 +39,7 @@ use crate::Error;
 /// What to compact.
 #[derive(Debug, Clone)]
 pub struct Options {
-    /// The history branch; the current branch when `None`.
+    /// The history; the current branch's when `None`.
     pub into: Option<String>,
     /// Commits built before this, in seconds since the epoch, are compacted.
     pub cutoff: i64,
@@ -104,6 +104,37 @@ pub fn compact(
     repo: &gix::Repository,
     options: &Options,
     plugins: &Plugins,
+) -> Result<Vec<Report>, Error> {
+    let name = crate::history::resolve_history(repo, options.into.as_deref())?;
+    let history = crate::history::read_history(repo, &name)?;
+    if history.tips.is_empty() {
+        return Err(Error::Refused(format!("{name} has no history")));
+    }
+    // One signer for the command: an encrypted key's passphrase asked once.
+    let signer = Signer::from_config(repo)?;
+    let mut reports = Vec::new();
+    for lineage in history.tips.keys() {
+        reports.push(compact_branch(
+            repo,
+            &history.branch(lineage),
+            options,
+            plugins,
+            &signer,
+        )?);
+    }
+    if !options.dry_run {
+        crate::history::record_history(repo, &signer, &history, "compact")?;
+    }
+    Ok(reports)
+}
+
+/// One lineage's branch compacted.
+fn compact_branch(
+    repo: &gix::Repository,
+    branch: &str,
+    options: &Options,
+    plugins: &Plugins,
+    signer: &Signer,
 ) -> Result<Report, Error> {
     let legacy = plugins.legacy;
     let rules = plugins.canonicalizer.rule_sets();
@@ -114,14 +145,7 @@ pub fn compact(
             options.level
         )));
     }
-    let branch = match &options.into {
-        Some(b) => b.clone(),
-        None => repo
-            .head_name()
-            .map_err(Error::git)?
-            .map(|n| n.shorten().to_string())
-            .ok_or_else(|| Error::Refused("HEAD is detached: give --into".into()))?,
-    };
+    let branch = branch.to_string();
     let ref_name = branch_ref(&branch)?;
     let old_tip =
         tip(repo, &ref_name)?.ok_or_else(|| Error::Refused(format!("no branch {branch:?}")))?;
@@ -353,7 +377,6 @@ pub fn compact(
     };
     let user = committer(repo, options.dry_run)?;
     let author_identity = author_identity(repo).unwrap_or_else(|| user.clone());
-    let signer = Signer::from_config(repo)?;
     let mut parent: Option<ObjectId> = None;
     let mut tree = ObjectId::empty_tree(repo.object_hash());
     let rewrite = |parent: Option<ObjectId>,

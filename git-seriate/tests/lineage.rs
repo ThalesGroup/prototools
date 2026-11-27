@@ -219,3 +219,284 @@ fn a_snapshot_known_only_to_a_history_may_be_stated() {
     assert!(ok, "{err}");
     assert!(out.contains("moved s1: default -> bundler"), "{out}");
 }
+
+// ── settle, per lineage (S2, S3, S3a) ────────────────────────────────────────
+
+const DAY: u64 = 86_400;
+
+/// Snapshots of one enum file: `exe0`..`exe3`, executables holding its
+/// full copy, one version per build; and `exe2!set@100`, a bundler's set
+/// in `exe2`, built with it, its copy stripped of the options.
+fn toy(root: &Path) -> PathBuf {
+    let repo = root.join("toy.git");
+    gix::init_bare(&repo).unwrap();
+    let full = |n: u64| format!("enum E {{\n  X = {n} [deprecated = true];\n}}\n");
+    let snapshots: [(&str, u64, String); 5] = [
+        ("exe0", 0, full(0)),
+        ("exe1", 1, full(1)),
+        ("exe2", 2, full(2)),
+        ("exe2!set@100", 2, "enum E {\n  X = 2;\n}\n".into()),
+        ("exe3", 3, full(3)),
+    ];
+    for (n, (id, day, text)) in snapshots.iter().enumerate() {
+        let dir = root.join(format!("toy{n}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("e.proto"), text).unwrap();
+        let time = (1_700_000_000 + day * DAY).to_string();
+        let (ok, _, err) = git_seriate(
+            &repo,
+            &[
+                "add",
+                "--id",
+                id,
+                "--build-time",
+                &time,
+                dir.to_str().unwrap(),
+            ],
+        );
+        assert!(ok, "{err}");
+    }
+    repo
+}
+
+fn subjects(repo: &Path, branch: &str) -> String {
+    git(repo, &["log", "--reverse", "--format=%s", branch])
+}
+
+/// The record's tree file `name`.
+fn record(repo: &Path, history: &str, name: &str) -> String {
+    git(
+        repo,
+        &["show", &format!("refs/seriate/histories/{history}:{name}")],
+    )
+}
+
+#[test]
+fn a_stated_producer_is_sorted_on_a_line_of_its_own() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = toy(tmp.path());
+    let (ok, _, err) = git_seriate(&repo, &["lineage", "set", "bundler", "exe2!set@100"]);
+    assert!(ok, "{err}");
+    let (ok, out, err) = git_seriate(&repo, &["settle", "--into", "main"]);
+    assert!(ok, "{err}");
+    assert!(
+        out.contains("settled main/bundler: kept 0, wrote 1"),
+        "{out}"
+    );
+    assert!(
+        out.contains("settled main/default: kept 0, wrote 4"),
+        "{out}"
+    );
+    assert!(
+        out.contains("recorded in refs/seriate/histories/main"),
+        "{out}"
+    );
+
+    // Each line holds its producer's snapshots only, in build order.
+    assert_eq!(
+        subjects(&repo, "main/default"),
+        "Snapshot exe0\nSnapshot exe1\nSnapshot exe2\nSnapshot exe3"
+    );
+    assert_eq!(subjects(&repo, "main/bundler"), "Snapshot exe2!set@100");
+    assert_eq!(
+        git(&repo, &["show", "main/bundler:e.proto"]),
+        "enum E {\n  X = 2;\n}"
+    );
+
+    // The record: each lineage's tip, the statements routed by; its
+    // parents the tips and the statements' record (S2, S5a).
+    let default = git(&repo, &["rev-parse", "main/default"]);
+    let bundler = git(&repo, &["rev-parse", "main/bundler"]);
+    let statements = git(&repo, &["rev-parse", "refs/seriate/lineages"]);
+    assert_eq!(
+        record(&repo, "main", "lineages"),
+        format!("bundler {bundler}\ndefault {default}")
+    );
+    assert_eq!(record(&repo, "main", "statements"), statements);
+    let parents = git(
+        &repo,
+        &["log", "-1", "--format=%P", "refs/seriate/histories/main"],
+    );
+    assert_eq!(parents, format!("{bundler} {default} {statements}"));
+    assert_eq!(
+        git(
+            &repo,
+            &[
+                "log",
+                "-1",
+                "--format=%an|%cn",
+                "refs/seriate/histories/main"
+            ]
+        ),
+        "Settler|Settler"
+    );
+    // Nothing new: nothing settled, no record written.
+    let before = git(&repo, &["rev-parse", "refs/seriate/histories/main"]);
+    let (ok, _, err) = git_seriate(&repo, &["settle", "--into", "main"]);
+    assert!(ok, "{err}");
+    assert!(err.contains("nothing new to settle"), "{err}");
+    assert_eq!(
+        git(&repo, &["rev-parse", "refs/seriate/histories/main"]),
+        before
+    );
+    git(&repo, &["fsck", "--full", "--strict", "--no-dangling"]);
+}
+
+#[test]
+fn a_lineage_stated_after_a_settle_moves_the_snapshot_at_the_next() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = toy(tmp.path());
+    // Nothing stated: one line, the set inside the executables' span.
+    let (ok, _, err) = git_seriate(&repo, &["settle", "--into", "main"]);
+    assert!(ok, "{err}");
+    assert!(subjects(&repo, "main/default").contains("exe2!set@100"));
+    let first = git(&repo, &["rev-parse", "refs/seriate/histories/main"]);
+
+    let (ok, _, err) = git_seriate(&repo, &["lineage", "set", "bundler", "exe2!set@100"]);
+    assert!(ok, "{err}");
+    // Nothing moves before a settle; a dry run names the move.
+    assert!(subjects(&repo, "main/default").contains("exe2!set@100"));
+    let (ok, out, err) = git_seriate(&repo, &["settle", "--into", "main", "--dry-run"]);
+    assert!(ok, "{err}");
+    assert!(
+        out.contains("would move exe2!set@100: main/default -> main/bundler"),
+        "{out}"
+    );
+    assert!(subjects(&repo, "main/default").contains("exe2!set@100"));
+
+    let (ok, out, err) = git_seriate(&repo, &["settle", "--into", "main"]);
+    assert!(ok, "{err}");
+    assert!(
+        out.contains("moved exe2!set@100: main/default -> main/bundler"),
+        "{out}"
+    );
+    assert!(
+        out.contains("previous tip saved as main/default-1"),
+        "{out}"
+    );
+    assert_eq!(
+        subjects(&repo, "main/default"),
+        "Snapshot exe0\nSnapshot exe1\nSnapshot exe2\nSnapshot exe3"
+    );
+    assert_eq!(subjects(&repo, "main/bundler"), "Snapshot exe2!set@100");
+    // The new record follows the first.
+    let parents = git(
+        &repo,
+        &["log", "-1", "--format=%P", "refs/seriate/histories/main"],
+    );
+    assert!(parents.starts_with(&first), "{parents}");
+
+    // Back to default, every snapshot of bundler moving out: the lineage
+    // emptied, its tip saved, gone from the record.
+    let (ok, _, err) = git_seriate(&repo, &["lineage", "unset", "exe2!set@100"]);
+    assert!(ok, "{err}");
+    let (ok, out, err) = git_seriate(&repo, &["settle", "--into", "main"]);
+    assert!(ok, "{err}");
+    assert!(
+        out.contains(
+            "emptied main/bundler: every snapshot of it moved; its tip saved as main/bundler-1"
+        ),
+        "{out}"
+    );
+    assert!(subjects(&repo, "main/default").contains("exe2!set@100"));
+    assert_eq!(git(&repo, &["branch", "--list", "main/bundler"]), "");
+    let default = git(&repo, &["rev-parse", "main/default"]);
+    assert_eq!(
+        record(&repo, "main", "lineages"),
+        format!("default {default}")
+    );
+    git(&repo, &["fsck", "--full", "--strict", "--no-dangling"]);
+}
+
+#[test]
+fn a_lineage_branch_names_its_history() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = toy(tmp.path());
+    let (ok, _, err) = git_seriate(&repo, &["lineage", "set", "bundler", "exe2!set@100"]);
+    assert!(ok, "{err}");
+    let (ok, _, err) = git_seriate(&repo, &["settle", "--into", "main"]);
+    assert!(ok, "{err}");
+    // --into main/bundler: the history main, both lineages re-sorted.
+    let (ok, out, err) = git_seriate(&repo, &["settle", "--into", "main/bundler", "--no-cutoff"]);
+    assert!(ok, "{err}");
+    assert!(out.contains("settled main/bundler"), "{out}");
+    assert!(out.contains("settled main/default"), "{out}");
+    assert_eq!(git(&repo, &["branch", "--list", "main/bundler/*"]), "");
+}
+
+#[test]
+fn a_history_of_the_former_layout_is_refused_then_migrated() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = toy(tmp.path());
+    let (ok, _, err) = git_seriate(&repo, &["settle", "--into", "tmp"]);
+    assert!(ok, "{err}");
+    // A history of before 0499: a branch of its own name, no record.
+    let tip = git(&repo, &["rev-parse", "tmp/default"]);
+    git(&repo, &["update-ref", "refs/heads/old", &tip]);
+    let (ok, _, err) = git_seriate(&repo, &["settle", "--into", "old"]);
+    assert!(!ok);
+    assert!(
+        err.contains("old is a history of before spec 0499"),
+        "{err}"
+    );
+    assert!(err.contains("git seriate migrate old"), "{err}");
+
+    // --into NEW: written beside, the branch left as it is.
+    let (ok, out, err) = git_seriate(&repo, &["migrate", "old", "--into", "master"]);
+    assert!(ok, "{err}");
+    assert!(out.contains("wrote history old as master/default"), "{out}");
+    assert!(out.contains("old left as it is"), "{out}");
+    assert_eq!(git(&repo, &["rev-parse", "master/default"]), tip);
+    assert_eq!(git(&repo, &["rev-parse", "refs/heads/old"]), tip);
+    assert_eq!(
+        record(&repo, "master", "lineages"),
+        format!("default {tip}")
+    );
+    let (ok, _, err) = git_seriate(&repo, &["migrate", "old", "--into", "master"]);
+    assert!(!ok);
+    assert!(err.contains("master exists"), "{err}");
+
+    // In place: the former branch kept under refs/seriate/migrated/.
+    let (ok, out, err) = git_seriate(&repo, &["migrate", "old"]);
+    assert!(ok, "{err}");
+    assert!(
+        out.contains("its former branch kept as refs/seriate/migrated/old"),
+        "{out}"
+    );
+    assert_eq!(git(&repo, &["rev-parse", "old/default"]), tip);
+    assert_eq!(git(&repo, &["rev-parse", "refs/seriate/migrated/old"]), tip);
+    assert_eq!(git(&repo, &["branch", "--list", "old"]), "");
+    let (ok, _, err) = git_seriate(&repo, &["settle", "--into", "old"]);
+    assert!(ok, "{err}");
+    git(&repo, &["fsck", "--full", "--strict", "--no-dangling"]);
+}
+
+/// Forgetting a lineage's only snapshot empties that lineage, its tip
+/// saved; the history's other lineage is left as it is.
+#[test]
+fn forgetting_a_lineages_only_snapshot_empties_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = toy(tmp.path());
+    let (ok, _, err) = git_seriate(&repo, &["lineage", "set", "bundler", "exe2!set@100"]);
+    assert!(ok, "{err}");
+    let (ok, _, err) = git_seriate(&repo, &["settle", "--into", "main"]);
+    assert!(ok, "{err}");
+    let default = git(&repo, &["rev-parse", "main/default"]);
+    let (ok, out, err) = git_seriate(
+        &repo,
+        &["forget", "--into", "main", "--reason", "x", "exe2!set@100"],
+    );
+    assert!(ok, "{err}");
+    assert!(out.contains("forgot exe2!set@100"), "{out}");
+    assert!(
+        out.contains(
+            "emptied main/bundler: every snapshot of it forgotten; its tip saved as main/bundler-1"
+        ),
+        "{out}"
+    );
+    assert_eq!(git(&repo, &["rev-parse", "main/default"]), default);
+    assert_eq!(
+        record(&repo, "main", "lineages"),
+        format!("default {default}")
+    );
+}

@@ -199,7 +199,7 @@ fn history_trees(repo: &Path) -> Vec<String> {
     let out = Command::new("git")
         .arg("--git-dir")
         .arg(repo)
-        .args(["log", "--reverse", "--format=%T", "main"])
+        .args(["log", "--reverse", "--format=%T", "main/default"])
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("HOME", repo.parent().unwrap())
         .output()
