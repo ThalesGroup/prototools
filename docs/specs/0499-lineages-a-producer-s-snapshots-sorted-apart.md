@@ -43,10 +43,12 @@ line, the bundler's.
 - **G1.** A lineage per producer: the snapshots one producer emitted
   sorted as a line of their own, the sort's two assumptions holding
   within it.
-- **G2.** A snapshot's lineage decided once, at extraction, from what is
-  known of how its copies were produced, never from how their contents
-  differ from other copies; recorded in its block; redone, as a split
-  is, by `forget` and `extract` again (specs 0495 S6, 0497).
+- **G2.** A snapshot's lineage stated by whoever knows its producer,
+  after extraction, from the snapshots as extracted, never derived from
+  how their contents differ from other copies; the statement kept beside
+  the snapshots, not in them: a snapshot holds what the bytes show, a
+  lineage is what the caller knows. Extraction stays one pass, and a
+  lineage is corrected by stating it again, with no extraction.
 - **G3.** Named by the producer, readable: `default` for the snapshots no
   producer is stated for, and the caller's names (`bundler`, say) for the
   others; a reader recognizes them in `git branch`.
@@ -70,46 +72,47 @@ line, the bundler's.
   and it would move a producer's output out of its lineage the day the
   producer kept one option more. Such differences are `advise`'s to
   report (S6), not a lineage's to decide.
-- **N2.** A lineage derived after extraction, by `settle` or `advise`:
-  `advise` may report a snapshot it suspects belongs to another lineage;
-  it never moves one (0495 S8).
+- **N2.** A lineage derived by `settle` or `advise`: `advise` may report
+  a snapshot it suspects belongs to another lineage; it never states one
+  (0495 S8).
+- **N4.** A lineage stated at extraction, in the snapshot's block: drafted
+  and dropped. The caller can only recognize a producer's output among
+  the snapshots once they are extracted, which forced two extraction
+  passes, and correcting a lineage meant `forget` and `extract` again for
+  what is no property of the bytes.
 - **N3.** The combined tip: the consumer's (a directory built from the
   tips, one include root per lineage, the include order as precedence, as
   a downstream proposed).
 
 ## Specification
 
-- **S1. A snapshot's lineage is stated, at extraction,** by whoever knows
-  the producer: the caller, who knows what its inputs are, as it knows a
-  group (`--as-one`, 0495 S3):
-  - **`extract --lineage NAME FILE…`:** every snapshot of these inputs,
-    the rest and its sets, in lineage `NAME`, for inputs a producer made
-    whole (bundles shipped alone, say);
-  - **`extract --lineages-from FILE INPUT…`:** a statement per snapshot,
-    for hosts embedding a producer's output beside other sets: `FILE`
-    holds one `<identity> <lineage>` per line, identities as extraction
-    names them (`<input>!set@<start>`, deterministic for given bytes, so
-    a first `--tar-out` run lists them); a snapshot not listed is
-    `default`; a listed identity the run does not produce is refused,
-    naming it, so that a statement cannot silently miss;
+- **S1. Lineage statements, `git seriate lineage`:**
+  - **`lineage set NAME IDENTITY…`**, and **`--from FILE`**, one
+    `<identity> <lineage>` per line (`-` for standard input): the
+    snapshots named go to lineage `NAME`. An identity that is no snapshot
+    of the repository is refused, naming it, nothing written, so that a
+    statement cannot silently miss;
+  - **`lineage unset IDENTITY…`:** back to `default`;
+  - **`lineage list [NAME]`:** the statements in force;
   - **nothing stated:** `default`.
 
-  The caller decides from what it knows of the producer, outside
-  git-seriate (a downstream recognizes its bundler's output format, the
-  message enclosing the set's records); git-seriate holds no producer's
-  knowledge. `--lineage` and `--lineages-from` conflict.
-
-  Recorded in the block: `source.lineage: <name>`, with "stated by the
-  caller" as its evidence. A snapshot of format 1, or with no `lineage`,
-  is `default`.
+  The caller decides from what it knows of the producer, reading the
+  snapshots as extracted (each set's identity and range are in its
+  record), outside git-seriate: a downstream recognizes its bundler's
+  output format, the message enclosing a set's records; git-seriate holds
+  no producer's knowledge. `NAME` is a ref component, `default` reserved.
+- **S1b. The statements' record, `refs/seriate/lineages`:** a commit per
+  `lineage` command, its tree one file, `lineages`, the whole mapping in
+  force (`<identity> <lineage>`, sorted), its message the command and the
+  identities changed, its parent the previous record. Pushed and fetched
+  like the snapshots; one hash pins every statement as of a time.
 - **S1a. Producer evidence, recorded, not acted on:** what extraction
   sees of how a copy was produced, recorded in the block (0494's
   evidence): how it was found (compiled into a module, a framed set, a
   file of its own) and the generator hints read (0492: Go's, C++'s,
   upb's, Python's). It is there for the caller and for `advise` to read;
-  it decides no lineage. A rule mapping evidence to a lineage, if a
-  producer ever leaves a mark of its own in the bytes, is a later spec,
-  on a producer measured in more than one corpus.
+  it decides no lineage. A caller's policy mapping evidence to lineages
+  (by generator, say) is the caller's, applied with `lineage set`.
 - **S2. The layout:**
   - **snapshots under `refs/seriate/snapshots/<identity>`,** no longer
     branches: `git branch` shows histories only, and a snapshot is known
@@ -120,17 +123,24 @@ line, the bundler's.
     a branch of its own name;
   - **the history's record, `refs/seriate/histories/<history>`:** a commit
     per settle whose tree lists the lineages and their tips, and whose
-    parents are the previous record and every lineage's tip, so that one
-    hash pins the history as of that settle and keeps every tip
+    parents are the previous record, every lineage's tip and the
+    statements' record it routed by (S1b), so that one hash pins the
+    history and the statements as of that settle, and keeps every tip
     reachable through a re-sort.
-- **S3. `settle --into <history>`:** each candidate goes to its lineage's
-  branch, created on first need; each lineage sorted on its own, phase 3
-  comparing copies within it only; the record then written. A snapshot
-  is never compared with another lineage's copies: containment across
-  producers is the false signal this spec removes.
+- **S3. `settle --into <history>`:** each candidate goes to the branch of
+  its lineage as the statements stand, created on first need; each
+  lineage sorted on its own, phase 3 comparing copies within it only; the
+  record then written. A snapshot is never compared with another
+  lineage's copies: containment across producers is the false signal
+  this spec removes.
+- **S3a. A lineage changed after a settle:** the next `settle` moves the
+  snapshot: its former lineage rewritten without it, as `forget` rewrites
+  (0497: from the oldest commit concerned, hand-made commits refused out
+  of reach), and its new lineage sorting it in. `--dry-run` names each
+  snapshot moved, from and to. Nothing moves before a `settle`.
 - **S4. Migration, once, per repository:** `git seriate migrate`: snapshot
   branches to `refs/seriate/snapshots/`, each history `NAME` to
-  `NAME/default` (no lineage being stated for them, S1), the record written, the
+  `NAME/default` (no lineage being stated, S1), the record written, the
   former branches kept under `refs/seriate/migrated/` until pruned.
   Commands refuse a repository not yet migrated, naming `migrate`;
   `import` and `--tar-out` write the new layout.
@@ -142,8 +152,8 @@ line, the bundler's.
   from that copy only by options or `json_name`s is reported, with the
   paths, as possibly another producer's output; so is a snapshot of a
   stated lineage whose copies equal `default`'s once canonical. The
-  report names the remedy, `forget` and `extract` with a lineage stated;
-  `advise` never moves a snapshot (N2).
+  report names the remedy, `lineage set` then `settle`; `advise` never
+  states a lineage (N2).
 
 ## Open questions
 
@@ -154,8 +164,8 @@ line, the bundler's.
   records, with its source list and metadata, known from its schema. It
   identifies all 10 bundles and none of the 21 other sets of one client,
   the 11 of another. The downstream's extractor states it per set
-  (`--lineages-from`); bundles shipped alone, by their package
-  (`--lineage`). One producer, one lineage, `bundler`.
+  (`lineage set --from`), bundles shipped alone by their package. One
+  producer, one lineage, `bundler`.
 - **Q2.** *Settled, one step:* a downstream pushing to a server that
   checks committers and signatures accepts new ref names, the commits
   being written as today; its users adapt their refspecs once.
@@ -164,21 +174,22 @@ line, the bundler's.
 
 1. A toy history as the downstream's case in small: an enum file, its
    full copy in executables, a bundler's copy dropping its options in a
-   set embedded in a host holding the full one beside another set,
-   extracted with `--lineages-from` naming the bundler's set only; that
-   set's block `lineage: bundler`, stated
-   by the caller, the other set and the host's rest `default`; settled, `main/default` and
+   set embedded in a host holding the full one beside another set;
+   extracted, then `lineage set bundler` on the bundler's set only;
+   settled, `main/default` (the other set and the host's rest) and
    `main/bundler`, each one line, no straddle; the record's parents the
-   two tips.
-2. The same extracted with nothing stated: one lineage, `default`, its
-   straddles as today, and `advise` reporting the set (S6) with the
-   remedy.
+   two tips and the statements' record.
+2. The same with nothing stated: one lineage, `default`, its straddles as
+   today, and `advise` reporting the set (S6) with the remedy; then
+   `lineage set` and `settle`: the set moved (S3a), `--dry-run` naming
+   it, the straddles gone.
 2a. A bundler whose later version keeps every option: its copies stay in
    `bundler`, by the statement, whatever their contents.
-2b. `extract --lineage bundler` on an input with no host: every snapshot
-   in `bundler`.
-2c. `--lineages-from` listing an identity the run does not produce:
-   refused, naming it, nothing written; with `--lineage`: refused.
+2b. `lineage set` naming an identity that is no snapshot: refused, naming
+   it, nothing written; `lineage set default …`: refused; `unset`: back
+   to `default`, moved at the next settle.
+2c. The statements' record: one commit per command, the whole mapping in
+   its tree, the previous record its parent.
 3. `migrate` on a history of today's layout: the same commits under the
    new names, the refusal before it, nothing lost.
 4. A re-sort of one lineage: the record's new commit keeps the other

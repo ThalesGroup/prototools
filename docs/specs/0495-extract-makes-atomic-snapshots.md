@@ -147,6 +147,16 @@ same each time; a split, once made, is redone only by extracting again
   dependency differing, measured on whole descriptors): built at the
   host's revision, by a bundler
   that strips options, so the host's time was right.
+- **Q3.** A repeated name is a late bound, not a boundary. Two sets glued
+  back to back, A = {a, b, c} and B = {d, a, e}, are cut at B's `a`, and
+  `d` goes with A: the bytes only say the boundary lies after A's `a` and
+  no later than B's. When A and B are different builds, `d` is misplaced,
+  possibly a straddle. Proposed: a cut is certain only when the interval
+  is one position (B starting with a name A holds); otherwise the
+  interval is recorded as evidence and `advise` reports it, the caller
+  stating the boundary if it knows better. First, to measure on both
+  corpora: how many chains a repetition cuts, and how many of those cuts
+  are ambiguous.
 
 ## Test plan
 
