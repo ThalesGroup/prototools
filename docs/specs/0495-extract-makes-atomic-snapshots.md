@@ -53,7 +53,10 @@ same each time; a split, once made, is redone only by extracting again
 - **N1.** Splitting or grouping after extraction, by `settle`, `advise` or
   anything else: a decision derived from the history would change with
   it, and make the history intractable. `advise` reports (S8).
-- **N2.** Lineages: a later spec, built on atomic snapshots.
+- **N2.** Lineages: a later spec, built on atomic snapshots. It will want
+  a set's stable label, since `set@<start>` moves between versions of its
+  host: generically, the set's root, its last record's `name` in
+  topological order, recorded in the block, not the identity.
 - **N3.** A C++ build's scattered descriptors, one per translation unit,
   unframed: they are the executable's own build, and stay in its rest.
 - **N4.** Splitting by registrant (a Go module other than the build's
@@ -84,7 +87,8 @@ same each time; a split, once made, is redone only by extracting again
   `--split none` keeps the input whole, as today. A part with nothing in
   it is no snapshot.
 - **S3. Grouping:** `extract --as-one IDENTITY FILE…` makes one snapshot of
-  several inputs, the caller's statement that they are one build; each
+  several inputs (or `--files-from FILE`, `-` for standard input, for more
+  than a command line holds: a runfiles tree of thousands of modules), the caller's statement that they are one build; each
   copy's origin starts with its input's path in the group, and S2 applies
   to the group as to one input.
 - **S4. A part's identity:** its input's (or group's) identity, then
