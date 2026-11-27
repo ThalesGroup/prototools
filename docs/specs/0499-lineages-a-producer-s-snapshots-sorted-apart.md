@@ -85,10 +85,19 @@ line, the bundler's.
   - **`extract --lineage NAME FILE…`:** every snapshot of these inputs,
     the rest and its sets, in lineage `NAME`, for inputs a producer made
     whole (bundles shipped alone, say);
-  - **`extract --sets-lineage NAME FILE…`:** the framed sets of these
-    inputs in `NAME`, their rest in `default`, for hosts embedding a
-    producer's output;
+  - **`extract --lineages-from FILE INPUT…`:** a statement per snapshot,
+    for hosts embedding a producer's output beside other sets: `FILE`
+    holds one `<identity> <lineage>` per line, identities as extraction
+    names them (`<input>!set@<start>`, deterministic for given bytes, so
+    a first `--tar-out` run lists them); a snapshot not listed is
+    `default`; a listed identity the run does not produce is refused,
+    naming it, so that a statement cannot silently miss;
   - **nothing stated:** `default`.
+
+  The caller decides from what it knows of the producer, outside
+  git-seriate (a downstream recognizes its bundler's output format, the
+  message enclosing the set's records); git-seriate holds no producer's
+  knowledge. `--lineage` and `--lineages-from` conflict.
 
   Recorded in the block: `source.lineage: <name>`, with "stated by the
   caller" as its evidence. A snapshot of format 1, or with no `lineage`,
@@ -138,14 +147,15 @@ line, the bundler's.
 
 ## Open questions
 
-- **Q1.** What tells a downstream's bundles apart at production, rather
-  than by their contents? A downstream's extractor knows an archive of
-  bundles shipped alone (S1's `--lineage`); for bundles embedded in a
-  host, which also embeds sets that are no bundles, `--sets-lineage`
-  would put both in one lineage. To answer from what the extractor knows
-  of the producer (its build rule, its output's name, its path), before
-  implementing; failing that, a per-set statement (`--lineage` on a set's
-  identity) is the generic fallback, never a content test.
+- **Q1.** *Answered:* what tells a downstream's bundles apart at
+  production. Not build metadata (none survives in a host), nor a path,
+  nor a marker file (present in most bundles, not all: a fit again), but
+  the bundler's output format: a message of its own enclosing the set's
+  records, with its source list and metadata, known from its schema. It
+  identifies all 10 bundles and none of the 21 other sets of one client,
+  the 11 of another. The downstream's extractor states it per set
+  (`--lineages-from`); bundles shipped alone, by their package
+  (`--lineage`). One producer, one lineage, `bundler`.
 - **Q2.** *Settled, one step:* a downstream pushing to a server that
   checks committers and signatures accepts new ref names, the commits
   being written as today; its users adapt their refspecs once.
@@ -154,9 +164,10 @@ line, the bundler's.
 
 1. A toy history as the downstream's case in small: an enum file, its
    full copy in executables, a bundler's copy dropping its options in a
-   set embedded in a host holding the full one, extracted with
-   `--sets-lineage bundler`; the set's block `lineage: bundler`, stated
-   by the caller, the host's rest `default`; settled, `main/default` and
+   set embedded in a host holding the full one beside another set,
+   extracted with `--lineages-from` naming the bundler's set only; that
+   set's block `lineage: bundler`, stated
+   by the caller, the other set and the host's rest `default`; settled, `main/default` and
    `main/bundler`, each one line, no straddle; the record's parents the
    two tips.
 2. The same extracted with nothing stated: one lineage, `default`, its
@@ -166,6 +177,8 @@ line, the bundler's.
    `bundler`, by the statement, whatever their contents.
 2b. `extract --lineage bundler` on an input with no host: every snapshot
    in `bundler`.
+2c. `--lineages-from` listing an identity the run does not produce:
+   refused, naming it, nothing written; with `--lineage`: refused.
 3. `migrate` on a history of today's layout: the same commits under the
    new names, the refusal before it, nothing lost.
 4. A re-sort of one lineage: the record's new commit keeps the other
