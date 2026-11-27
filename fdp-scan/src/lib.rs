@@ -97,6 +97,28 @@ pub struct FrameCut {
     pub end: usize,
     /// Where the walk without the frame ended it.
     pub read_to: usize,
+    /// The frame that ended it.
+    pub frame: Frame,
+}
+
+/// A frame that declares a record's length (spec 0496).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Frame {
+    /// A protobuf length-delimited field, chained to the record before
+    /// (S1, S2): a set's record.
+    Protobuf,
+    /// A Python marshal bytes object (S5): a compiled module's descriptor.
+    Marshal,
+}
+
+impl Frame {
+    /// The frame's name, as a record entry says it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Frame::Protobuf => "protobuf",
+            Frame::Marshal => "marshal",
+        }
+    }
 }
 
 /// A record [`ScanOptions::increasing_field_numbers`] ended early. It is in
@@ -266,14 +288,15 @@ fn walk_candidates(
                                 end: walked_end,
                                 order_break,
                             }) => {
-                                let fdp_end = framed_end(
+                                let (fdp_end, frame) = framed_end(
                                     data, offset, walked_end, chain_end, graph, root, options,
                                 );
-                                if fdp_end < walked_end {
+                                if let Some(frame) = frame {
                                     result.frame_cuts.push(FrameCut {
                                         start: offset,
                                         end: fdp_end,
                                         read_to: walked_end,
+                                        frame,
                                     });
                                 }
                                 chain_end = Some(fdp_end);
@@ -436,6 +459,13 @@ pub fn frame_at(data: &[u8], at: usize, start: usize) -> Option<usize> {
 ///
 /// A set's first record isn't chained, and needs no check: the next record
 /// ends it. So a set of one record read on past its end is not cut.
+///
+/// Or a Python marshal bytes object's header right before it (S5), as a
+/// compiled module stores its file's descriptor: whose next constant, the
+/// module's name as a marshal short string (`z`, 0x7a), reads as field 15,
+/// `option_dependency`. Its length is 4 bytes: stray bytes before a raw
+/// descriptor don't declare a length that lands on one of its field
+/// boundaries, so it needs no chaining; inside and whole, as above.
 fn framed_end(
     data: &[u8],
     start: usize,
@@ -444,20 +474,39 @@ fn framed_end(
     graph: &LoadedGraph,
     root: &str,
     options: &ScanOptions,
-) -> usize {
-    let Some(length) = chain_end.and_then(|at| frame_at(data, at, start)) else {
-        return walked_end;
-    };
-    let Some(framed) = start.checked_add(length) else {
-        return walked_end;
-    };
-    if framed >= walked_end {
-        return walked_end;
+) -> (usize, Option<Frame>) {
+    let declared = [
+        (
+            chain_end.and_then(|at| frame_at(data, at, start)),
+            Frame::Protobuf,
+        ),
+        (marshal_length(data, start), Frame::Marshal),
+    ];
+    for (length, frame) in declared {
+        let Some(framed) = length.and_then(|l| start.checked_add(l)) else {
+            continue;
+        };
+        if framed >= walked_end {
+            continue;
+        }
+        if let Ok(prefix) = score_candidate_with(&data[..framed], start, graph, root, options) {
+            if prefix.end == framed {
+                return (framed, Some(frame));
+            }
+        }
     }
-    match score_candidate_with(&data[..framed], start, graph, root, options) {
-        Ok(prefix) if prefix.end == framed => framed,
-        _ => walked_end,
+    (walked_end, None)
+}
+
+/// The length a Python marshal bytes object's header right before `start`
+/// declares (spec 0496 S5): the type `s` (0x73, or 0xf3 with marshal's
+/// reference flag), then a 4-byte little-endian length.
+fn marshal_length(data: &[u8], start: usize) -> Option<usize> {
+    let header = data.get(start.checked_sub(5)?..start)?;
+    if !matches!(header[0], 0x73 | 0xf3) {
+        return None;
     }
+    usize::try_from(u32::from_le_bytes(header[1..5].try_into().ok()?)).ok()
 }
 
 /// A candidate [`score_candidate_with`] accepts.
@@ -988,6 +1037,7 @@ mod tests {
                 start: ranges[1].0,
                 end: ranges[1].1,
                 read_to: data.len(),
+                frame: Frame::Protobuf,
             }]
         );
     }
@@ -1038,6 +1088,58 @@ mod tests {
         let explained = scan_explained(&data);
         assert_eq!(explained.found, ranges);
         assert!(explained.frame_cuts.is_empty());
+    }
+
+    /// A compiled Python module's constants, as marshal writes them (spec
+    /// 0496 S5): `record` as a bytes object (type `type_byte`, a 4-byte
+    /// little-endian `declared` length), then the module's name as a short
+    /// string (`z`, which reads as field 15, `option_dependency`). Where the
+    /// record starts, and the data.
+    fn compiled_module(record: &[u8], type_byte: u8, declared: usize) -> (usize, Vec<u8>) {
+        let mut data = vec![0xe3, 0, 0, 0, 0]; // a code object's head, roughly
+        data.push(type_byte);
+        data.extend_from_slice(&u32::try_from(declared).unwrap().to_le_bytes());
+        let start = data.len();
+        data.extend_from_slice(record);
+        let name = b"x.a_pb2";
+        data.push(0x7a);
+        data.push(u8::try_from(name.len()).unwrap());
+        data.extend_from_slice(name);
+        data.push(0x29); // a tuple of constants, next
+        (start, data)
+    }
+
+    #[test]
+    fn a_marshal_frame_ends_a_compiled_modules_descriptor() {
+        let record = make_declaring_fdp("x/a.proto");
+        for type_byte in [0x73, 0xf3] {
+            let (start, data) = compiled_module(&record, type_byte, record.len());
+            let explained = scan_explained(&data);
+            assert_eq!(
+                explained.found,
+                [(start, start + record.len())],
+                "{type_byte:#x}"
+            );
+            assert_eq!(explained.frame_cuts.len(), 1);
+            assert_eq!(explained.frame_cuts[0].frame, Frame::Marshal);
+            assert!(explained.frame_cuts[0].read_to > start + record.len());
+        }
+    }
+
+    #[test]
+    fn a_marshal_length_off_the_records_boundaries_is_no_frame() {
+        // Declaring one byte less than the record: inside, but not whole.
+        let record = make_declaring_fdp("x/a.proto");
+        let (start, data) = compiled_module(&record, 0x73, record.len() - 1);
+        let explained = scan_explained(&data);
+        assert!(explained.frame_cuts.is_empty());
+        assert!(
+            explained.found[0].1 > start + record.len(),
+            "read on, as before"
+        );
+        // No marshal header at all: the same.
+        let (_, data) = compiled_module(&record, 0x00, record.len());
+        assert!(scan_explained(&data).frame_cuts.is_empty());
     }
 
     #[test]

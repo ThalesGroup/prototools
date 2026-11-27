@@ -73,8 +73,19 @@ digest, depend on what follows it.
 - **S3. The record ends at its frame,** in `Explained::found`, and the cut
   is listed in `Explained::frame_cuts`: its start, its end, and where the
   walk would have read on to. A record its frame cut reports no order cut.
-- **S4. `extract` records it:** `frame-cut <path>: <origin>, read on to
-  <offset>`, in the snapshot's record.
+- **S4. `extract` records it:** `frame-cut <path>: <origin>, <frame>
+  frame, read on to <offset>`, in the snapshot's record, `<frame>`
+  `protobuf` or `marshal`.
+- **S5. A Python marshal frame,** *added 2026-11-27*: a compiled module
+  (`*_pb2.pyc`) stores its file's descriptor as a marshal bytes object,
+  the type `s` (`0x73`, or `0xf3` with marshal's reference flag) and a
+  4-byte little-endian length right before it; the next constant is
+  usually the module's name as a marshal short string, `z` (`0x7a`), which
+  is the tag of field 15, `option_dependency`, so the walk took the
+  module's name for one dependency more. A marshal header is a frame,
+  trusted when inside and whole (S2), with no chaining: its length is 4
+  bytes, and stray bytes before a raw descriptor don't declare one landing
+  on one of its field boundaries.
 
 ## Alternatives considered
 
@@ -92,8 +103,11 @@ fdp-scan: `a_chained_frame_ends_the_last_record_of_a_set`,
 `a_set_of_one_record_is_not_cut`,
 `bytes_that_read_as_a_frame_before_a_raw_record_are_no_frame`,
 `a_set_its_frames_agree_with_reports_no_cut`,
-`frame_at_reads_a_tag_and_a_length`. git-seriate-fdp:
-`a_framed_descriptor_ends_at_its_frame`, on two stock descriptors.
+`frame_at_reads_a_tag_and_a_length`,
+`a_marshal_frame_ends_a_compiled_modules_descriptor` (with and without
+the reference flag), `a_marshal_length_off_the_records_boundaries_is_no_frame`.
+git-seriate-fdp: `a_framed_descriptor_ends_at_its_frame`, on two stock
+descriptors.
 
 ## Measured outcome
 
@@ -112,3 +126,12 @@ ones included. It has ten fewer paths: the closing file of nine bundles,
 read on, had nine copies differing only by what followed them; cut, they
 are the same bytes, and merge. Every record that had been read on sat in
 a chain, so N3's limit didn't apply. The order check's tests unchanged.
+
+S5, on the compiled modules of Python protobuf's own package (7.36.2,
+CPython 3.13): 12 of its 13 `*_pb2` modules were read on past their
+descriptor, each by exactly its own name (25 bytes for `any_pb2`: `z`, a
+length, `google.protobuf.any_pb2`), and now end at their marshal frame;
+the thirteenth, `descriptor_pb2`, is followed by a tuple, and unchanged.
+Downstream, the same over-read was in 1,095 of a history's 1,106 compiled
+modules, masked by a canonicalization rule dropping an
+`option_dependency` equal to the module's name.

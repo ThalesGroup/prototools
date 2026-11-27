@@ -585,7 +585,10 @@ fn a_framed_descriptor_ends_at_its_frame() {
         block.record,
         [(
             format!("frame-cut {}", item_path_of(b)),
-            format!("{start}..{end}, read on to {}", 64 + message.len())
+            format!(
+                "{start}..{end}, protobuf frame, read on to {}",
+                64 + message.len()
+            )
         )]
     );
 }

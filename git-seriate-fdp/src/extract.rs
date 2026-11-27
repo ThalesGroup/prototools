@@ -117,8 +117,9 @@ fn collect(
             Some((
                 format!("frame-cut {}", path_of(c.start)?),
                 format!(
-                    "{}, read on to {}",
+                    "{}, {} frame, read on to {}",
                     within.text(None, c.start, c.end),
+                    c.frame.name(),
                     c.read_to
                 ),
             ))
