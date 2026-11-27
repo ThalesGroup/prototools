@@ -138,15 +138,36 @@ line, the bundler's.
   (0497: from the oldest commit concerned, hand-made commits refused out
   of reach), and its new lineage sorting it in. `--dry-run` names each
   snapshot moved, from and to. Nothing moves before a `settle`.
-- **S4. Migration, once, per repository:** `git seriate migrate`: snapshot
-  branches to `refs/seriate/snapshots/`, each history `NAME` to
-  `NAME/default` (no lineage being stated, S1), the record written, the
-  former branches kept under `refs/seriate/migrated/` until pruned.
-  Commands refuse a repository not yet migrated, naming `migrate`;
-  `import` and `--tar-out` write the new layout.
+- **S4. Migration, once, per repository:** `git seriate migrate`:
+  snapshot branches to `refs/seriate/snapshots/`, then each history:
+  - **`migrate HISTORY --into NEW`:** `NEW/default` written from
+    `HISTORY` (no lineage being stated, S1) and `NEW`'s record, `HISTORY`
+    left as it is, an ordinary branch no command reads as a history any
+    more; `NEW` refused if it exists. Git holds no `NAME` beside
+    `NAME/default`, so a history pushed to a server where its branch is
+    protected (or the default branch) migrates under a new name, pushed
+    beside the old one, which its owner retires when the new is checked;
+  - **`migrate HISTORY`, in place:** `HISTORY` to `HISTORY/default`, the
+    former branch kept under `refs/seriate/migrated/` until pruned.
+
+  Commands refuse a repository whose snapshots are still branches,
+  naming `migrate`; `import` and `--tar-out` write the new layout.
 - **S5. What reads a history:** `advise`, `list`, `compact`, `forget` and
   `prune` read every lineage of a history, and name a commit's lineage
   where it matters (`forget` rewrites the lineage holding the snapshot).
+- **S5a. The records' commits:** the statements' record (S1b) and the
+  history's (S2) are written as history commits are: the committer and
+  signing of 0452 S5 step 6, and the user running the command as their
+  author (0471). Neither reaches a snapshot commit: the history's record
+  has as parents only its previous record, lineage tips (history
+  commits, whose parents are history commits) and a statements' record;
+  the statements' record only its previous one, its tree naming
+  identities as text. So pushing the histories and the two records
+  carries no snapshot; `refs/seriate/forgotten/` (0497) does, its
+  parents being snapshots, and stays local where snapshots do. A
+  guarantee: an invariant of `docs/invariants/`, with its regression test
+  (a push of the histories and records to a bare repository holds no
+  snapshot commit), at implementation.
 - **S6. `advise` reports what contents suggest:** a snapshot whose copies
   sit inside another copy's span in its lineage (a straddle) and differ
   from that copy only by options or `json_name`s is reported, with the
@@ -191,7 +212,12 @@ line, the bundler's.
 2c. The statements' record: one commit per command, the whole mapping in
    its tree, the previous record its parent.
 3. `migrate` on a history of today's layout: the same commits under the
-   new names, the refusal before it, nothing lost.
+   new names, the refusal before it, nothing lost; `--into NEW`: `NEW/default`
+   with the history's commits, `HISTORY` unchanged, `NEW` refused when it
+   exists.
+3a. S5a: the records' commits signed and authored as history commits;
+   the histories and the records pushed to a bare repository, no snapshot
+   commit in it.
 4. A re-sort of one lineage: the record's new commit keeps the other
    lineage's tip as a parent, the previous record too.
 5. Downstream, on the measured history, with the lineages stated by its

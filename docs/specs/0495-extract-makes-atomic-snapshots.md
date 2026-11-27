@@ -156,7 +156,12 @@ same each time; a split, once made, is redone only by extracting again
   interval is recorded as evidence and `advise` reports it, the caller
   stating the boundary if it knows better. First, to measure on both
   corpora: how many chains a repetition cuts, and how many of those cuts
-  are ambiguous.
+  are ambiguous. *Measured downstream* on 60 sets of eleven executables:
+  2 cut by a repetition, both certain (three sets of one library, each a
+  root with its import closure, back to back, each starting again with
+  the closure's first file); the downstream counted as valid every split
+  point leaving both parts with no repeated name and closed under their
+  dependencies. Our corpus still to count.
 
 ## Test plan
 
