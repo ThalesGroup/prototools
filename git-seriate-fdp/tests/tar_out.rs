@@ -184,7 +184,11 @@ fn tar_out_is_the_repository() {
     };
     assert_eq!(refs(&unpacked), refs(&repo));
     assert_eq!(objects(&unpacked), objects(&repo));
-    assert!(git(&unpacked, &["symbolic-ref", "HEAD"]).starts_with("refs/heads/bin0"));
+    // No branch yet: HEAD names one to be, as `git init --bare` leaves it.
+    assert_eq!(
+        git(&unpacked, &["symbolic-ref", "HEAD"]).trim(),
+        "refs/heads/main"
+    );
 
     // And settled, the same history.
     for r in [&unpacked, &repo] {

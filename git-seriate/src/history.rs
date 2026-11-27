@@ -12,6 +12,7 @@ use gix::refs::transaction::PreviousValue;
 use gix::ObjectId;
 
 use crate::format::Block;
+use crate::layout::snapshot_ref;
 use crate::plugins::{Canonicalizer, ItemPaths, Renderer};
 pub(crate) use crate::sign::Signer;
 use crate::store::{self, branch_ref, tip};
@@ -48,7 +49,7 @@ pub struct Options<'a> {
     pub cutoff: Cutoff,
     pub settling_days: u32,
     pub dry_run: bool,
-    /// The candidates; every snapshot branch not yet in the history when
+    /// The candidates; every snapshot not yet in the history when
     /// empty.
     pub branches: Vec<String>,
     pub sort: seriation::Settings,
@@ -156,13 +157,13 @@ fn settle_with(
     // 1. The candidates.
     let listed = store::list_with(repo, legacy)?;
     let by_branch: HashMap<&str, &store::Listed> =
-        listed.iter().map(|l| (l.branch.as_str(), l)).collect();
+        listed.iter().map(|l| (l.identity.as_str(), l)).collect();
     let mut candidates: Vec<&store::Listed> = Vec::new();
     if options.branches.is_empty() {
         candidates.extend(
             listed
                 .iter()
-                .filter(|l| l.block.contents.is_some() && !in_history.contains(&l.branch)),
+                .filter(|l| l.block.contents.is_some() && !in_history.contains(&l.identity)),
         );
     } else {
         for b in &options.branches {
@@ -172,7 +173,7 @@ fn settle_with(
                         candidates.push(l);
                     }
                 }
-                _ => return Err(Error::Refused(format!("{b:?} is not a snapshot branch"))),
+                _ => return Err(Error::Refused(format!("{b:?} is not a snapshot"))),
             }
         }
     }
@@ -468,7 +469,7 @@ pub struct Forgotten {
     pub forgotten: Vec<String>,
     /// The decision's record, `refs/seriate/forgotten/<n>`, which keeps them.
     pub record: String,
-    /// The snapshot branches deleted.
+    /// The snapshots deleted from the store.
     pub deleted: Vec<String>,
 }
 
@@ -560,7 +561,7 @@ pub fn forget(repo: &gix::Repository, options: &ForgetOptions) -> Result<Forgott
         })
         .expect("a free name");
     out.record = record.clone();
-    // Each snapshot itself where its branch keeps it, else its history
+    // Each snapshot itself where the store keeps it, else its history
     // commit, which keeps it as well.
     let mut seen = HashSet::new();
     let mut kept: Vec<(String, ObjectId, Option<ObjectId>)> = Vec::new();
@@ -568,7 +569,7 @@ pub fn forget(repo: &gix::Repository, options: &ForgetOptions) -> Result<Forgott
         if !seen.insert(identity.as_str()) {
             continue;
         }
-        let branch_tip = tip(repo, &branch_ref(identity)?)?;
+        let branch_tip = tip(repo, &snapshot_ref(identity)?)?;
         kept.push((
             identity.clone(),
             branch_tip.unwrap_or(*history_commit),
@@ -626,7 +627,7 @@ pub fn forget(repo: &gix::Repository, options: &ForgetOptions) -> Result<Forgott
     store::set_ref(repo, &full, PreviousValue::MustNotExist, id)?;
     for (identity, _, branch_tip) in &kept {
         if let Some(t) = branch_tip {
-            store::delete_branch(repo, identity, *t)?;
+            store::delete_snapshot(repo, identity, *t)?;
         }
     }
     Ok(out)
@@ -972,8 +973,8 @@ fn history_items(
 }
 
 /// A snapshot commit of the history: its own items when it is trusted
-/// (spec 0464 S3); else its snapshot branch's raw items when the branch is
-/// there, else its own, the branch then recreated from them.
+/// (spec 0464 S3); else its snapshot's raw items when the store holds it,
+/// else its own, the snapshot then recreated from them.
 fn sort_input_from_history(
     target: &gix::Repository,
     s: &SnapCommit,
@@ -1059,9 +1060,7 @@ fn sort_input_from_history(
     } else {
         "recreated"
     };
-    report
-        .notes
-        .push(format!("{verb} snapshot branch {identity}"));
+    report.notes.push(format!("{verb} snapshot {identity}"));
     Ok(SortInput {
         block: s.block.clone(),
         items,
@@ -1672,7 +1671,7 @@ mod tests {
             };
             store::add(&repo, snapshot).unwrap();
             let commit = repo
-                .find_reference(format!("refs/heads/{id}").as_str())
+                .find_reference(format!("refs/seriate/snapshots/{id}").as_str())
                 .unwrap()
                 .peel_to_id()
                 .unwrap()

@@ -91,14 +91,35 @@ fn a_directory_is_added_once() {
     // The commit: parentless, dated, its tree the directory.
     let shown = git(
         &repo,
-        &["log", "-1", "--format=%P|%at|%ct|%an", "build0001/part0"],
+        &[
+            "log",
+            "-1",
+            "--format=%P|%at|%ct|%an",
+            "refs/seriate/snapshots/build0001/part0",
+        ],
     );
     assert_eq!(shown, "|3|1700000000|git-seriate\n");
     assert_eq!(
-        git(&repo, &["ls-tree", "-r", "--name-only", "build0001/part0"]),
+        git(
+            &repo,
+            &[
+                "ls-tree",
+                "-r",
+                "--name-only",
+                "refs/seriate/snapshots/build0001/part0"
+            ]
+        ),
         "a.txt\nd/b.txt\nd/e/c.txt\n"
     );
-    let message = git(&repo, &["log", "-1", "--format=%B", "build0001/part0"]);
+    let message = git(
+        &repo,
+        &[
+            "log",
+            "-1",
+            "--format=%B",
+            "refs/seriate/snapshots/build0001/part0",
+        ],
+    );
     let block = Block::read(&message).unwrap().unwrap();
     assert_eq!(block.source.identity, "build0001/part0");
     assert_eq!(block.contents.unwrap().len(), 3);
@@ -138,7 +159,7 @@ fn the_same_snapshot_is_the_same_commit_anywhere() {
                 ],
             );
             assert!(ok, "{err}");
-            git(&repo, &["rev-parse", "s"])
+            git(&repo, &["rev-parse", "refs/seriate/snapshots/s"])
         })
         .collect();
     assert_eq!(commits[0], commits[1]);
@@ -174,10 +195,16 @@ fn refused_paths_are_reported_and_the_tree_stays_valid() {
     assert!(err.contains("y/git~1/g.txt: refused (invalid"), "{err}");
     fsck(&repo);
     assert_eq!(
-        git(&repo, &["ls-tree", "-r", "--name-only", "s"]),
+        git(
+            &repo,
+            &["ls-tree", "-r", "--name-only", "refs/seriate/snapshots/s"]
+        ),
         "ok.txt\n"
     );
-    let message = git(&repo, &["log", "-1", "--format=%B", "s"]);
+    let message = git(
+        &repo,
+        &["log", "-1", "--format=%B", "refs/seriate/snapshots/s"],
+    );
     assert_eq!(Block::read(&message).unwrap().unwrap().rejected.len(), 2);
 }
 
@@ -303,8 +330,8 @@ fn import_copies_the_branches_once() {
     assert!(out.ends_with("copied 1, already here 0\n"), "{out}");
     fsck(&ours);
     assert_eq!(
-        git(&ours, &["rev-parse", "s"]),
-        git(&theirs, &["rev-parse", "s"])
+        git(&ours, &["rev-parse", "refs/seriate/snapshots/s"]),
+        git(&theirs, &["rev-parse", "refs/seriate/snapshots/s"])
     );
     let (_, out, _) = git_seriate(&ours, &["import", theirs.to_str().unwrap()]);
     assert!(out.ends_with("copied 0, already here 1\n"), "{out}");
@@ -358,7 +385,7 @@ fn trees_are_the_ones_git_builds() {
         ],
     );
     assert!(ok, "{err}");
-    let ours = git(&repo, &["rev-parse", "s^{tree}"]);
+    let ours = git(&repo, &["rev-parse", "refs/seriate/snapshots/s^{tree}"]);
     // git's: the same files through an index.
     let index = tmp.path().join("index");
     let with_index = |args: &[&str]| {
@@ -390,4 +417,86 @@ fn trees_are_the_ones_git_builds() {
     let gits = with_index(&["write-tree"]);
     assert_eq!(ours.trim(), gits.trim());
     fsck(&repo);
+}
+
+/// A repository of before spec 0499, its snapshots branches: refused by
+/// every command reading the store, naming `migrate`; `migrate --dry-run`
+/// says what it would move and moves nothing; `migrate` moves each under
+/// refs/seriate/snapshots/, the same commit, its branch gone (spec 0499
+/// S4).
+#[test]
+fn a_repository_of_the_former_layout_is_refused_until_migrated() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = new_repo(tmp.path(), "r.git");
+    let dir = tmp.path().join("s");
+    write(&dir, &[("a.txt", "a\n")]);
+    for id in ["s0", "pkg/s1"] {
+        let (ok, _, err) = git_seriate(
+            &repo,
+            &[
+                "add",
+                "--id",
+                id,
+                "--build-time",
+                "1",
+                dir.to_str().unwrap(),
+            ],
+        );
+        assert!(ok, "{err}");
+    }
+    for id in ["s0", "pkg/s1"] {
+        // Where snapshots were before spec 0499: a branch of their name.
+        let full = format!("refs/seriate/snapshots/{id}");
+        let commit = git(&repo, &["rev-parse", &full]).trim().to_string();
+        git(&repo, &["update-ref", &format!("refs/heads/{id}"), &commit]);
+        git(&repo, &["update-ref", "-d", &full]);
+    }
+    let before = git(&repo, &["rev-parse", "refs/heads/s0"]);
+
+    for args in [&["list"][..], &["settle", "--into", "main"], &["prune"]] {
+        let (ok, _, err) = git_seriate(&repo, args);
+        assert!(!ok, "{args:?}");
+        assert!(err.contains("2 snapshot(s) are still branches"), "{err}");
+        assert!(err.contains("run `git seriate migrate` first"), "{err}");
+    }
+
+    let (ok, out, err) = git_seriate(&repo, &["migrate", "--dry-run"]);
+    assert!(ok, "{err}");
+    assert!(out.contains("would move 2 snapshot(s)"), "{out}");
+    assert_eq!(git(&repo, &["rev-parse", "refs/heads/s0"]), before);
+
+    let (ok, out, err) = git_seriate(&repo, &["migrate"]);
+    assert!(ok, "{err}");
+    assert!(
+        out.contains("moved 2 snapshot(s) to refs/seriate/snapshots/"),
+        "{out}"
+    );
+    assert_eq!(
+        git(&repo, &["rev-parse", "refs/seriate/snapshots/s0"]),
+        before
+    );
+    assert_eq!(git(&repo, &["branch", "--list"]), "");
+    let (ok, out, err) = git_seriate(&repo, &["list"]);
+    assert!(ok, "{err}");
+    assert_eq!(out, "pkg/s1\ns0\n");
+    fsck(&repo);
+}
+
+/// A snapshot and a history may share a name: they no longer share a
+/// namespace (spec 0499 S2).
+#[test]
+fn a_snapshot_may_be_named_as_a_branch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = new_repo(tmp.path(), "r.git");
+    let dir = tmp.path().join("s");
+    write(&dir, &[("a.txt", "a\n")]);
+    let dir = dir.to_str().unwrap();
+    let (ok, _, err) = git_seriate(&repo, &["add", "--id", "x", "--build-time", "1", dir]);
+    assert!(ok, "{err}");
+    let x = git(&repo, &["rev-parse", "refs/seriate/snapshots/x"]);
+    git(&repo, &["update-ref", "refs/heads/main", x.trim()]);
+    let (ok, out, err) = git_seriate(&repo, &["add", "--id", "main", "--build-time", "2", dir]);
+    assert!(ok, "{err}");
+    assert!(out.contains("added main"), "{out}");
+    assert_eq!(git(&repo, &["rev-parse", "refs/heads/main"]), x);
 }

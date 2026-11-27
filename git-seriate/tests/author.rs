@@ -119,8 +119,9 @@ fn authors(repo: &gix::Repository, branch: &str) -> Vec<(String, i64, String)> {
         .collect()
 }
 
-/// `branch`'s tip rewritten with the author `author` (name, email) and the
-/// same tree, parents, message and author date.
+/// The tip of the ref `branch` (a full name) rewritten with the author
+/// `author` (name, email) and the same tree, parents, message and author
+/// date.
 fn reauthor_tip(repo: &gix::Repository, branch: &str, name: &str, email: &str) {
     let tree = git(repo, &["rev-parse", &format!("{branch}^{{tree}}")], &[], "");
     let parents: Vec<String> = git(repo, &["log", "-1", "--format=%P", branch], &[], "")
@@ -145,12 +146,7 @@ fn reauthor_tip(repo: &gix::Repository, branch: &str, name: &str, email: &str) {
         ],
         &message,
     );
-    git(
-        repo,
-        &["update-ref", &format!("refs/heads/{branch}"), &commit],
-        &[],
-        "",
-    );
+    git(repo, &["update-ref", branch, &commit], &[], "");
 }
 
 fn repo() -> (tempfile::TempDir, gix::Repository) {
@@ -175,14 +171,22 @@ fn a_tool_authored_snapshot_is_authored_by_the_user() {
             "the order hint as its date: {date}"
         );
     }
-    assert_eq!(authors(&repo, "s0")[0].0, "git-seriate <>");
+    assert_eq!(
+        authors(&repo, "refs/seriate/snapshots/s0")[0].0,
+        "git-seriate <>"
+    );
 }
 
 #[test]
 fn a_snapshots_author_is_kept() {
     let (_tmp, repo) = repo();
     add(&repo, "s0", 0, 10, "a\n");
-    reauthor_tip(&repo, "s0", "Alice", "alice@example.com");
+    reauthor_tip(
+        &repo,
+        "refs/seriate/snapshots/s0",
+        "Alice",
+        "alice@example.com",
+    );
     settle(&repo);
     assert_eq!(
         authors(&repo, "main")[0].0,
@@ -199,7 +203,7 @@ fn a_rewrite_re_authors_only_the_authorless() {
     settle(&repo);
     // The tip as settled before 0471: no author; a manual commit by Bob on
     // top.
-    reauthor_tip(&repo, "main", "git-seriate", "");
+    reauthor_tip(&repo, "refs/heads/main", "git-seriate", "");
     let tree = git(&repo, &["rev-parse", "main^{tree}"], &[], "");
     let tip = git(&repo, &["rev-parse", "main"], &[], "");
     let bob = git(
@@ -296,10 +300,18 @@ fn a_recreated_branch_is_the_original_commit() {
     add(&repo, "s0", 0, 10, "a\n");
     add(&repo, "s1", 1, 11, "a\nb\n");
     settle(&repo);
-    let original = git(&repo, &["rev-parse", "s0"], &[], "");
-    git(&repo, &["update-ref", "-d", "refs/heads/s0"], &[], "");
+    let original = git(&repo, &["rev-parse", "refs/seriate/snapshots/s0"], &[], "");
+    git(
+        &repo,
+        &["update-ref", "-d", "refs/seriate/snapshots/s0"],
+        &[],
+        "",
+    );
     // A snapshot before them: the history re-sorted, s0 recreated from it.
     add(&repo, "s", 0, 9, "");
     settle(&repo);
-    assert_eq!(git(&repo, &["rev-parse", "s0"], &[], ""), original);
+    assert_eq!(
+        git(&repo, &["rev-parse", "refs/seriate/snapshots/s0"], &[], ""),
+        original
+    );
 }

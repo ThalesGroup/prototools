@@ -62,7 +62,8 @@ enum Command<E: Subcommand> {
     Extra(E),
     /// Add the files under DIR as a snapshot.
     Add {
-        /// Its identity, and so its branch name; DIR's name by default.
+        /// Its identity, and so its ref, refs/seriate/snapshots/<ID>; DIR's
+        /// name by default.
         #[arg(long)]
         id: Option<String>,
         /// Seconds since the epoch; the newest file's modification time by
@@ -114,7 +115,7 @@ enum Command<E: Subcommand> {
         /// where (positions among the snapshots sorted, 0 the oldest).
         #[arg(long)]
         stats: bool,
-        /// The snapshot branches to settle; every new one by default.
+        /// The snapshots to settle; every new one by default.
         branches: Vec<String>,
     },
     /// Garbage-collect the history before a cutoff.
@@ -137,9 +138,9 @@ enum Command<E: Subcommand> {
         #[arg(long)]
         dry_run: bool,
     },
-    /// List the snapshot branches.
+    /// List the snapshots.
     List {
-        /// The record-only branches instead.
+        /// The record-only ones instead.
         #[arg(long)]
         record_only: bool,
     },
@@ -160,32 +161,38 @@ enum Command<E: Subcommand> {
         #[arg(required = true)]
         identities: Vec<String>,
     },
-    /// Delete snapshot branches the history holds: it rebuilds one when it
-    /// needs it. Those whose raw form only the branch keeps are listed first.
-    /// (Formerly `drop`.)
+    /// Delete snapshots the history holds: it rebuilds one when it needs
+    /// it. (Formerly `drop`.)
     Prune {
-        /// Only the branches matching this glob.
+        /// Only the snapshots matching this glob.
         #[arg(long)]
         glob: Option<String>,
-        /// The record-only branches instead.
+        /// The record-only ones instead.
         #[arg(long)]
         record_only: bool,
     },
     /// `prune`, under its former name: warns, then prunes.
     #[command(hide = true)]
     Drop {
-        /// Only the branches matching this glob.
+        /// Only the snapshots matching this glob.
         #[arg(long)]
         glob: Option<String>,
-        /// The record-only branches instead.
+        /// The record-only ones instead.
         #[arg(long)]
         record_only: bool,
     },
-    /// Copy the snapshot branches of other repositories.
+    /// Copy the snapshots of other repositories, of either layout.
     Import {
         /// The repositories to copy them from.
         #[arg(required = true)]
         repos: Vec<PathBuf>,
+    },
+    /// Move a repository of before spec 0499 to its layout: its snapshot
+    /// branches under refs/seriate/snapshots/.
+    Migrate {
+        /// Show what would be moved, and write nothing.
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -376,6 +383,15 @@ fn dispatch<E: Subcommand>(
         Err(e) => return Err(Error::Git(e.to_string())),
     };
     let kit = &kit(&repo)?;
+    // Every command but `migrate` and `import` reads or writes the store as
+    // laid out since spec 0499: a repository of before it is refused.
+    let former_ok = matches!(
+        cli.command,
+        Command::Migrate { .. } | Command::Import { .. } | Command::Extra(_)
+    ) || tar_out;
+    if !former_ok {
+        refuse_former_layout(&repo, kit)?;
+    }
     match cli.command {
         Command::Extra(e) => extra(e, &repo, kit)?,
         Command::Add {
@@ -432,13 +448,13 @@ fn dispatch<E: Subcommand>(
                 }
             };
             match added {
-                Added::Written { branch, rejected } => {
+                Added::Written { identity, rejected } => {
                     for r in &rejected {
                         eprintln!("warning: {}: refused ({})", r.name, r.reason);
                     }
-                    say(format!("added {branch}"));
+                    say(format!("added {identity}"));
                 }
-                Added::Unchanged { branch } => say(format!("unchanged {branch}")),
+                Added::Unchanged { identity } => say(format!("unchanged {identity}")),
                 Added::Nothing => say(format!("nothing to add: {} holds no file", dir.display())),
             }
         }
@@ -557,7 +573,7 @@ fn dispatch<E: Subcommand>(
             }
             for b in &forgotten.deleted {
                 let verb = if dry_run { "would delete" } else { "deleted" };
-                println!("{verb} its snapshot branch {b}");
+                println!("{verb} its snapshot {b}");
             }
             println!(
                 "{} {}: kept {}, rewrote {} snapshot(s), replayed {} commit(s){}",
@@ -627,7 +643,7 @@ fn dispatch<E: Subcommand>(
         Command::List { record_only } => {
             for listed in store::list_with(&repo, kit.legacy.as_deref())? {
                 if listed.block.contents.is_none() == record_only {
-                    println!("{}", listed.branch);
+                    println!("{}", listed.identity);
                 }
             }
         }
@@ -647,20 +663,36 @@ fn dispatch<E: Subcommand>(
                 );
             }
         }
+        Command::Migrate { dry_run } => {
+            let moved = crate::layout::migrate_snapshots(&repo, dry_run, kit.legacy.as_deref())?;
+            let verb = if dry_run { "would move" } else { "moved" };
+            println!(
+                "{verb} {} snapshot(s) to {}",
+                moved.len(),
+                crate::layout::SNAPSHOTS
+            );
+        }
     }
     Ok(())
 }
 
-/// `prune`, and `drop` under its former name: the snapshot branches
-/// deleted, listed.
+/// A repository whose snapshots are still branches, as before spec 0499,
+/// refused, naming `migrate`: for a front end's own commands that read or
+/// write the store.
+pub fn refuse_former_layout(repo: &gix::Repository, kit: &Kit) -> Result<(), Error> {
+    store::refuse_former_layout(repo, kit.legacy.as_deref())
+}
+
+/// `prune`, and `drop` under its former name: the snapshots deleted,
+/// listed.
 fn prune(
     repo: &gix::Repository,
     glob: Option<&str>,
     record_only: bool,
     kit: &Kit,
 ) -> Result<(), Error> {
-    for branch in store::prune(repo, glob, record_only, kit.legacy.as_deref())? {
-        println!("deleted {branch}");
+    for identity in store::prune(repo, glob, record_only, kit.legacy.as_deref())? {
+        println!("deleted {identity}");
     }
     Ok(())
 }

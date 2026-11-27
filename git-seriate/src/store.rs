@@ -2,7 +2,8 @@
 //
 // SPDX-License-Identifier: MIT
 
-//! Snapshot branches: add, list, drop, import (spec 0452 S3).
+//! Snapshots: add, list, prune, import (spec 0452 S3), each a parentless
+//! commit under `refs/seriate/snapshots/` (spec 0499 S2).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
@@ -15,6 +16,7 @@ use gix::refs::Target;
 use gix::ObjectId;
 
 use crate::format::{Block, Rejection, Source};
+use crate::layout::{snapshot_ref, SNAPSHOTS};
 use crate::Error;
 
 /// The identity snapshot commits are written as, author and committer: a
@@ -49,21 +51,21 @@ pub struct NewSnapshot {
 /// What [`add`] did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Added {
-    /// A new branch.
+    /// A new snapshot.
     Written {
-        branch: String,
+        identity: String,
         rejected: Vec<Rejection>,
     },
-    /// The branch already holds this very commit.
-    Unchanged { branch: String },
+    /// The store already holds this very commit.
+    Unchanged { identity: String },
     /// No item and no record: nothing to keep.
     Nothing,
 }
 
-/// A snapshot or record-only branch.
+/// A snapshot, or a record-only one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Listed {
-    pub branch: String,
+    pub identity: String,
     pub commit: ObjectId,
     pub block: Block,
 }
@@ -87,65 +89,64 @@ impl Sink<'_> {
         }
     }
 
-    /// A branch that `branch` can't sit beside: one whose name is a
-    /// directory of `branch`'s, or under it. Git keeps a ref and a
-    /// directory of refs apart (`a` and `a/b` can't both be branches).
-    fn clash(&self, branch: &str) -> Result<Option<String>, Error> {
+    /// A snapshot that `identity` can't sit beside: one whose identity is a
+    /// directory of `identity`, or under it. Git keeps a ref and a
+    /// directory of refs apart (`a` and `a/b` can't both be refs).
+    fn clash(&self, identity: &str) -> Result<Option<String>, Error> {
         let clashes = |other: &str| {
-            other != branch
-                && (branch.starts_with(&format!("{other}/"))
-                    || other.starts_with(&format!("{branch}/")))
+            other != identity
+                && (identity.starts_with(&format!("{other}/"))
+                    || other.starts_with(&format!("{identity}/")))
         };
         match self {
-            Sink::Repo(repo) => {
-                let refs = repo.references().map_err(Error::git)?;
-                for r in refs.local_branches().map_err(Error::git)? {
-                    let name = r.map_err(Error::git)?.name().shorten().to_string();
-                    if clashes(&name) {
-                        return Ok(Some(name));
-                    }
-                }
-                Ok(None)
-            }
+            Sink::Repo(repo) => Ok(snapshot_refs(repo)?
+                .into_iter()
+                .map(|(name, _)| name)
+                .find(|n| clashes(n))),
             Sink::Archive(archive) => Ok(archive
-                .branch_names()
+                .snapshot_identities()
                 .find(|n| clashes(n))
                 .map(str::to_string)),
         }
     }
 
-    fn tip(&self, branch: &str, ref_name: &gix::refs::FullName) -> Result<Option<ObjectId>, Error> {
+    fn tip(
+        &self,
+        identity: &str,
+        ref_name: &gix::refs::FullName,
+    ) -> Result<Option<ObjectId>, Error> {
         match self {
             Sink::Repo(repo) => tip(repo, ref_name),
-            Sink::Archive(archive) => Ok(archive.branch(branch)),
+            Sink::Archive(archive) => Ok(archive.snapshot(identity)),
         }
     }
 
-    fn set_branch(
+    fn set_snapshot(
         &mut self,
-        branch: &str,
+        identity: &str,
         ref_name: &gix::refs::FullName,
         id: ObjectId,
     ) -> Result<(), Error> {
         match self {
             Sink::Repo(repo) => set_ref(repo, ref_name, PreviousValue::MustNotExist, id),
             Sink::Archive(archive) => {
-                archive.set_branch(branch, id);
+                archive.set_snapshot(identity, id);
                 Ok(())
             }
         }
     }
 }
 
-/// Add a snapshot as its branch (spec 0452 S3).
+/// Add a snapshot, at `refs/seriate/snapshots/<identity>` (spec 0452 S3,
+/// 0499 S2).
 pub fn add(repo: &gix::Repository, snapshot: NewSnapshot) -> Result<Added, Error> {
     add_to(&mut Sink::Repo(repo), snapshot)
 }
 
 /// [`add`], into a repository or an archive.
 pub fn add_to(sink: &mut Sink, snapshot: NewSnapshot) -> Result<Added, Error> {
-    let branch = snapshot.source.identity.clone();
-    let ref_name = branch_ref(&branch)?;
+    let identity = snapshot.source.identity.clone();
+    let ref_name = snapshot_ref(&identity)?;
     let mut rejected = snapshot.rejected;
     let Placed {
         files: placed,
@@ -185,32 +186,33 @@ pub fn add_to(sink: &mut Sink, snapshot: NewSnapshot) -> Result<Added, Error> {
         extra_headers: Vec::new(),
     };
     let id = commit_id(&commit)?;
-    // Before reading the branch's tip, which git can't even look up under a
+    // Before reading the snapshot's ref, which git can't even look up under a
     // name that is a ref already.
-    if let Some(other) = sink.clash(&branch)? {
+    if let Some(other) = sink.clash(&identity)? {
         return Err(Error::Refused(format!(
-            "snapshot {branch:?} can't sit beside branch {other:?}: git keeps a ref and a \
+            "snapshot {identity:?} can't sit beside snapshot {other:?}: git keeps a ref and a \
              directory of refs apart; give one of them another identity"
         )));
     }
-    if let Some(existing) = sink.tip(&branch, &ref_name)? {
+    if let Some(existing) = sink.tip(&identity, &ref_name)? {
         return if existing == id {
-            Ok(Added::Unchanged { branch })
+            Ok(Added::Unchanged { identity })
         } else {
             Err(Error::Refused(format!(
-                "branch {branch:?} exists with another commit ({existing}); this snapshot \
+                "snapshot {identity:?} exists with another commit ({existing}); this snapshot \
                  would be {id}"
             )))
         };
     }
     let written = sink.write(&commit)?;
     debug_assert_eq!(written, id);
-    sink.set_branch(&branch, &ref_name, written)?;
-    Ok(Added::Written { branch, rejected })
+    sink.set_snapshot(&identity, &ref_name, written)?;
+    Ok(Added::Written { identity, rejected })
 }
 
-/// Every snapshot and record-only branch, by name (spec 0452 S3): a
-/// parentless tip with a block, named as the block's identity.
+/// Every snapshot and record-only one, by identity (spec 0452 S3): a
+/// parentless commit with a block under `refs/seriate/snapshots/`, at the
+/// block's identity (spec 0499 S2).
 pub fn list(repo: &gix::Repository) -> Result<Vec<Listed>, Error> {
     list_with(repo, None)
 }
@@ -220,12 +222,64 @@ pub fn list_with(
     repo: &gix::Repository,
     legacy: Option<&dyn crate::plugins::LegacyReader>,
 ) -> Result<Vec<Listed>, Error> {
+    listed_under(repo, SNAPSHOTS, legacy)
+}
+
+/// The snapshots of the former layout, branches named as their identity
+/// (spec 0452 S3, before spec 0499): what `migrate` moves.
+pub fn former_snapshots(
+    repo: &gix::Repository,
+    legacy: Option<&dyn crate::plugins::LegacyReader>,
+) -> Result<Vec<Listed>, Error> {
+    listed_under(repo, "refs/heads/", legacy)
+}
+
+/// A repository still holding snapshots as branches, refused, naming
+/// `migrate` (spec 0499 S4).
+pub fn refuse_former_layout(
+    repo: &gix::Repository,
+    legacy: Option<&dyn crate::plugins::LegacyReader>,
+) -> Result<(), Error> {
+    let former = former_snapshots(repo, legacy)?;
+    match former.first() {
+        None => Ok(()),
+        Some(first) => Err(Error::Refused(format!(
+            "{} snapshot(s) are still branches, as before spec 0499 ({}{}): run \
+             `git seriate migrate` first",
+            former.len(),
+            first.identity,
+            if former.len() > 1 { ", …" } else { "" }
+        ))),
+    }
+}
+
+/// The refs under `prefix`, by their name past it, and their targets.
+fn refs_under(repo: &gix::Repository, prefix: &str) -> Result<Vec<(String, ObjectId)>, Error> {
     let mut out = Vec::new();
     let refs = repo.references().map_err(Error::git)?;
-    for r in refs.local_branches().map_err(Error::git)? {
+    for r in refs.prefixed(prefix).map_err(Error::git)? {
         let mut r = r.map_err(Error::git)?;
-        let name = r.name().shorten().to_string();
-        let commit_id = r.peel_to_id().map_err(Error::git)?.detach();
+        let full = r.name().as_bstr().to_str_lossy().into_owned();
+        let name = full.strip_prefix(prefix).unwrap_or(&full).to_string();
+        out.push((name, r.peel_to_id().map_err(Error::git)?.detach()));
+    }
+    Ok(out)
+}
+
+/// The snapshot refs, by identity, and their commits.
+pub(crate) fn snapshot_refs(repo: &gix::Repository) -> Result<Vec<(String, ObjectId)>, Error> {
+    refs_under(repo, SNAPSHOTS)
+}
+
+/// The parentless commits with a block under `prefix`, at their block's
+/// identity, by identity.
+fn listed_under(
+    repo: &gix::Repository,
+    prefix: &str,
+    legacy: Option<&dyn crate::plugins::LegacyReader>,
+) -> Result<Vec<Listed>, Error> {
+    let mut out = Vec::new();
+    for (name, commit_id) in refs_under(repo, prefix)? {
         let commit = repo.find_commit(commit_id).map_err(Error::git)?;
         let decoded = commit.decode().map_err(Error::git)?;
         if decoded.parents().next().is_some() {
@@ -237,19 +291,19 @@ pub fn list_with(
         };
         if block.source.identity == name {
             out.push(Listed {
-                branch: name,
+                identity: name,
                 commit: commit_id,
                 block,
             });
         }
     }
-    out.sort_by(|a, b| a.branch.cmp(&b.branch));
+    out.sort_by(|a, b| a.identity.cmp(&b.identity));
     Ok(out)
 }
 
-/// Delete snapshot branches matching `glob` (all when `None`), or the
+/// Delete the snapshots matching `glob` (all when `None`), or the
 /// record-only ones with `record_only` (`prune`, spec 0497 S4, formerly
-/// `drop`). Returns the branches deleted.
+/// `drop`). Returns the identities deleted.
 pub fn prune(
     repo: &gix::Repository,
     glob: Option<&str>,
@@ -261,19 +315,28 @@ pub fn prune(
         if listed.block.contents.is_none() != record_only {
             continue;
         }
-        if glob.is_some_and(|g| !crate::plugins::glob_matches(g, &listed.branch)) {
+        if glob.is_some_and(|g| !crate::plugins::glob_matches(g, &listed.identity)) {
             continue;
         }
-        delete_branch(repo, &listed.branch, listed.commit)?;
-        deleted.push(listed.branch);
+        delete_snapshot(repo, &listed.identity, listed.commit)?;
+        deleted.push(listed.identity);
     }
     Ok(deleted)
 }
 
-/// Delete the branch `name`, which must point at `commit`.
-pub(crate) fn delete_branch(
+/// Delete the snapshot `identity`, whose ref must point at `commit`.
+pub(crate) fn delete_snapshot(
     repo: &gix::Repository,
-    name: &str,
+    identity: &str,
+    commit: ObjectId,
+) -> Result<(), Error> {
+    delete_ref(repo, snapshot_ref(identity)?, commit)
+}
+
+/// Delete the ref `name`, which must point at `commit`.
+pub(crate) fn delete_ref(
+    repo: &gix::Repository,
+    name: gix::refs::FullName,
     commit: ObjectId,
 ) -> Result<(), Error> {
     repo.edit_references_as(
@@ -282,7 +345,7 @@ pub(crate) fn delete_branch(
                 expected: PreviousValue::MustExistAndMatch(Target::Object(commit)),
                 log: RefLog::AndReference,
             },
-            name: branch_ref(name)?,
+            name,
             deref: false,
         }],
         None,
@@ -299,26 +362,28 @@ pub struct Imported {
     pub present: Vec<String>,
 }
 
-/// Copy the snapshot and record-only branches of the repository at `from`
-/// (spec 0452 S3). A branch here with another commit is refused, before
-/// anything is copied.
+/// Copy the snapshots and record-only ones of the repository at `from`
+/// (spec 0452 S3), its snapshots under either layout (spec 0499 S4): an
+/// archive or a repository of before 0499 imports into this one's. A
+/// snapshot here with another commit is refused, before anything is copied.
 pub fn import(
     repo: &gix::Repository,
     from: &Path,
     legacy: Option<&dyn crate::plugins::LegacyReader>,
 ) -> Result<Imported, Error> {
     let source = gix::open(from).map_err(Error::git)?;
-    let theirs = list_with(&source, legacy)?;
+    let mut theirs = list_with(&source, legacy)?;
+    theirs.extend(former_snapshots(&source, legacy)?);
     let mut report = Imported::default();
     let mut todo = Vec::new();
     for listed in theirs {
-        let ref_name = branch_ref(&listed.branch)?;
+        let ref_name = snapshot_ref(&listed.identity)?;
         match tip(repo, &ref_name)? {
-            Some(ours) if ours == listed.commit => report.present.push(listed.branch),
+            Some(ours) if ours == listed.commit => report.present.push(listed.identity),
             Some(ours) => {
                 return Err(Error::Refused(format!(
-                    "branch {:?} exists here as {ours}, there as {}",
-                    listed.branch, listed.commit
+                    "snapshot {:?} exists here as {ours}, there as {}",
+                    listed.identity, listed.commit
                 )))
             }
             None => todo.push((listed, ref_name)),
@@ -327,7 +392,7 @@ pub fn import(
     for (listed, ref_name) in todo {
         copy_object(&source, repo, listed.commit)?;
         set_ref(repo, &ref_name, PreviousValue::MustNotExist, listed.commit)?;
-        report.copied.push(listed.branch);
+        report.copied.push(listed.identity);
     }
     Ok(report)
 }

@@ -149,9 +149,12 @@ fn level_1_drops_empty_manual_commits_and_second_copies() {
     assert!(out.contains("dropped 2, reduced 0, converted 0"), "{out}");
     assert_eq!(subjects(&repo), "Snapshot s0\nSnapshot s1\n");
     assert_eq!(git(&repo, &["rev-parse", "main^{tree}"]), tree);
-    // s1's first copy stays, and so does its branch.
-    assert!(!out.contains("delete branch"), "{out}");
-    git(&repo, &["rev-parse", "--verify", "refs/heads/s1"]);
+    // s1's first copy stays, and so does its snapshot.
+    assert!(!out.contains("delete snapshot"), "{out}");
+    git(
+        &repo,
+        &["rev-parse", "--verify", "refs/seriate/snapshots/s1"],
+    );
     git(&repo, &["fsck", "--full", "--strict", "--no-dangling"]);
 }
 
@@ -225,16 +228,18 @@ fn level_2_drops_what_is_made_again_later() {
     // back; the others stay.
     for id in ["s0", "s1", "s2"] {
         assert!(
-            out.contains(&format!(
-                "delete branch {id}: its snapshot's last commit is dropped"
-            )),
+            out.contains(&format!("delete snapshot {id}: its last commit is dropped")),
             "{out}"
         );
     }
     assert_eq!(
         git(
             &repo,
-            &["branch", "--list", "s*", "--format=%(refname:short)"]
+            &[
+                "for-each-ref",
+                "--format=%(refname:lstrip=3)",
+                "refs/seriate/snapshots/s*"
+            ]
         ),
         "s3\ns4\n"
     );
@@ -243,9 +248,9 @@ fn level_2_drops_what_is_made_again_later() {
     assert_eq!(subjects(&repo), "Snapshot s3\nSnapshot s4\n");
 }
 
-/// A dry run lists the branches it would delete, and deletes none.
+/// A dry run lists the snapshots it would delete, and deletes none.
 #[test]
-fn a_dry_run_lists_the_branches_and_deletes_none() {
+fn a_dry_run_lists_the_snapshots_and_deletes_none() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = history(tmp.path(), GROWING);
     let out = git_seriate(
@@ -261,11 +266,15 @@ fn a_dry_run_lists_the_branches_and_deletes_none() {
             "--dry-run",
         ],
     );
-    assert!(out.contains("delete branch s2:"), "{out}");
+    assert!(out.contains("delete snapshot s2:"), "{out}");
     assert_eq!(
         git(
             &repo,
-            &["branch", "--list", "s*", "--format=%(refname:short)"]
+            &[
+                "for-each-ref",
+                "--format=%(refname:lstrip=3)",
+                "refs/seriate/snapshots/s*"
+            ]
         ),
         "s0\ns1\ns2\ns3\ns4\n"
     );

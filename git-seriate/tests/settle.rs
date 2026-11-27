@@ -133,7 +133,7 @@ fn build_times(repo: &Path) -> Vec<(i64, String)> {
     let mut times: Vec<(i64, String)> = store::list(&r)
         .unwrap()
         .into_iter()
-        .map(|l| (l.block.source.build_time, l.branch))
+        .map(|l| (l.block.source.build_time, l.identity))
         .collect();
     times.sort();
     times

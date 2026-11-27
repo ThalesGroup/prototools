@@ -151,6 +151,7 @@ fn main() -> ExitCode {
                         report,
                         strict,
                     };
+                    git_seriate::cli::refuse_former_layout(repo, kit)?;
                     let mut text = String::new();
                     let status = advise::run(repo, kit, &advise::Generic, &options, &mut text)?;
                     print!("{text}");
@@ -218,6 +219,9 @@ fn main() -> ExitCode {
                 no_split: split == "none",
                 as_one,
             };
+            if tar_out.is_none() {
+                git_seriate::cli::refuse_former_layout(repo, kit)?;
+            }
             let mut warnings = Vec::new();
             let mut archive = git_seriate::archive::Archive::new();
             let mut sink = match &tar_out {
@@ -250,13 +254,13 @@ fn main() -> ExitCode {
                 .collect();
             for o in outcomes {
                 match o.added {
-                    Added::Written { branch, rejected } => {
+                    Added::Written { identity, rejected } => {
                         for r in &rejected {
                             eprintln!("{}: refused {} ({})", o.file.display(), r.name, r.reason);
                         }
-                        say(format!("added {branch}"));
+                        say(format!("added {identity}"));
                     }
-                    Added::Unchanged { branch } => say(format!("unchanged {branch}")),
+                    Added::Unchanged { identity } => say(format!("unchanged {identity}")),
                     Added::Nothing if !found.contains(&o.file) => {
                         say(format!("{}: no descriptor", o.file.display()));
                     }

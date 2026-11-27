@@ -73,10 +73,10 @@ pub struct Report {
     pub moved: bool,
     pub backup: Option<String>,
     pub warnings: Vec<String>,
-    /// The snapshot branches deleted (or, with `dry_run`, to delete): those
+    /// The snapshots deleted (or, with `dry_run`, to delete): those
     /// of the identities whose last commit is dropped, which `settle`
     /// would otherwise take for new snapshots.
-    pub branches_deleted: Vec<String>,
+    pub snapshots_deleted: Vec<String>,
 }
 
 /// One commit of the history, oldest first.
@@ -293,20 +293,20 @@ pub fn compact(
     dropped_identities.sort_unstable();
     dropped_identities.dedup();
 
-    // Their snapshot branches go too: left, `settle` would take them for
+    // Their snapshots go too: left, `settle` would take them for
     // new snapshots and put back what this drops.
     let branches: HashMap<String, ObjectId> = store::list_with(repo, legacy)?
         .into_iter()
         .filter(|l| l.block.contents.is_some())
-        .map(|l| (l.branch, l.commit))
+        .map(|l| (l.identity, l.commit))
         .collect();
     let mut to_delete: Vec<(&str, ObjectId)> = Vec::new();
     for id in &dropped_identities {
         if let Some(&commit) = branches.get(*id) {
-            report.actions.push(format!(
-                "delete branch {id}: its snapshot's last commit is dropped"
-            ));
-            report.branches_deleted.push(id.to_string());
+            report
+                .actions
+                .push(format!("delete snapshot {id}: its last commit is dropped"));
+            report.snapshots_deleted.push(id.to_string());
             to_delete.push((id, commit));
         }
     }
@@ -453,7 +453,7 @@ pub fn compact(
     )?;
     report.moved = true;
     for (name, commit) in to_delete {
-        store::delete_branch(repo, name, commit)?;
+        store::delete_snapshot(repo, name, commit)?;
     }
     Ok(report)
 }

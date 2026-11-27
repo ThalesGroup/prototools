@@ -16,6 +16,7 @@ pub mod cli;
 pub mod compact;
 pub mod format;
 pub mod history;
+pub mod layout;
 pub mod plugins;
 mod sign;
 pub mod store;

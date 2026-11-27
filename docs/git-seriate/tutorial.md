@@ -55,9 +55,10 @@ $ git init -b main history && cd history
 $ git config seriate.itemPattern 'conf/**'
 ```
 
-**Add each copy as a snapshot.** Each becomes a branch of its own, named
-by the snapshot's identity (the directory's name, or `--id`); its build
-time is the newest file's modification time, or `--build-time`:
+**Add each copy as a snapshot.** Each becomes a commit of its own, kept
+at `refs/seriate/snapshots/<identity>` (the directory's name, or `--id`),
+apart from your branches; its build time is the newest file's
+modification time, or `--build-time`:
 
 ```console
 $ git seriate add ../found/rack-c
@@ -231,17 +232,17 @@ $ git seriate compact --cutoff 2026-04-01 --level 2 --dry-run
 drop 2b3f522a ('Snapshot rack-b'): every change it makes is made again later
 drop ce9a19df ('Snapshot rack-a'): every change it makes is made again later
 drop 0912a3bc ('Snapshot rack-e'): changes nothing; the only record of "rack-e" goes with it
-delete branch rack-a: its snapshot's last commit is dropped
-delete branch rack-b: its snapshot's last commit is dropped
-delete branch rack-e: its snapshot's last commit is dropped
+delete snapshot rack-a: its last commit is dropped
+delete snapshot rack-b: its last commit is dropped
+delete snapshot rack-e: its last commit is dropped
 would compact main: dropped 3, reduced 0, converted 0
 $ git seriate compact --cutoff 2026-04-01 --level 2
 drop 2b3f522a ('Snapshot rack-b'): every change it makes is made again later
 drop ce9a19df ('Snapshot rack-a'): every change it makes is made again later
 drop 0912a3bc ('Snapshot rack-e'): changes nothing; the only record of "rack-e" goes with it
-delete branch rack-a: its snapshot's last commit is dropped
-delete branch rack-b: its snapshot's last commit is dropped
-delete branch rack-e: its snapshot's last commit is dropped
+delete snapshot rack-a: its last commit is dropped
+delete snapshot rack-b: its last commit is dropped
+delete snapshot rack-e: its last commit is dropped
 compacted main: dropped 3, reduced 0, converted 0; previous tip saved as main-2
 $ git log --format='%cs %s'
 2026-04-15 Snapshot rack-d
@@ -252,14 +253,14 @@ $ git log --format='%cs %s'
 rack-c rewrites both files before the cutoff, so rack-b's and rack-a's
 versions never reach it. The tree at the cutoff, and every commit after
 it, stay the same: the files you have checked out don't change. The
-snapshot branches of what was dropped go too; left, the next `settle`
+snapshots of what was dropped go too; left, the next `settle`
 would take them for new snapshots and put them back. The previous tip,
 `main-2`, keeps everything until you delete it.
 
-## 5. Snapshot branches, and other repositories
+## 5. Snapshots, and other repositories
 
-Once settled, a snapshot lives in the history: `settle` can rebuild its
-branch from its commit when it needs it. So the branches can go:
+Once settled, a snapshot lives in the history: `settle` can rebuild it
+from its history commit when it needs it. So the store's copies can go:
 
 ```console
 $ git seriate prune
@@ -279,16 +280,18 @@ way:
 $ git seriate forget --reason "extracted before the scanner fix" rack-c
 ```
 
-It says what it forgot, which branch it deleted, how it rewrote the
+It says what it forgot, which snapshot it deleted, how it rewrote the
 history (the previous tip saved, as by `settle`), and the record that
 keeps what was forgotten with the reason, `refs/seriate/forgotten/1`;
 then, as a reminder, to extract the replacement and settle before sharing
 the history. `--dry-run` shows the same, and writes nothing.
 
 `git seriate import
-OTHER-REPO` copies another repository's snapshot branches into this one,
-to be settled here: several people can extract on their side and merge
-the results in one history.
+OTHER-REPO` copies another repository's snapshots into this one, to be
+settled here: several people can extract on their side and merge the
+results in one history. A repository made before snapshots moved out of
+the branches (spec 0499) is read too; your own is moved once with `git
+seriate migrate`, which every other command asks for.
 
 ## 6. Descriptors embedded in executables
 

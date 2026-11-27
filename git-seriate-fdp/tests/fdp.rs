@@ -367,7 +367,7 @@ fn the_corpus_records_are_items_and_its_decoys_refusals() {
     let truth: Vec<(String, usize, usize)> = serde_json_lite(&corpus.join("isolated.truth.json"));
     let isolated = listed
         .iter()
-        .find(|l| l.branch.ends_with("isolated.bin"))
+        .find(|l| l.identity.ends_with("isolated.bin"))
         .unwrap();
     let contents = isolated.block.contents.as_ref().unwrap();
     // Every true record is an item; duplicates of one name become `~N`.
@@ -377,7 +377,7 @@ fn the_corpus_records_are_items_and_its_decoys_refusals() {
     let decoys = git_seriate::store::list_with(&r, None)
         .unwrap()
         .into_iter()
-        .find(|l| l.branch.ends_with("decoys.bin"))
+        .find(|l| l.identity.ends_with("decoys.bin"))
         .expect("the decoys' refusals kept, as a record-only branch");
     assert!(decoys.block.contents.is_none());
     let reasons: Vec<&str> = decoys
@@ -574,7 +574,10 @@ fn a_framed_descriptor_ends_at_its_frame() {
     let listed = git_seriate::store::list_with(&r, None).unwrap();
     let a_start = 64 + field(1, a).len() - a.len();
     assert_eq!(
-        listed.iter().map(|l| l.branch.as_str()).collect::<Vec<_>>(),
+        listed
+            .iter()
+            .map(|l| l.identity.as_str())
+            .collect::<Vec<_>>(),
         [format!("x!set@{a_start}")]
     );
     let block = &listed[0].block;
@@ -608,7 +611,7 @@ fn snapshots_of(
         .into_iter()
         .map(|l| {
             (
-                l.branch,
+                l.identity,
                 l.block.source.group,
                 l.block.contents.unwrap_or_default(),
             )
@@ -723,13 +726,13 @@ fn each_set_keeps_its_own_copys_record_entries() {
             .iter()
             .filter(|(k, _)| k.starts_with("frame-cut "))
             .collect();
-        assert_eq!(cuts.len(), 1, "{}: {:?}", l.branch, l.block.record);
+        assert_eq!(cuts.len(), 1, "{}: {:?}", l.identity, l.block.record);
         // Its own copy's: the entry's range is the copy's origin.
         assert_eq!(
             cuts[0].1.split(", ").next(),
             l.block.evidence.get(&item_path_of(b)).map(String::as_str),
             "{}",
-            l.branch
+            l.identity
         );
     }
 }
@@ -785,7 +788,7 @@ fn as_one_makes_one_snapshot_of_several_inputs() {
     .unwrap();
     let listed = git_seriate::store::list_with(&r, None).unwrap();
     assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0].branch, "tree");
+    assert_eq!(listed[0].identity, "tree");
     for (i, file) in files.iter().enumerate() {
         let path = item_path_of(&stock[i]);
         assert_eq!(

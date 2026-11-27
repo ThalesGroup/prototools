@@ -5,9 +5,10 @@
 //! Snapshots written as an archive of a bare repository, with no repository
 //! (spec 0466): each object compressed as it is written and kept so, then
 //! one pack, without deltas, its objects sorted by id, and its index, in a
-//! tar with `HEAD`, `config` and `packed-refs`. The same objects and
-//! branches give the same archive, byte for byte, whatever order they were
-//! written in.
+//! tar with `HEAD`, `config` and `packed-refs`, its snapshots under
+//! `refs/seriate/snapshots/` (spec 0499 S2). The same objects and snapshots
+//! give the same archive, byte for byte, whatever order they were written
+//! in.
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -24,11 +25,11 @@ struct Packed {
     deflated: Vec<u8>,
 }
 
-/// The objects and branches of an archive being built.
+/// The objects and snapshots of an archive being built.
 #[derive(Default)]
 pub struct Archive {
     objects: BTreeMap<ObjectId, Packed>,
-    branches: BTreeMap<String, ObjectId>,
+    snapshots: BTreeMap<String, ObjectId>,
 }
 
 impl Archive {
@@ -51,18 +52,18 @@ impl Archive {
         Ok(id)
     }
 
-    /// Where branch `name` points in the archive, if it is there.
-    pub fn branch(&self, name: &str) -> Option<ObjectId> {
-        self.branches.get(name).copied()
+    /// The commit of snapshot `identity` in the archive, if it is there.
+    pub fn snapshot(&self, identity: &str) -> Option<ObjectId> {
+        self.snapshots.get(identity).copied()
     }
 
-    /// The archive's branch names.
-    pub fn branch_names(&self) -> impl Iterator<Item = &str> {
-        self.branches.keys().map(String::as_str)
+    /// The archive's snapshot identities.
+    pub fn snapshot_identities(&self) -> impl Iterator<Item = &str> {
+        self.snapshots.keys().map(String::as_str)
     }
 
-    pub fn set_branch(&mut self, name: &str, id: ObjectId) {
-        self.branches.insert(name.to_string(), id);
+    pub fn set_snapshot(&mut self, identity: &str, id: ObjectId) {
+        self.snapshots.insert(identity.to_string(), id);
     }
 
     /// The archive written to `path`, or to standard output for `-`.
@@ -78,12 +79,8 @@ impl Archive {
     pub fn write_tar(&self, out: impl Write) -> Result<(), Error> {
         let (pack, index, hash) = self.pack()?;
         let mut tar = tar::Builder::new(out);
-        let head = self
-            .branches
-            .keys()
-            .next()
-            .map_or("refs/heads/main".to_string(), |b| format!("refs/heads/{b}"));
-        add_file(&mut tar, "HEAD", format!("ref: {head}\n").as_bytes())?;
+        // No branch: HEAD names one to be, as `git init --bare` leaves it.
+        add_file(&mut tar, "HEAD", b"ref: refs/heads/main\n")?;
         add_file(
             &mut tar,
             "config",
@@ -100,8 +97,8 @@ impl Archive {
         }
         // Sorted, as the header says: git looks refs up by binary search.
         let mut packed_refs = String::from("# pack-refs with: peeled fully-peeled sorted\n");
-        for (name, id) in &self.branches {
-            packed_refs.push_str(&format!("{id} refs/heads/{name}\n"));
+        for (identity, id) in &self.snapshots {
+            packed_refs.push_str(&format!("{id} {}{identity}\n", crate::layout::SNAPSHOTS));
         }
         add_file(&mut tar, "packed-refs", packed_refs.as_bytes())?;
         add_file(&mut tar, &format!("objects/pack/pack-{hash}.pack"), &pack)?;

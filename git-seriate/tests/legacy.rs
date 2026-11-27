@@ -169,8 +169,8 @@ fn an_old_history_is_settled_and_converted() {
         report
             .notes
             .iter()
-            .any(|n| n.contains("recreated snapshot branch old")),
-        "the old snapshots had no branch: rebuilt from the history, {report:?}"
+            .any(|n| n.contains("recreated snapshot old")),
+        "the old snapshots were not in the store: rebuilt from the history, {report:?}"
     );
 
     // compact, dropping nothing, writes what remains old in format 1.
@@ -214,6 +214,7 @@ fn old_branch(repo: &gix::Repository, id: &str) -> ObjectId {
         extra_headers: Vec::new(),
     };
     let commit_id = repo.write_object(&commit).unwrap().detach();
+    // A branch, as snapshots were before spec 0499.
     store::set_ref(
         repo,
         &store::branch_ref(id).unwrap(),
@@ -230,17 +231,22 @@ fn old_snapshot_branches_are_listed_imported_and_dropped() {
     let theirs = gix::init_bare(tmp.path().join("theirs.git")).unwrap();
     let commit = old_branch(&theirs, "pkg/v1/0/bin");
 
-    // Without the reader, not a snapshot branch; with it, one.
-    assert!(store::list(&theirs).unwrap().is_empty());
-    let listed = store::list_with(&theirs, Some(&Old)).unwrap();
+    // Without the reader, not a snapshot; with it, one, of the former
+    // layout, which `import` copies into ours.
+    assert!(store::former_snapshots(&theirs, None).unwrap().is_empty());
+    let listed = store::former_snapshots(&theirs, Some(&Old)).unwrap();
     assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0].branch, "pkg/v1/0/bin");
+    assert_eq!(listed[0].identity, "pkg/v1/0/bin");
 
     let ours = gix::init_bare(tmp.path().join("ours.git")).unwrap();
     let imported = store::import(&ours, &tmp.path().join("theirs.git"), Some(&Old)).unwrap();
     assert_eq!(imported.copied, ["pkg/v1/0/bin"]);
     assert_eq!(
-        store::tip(&ours, &store::branch_ref("pkg/v1/0/bin").unwrap()).unwrap(),
+        store::tip(
+            &ours,
+            &git_seriate::layout::snapshot_ref("pkg/v1/0/bin").unwrap()
+        )
+        .unwrap(),
         Some(commit)
     );
 

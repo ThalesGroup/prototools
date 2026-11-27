@@ -194,7 +194,7 @@ fn a_walk_stopped_by_a_manual_commit_is_a_refusal_saying_why() {
     assert!(err.contains("no seriate.itemPattern is set"), "{err}");
     assert!(err.contains("to let the history's rewrites pass"), "{err}");
     assert_eq!(git(&repo, &["rev-parse", "main"]), old);
-    assert!(ref_exists(&repo, "refs/heads/s2"));
+    assert!(ref_exists(&repo, "refs/seriate/snapshots/s2"));
 }
 
 #[test]
@@ -242,7 +242,7 @@ fn a_forgotten_snapshot_leaves_the_history_and_the_store() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = three(tmp.path());
     let old = git(&repo, &["rev-parse", "main"]);
-    let s2 = git(&repo, &["rev-parse", "refs/heads/s2"]);
+    let s2 = git(&repo, &["rev-parse", "refs/seriate/snapshots/s2"]);
     let (ok, out, err) = git_seriate(
         &repo,
         &[
@@ -266,7 +266,7 @@ fn a_forgotten_snapshot_leaves_the_history_and_the_store() {
     // The previous tip saved; the branch gone; the snapshot kept by the
     // decision's record, with why, and listed in its tree.
     assert_eq!(git(&repo, &["rev-parse", "main-1"]), old);
-    assert!(!ref_exists(&repo, "refs/heads/s2"));
+    assert!(!ref_exists(&repo, "refs/seriate/snapshots/s2"));
     let record = "refs/seriate/forgotten/1";
     assert_eq!(git(&repo, &["rev-parse", &format!("{record}^1")]), s2);
     let message = git(&repo, &["log", "-1", "--format=%B", record]);
@@ -348,9 +348,9 @@ fn a_dry_run_lists_and_writes_nothing() {
     );
     assert!(ok, "{err}");
     assert!(out.contains("would forget s2"), "{out}");
-    assert!(out.contains("would delete its snapshot branch s2"), "{out}");
+    assert!(out.contains("would delete its snapshot s2"), "{out}");
     assert_eq!(git(&repo, &["rev-parse", "main"]), old);
-    assert!(ref_exists(&repo, "refs/heads/s2"));
+    assert!(ref_exists(&repo, "refs/seriate/snapshots/s2"));
     assert!(!ref_exists(&repo, "refs/seriate/forgotten/1"));
 }
 
