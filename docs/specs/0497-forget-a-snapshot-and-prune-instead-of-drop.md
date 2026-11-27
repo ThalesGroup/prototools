@@ -65,7 +65,12 @@ copies the history can rebuild; it removes nothing.
   and renderer (spec 0464), their trees rebuilt without the forgotten
   snapshots' items. The previous tip is saved as `NAME-N`. Then each
   forgotten snapshot's branch is deleted, so that `settle` doesn't put it
-  back. `--dry-run` lists what it would do, and writes nothing.
+  back. `--dry-run` lists what it would do, and writes nothing, its
+  listing saying "would" throughout.
+- **S1a. Out of reach:** a snapshot below where the history's walk stops
+  (a manual commit changing a snapshot file, as `settle` warns) is
+  refused, naming it, the commit and path that stop the walk, and, when
+  no `seriate.itemPattern` is set, how to set one. Nothing is written.
 - **S2. One record per decision,** `refs/seriate/forgotten/<n>`, `n`
   counting the decisions: a commit whose parents are the forgotten
   snapshots (each its branch's commit where it had one, else its history
@@ -74,7 +79,15 @@ copies the history can rebuild; it removes nothing.
   identity and commit.
 - **S3. Anchors:** a manual commit anchored to a forgotten snapshot is
   reported, as when an anchor is gone (spec 0452 S5 step 5), and replayed
-  after the snapshot below it.
+  after the nearest snapshot below it that the history still holds, or at
+  the bottom when that one is in the kept prefix: it keeps its place among
+  the other manual commits, and the tip their versions. (The snapshot
+  directly below it, the former fallback, is often the forgotten one
+  itself: a commit rebuilding derived files is anchored to the update it
+  follows. Measured downstream: falling to the bottom, the newest of 13
+  manual commits went below seven older ones, and the tip would have
+  taken their older versions of 588 files.) This holds for `settle` too,
+  wherever an anchor is gone.
 - **S4. What next:** the listing ends with "extract their replacements, if
   any, then settle", so that a history isn't shared half-repaired.
 - **S5. `prune`** is `drop` renamed, unchanged: it deletes snapshot
@@ -91,8 +104,11 @@ gone, the record's parent, message and list),
 a second record), `one_decision_one_record_for_every_snapshot_it_forgets`,
 `a_dry_run_lists_and_writes_nothing`,
 `what_matches_nothing_or_everything_is_refused` (and no `--reason`),
-`prune_is_what_drop_was_and_drop_says_so`. Anchors: `settle`'s existing
-tests of an anchor gone.
+`prune_is_what_drop_was_and_drop_says_so`,
+`a_walk_stopped_by_a_manual_commit_is_a_refusal_saying_why` (S1a),
+`a_manual_commit_whose_anchor_is_forgotten_keeps_its_place` (S3: failing
+on the former fallback with the downstream's warning, "now replayed
+before …: the tip has the older version").
 
 ## Measured outcome
 

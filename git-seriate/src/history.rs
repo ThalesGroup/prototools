@@ -215,9 +215,26 @@ fn settle_with(
             Entry::Manual(_) => None,
         })
         .collect();
-    if let Some(missing) = forget.iter().find(|f| !in_region.contains(f.as_str())) {
-        return Err(Error::Bug(format!(
-            "{missing} to forget is not in the re-sorted region"
+    // A snapshot to forget below where the walk stopped (a manual commit
+    // changing a snapshot file): refused, saying why, as `settle` warns.
+    let mut out_of_reach: Vec<&str> = forget
+        .iter()
+        .filter(|f| !in_region.contains(f.as_str()))
+        .map(String::as_str)
+        .collect();
+    if !out_of_reach.is_empty() {
+        out_of_reach.sort_unstable();
+        let why = report
+            .warnings
+            .iter()
+            .find(|w| w.starts_with("settle stopped at"))
+            .map_or_else(
+                || "the history can't be rewritten that far down".to_string(),
+                |w| w.replacen("settle stopped at", "the walk stops at", 1),
+            );
+        return Err(Error::Refused(format!(
+            "cannot forget {}, below where the history can be rewritten: {why}",
+            out_of_reach.join(", ")
         )));
     }
 
@@ -1027,9 +1044,14 @@ fn sort_input_from_history(
             },
         )?;
     }
+    let verb = if dry_run {
+        "would recreate"
+    } else {
+        "recreated"
+    };
     report
         .notes
-        .push(format!("recreated snapshot branch {identity}"));
+        .push(format!("{verb} snapshot branch {identity}"));
     Ok(SortInput {
         block: s.block.clone(),
         items,
@@ -1215,7 +1237,22 @@ fn plan(
             }
             None => bottom.push((index, "at the bottom".into())),
             Some(a) => {
-                let fallback = m.below.as_deref().filter(|b| placed.contains(b));
+                // The nearest snapshot below it that the history still
+                // holds (spec 0497): the one directly below may be gone
+                // too, as when a manual commit's anchor is forgotten.
+                // Replayed after it, or at the bottom when it is in the kept
+                // prefix, the manual commit keeps its place among the
+                // others, and the tip their versions.
+                let nearest = old_chain[..index].iter().rev().find_map(|e| match e {
+                    Entry::Snapshot(s) => {
+                        let i = s.block.source.identity.as_str();
+                        (placed.contains(i) || kept_identities.contains(i)).then_some(i)
+                    }
+                    Entry::Manual(_) => None,
+                });
+                let fallback = nearest
+                    .or(m.below.as_deref())
+                    .filter(|b| placed.contains(b));
                 match fallback {
                     Some(b) => {
                         report.notes.push(format!(

@@ -144,6 +144,97 @@ fn three(root: &Path) -> PathBuf {
     repo
 }
 
+/// A manual commit on `branch`: `path` written with `text`.
+fn manual_commit(repo: &Path, branch: &str, path: &str, text: &str, subject: &str) {
+    let worktree = repo.parent().unwrap().join("wt");
+    std::fs::create_dir_all(&worktree).unwrap();
+    let index = repo.parent().unwrap().join("index");
+    let run = |args: &[&str]| {
+        let mut command = Command::new("git");
+        isolated(&mut command, repo);
+        let out = command
+            .arg("--git-dir")
+            .arg(repo)
+            .arg("--work-tree")
+            .arg(&worktree)
+            .args(args)
+            .env("GIT_INDEX_FILE", &index)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    run(&["read-tree", branch]);
+    std::fs::write(worktree.join(path), text).unwrap();
+    run(&["add", path]);
+    let tree = run(&["write-tree"]);
+    let parent = run(&["rev-parse", branch]);
+    let commit = run(&["commit-tree", &tree, "-p", &parent, "-m", subject]);
+    run(&["update-ref", &format!("refs/heads/{branch}"), &commit]);
+}
+
+#[test]
+fn a_walk_stopped_by_a_manual_commit_is_a_refusal_saying_why() {
+    // No seriate.itemPattern: every file counts as a snapshot file, so a
+    // manual commit at the tip stops the walk, above the snapshot to forget.
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = three(tmp.path());
+    manual_commit(&repo, "main", "README.md", "notes\n", "docs");
+    let old = git(&repo, &["rev-parse", "main"]);
+    let (ok, _, err) = git_seriate(&repo, &["forget", "--into", "main", "--reason", "x", "s2"]);
+    assert!(!ok);
+    assert!(!err.contains("internal error"), "{err}");
+    assert!(err.contains("cannot forget s2"), "{err}");
+    assert!(err.contains("the walk stops at"), "{err}");
+    assert!(err.contains("no seriate.itemPattern is set"), "{err}");
+    assert_eq!(git(&repo, &["rev-parse", "main"]), old);
+    assert!(ref_exists(&repo, "refs/heads/s2"));
+}
+
+#[test]
+fn a_manual_commit_whose_anchor_is_forgotten_keeps_its_place() {
+    // s1 s2 s3, A (README 1), s4, B (README 2, anchored to s4). Forgetting
+    // s2 and s4 rewrites from s2: B, its anchor gone, goes after the
+    // nearest snapshot below it still held, s3, so after A, and the tip
+    // keeps B's README; not at the bottom, below A, which would give the
+    // tip A's older one.
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = three(tmp.path());
+    git(&repo, &["config", "seriate.itemPattern", "*.txt"]);
+    manual_commit(&repo, "main", "README.md", "1\n", "docs A");
+    add(&repo, "s4", 4_000_000, &[("d.txt", "4\n")]);
+    let (ok, _, err) = git_seriate(&repo, &["settle", "--into", "main"]);
+    assert!(ok, "{err}");
+    manual_commit(&repo, "main", "README.md", "2\n", "docs B");
+    assert_eq!(
+        subjects(&repo, "main"),
+        [
+            "Snapshot s1",
+            "Snapshot s2",
+            "Snapshot s3",
+            "docs A",
+            "Snapshot s4",
+            "docs B"
+        ]
+    );
+    let (ok, _, err) = git_seriate(
+        &repo,
+        &["forget", "--into", "main", "--reason", "x", "s2", "s4"],
+    );
+    assert!(ok, "{err}");
+    assert!(!err.contains("now replayed before"), "{err}");
+    assert!(err.contains("replayed after 's3'"), "{err}");
+    assert_eq!(
+        subjects(&repo, "main"),
+        ["Snapshot s1", "Snapshot s3", "docs A", "docs B"]
+    );
+    assert_eq!(file_at(&repo, "main", "README.md").as_deref(), Some("2\n"));
+}
+
 #[test]
 fn a_forgotten_snapshot_leaves_the_history_and_the_store() {
     let tmp = tempfile::tempdir().unwrap();
