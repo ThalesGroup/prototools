@@ -97,6 +97,18 @@ fdp-scan: `a_chained_frame_ends_the_last_record_of_a_set`,
 
 ## Measured outcome
 
-The tests pass; the order check's tests unchanged. To measure on the
-downstream's client: the 11 over-read records end at their frames, the
-2,542 others unchanged.
+Measured downstream, on two database clients embedding schema bundles,
+a year apart, each extracted as its own input:
+
+| | the newer client | the older one |
+|---|---|---|
+| ranges | 15,318, the same starts as before the fix | 12,728 |
+| ranges changed | 11, exactly the over-read ones, now ending at their frames | |
+| `frame-cut` entries | 11 | 10 |
+| copies still read on | 0 | 0 |
+
+The newer client's 15,307 other ranges kept their ends, the 2,542 framed
+ones included. It has ten fewer paths: the closing file of nine bundles,
+read on, had nine copies differing only by what followed them; cut, they
+are the same bytes, and merge. Every record that had been read on sat in
+a chain, so N3's limit didn't apply. The order check's tests unchanged.
