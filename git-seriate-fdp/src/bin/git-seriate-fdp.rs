@@ -54,6 +54,13 @@ enum Fdp {
         #[arg(required = true)]
         files: Vec<PathBuf>,
     },
+    /// What each FILE tells about where its descriptors come from, beyond
+    /// them (seriate-tuto spec 0007): one JSON line per file.
+    Hints {
+        /// The executables to read.
+        #[arg(required = true)]
+        files: Vec<PathBuf>,
+    },
     /// What the history can't hold in one schema database, and which
     /// sources could fix it.
     Advise {
@@ -97,6 +104,20 @@ fn main() -> ExitCode {
                 tar_out,
                 files,
             ) = match command {
+                Fdp::Hints { files } => {
+                    for file in files {
+                        let bytes = std::fs::read(&file).map_err(|e| {
+                            Error::Io(std::io::Error::new(
+                                e.kind(),
+                                format!("{}: {e}", file.display()),
+                            ))
+                        })?;
+                        let mut line = git_seriate_fdp::hints::hints(&bytes);
+                        line["file"] = file.display().to_string().into();
+                        println!("{line}");
+                    }
+                    return Ok(());
+                }
                 Fdp::Advise {
                     into,
                     out,

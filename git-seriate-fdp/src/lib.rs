@@ -8,6 +8,7 @@
 
 pub mod advise;
 pub mod extract;
+pub mod hints;
 pub mod rules;
 
 use std::path::{Path, PathBuf};
