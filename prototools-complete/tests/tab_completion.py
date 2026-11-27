@@ -6,16 +6,15 @@
 
 Usage: tab_completion.py BINDIR
 
-For each of prototext and protolens found in BINDIR, sources the script that
-`<TOOL>_COMPLETE=bash <tool>` prints into a fresh interactive bash on a
-pseudo-terminal, types each line of the spec's table, presses Tab, and
-compares the resulting command line with the expected one. Exits non-zero if
-any line differs.
+For each of prototext, protolens, protoscan and protoback found in BINDIR,
+sources the script that `<TOOL>_COMPLETE=bash <tool>` prints into an
+interactive bash on a pseudo-terminal, one per tool, types each line of the
+spec's table, presses Tab, and compares the command line readline then holds
+with the expected one. Exits non-zero if any line differs.
 """
 
 import os
 import pty
-import re
 import select
 import shutil
 import sys
@@ -102,44 +101,67 @@ def make_tree(root):
         f.write(bytes(range(256)) * 4 + fdp + b"\x00\xff" * 64)
 
 
-def tab(bindir, root, tool, typed):
-    """The command line after typing `tool typed` and pressing Tab."""
-    pid, fd = pty.fork()
-    if pid == 0:
-        os.chdir(root)
-        env = {
-            "PATH": bindir + os.pathsep + os.environ["PATH"],
-            "HOME": root,
-            "TERM": "dumb",
-            "PS1": "$ ",
-            "LC_ALL": "C.UTF-8",
-        }
-        os.execvpe("bash", ["bash", "--norc", "--noprofile", "-i"], env)
+# The line readline holds, printed between markers by a key bound to a shell
+# command (`bind -x`), which readline runs only once the keys before it,
+# Tab's completion included, are handled: no fixed wait, and the line as
+# readline holds it, with no terminal escape to strip.
+SHOW_LINE = "\x18l"  # C-x l
+LINE_START, LINE_END = "@@line<", ">line@@"
+READY = "@@ready@@"
+# Only a bound on a hang, never waited out on success.
+TIMEOUT = 10.0
 
-    def read(seconds):
-        out, end = b"", time.time() + seconds
-        while time.time() < end:
-            if select.select([fd], [], [], 0.05)[0]:
-                try:
-                    out += os.read(fd, 4096)
-                except OSError:
-                    break
-        return out
 
-    var = tool.upper() + "_COMPLETE"
-    read(0.5)
-    os.write(fd, f'source <({var}=bash {tool}); bind "set bell-style none"\n'.encode())
-    read(1.0)
-    os.write(fd, f"{tool} {typed}\t".encode())
-    out = read(2.0)
-    os.write(fd, b"\x15exit\n")
-    read(0.3)
-    os.waitpid(pid, 0)
-    text = out.decode(errors="replace").replace("\r", "")
-    text = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]|\x07|\x08", "", text)
-    # The line as echoed: everything after the last prompt-less echo of it.
-    start = text.rfind(f"{tool} ")
-    return text[start:].split("\n")[0] if start >= 0 else text
+class Shell:
+    """An interactive bash on a pseudo-terminal, one per tool, with the
+    tool's completion script sourced."""
+
+    def __init__(self, bindir, root, tool):
+        self.tool = tool
+        self.pid, self.fd = pty.fork()
+        if self.pid == 0:
+            os.chdir(root)
+            env = {
+                "PATH": bindir + os.pathsep + os.environ["PATH"],
+                "HOME": root,
+                "TERM": "dumb",
+                "PS1": "$ ",
+                "LC_ALL": "C.UTF-8",
+            }
+            os.execvpe("bash", ["bash", "--norc", "--noprofile", "-i"], env)
+        self.pending = b""
+        var = tool.upper() + "_COMPLETE"
+        show = f'printf "\\n{LINE_START}%s{LINE_END}\\n" "$READLINE_LINE"'
+        self.send(f'source <({var}=bash {tool}); bind "set bell-style none"; '
+                  f"bind -x '\"\\C-xl\": {show}'; echo {READY[:2]}''{READY[2:]}\n")
+        self.until(READY)
+
+    def send(self, text):
+        os.write(self.fd, text.encode())
+
+    def until(self, marker):
+        """The output up to `marker`, which it consumes."""
+        wanted, end = marker.encode(), time.time() + TIMEOUT
+        while wanted not in self.pending:
+            if time.time() > end:
+                raise TimeoutError(f"{self.tool}: no {marker!r} after {TIMEOUT} s: "
+                                   f"{self.pending.decode(errors='replace')!r}")
+            if select.select([self.fd], [], [], 0.05)[0]:
+                self.pending += os.read(self.fd, 4096)
+        head, _, self.pending = self.pending.partition(wanted)
+        return head.decode(errors="replace")
+
+    def tab(self, typed):
+        """The command line after typing `tool typed` and pressing Tab."""
+        self.send(f"{self.tool} {typed}\t{SHOW_LINE}")
+        self.until(LINE_START)
+        line = self.until(LINE_END)
+        self.send("\x15")  # C-u: an empty line for the next one
+        return line
+
+    def close(self):
+        self.send("\x15exit\n")
+        os.waitpid(self.pid, 0)
 
 
 def main():
@@ -150,14 +172,16 @@ def main():
         for tool, rows in TOOLS.items():
             if not shutil.which(tool, path=bindir):
                 continue
+            shell = Shell(bindir, root, tool)
             for typed, expected in rows:
                 typed = typed.format(sub=SUB[tool])
                 expected = f"{tool} " + expected.format(sub=SUB[tool])
-                got = tab(bindir, root, tool, typed)
+                got = shell.tab(typed)
                 ok = got == expected
                 failures += not ok
                 print(f"{'ok  ' if ok else 'FAIL'} {tool} {typed!r:42} -> {got!r}"
                       + ("" if ok else f" (expected {expected!r})"))
+            shell.close()
     sys.exit(1 if failures else 0)
 
 
