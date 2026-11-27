@@ -57,7 +57,9 @@ line, the bundler's.
 
 - **N1.** Transformations other than dropped options (stripped source
   info, renamed packages, …): each a lineage of its own when one is
-  measured.
+  measured. The mirror case, a set carrying more options than its host,
+  is one: phase 3 then reads the host as older, which costs little while
+  they share a build time; an "options-added" lineage if it ever matters.
 - **N2.** A lineage derived after extraction, by `settle` or `advise`:
   `advise` may report a snapshot it suspects belongs to another lineage;
   it never moves one (0495 S8).
@@ -69,16 +71,34 @@ line, the bundler's.
 
 - **S1. A snapshot's lineage, at extraction:** when an input splits
   (0495), each set's copies are compared with the copies of the same
-  paths in its input's rest, the host's compiled copies:
-  - **`options-dropped`:** every shared path's copy in the set equals the
-    host's once custom options are removed, and at least one carries
-    fewer options than the host's;
+  paths in its input's rest, the host's compiled copies, both
+  canonicalized first by the history's rule sets (which drop, for
+  example, a `json_name` equal to protoc's default):
+  - **`options-dropped`:** every shared copy is the host's minus some
+    entries and never more: options entries, custom or standard, on any
+    element (the file, a message, a field, an enum, a value, a service, a
+    method, a oneof), and `json_name`s; nothing else differing; and at
+    least one copy strictly smaller. Options are compared as multisets of
+    entries, their order set aside;
   - **`full`:** otherwise, and for every snapshot no host is compared
     with (the rest itself, an unsplit input, an `--as-one` group).
 
+  The direction is what tells a lossy producer apart: measured
+  downstream, a bundler's sets carry fewer entries than their host in
+  every differing file and never more, while other embedded sets carry
+  more, never fewer (their host's compiled copies being the leaner
+  ones). A set equal to its host once canonical is `full`: nothing tells
+  it apart.
+
   Recorded in the block: `source.lineage: <name>`, and the evidence, the
-  shared paths compared and how many carried fewer options. A snapshot
+  shared paths compared and how many were strictly smaller. A snapshot
   of format 1, or with no `lineage`, is `full`.
+- **S1a. A lineage stated by the caller:** `extract --lineage NAME FILE…`
+  for inputs the caller knows a producer made, such as schema bundles
+  shipped alone, with no host to compare with; recorded as S1's, with
+  "stated by the caller" as its evidence, and redone like any other, by
+  `forget` and `extract`. S1's test is not run on an input with a stated
+  lineage.
 - **S2. The layout:**
   - **snapshots under `refs/seriate/snapshots/<identity>`,** no longer
     branches: `git branch` shows histories only, and a snapshot is known
@@ -109,17 +129,18 @@ line, the bundler's.
 
 ## Open questions
 
-- **Q1.** A snapshot with no host, which drops options too (a bundle
-  shipped alone): S1 leaves it `full`. A local test (it declares an
-  extension none of its own files use) misfired downstream on single
-  modules declaring extensions; to measure a stricter form before using
-  it.
-- **Q2.** Should a set whose copies equal its host's byte for byte, or
-  once canonical, be `full` or a lineage of "embedded copies"? Phase 3
-  places it with its host either way; `full` until a measurement says
-  otherwise.
-- **Q3.** Migration in two steps (the namespace first, lineages after) or
-  one: one, so that users adapt their refspecs once.
+- **Q1.** *Answered by S1a:* a bundle shipped alone, with no host to
+  compare with. A downstream holds six such archives, at several
+  versions, which meet the full copies on one line: the conflict this
+  work started from. A local test (it declares an extension none of its
+  own files use) misfired downstream on single modules, so the caller,
+  who knows what its archives hold, states the lineage.
+- **Q2.** *Settled, `full`:* a set equal to its host once canonical
+  (measured downstream: a small bundle of 3 files) sorts with its host
+  either way.
+- **Q3.** *Settled, one step:* a downstream pushing to a server that
+  checks committers and signatures accepts new ref names, the commits
+  being written as today; its users adapt their refspecs once.
 
 ## Test plan
 
@@ -129,13 +150,21 @@ line, the bundler's.
    options-dropped`, the host's rest `full`; settled, `main/full` and
    `main/options-dropped`, each one line, no straddle; the record's
    parents the two tips.
-2. A set whose copies equal its host's: `full`.
+2. A set whose copies equal its host's once canonical: `full`. A set
+   carrying more options than its host in one file: `full`. A set
+   differing from its host in a field other than options: `full`.
+2a. A set differing by a standard option and a `json_name` not dropped
+   by the rule sets, both fewer: `options-dropped`.
+2b. `extract --lineage options-dropped` on an input with no host: its
+   block says so, with "stated by the caller".
 3. `migrate` on a history of today's layout: the same commits under the
    new names, the refusal before it, nothing lost.
 4. A re-sort of one lineage: the record's new commit keeps the other
    lineage's tip as a parent, the previous record too.
 5. Downstream, on the measured history: the 375 straddles inside the
-   bundles gone, the 35 elsewhere unchanged.
+   bundles gone, the 35 elsewhere unchanged. Their 31 sets: the 9
+   straddling bundles `options-dropped`, the 22 others `full` (measured
+   with a prototype of S1's test, before implementation).
 
 ## Measured outcome
 

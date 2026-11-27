@@ -143,7 +143,9 @@ same each time; a split, once made, is redone only by extracting again
   cases once fdp-scan reads containers as such.
 - **Q2.** A part's upper-bound time in phase 1: deferred. In the measured
   case the bundles agreed copy for copy with their host's compiled
-  copies, options set aside: built at the host's revision, by a bundler
+  copies, options and `json_name`s set aside (no message, field, enum or
+  dependency differing, measured on whole descriptors): built at the
+  host's revision, by a bundler
   that strips options, so the host's time was right.
 
 ## Test plan
