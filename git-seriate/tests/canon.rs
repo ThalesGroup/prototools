@@ -81,6 +81,7 @@ fn add(repo: &gix::Repository, id: &str, day: i64, text: &str) {
                 path: "f.txt".into(),
                 bytes: text.as_bytes().to_vec(),
                 record: Vec::new(),
+                origin: None,
             }],
             rejected: Vec::new(),
             record: Vec::new(),

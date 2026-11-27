@@ -490,9 +490,16 @@ fn inflate_records_origins_and_skipped_members() {
             .block
     };
 
+    // Every descriptor's origin, as its path's leaf in `contents` (spec
+    // 0494 S1): the input's own too, with --inflate or without.
+    let clear_at = (item_path_of(clear), format!("64..{}", 64 + clear.len()));
     let off = blocks(false);
     assert_eq!(off.contents.unwrap(), [item_path_of(clear)]);
     assert!(off.record.is_empty(), "{:?}", off.record);
+    assert_eq!(
+        off.evidence.into_iter().collect::<Vec<_>>(),
+        std::slice::from_ref(&clear_at)
+    );
 
     let on = blocks(true);
     let mut contents = vec![item_path_of(clear), item_path_of(packed)];
@@ -500,15 +507,18 @@ fn inflate_records_origins_and_skipped_members() {
     assert_eq!(on.contents.unwrap(), contents);
     assert_eq!(
         on.record,
-        [
-            (
-                format!("skipped zip@{zip_at}!e.pb"),
-                "encrypted".to_string()
-            ),
-            (
-                format!("origin {}", item_path_of(packed)),
-                format!("gzip@{gzip_at}!0..{}", packed.len())
-            ),
-        ]
+        [(
+            format!("skipped zip@{zip_at}!e.pb"),
+            "encrypted".to_string()
+        )]
     );
+    let mut evidence = vec![
+        clear_at,
+        (
+            item_path_of(packed),
+            format!("gzip@{gzip_at}!0..{}", packed.len()),
+        ),
+    ];
+    evidence.sort();
+    assert_eq!(on.evidence.into_iter().collect::<Vec<_>>(), evidence);
 }

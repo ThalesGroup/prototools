@@ -70,15 +70,17 @@ fn collect(
     out: &mut Extracted,
 ) {
     let path_of = |start: usize| name_at(data, start).map(|n| item_path(&n));
+    // Every descriptor's origin (spec 0494 S1), the input's own included:
+    // its range, after the members it was found in.
+    let top = fdp_scan::Origin::default();
+    let within = origin.unwrap_or(&top);
     out.items
         .extend(explained.found.iter().filter_map(|&(start, end)| {
             Some(Item {
                 path: path_of(start)?,
                 bytes: data[start..end].to_vec(),
-                record: origin
-                    .map(|o| ("origin".to_string(), o.text(None, start, end)))
-                    .into_iter()
-                    .collect(),
+                record: Vec::new(),
+                origin: Some(within.text(None, start, end)),
             })
         }));
     out.rejected
@@ -236,6 +238,7 @@ pub fn extract_files_into(
                     path: item.path,
                     bytes: text,
                     record: item.record,
+                    origin: item.origin,
                 }),
                 Err(e) => rejected.push(Rejection {
                     name: item.path,

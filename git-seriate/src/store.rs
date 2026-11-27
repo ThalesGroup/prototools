@@ -4,7 +4,7 @@
 
 //! Snapshot branches: add, list, drop, import (spec 0452 S3).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 use gix::bstr::{BStr, ByteSlice};
@@ -30,6 +30,9 @@ pub struct Item {
     /// Record entries about this item (spec 0480 S8): each is written as
     /// `<key> <stored path>`, the path the store places it under.
     pub record: Vec<(String, String)>,
+    /// Where the extractor found it, its origin (spec 0494 S1): written as
+    /// its path's leaf in `contents`, which makes the block format 2.
+    pub origin: Option<String>,
 }
 
 /// A snapshot to add.
@@ -120,6 +123,7 @@ pub fn add_to(sink: &mut Sink, snapshot: NewSnapshot) -> Result<Added, Error> {
     let Placed {
         files: placed,
         record: item_record,
+        evidence,
     } = place_items(snapshot.items, &mut rejected);
     let mut record = snapshot.record;
     record.extend(item_record);
@@ -137,6 +141,7 @@ pub fn add_to(sink: &mut Sink, snapshot: NewSnapshot) -> Result<Added, Error> {
     let block = Block {
         source: snapshot.source,
         contents: (!placed.is_empty()).then(|| placed.iter().map(|(p, _)| p.clone()).collect()),
+        evidence,
         rejected: rejected.clone(),
         record,
         canon_rules: Vec::new(),
@@ -300,6 +305,9 @@ struct Placed {
     /// Their record entries, keyed by those paths (spec 0480 S8), in item
     /// order.
     record: Vec<(String, String)>,
+    /// Their origins, by those paths (spec 0494 S1); the same bytes found
+    /// again join theirs to the kept copy's, `; `-separated, in item order.
+    evidence: BTreeMap<String, String>,
 }
 
 /// Places the items. An item dropped as the same bytes again gives its
@@ -317,6 +325,18 @@ fn place_items(items: Vec<Item>, rejected: &mut Vec<Rejection>) -> Placed {
                 }
                 None => record.push((key, value)),
             }
+        }
+    };
+    let mut evidence: BTreeMap<String, String> = BTreeMap::new();
+    let mut found_at = |origin: Option<String>, path: &str| {
+        if let Some(origin) = origin {
+            evidence
+                .entry(path.to_string())
+                .and_modify(|e| {
+                    e.push_str("; ");
+                    e.push_str(&origin);
+                })
+                .or_insert(origin);
         }
     };
     let mut files: HashMap<String, Vec<u8>> = HashMap::new();
@@ -346,6 +366,7 @@ fn place_items(items: Vec<Item>, rejected: &mut Vec<Rejection>) -> Placed {
         let seen = variants.entry(item.path.clone()).or_default();
         if let Some(kept) = seen.iter().find(|p| files[*p] == item.bytes) {
             note(item.record, kept); // the same item again
+            found_at(item.origin, kept);
             continue;
         }
         let taken = |p: &str| files.contains_key(p) || dirs.contains(p);
@@ -363,6 +384,7 @@ fn place_items(items: Vec<Item>, rejected: &mut Vec<Rejection>) -> Placed {
         }
         seen.push(path.clone());
         note(item.record, &path);
+        found_at(item.origin, &path);
         files.insert(path, item.bytes);
     }
     let mut placed: Vec<(String, Vec<u8>)> = files.into_iter().collect();
@@ -370,6 +392,7 @@ fn place_items(items: Vec<Item>, rejected: &mut Vec<Rejection>) -> Placed {
     Placed {
         files: placed,
         record,
+        evidence,
     }
 }
 
@@ -552,6 +575,7 @@ mod tests {
                 path: p.to_string(),
                 bytes: b.as_bytes().to_vec(),
                 record: Vec::new(),
+                origin: None,
             })
             .collect()
     }
@@ -612,6 +636,7 @@ mod tests {
             path: "a.pb".into(),
             bytes: bytes.as_bytes().to_vec(),
             record: vec![("origin".into(), origin.into())],
+            origin: None,
         };
         let mut rejected = Vec::new();
         let Placed { record, .. } = place_items(
@@ -623,6 +648,38 @@ mod tests {
             [
                 ("origin a.pb".to_string(), "x; z".to_string()),
                 ("origin a~2.pb".to_string(), "y".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn origins_are_keyed_by_the_stored_path() {
+        // Spec 0494 S1: as record entries are, but as evidence, its path's
+        // leaf in `contents`; an item without an origin has none.
+        let item = |bytes: &str, origin: Option<&str>| Item {
+            path: "a.pb".into(),
+            bytes: bytes.as_bytes().to_vec(),
+            record: Vec::new(),
+            origin: origin.map(str::to_string),
+        };
+        let mut rejected = Vec::new();
+        let Placed {
+            evidence, record, ..
+        } = place_items(
+            vec![
+                item("1", Some("0..1")),
+                item("2", Some("gzip@9!0..1")),
+                item("1", Some("5..6")),
+                item("3", None),
+            ],
+            &mut rejected,
+        );
+        assert!(record.is_empty());
+        assert_eq!(
+            evidence.into_iter().collect::<Vec<_>>(),
+            [
+                ("a.pb".to_string(), "0..1; 5..6".to_string()),
+                ("a~2.pb".to_string(), "gzip@9!0..1".to_string()),
             ]
         );
     }

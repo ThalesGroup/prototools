@@ -35,6 +35,7 @@ fn add(repo: &gix::Repository, kit: &Kit, id: &str, day: i64, files: &[(&str, &s
                 path: path.to_string(),
                 bytes: kit.renderer.render(path, &fdp).unwrap(),
                 record: Vec::new(),
+                origin: None,
             }
         })
         .collect();

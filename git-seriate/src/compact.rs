@@ -404,6 +404,7 @@ pub fn compact(
                 if let Some(contents) = &mut block.contents {
                     contents.retain(|p| !removed.contains(&p.as_str()));
                 }
+                block.evidence.retain(|p, _| !removed.contains(&p.as_str()));
                 block.reduced |= k.reduced;
                 Some(block.message())
             }

@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0494 — extract records the evidence: origins, types, registrants, provenance
 
-Status: draft
+Status: draft (S1's origins and S5 implemented on 2026-11-27; the rest
+        to come)
 App: git-seriate, git-seriate-fdp
 Refs: docs/specs/0452-git-seriate-the-store-and-the-history.md
         (the snapshot, its block S4, and adding a snapshot S3, which this
@@ -59,7 +60,10 @@ the block already lists in `contents`.
   - a string, its origin, when that is all: `START..END` for the input's
     own descriptors, the chain then the range inside a container
     (`zip@7340032!assets/api.binpb!88..4210`);
-  - a flow map when there is more: `{at: <origin>, by: <registrant>}`,
+  - a tagged map when there is more, `!evidence {at: <origin>, by:
+    <registrant>}`: tagged, since an untagged map in `contents` is a
+    directory, and a file's evidence would read as files named `at` and
+    `by`;
     the registrant from spec 0492's hints: `go:<package>` (its init
     function's package), `cpp:<library>` (a descriptor table's holder),
     and `module: <module>@<version>` where the build info or a `.pb.go`
@@ -118,4 +122,12 @@ the block already lists in `contents`.
 
 ## Measured outcome
 
-Filled in at implementation.
+S1's origins and S5, implemented: an item carries its origin (`Item.origin`,
+which `extract` fills for every descriptor, the input's own included), the
+store writes it as its path's leaf, the same bytes found again joining
+theirs to the kept copy's (`; `). A block with an origin is format 2,
+one without format 1, byte for byte as before, so existing snapshots and
+their history commits are unchanged. `compact` drops a removed path's
+evidence; a snapshot rebuilt from its history commit gets its origins back
+from the block, and is the same commit. An input extracted before gives,
+extracted again, another commit, which spec 0452 still refuses until S6.

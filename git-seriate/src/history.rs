@@ -784,10 +784,13 @@ fn sort_input_from_history(
         let mut snapshot_items = Vec::new();
         for (path, oid) in &items {
             let blob = target.find_blob(*oid).map_err(Error::git)?;
+            // Its origin back from the block (spec 0494 S1), so that the
+            // rebuilt snapshot is the same commit.
             snapshot_items.push(store::Item {
                 path: path.clone(),
                 bytes: blob.data.clone(),
                 record: Vec::new(),
+                origin: s.block.evidence.get(path).cloned(),
             });
         }
         let mut block = s.block.clone();
@@ -1393,6 +1396,7 @@ mod tests {
                         path: p.to_string(),
                         bytes: t.as_bytes().to_vec(),
                         record: Vec::new(),
+                        origin: None,
                     })
                     .collect(),
                 rejected: Vec::new(),

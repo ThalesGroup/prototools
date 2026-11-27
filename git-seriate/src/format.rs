@@ -3,16 +3,20 @@
 // SPDX-License-Identifier: MIT
 
 //! The commit block (spec 0452 S4): a subject, a line `---`, and a YAML
-//! block, `format: 1`.
+//! block, `format: 1`, or `format: 2` when it holds what format 1 can't
+//! (spec 0494 S5): each block its own format, a history mixing both.
 //!
 //! Written by hand, in a fixed key order and with every string quoted, so
 //! that one snapshot always gives one message, byte for byte. Read with
 //! `serde_yaml`.
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
-/// The block's format version this crate writes and reads.
-pub const FORMAT: u64 = 1;
+/// The highest block format this crate reads and writes. A block is
+/// written in the lowest format that holds it: format 1 unless it has
+/// format 2's evidence, so a block without stays byte for byte as before.
+pub const FORMAT: u64 = 2;
 
 /// Where a snapshot comes from (spec 0450 S3).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,6 +42,10 @@ pub struct Block {
     pub source: Source,
     /// The tree's paths, sorted; `None` for a record-only commit.
     pub contents: Option<Vec<String>>,
+    /// Format 2 (spec 0494 S1): each path's evidence, written as its leaf
+    /// in `contents`: where the extractor found it, its origin. Only paths
+    /// of `contents`; a path without evidence is absent.
+    pub evidence: BTreeMap<String, String>,
     pub rejected: Vec<Rejection>,
     /// The extractor's, shown, never interpreted.
     pub record: Vec<(String, String)>,
@@ -64,7 +72,7 @@ impl std::fmt::Display for ReadError {
         match self {
             ReadError::Newer(v) => write!(
                 f,
-                "written in format {v}; this git-seriate reads format {FORMAT}: upgrade it"
+                "written in format {v}; this git-seriate reads formats up to {FORMAT}: upgrade it"
             ),
             ReadError::Malformed(m) => write!(f, "malformed block: {m}"),
         }
@@ -100,7 +108,7 @@ impl Block {
             "Record"
         };
         let mut m = format!("{kind} {}\n\n---\n", self.source.identity);
-        writeln!(m, "format: {FORMAT}").unwrap();
+        writeln!(m, "format: {}", self.format()).unwrap();
         let s = &self.source;
         m.push_str("source:\n");
         writeln!(m, "  identity: {}", quote(&s.identity)).unwrap();
@@ -125,7 +133,7 @@ impl Block {
                     m.push_str("contents: {}\n");
                 } else {
                     m.push_str("contents:\n");
-                    write_tree(&mut m, paths);
+                    write_tree(&mut m, paths, &self.evidence);
                 }
             }
         }
@@ -162,6 +170,15 @@ impl Block {
             m.push_str("reduced: true\n");
         }
         m
+    }
+
+    /// The format this block is written in: the lowest that holds it.
+    pub fn format(&self) -> u64 {
+        if self.evidence.is_empty() {
+            1
+        } else {
+            2
+        }
     }
 
     /// [`Block::read`], then, for a message with no block of this format,
@@ -231,6 +248,7 @@ impl Block {
             },
             metadata: pairs(source.get("metadata"), "metadata")?,
         };
+        let mut evidence = BTreeMap::new();
         let contents = if map.get("kind").and_then(serde_yaml::Value::as_str) == Some("record-only")
         {
             None
@@ -239,7 +257,9 @@ impl Block {
             flatten(
                 map.get("contents").ok_or_else(|| bad("no contents"))?,
                 "",
+                format,
                 &mut paths,
+                &mut evidence,
             )
             .map_err(ReadError::Malformed)?;
             paths.sort();
@@ -285,6 +305,7 @@ impl Block {
         Ok(Some(Block {
             source,
             contents,
+            evidence,
             rejected,
             record: pairs(map.get("record"), "record")?,
             canon_rules,
@@ -294,8 +315,9 @@ impl Block {
     }
 }
 
-/// Sorted paths as nested maps, leaves `null`, two spaces per level.
-fn write_tree(out: &mut String, paths: &[String]) {
+/// Sorted paths as nested maps, two spaces per level, each leaf its
+/// evidence, `null` for none.
+fn write_tree(out: &mut String, paths: &[String], evidence: &BTreeMap<String, String>) {
     let mut open: Vec<&str> = Vec::new();
     for path in paths {
         let parts: Vec<&str> = path.split('/').collect();
@@ -306,9 +328,12 @@ fn write_tree(out: &mut String, paths: &[String]) {
             writeln!(out, "{}{}:", "  ".repeat(open.len() + 1), quote(dir)).unwrap();
             open.push(dir);
         }
+        let value = evidence
+            .get(path)
+            .map_or_else(|| "null".to_string(), |e| quote(e));
         writeln!(
             out,
-            "{}{}: null",
+            "{}{}: {value}",
             "  ".repeat(open.len() + 1),
             quote(leaf[0])
         )
@@ -316,7 +341,15 @@ fn write_tree(out: &mut String, paths: &[String]) {
     }
 }
 
-fn flatten(v: &serde_yaml::Value, prefix: &str, out: &mut Vec<String>) -> Result<(), String> {
+/// `contents`' paths, and their evidence: a leaf is `null`, or from format
+/// 2 a string, the origin; a map is a directory.
+fn flatten(
+    v: &serde_yaml::Value,
+    prefix: &str,
+    format: u64,
+    out: &mut Vec<String>,
+    evidence: &mut BTreeMap<String, String>,
+) -> Result<(), String> {
     let map = v.as_mapping().ok_or("contents is not a map")?;
     for (k, child) in map {
         let name = k.as_str().ok_or("a contents key is not a string")?;
@@ -327,8 +360,16 @@ fn flatten(v: &serde_yaml::Value, prefix: &str, out: &mut Vec<String>) -> Result
         };
         if child.is_null() {
             out.push(path);
+        } else if let Some(origin) = child.as_str() {
+            if format < 2 {
+                return Err(format!(
+                    "{path}: a value in a format-{format} block's contents"
+                ));
+            }
+            evidence.insert(path.clone(), origin.to_string());
+            out.push(path);
         } else {
-            flatten(child, &path, out)?;
+            flatten(child, &path, format, out, evidence)?;
         }
     }
     Ok(())
@@ -353,6 +394,7 @@ mod tests {
                 "d/g.txt".into(),
                 "z".into(),
             ]),
+            evidence: BTreeMap::new(),
             rejected: vec![Rejection {
                 name: "../x".into(),
                 reason: "dotdot".into(),
@@ -411,6 +453,32 @@ mod tests {
         assert!(m.starts_with("Snapshot build0001/part0\n\n---\nformat: 1\n"));
     }
 
+    /// Spec 0494 S1, S5: a block with evidence is format 2, its leaves the
+    /// origins; without, format 1, as before.
+    #[test]
+    fn evidence_makes_a_format_2_block() {
+        let mut b = block();
+        assert!(b.message().contains("format: 1\n"));
+        assert!(b.message().contains("\"f.txt\": null\n"));
+        b.evidence
+            .insert("d/e/f.txt".into(), "zip@12!x.bin!88..4210".into());
+        b.evidence.insert("z".into(), "0..10; 30..40".into());
+        let m = b.message();
+        assert!(m.contains("format: 2\n"), "{m}");
+        assert!(m.contains("\"f.txt\": \"zip@12!x.bin!88..4210\"\n"), "{m}");
+        assert!(m.contains("\"a.txt\": null\n"), "{m}");
+        assert_eq!(Block::read(&m).unwrap(), Some(b));
+    }
+
+    #[test]
+    fn a_value_in_a_format_1_block_s_contents_is_malformed() {
+        let m = block().message().replace("\"z\": null", "\"z\": \"0..1\"");
+        assert!(
+            matches!(Block::read(&m), Err(ReadError::Malformed(_))),
+            "{m}"
+        );
+    }
+
     #[test]
     fn other_messages_are_not_blocks() {
         assert_eq!(Block::read("docs: notes"), Ok(None));
@@ -419,7 +487,7 @@ mod tests {
             Ok(None),
             "an older format"
         );
-        let newer = block().message().replace("format: 1", "format: 2");
-        assert_eq!(Block::read(&newer), Err(ReadError::Newer(2)));
+        let newer = block().message().replace("format: 1", "format: 3");
+        assert_eq!(Block::read(&newer), Err(ReadError::Newer(3)));
     }
 }

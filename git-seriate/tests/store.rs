@@ -202,6 +202,7 @@ fn drop_and_record_only_branches() {
                     path: "f.txt".into(),
                     bytes: id.as_bytes().to_vec(),
                     record: Vec::new(),
+                    origin: None,
                 }],
                 rejected: Vec::new(),
                 record: Vec::new(),

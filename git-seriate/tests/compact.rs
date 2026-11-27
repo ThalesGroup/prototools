@@ -78,6 +78,7 @@ fn history(root: &Path, snapshots: &[&[(&str, &str)]]) -> PathBuf {
                         path: p.to_string(),
                         bytes: t.as_bytes().to_vec(),
                         record: Vec::new(),
+                        origin: None,
                     })
                     .collect(),
                 rejected: Vec::new(),

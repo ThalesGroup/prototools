@@ -583,6 +583,7 @@ pub fn read_dir(dir: &Path) -> Result<(Vec<Item>, i64), Error> {
                     path: relative,
                     bytes: std::fs::read(&path)?,
                     record: Vec::new(),
+                    origin: None,
                 });
             }
         }
