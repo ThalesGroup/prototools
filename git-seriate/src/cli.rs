@@ -187,12 +187,52 @@ enum Command<E: Subcommand> {
         #[arg(required = true)]
         repos: Vec<PathBuf>,
     },
+    /// State which producer's lineage snapshots belong to, after extracting
+    /// them; `settle` sorts each lineage on its own.
+    Lineage {
+        #[command(subcommand)]
+        action: LineageAction,
+    },
     /// Move a repository of before spec 0499 to its layout: its snapshot
     /// branches under refs/seriate/snapshots/.
     Migrate {
         /// Show what would be moved, and write nothing.
         #[arg(long)]
         dry_run: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum LineageAction {
+    /// Put snapshots in lineage NAME: `set NAME IDENTITY...`, or `set
+    /// --from FILE`, one `<identity> <lineage>` per line (- for standard
+    /// input).
+    Set {
+        /// The statements, one `<identity> <lineage>` per line.
+        #[arg(long, value_name = "FILE", conflicts_with_all = ["name", "identities"])]
+        from: Option<PathBuf>,
+        /// Show what would change, and write nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// The lineage.
+        name: Option<String>,
+        /// The snapshots' identities.
+        identities: Vec<String>,
+    },
+    /// Put snapshots back in the default lineage.
+    Unset {
+        /// Show what would change, and write nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// The snapshots' identities.
+        #[arg(required = true)]
+        identities: Vec<String>,
+    },
+    /// The statements in force, `<identity> <lineage>`, those of lineage
+    /// NAME only when given.
+    List {
+        /// Only this lineage's.
+        name: Option<String>,
     },
 }
 
@@ -663,6 +703,7 @@ fn dispatch<E: Subcommand>(
                 );
             }
         }
+        Command::Lineage { action } => lineage(&repo, action, kit)?,
         Command::Migrate { dry_run } => {
             let moved = crate::layout::migrate_snapshots(&repo, dry_run, kit.legacy.as_deref())?;
             let verb = if dry_run { "would move" } else { "moved" };
@@ -672,6 +713,91 @@ fn dispatch<E: Subcommand>(
                 crate::layout::SNAPSHOTS
             );
         }
+    }
+    Ok(())
+}
+
+/// `lineage set`, `unset`, `list` (spec 0499 S1).
+fn lineage(repo: &gix::Repository, action: LineageAction, kit: &Kit) -> Result<(), Error> {
+    use crate::layout::DEFAULT_LINEAGE;
+    let (statements, command, dry_run) = match action {
+        LineageAction::List { name } => {
+            for (identity, lineage) in crate::lineage::read(repo)?.lineages {
+                if name.as_deref().is_none_or(|n| n == lineage) {
+                    println!("{identity} {lineage}");
+                }
+            }
+            return Ok(());
+        }
+        LineageAction::Set {
+            from: Some(file),
+            dry_run,
+            ..
+        } => {
+            let text = if file.as_os_str() == "-" {
+                std::io::read_to_string(std::io::stdin())?
+            } else {
+                std::fs::read_to_string(&file).map_err(|e| {
+                    Error::Io(std::io::Error::new(
+                        e.kind(),
+                        format!("{}: {e}", file.display()),
+                    ))
+                })?
+            };
+            let statements = crate::lineage::parse_statements(&text)
+                .map_err(|e| Error::Refused(format!("{}: {e}", file.display())))?;
+            if let Some((_, l)) = statements.iter().find(|(_, l)| l == DEFAULT_LINEAGE) {
+                crate::layout::check_lineage_name(l)?;
+            }
+            (
+                statements,
+                format!("set --from {}", file.display()),
+                dry_run,
+            )
+        }
+        LineageAction::Set {
+            from: None,
+            dry_run,
+            name,
+            identities,
+        } => {
+            let Some(name) = name.filter(|_| !identities.is_empty()) else {
+                return Err(Error::Refused(
+                    "lineage set: give NAME and IDENTITY..., or --from FILE".into(),
+                ));
+            };
+            crate::layout::check_lineage_name(&name)?;
+            let statements = identities.into_iter().map(|i| (i, name.clone())).collect();
+            (statements, format!("set {name}"), dry_run)
+        }
+        LineageAction::Unset {
+            dry_run,
+            identities,
+        } => {
+            let statements = identities
+                .into_iter()
+                .map(|i| (i, DEFAULT_LINEAGE.to_string()))
+                .collect();
+            (statements, "unset".to_string(), dry_run)
+        }
+    };
+    let stated =
+        crate::lineage::state(repo, &statements, &command, dry_run, kit.legacy.as_deref())?;
+    for (identity, from, to) in &stated.changed {
+        let verb = if dry_run { "would move" } else { "moved" };
+        println!("{verb} {identity}: {from} -> {to}");
+    }
+    for identity in &stated.unchanged {
+        println!("unchanged {identity}");
+    }
+    match stated.record {
+        Some(record) => println!(
+            "recorded in {} ({}); settle to move them",
+            crate::layout::LINEAGES,
+            record.to_hex_with_len(8)
+        ),
+        None if !stated.changed.is_empty() => {}
+        None => println!("nothing to record"),
     }
     Ok(())
 }

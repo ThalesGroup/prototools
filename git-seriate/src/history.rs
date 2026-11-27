@@ -583,28 +583,12 @@ pub fn forget(repo: &gix::Repository, options: &ForgetOptions) -> Result<Forgott
     if options.dry_run {
         return Ok(out);
     }
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
     let list: String = kept
         .iter()
         .map(|(identity, commit, _)| format!("{identity}\t{commit}\n"))
         .collect();
-    let blob = repo
-        .write_blob(list.as_bytes())
-        .map_err(Error::git)?
-        .detach();
-    let tree = repo
-        .write_object(&gix::objs::Tree {
-            entries: vec![gix::objs::tree::Entry {
-                mode: EntryKind::Blob.into(),
-                filename: "forgotten".into(),
-                oid: blob,
-            }],
-        })
-        .map_err(Error::git)?
-        .detach();
-    let signature = with_time(&committer(repo, false)?, now);
+    let tree = one_file_tree(repo, "forgotten", &list)?;
+    let signature = with_time(&committer(repo, false)?, now());
     let marker = gix::objs::Commit {
         tree,
         parents: kept.iter().map(|(_, c, _)| *c).collect(),
@@ -1386,7 +1370,7 @@ fn nearest_identity(
 }
 
 /// Every snapshot identity from `from` down, along first parents.
-fn history_identities(
+pub(crate) fn history_identities(
     repo: &gix::Repository,
     from: Option<ObjectId>,
     legacy: Option<&dyn crate::plugins::LegacyReader>,
@@ -1591,6 +1575,63 @@ pub(crate) fn with_time(sig: &gix::actor::Signature, seconds: i64) -> gix::actor
         time: gix::date::Time::new(seconds, 0),
         ..sig.clone()
     }
+}
+
+/// Now, in seconds since the epoch.
+pub(crate) fn now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0))
+}
+
+/// A tree of one file, `name`, holding `text`.
+pub(crate) fn one_file_tree(
+    repo: &gix::Repository,
+    name: &str,
+    text: &str,
+) -> Result<ObjectId, Error> {
+    let blob = repo
+        .write_blob(text.as_bytes())
+        .map_err(Error::git)?
+        .detach();
+    Ok(repo
+        .write_object(&gix::objs::Tree {
+            entries: vec![gix::objs::tree::Entry {
+                mode: EntryKind::Blob.into(),
+                filename: name.into(),
+                oid: blob,
+            }],
+        })
+        .map_err(Error::git)?
+        .detach())
+}
+
+/// A record's commit (spec 0499 S5a): committed and signed as history
+/// commits are (spec 0452 S5 step 6), authored by the user running the
+/// command (spec 0471), now.
+pub(crate) fn write_record(
+    repo: &gix::Repository,
+    tree: ObjectId,
+    parents: Vec<ObjectId>,
+    message: String,
+) -> Result<ObjectId, Error> {
+    let now = now();
+    let committer = with_time(&committer(repo, false)?, now);
+    let author = with_time(
+        &author_identity(repo).unwrap_or_else(|| committer.clone()),
+        now,
+    );
+    let commit = gix::objs::Commit {
+        tree,
+        parents: parents.into_iter().collect(),
+        author,
+        committer,
+        encoding: None,
+        message: message.into(),
+        extra_headers: Vec::new(),
+    };
+    let commit = Signer::from_config(repo)?.sign(commit)?;
+    Ok(repo.write_object(&commit).map_err(Error::git)?.detach())
 }
 
 pub(crate) fn checked_out(

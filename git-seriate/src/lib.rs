@@ -17,6 +17,7 @@ pub mod compact;
 pub mod format;
 pub mod history;
 pub mod layout;
+pub mod lineage;
 pub mod plugins;
 mod sign;
 pub mod store;
