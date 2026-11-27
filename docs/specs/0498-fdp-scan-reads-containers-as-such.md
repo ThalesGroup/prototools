@@ -100,7 +100,8 @@ executables are each one, or one build together.
   | `apk`, `aar` | `AndroidManifest.xml` | one build |
   | `nupkg` | a `*.nuspec` member | one build |
   | `descriptor-zip` | every member a descriptor file (`.pb`, `.desc`, `.binpb`, `.protoset`) | one bundle |
-  | `tarball` | a tar stream | each member, or one build (Q2) |
+  | `zip-of-archives` | its members holding descriptors are archives themselves (Bazel's appended zip of jars) | one build |
+  | `tarball` | a tar stream | each member, which sort together (Q2) |
   | `zip` | none of the above | the member (Q3) |
 
   A kind is evidence, recorded, never acted on by fdp-scan.
@@ -112,15 +113,22 @@ executables are each one, or one build together.
 ## Open questions
 
 - **Q1.** An archive embedded in an executable away from its end (a Go
-  `embed` of a zip, a resource section): found by its directory anywhere
-  in the buffer, verified by the offsets; to measure how often that
-  verification fails on real executables, and what the fallback finds
-  then.
+  `embed` of a zip, a resource section). *Measured, none:* every archive
+  holding descriptors in the open-source corpus sits at its buffer's end
+  (Measured outcome). The search anywhere stays, verified, for safety;
+  nothing measured exercises it, nor the fallback.
 - **Q2.** A release tarball's executables: each a snapshot, or one build
-  together? Kythe's are one build at one revision; a tarball bundling
-  third-party tools is not. To measure on the open-source corpus's
-  tarballs (store cpp-0008).
-- **Q3.** A generic zip: per member, or whole? To decide on measured cases.
+  together? *Measured on two projects:* or-tools' members agree on every
+  path they share; kythe's agree on 95% once canonical, the byte
+  differences being generator flavors (Go's and C++'s), the remaining 5%
+  to look at file by file. One build, in both. So each member a snapshot
+  costs nothing (they sort together, at the same build time), and grouping
+  stays the caller's choice (0495 S3); a tarball bundling third-party
+  tools, not seen yet, would argue the same way.
+- **Q3.** A generic zip: per member, or whole? *Not met:* the corpus's
+  archives holding descriptors are jars, nupkgs and Bazel's zip of jars;
+  no zip of loose descriptor files, nor any other. To decide on a measured
+  case, when one comes.
 
 ## Test plan
 
@@ -139,5 +147,28 @@ Synthetic archives, written by the tests, never by the tool under test:
 
 ## Measured outcome
 
-Filled in at implementation: on the open-source corpus (stores raw-0007,
-cpp-0008), the archives found, by kind, and how many fall back.
+Before implementation, by a prototype reading the open-source corpus's
+kept artifacts as data (seriate-tuto, `stash/analysis-0007/containers.py`
+and `kythe_flavors.py`), on every buffer whose descriptors were found
+through a zip member:
+
+| store | buffers | archives verified | at the end | within | descriptors outside any verified archive |
+|---|---|---|---|---|---|
+| executables (Bazel's) | 97 | 97 | 97 | 0 | 0 |
+| C++ candidates' members | 336 | 336 | 336 | 0 | 0 |
+
+The archives holding descriptors, by kind: 327 `jar` (17,943 descriptor
+occurrences), 9 `nupkg` (291), 97 Bazel zips of jars (8,215), which S5's
+`zip-of-archives` covers. A gzip layer was a container nowhere: about
+120,000 occurrences sat in gzip streams holding one descriptor each
+(S2a).
+
+Release tarballs: or-tools, 20 releases, every path several members share
+the same copy; kythe, 41 releases, of 1,498 shared paths, 688 the same
+bytes, 732 the same once canonical, 78 different (always in
+`message_type`; 61 between a Go member and another).
+
+A downstream corpus of 38 archives held no container with descriptors at
+all.
+
+At implementation: the same on the implementation, and its fallbacks.
