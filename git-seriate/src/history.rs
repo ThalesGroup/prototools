@@ -116,16 +116,32 @@ pub struct Change {
     pub new: Option<(EntryKind, ObjectId)>,
 }
 
-/// Settle a history branch (spec 0452 S5).
-pub fn settle(repo: &gix::Repository, options: &Options) -> Result<Report, Error> {
-    let branch = match &options.into {
-        Some(b) => b.clone(),
+/// The history branch `into` names, or the current one.
+fn history_branch(repo: &gix::Repository, into: Option<&String>) -> Result<String, Error> {
+    match into {
+        Some(b) => Ok(b.clone()),
         None => repo
             .head_name()
             .map_err(Error::git)?
             .map(|n| n.shorten().to_string())
-            .ok_or_else(|| Error::Refused("HEAD is detached: give --into".into()))?,
-    };
+            .ok_or_else(|| Error::Refused("HEAD is detached: give --into".into())),
+    }
+}
+
+/// Settle a history branch (spec 0452 S5).
+pub fn settle(repo: &gix::Repository, options: &Options) -> Result<Report, Error> {
+    settle_with(repo, options, &HashSet::new())
+}
+
+/// [`settle`], the snapshots of `forget` left out of the history (spec
+/// 0497): with any, no new snapshot is settled, and each must be in the
+/// re-sorted region.
+fn settle_with(
+    repo: &gix::Repository,
+    options: &Options,
+    forget: &HashSet<String>,
+) -> Result<Report, Error> {
+    let branch = history_branch(repo, options.into.as_ref())?;
     let ref_name = branch_ref(&branch)?;
     let old_tip = tip(repo, &ref_name)?;
     let mut report = Report {
@@ -161,6 +177,10 @@ pub fn settle(repo: &gix::Repository, options: &Options) -> Result<Report, Error
         }
     }
 
+    if !forget.is_empty() {
+        candidates.clear();
+    }
+
     // 2. The cutoff.
     let settling = i64::from(options.settling_days) * 86_400;
     let cutoff = match options.cutoff {
@@ -188,6 +208,18 @@ pub fn settle(repo: &gix::Repository, options: &Options) -> Result<Report, Error
     let region = &walk.entries[..walk.region_len];
     let old_chain: Vec<&Entry> = region.iter().rev().collect();
     refuse_repeated(repo, &old_chain)?;
+    let in_region: HashSet<&str> = old_chain
+        .iter()
+        .filter_map(|e| match e {
+            Entry::Snapshot(s) => Some(s.block.source.identity.as_str()),
+            Entry::Manual(_) => None,
+        })
+        .collect();
+    if let Some(missing) = forget.iter().find(|f| !in_region.contains(f.as_str())) {
+        return Err(Error::Bug(format!(
+            "{missing} to forget is not in the re-sorted region"
+        )));
+    }
 
     // 4. The sort. A history commit written with today's rule sets and
     // renderer is canonical: its items are taken from its tree as they are
@@ -210,6 +242,9 @@ pub fn settle(repo: &gix::Repository, options: &Options) -> Result<Report, Error
     let mut trees = Trees::default();
     for entry in &old_chain {
         if let Entry::Snapshot(s) = entry {
+            if forget.contains(&s.block.source.identity) {
+                continue;
+            }
             inputs.push(sort_input_from_history(
                 &target,
                 s,
@@ -382,6 +417,192 @@ pub fn settle(repo: &gix::Repository, options: &Options) -> Result<Report, Error
         ));
     }
     Ok(report)
+}
+
+/// What to forget, and from which history (spec 0497).
+pub struct ForgetOptions<'a> {
+    /// The history branch; the current branch when `None`.
+    pub into: Option<String>,
+    /// Snapshot identities, or globs of them.
+    pub patterns: Vec<String>,
+    /// Why, kept with each forgotten snapshot.
+    pub reason: String,
+    pub dry_run: bool,
+    pub sort: seriation::Settings,
+    pub plugins: Plugins<'a>,
+}
+
+/// What [`forget`] did, or would do with `dry_run`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Forgotten {
+    /// The history's rewrite, as `settle` reports one.
+    pub settle: Report,
+    /// The snapshots forgotten, in the history's order, newest first.
+    pub forgotten: Vec<String>,
+    /// The decision's record, `refs/seriate/forgotten/<n>`, which keeps them.
+    pub record: String,
+    /// The snapshot branches deleted.
+    pub deleted: Vec<String>,
+}
+
+/// Forget snapshots (spec 0497): out of the history, which is rewritten
+/// from the oldest of them as `settle` rewrites it, the previous tip saved;
+/// out of the store, their branches deleted, so that `settle` doesn't put
+/// them back; kept, with the reason, by one record per decision,
+/// `refs/seriate/forgotten/<n>`: a commit whose parents are the forgotten
+/// snapshots, whose message gives the reason, and whose tree lists them.
+pub fn forget(repo: &gix::Repository, options: &ForgetOptions) -> Result<Forgotten, Error> {
+    let branch = history_branch(repo, options.into.as_ref())?;
+    let Some(old_tip) = tip(repo, &branch_ref(&branch)?)? else {
+        return Err(Error::Refused(format!("{branch} has no history")));
+    };
+    // The history's snapshot commits, along first parents, newest first.
+    let mut snapshots: Vec<(String, ObjectId, i64)> = Vec::new();
+    let mut current = Some(old_tip);
+    while let Some(id) = current {
+        let commit = repo.find_commit(id).map_err(Error::git)?;
+        let decoded = commit.decode().map_err(Error::git)?;
+        if let Ok(Some(block)) =
+            Block::read_with(&decoded.message.to_str_lossy(), options.plugins.legacy)
+        {
+            if block.contents.is_some() {
+                snapshots.push((block.source.identity, id, block.source.build_time));
+            }
+        }
+        current = decoded.parents().next();
+    }
+    let matches = |identity: &str| {
+        options
+            .patterns
+            .iter()
+            .any(|p| p == identity || crate::plugins::glob_matches(p, identity))
+    };
+    for p in &options.patterns {
+        if !snapshots
+            .iter()
+            .any(|(i, _, _)| i == p || crate::plugins::glob_matches(p, i))
+        {
+            return Err(Error::Refused(format!(
+                "no snapshot of {branch} matches {p:?}"
+            )));
+        }
+    }
+    let chosen: Vec<&(String, ObjectId, i64)> =
+        snapshots.iter().filter(|(i, _, _)| matches(i)).collect();
+    let set: HashSet<String> = chosen.iter().map(|(i, _, _)| i.clone()).collect();
+    if snapshots.iter().all(|(i, _, _)| set.contains(i)) {
+        return Err(Error::Refused(format!(
+            "forgetting every snapshot of {branch} would leave it empty: delete the branch instead"
+        )));
+    }
+    let oldest = chosen
+        .iter()
+        .map(|(_, _, t)| *t)
+        .min()
+        .expect("one matched");
+    let settle = settle_with(
+        repo,
+        &Options {
+            into: Some(branch.clone()),
+            cutoff: Cutoff::At(oldest),
+            settling_days: 0,
+            dry_run: options.dry_run,
+            branches: Vec::new(),
+            sort: options.sort.clone(),
+            plugins: Plugins {
+                renderer: options.plugins.renderer,
+                canonicalizer: options.plugins.canonicalizer,
+                item_paths: options.plugins.item_paths,
+                comparator: options.plugins.comparator,
+                legacy: options.plugins.legacy,
+            },
+            verify_canon: false,
+        },
+        &set,
+    )?;
+    let mut out = Forgotten {
+        settle,
+        ..Forgotten::default()
+    };
+    let record = (1..)
+        .map(|n| format!("refs/seriate/forgotten/{n}"))
+        .find(|n| {
+            gix::refs::FullName::try_from(n.as_str())
+                .ok()
+                .is_some_and(|f| matches!(tip(repo, &f), Ok(None)))
+        })
+        .expect("a free name");
+    out.record = record.clone();
+    // Each snapshot itself where its branch keeps it, else its history
+    // commit, which keeps it as well.
+    let mut seen = HashSet::new();
+    let mut kept: Vec<(String, ObjectId, Option<ObjectId>)> = Vec::new();
+    for (identity, history_commit, _) in chosen {
+        if !seen.insert(identity.as_str()) {
+            continue;
+        }
+        let branch_tip = tip(repo, &branch_ref(identity)?)?;
+        kept.push((
+            identity.clone(),
+            branch_tip.unwrap_or(*history_commit),
+            branch_tip,
+        ));
+        out.forgotten.push(identity.clone());
+        if branch_tip.is_some() {
+            out.deleted.push(identity.clone());
+        }
+    }
+    if options.dry_run {
+        return Ok(out);
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
+    let list: String = kept
+        .iter()
+        .map(|(identity, commit, _)| format!("{identity}\t{commit}\n"))
+        .collect();
+    let blob = repo
+        .write_blob(list.as_bytes())
+        .map_err(Error::git)?
+        .detach();
+    let tree = repo
+        .write_object(&gix::objs::Tree {
+            entries: vec![gix::objs::tree::Entry {
+                mode: EntryKind::Blob.into(),
+                filename: "forgotten".into(),
+                oid: blob,
+            }],
+        })
+        .map_err(Error::git)?
+        .detach();
+    let signature = with_time(&committer(repo, false)?, now);
+    let marker = gix::objs::Commit {
+        tree,
+        parents: kept.iter().map(|(_, c, _)| *c).collect(),
+        author: signature.clone(),
+        committer: signature,
+        encoding: None,
+        message: format!(
+            "Forgotten from {branch}: {} snapshot(s)\n\nReason: {}\nHistory: {branch}\n",
+            kept.len(),
+            options.reason
+        )
+        .into(),
+        extra_headers: Vec::new(),
+    };
+    let id = repo.write_object(&marker).map_err(Error::git)?.detach();
+    let full: gix::refs::FullName = record
+        .as_str()
+        .try_into()
+        .map_err(|e| Error::Refused(format!("{record:?} is not a valid ref name: {e}")))?;
+    store::set_ref(repo, &full, PreviousValue::MustNotExist, id)?;
+    for (identity, _, branch_tip) in &kept {
+        if let Some(t) = branch_tip {
+            store::delete_branch(repo, identity, *t)?;
+        }
+    }
+    Ok(out)
 }
 
 /// The walk's result.

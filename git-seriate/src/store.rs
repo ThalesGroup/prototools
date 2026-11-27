@@ -213,8 +213,9 @@ pub fn list_with(
 }
 
 /// Delete snapshot branches matching `glob` (all when `None`), or the
-/// record-only ones with `record_only`. Returns the branches deleted.
-pub fn drop(
+/// record-only ones with `record_only` (`prune`, spec 0497 S4, formerly
+/// `drop`). Returns the branches deleted.
+pub fn prune(
     repo: &gix::Repository,
     glob: Option<&str>,
     record_only: bool,

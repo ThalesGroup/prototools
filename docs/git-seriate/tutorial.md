@@ -262,12 +262,30 @@ Once settled, a snapshot lives in the history: `settle` can rebuild its
 branch from its commit when it needs it. So the branches can go:
 
 ```console
-$ git seriate drop
+$ git seriate prune
 deleted rack-c
 deleted rack-d
 ```
 
-`drop --glob 'rack-*'` deletes only those matching. `git seriate import
+`prune --glob 'rack-*'` deletes only those matching. Pruning removes no
+snapshot: the history still holds them. (`prune` was once called `drop`,
+which still works, and warns.)
+
+To take a snapshot out of the history, say one extracted by a scanner
+since fixed, forget it, saying why, then add its replacement the normal
+way:
+
+```console
+$ git seriate forget --reason "extracted before the scanner fix" rack-c
+```
+
+It says what it forgot, which branch it deleted, how it rewrote the
+history (the previous tip saved, as by `settle`), and the record that
+keeps what was forgotten with the reason, `refs/seriate/forgotten/1`;
+then, as a reminder, to extract the replacement and settle before sharing
+the history. `--dry-run` shows the same, and writes nothing.
+
+`git seriate import
 OTHER-REPO` copies another repository's snapshot branches into this one,
 to be settled here: several people can extract on their side and merge
 the results in one history.

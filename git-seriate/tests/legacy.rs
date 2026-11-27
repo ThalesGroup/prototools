@@ -244,7 +244,7 @@ fn old_snapshot_branches_are_listed_imported_and_dropped() {
         Some(commit)
     );
 
-    let deleted = store::drop(&ours, None, false, Some(&Old)).unwrap();
+    let deleted = store::prune(&ours, None, false, Some(&Old)).unwrap();
     assert_eq!(deleted, ["pkg/v1/0/bin"]);
     assert!(store::list_with(&ours, Some(&Old)).unwrap().is_empty());
 }

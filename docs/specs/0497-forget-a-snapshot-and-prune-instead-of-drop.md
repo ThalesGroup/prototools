@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0497 — forget a snapshot; prune instead of drop
 
-Status: draft
+Status: implemented
+Implemented in: 2026-11-27
 App: git-seriate
 Refs: docs/specs/0452-git-seriate-the-store-and-the-history.md
         (drop, compact, the rebuild of a snapshot branch from its history
@@ -40,6 +41,9 @@ copies the history can rebuild; it removes nothing.
 - **G1.** Remove a named snapshot, from the history and the store, by an
   explicit decision, recorded with its reason.
 - **G2.** Then add its replacement the normal way: `extract`, `settle`.
+  That `settle` re-sorts from the replacement's build time less the
+  settling window, as for any new snapshot: for an old snapshot, nearly
+  the whole history, once.
 - **G3.** `drop` named for what it does.
 
 ## Non-goals
@@ -52,34 +56,46 @@ copies the history can rebuild; it removes nothing.
 ## Specification
 
 - **S1. `git seriate forget IDENTITY… --reason TEXT [--into NAME]
-  [--dry-run]`,** identities or globs: each snapshot's history commits
-  dropped, the history rewritten from the first, the previous tip saved
-  as `NAME-N` (as by `settle` and `compact`); its snapshot branch deleted,
-  so that `settle` doesn't put it back; listing what it does, by
-  `--dry-run` too.
-- **S2. Kept reachable, with the reason:** each forgotten snapshot's
-  commit under `refs/seriate/forgotten/<identity>/<n>` (escaped as spec
-  0495 S4 escapes identities, `n` counting the times that identity was
-  forgotten), a tag-like commit whose message gives the reason, the date
-  and the history it left.
+  [--dry-run]`,** identities or globs, a pattern that matches no snapshot
+  of the history refused, and so is forgetting all of them (delete the
+  branch instead). The history is rewritten as `settle` rewrites it, with
+  no new snapshot and without the forgotten ones, from the oldest of them:
+  the commits below it are kept as they were; those above are rewritten
+  as a re-sort rewrites them, their blocks stamped with today's rule sets
+  and renderer (spec 0464), their trees rebuilt without the forgotten
+  snapshots' items. The previous tip is saved as `NAME-N`. Then each
+  forgotten snapshot's branch is deleted, so that `settle` doesn't put it
+  back. `--dry-run` lists what it would do, and writes nothing.
+- **S2. One record per decision,** `refs/seriate/forgotten/<n>`, `n`
+  counting the decisions: a commit whose parents are the forgotten
+  snapshots (each its branch's commit where it had one, else its history
+  commit), which keeps them reachable; whose message gives the reason and
+  the history; and whose tree is one file, `forgotten`, listing each
+  identity and commit.
 - **S3. Anchors:** a manual commit anchored to a forgotten snapshot is
-  warned about, as by `compact`.
-- **S4. `prune`** is `drop` renamed, unchanged: it deletes snapshot
+  reported, as when an anchor is gone (spec 0452 S5 step 5), and replayed
+  after the snapshot below it.
+- **S4. What next:** the listing ends with "extract their replacements, if
+  any, then settle", so that a history isn't shared half-repaired.
+- **S5. `prune`** is `drop` renamed, unchanged: it deletes snapshot
   branches the history holds, listing first those whose raw form only the
-  branch keeps. `drop` stays a deprecated alias, warning, for a while.
+  branch keeps. `drop` stays, hidden, warning, then pruning.
 
 ## Test plan
 
-1. A history of three snapshots, the middle one forgotten: the history
-   holds two, the tree at the tip without the middle one's own files,
-   the previous tip saved, its branch gone, its commit and reason under
-   `refs/seriate/forgotten/`.
-2. Forgotten, then extracted again and settled: the new commit in its
-   place, with no refusal.
-3. `--dry-run`: the listing, nothing written.
-4. A manual commit anchored to it: warned about.
-5. `prune` as `drop` was; `drop` warning, and doing the same.
+`git-seriate/tests/forget.rs`:
+`a_forgotten_snapshot_leaves_the_history_and_the_store` (two snapshots
+left, a file back to its version below, the previous tip saved, the branch
+gone, the record's parent, message and list),
+`a_forgotten_snapshot_is_added_again_the_normal_way` (and forgotten again,
+a second record), `one_decision_one_record_for_every_snapshot_it_forgets`,
+`a_dry_run_lists_and_writes_nothing`,
+`what_matches_nothing_or_everything_is_refused` (and no `--reason`),
+`prune_is_what_drop_was_and_drop_says_so`. Anchors: `settle`'s existing
+tests of an anchor gone.
 
 ## Measured outcome
 
-Filled in at implementation.
+The tests above pass. To measure downstream: a repair forgetting one
+archive's 1,116 snapshots by one glob, then extracting it again as about
+20 atomic snapshots (spec 0495).

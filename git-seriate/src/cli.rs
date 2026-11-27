@@ -143,7 +143,36 @@ enum Command<E: Subcommand> {
         #[arg(long)]
         record_only: bool,
     },
-    /// Delete snapshot branches.
+    /// Forget snapshots: out of the history, which is rewritten from the
+    /// oldest of them (the previous tip saved), and out of the store; each
+    /// kept, with the reason, under refs/seriate/forgotten/.
+    Forget {
+        /// The history branch; the current one by default.
+        #[arg(long)]
+        into: Option<String>,
+        /// Why: kept with each forgotten snapshot.
+        #[arg(long, required = true)]
+        reason: String,
+        /// Show what would be done, and write nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// The snapshots' identities, or globs of them.
+        #[arg(required = true)]
+        identities: Vec<String>,
+    },
+    /// Delete snapshot branches the history holds: it rebuilds one when it
+    /// needs it. Those whose raw form only the branch keeps are listed first.
+    /// (Formerly `drop`.)
+    Prune {
+        /// Only the branches matching this glob.
+        #[arg(long)]
+        glob: Option<String>,
+        /// The record-only branches instead.
+        #[arg(long)]
+        record_only: bool,
+    },
+    /// `prune`, under its former name: warns, then prunes.
+    #[command(hide = true)]
     Drop {
         /// Only the branches matching this glob.
         #[arg(long)]
@@ -486,6 +515,73 @@ fn dispatch<E: Subcommand>(
                 )));
             }
         }
+        Command::Forget {
+            into,
+            reason,
+            dry_run,
+            identities,
+        } => {
+            let pattern = repo
+                .config_snapshot()
+                .string("seriate.itemPattern")
+                .map(|p| p.to_string())
+                .or_else(|| kit.item_pattern.clone());
+            let item_paths = Pattern(pattern);
+            let forgotten = history::forget(
+                &repo,
+                &history::ForgetOptions {
+                    into,
+                    patterns: identities,
+                    reason,
+                    dry_run,
+                    sort: seriation::Settings::default(),
+                    plugins: Plugins {
+                        renderer: kit.renderer.as_ref(),
+                        canonicalizer: kit.canonicalizer.as_ref(),
+                        item_paths: &item_paths,
+                        comparator: kit.comparator.as_ref(),
+                        legacy: kit.legacy.as_deref(),
+                    },
+                },
+            )?;
+            let report = &forgotten.settle;
+            for w in &report.warnings {
+                eprintln!("warning: {w}");
+            }
+            for n in &report.notes {
+                eprintln!("{n}");
+            }
+            let verb = if dry_run { "would forget" } else { "forgot" };
+            for identity in &forgotten.forgotten {
+                println!("{verb} {identity}");
+            }
+            for b in &forgotten.deleted {
+                let verb = if dry_run { "would delete" } else { "deleted" };
+                println!("{verb} its snapshot branch {b}");
+            }
+            println!(
+                "{} {}: kept {}, rewrote {} snapshot(s), replayed {} commit(s){}",
+                if dry_run { "would rewrite" } else { "rewrote" },
+                report.branch,
+                report.kept,
+                report.written.len(),
+                report.replayed.len(),
+                report
+                    .backup
+                    .as_ref()
+                    .map_or(String::new(), |b| format!("; previous tip saved as {b}"))
+            );
+            let kept = if dry_run {
+                "would be kept by"
+            } else {
+                "kept by"
+            };
+            println!("{kept} {}", forgotten.record);
+            println!(
+                "next: extract their replacements, if any, then settle, before sharing {}",
+                report.branch
+            );
+        }
         Command::Compact {
             into,
             cutoff,
@@ -536,10 +632,10 @@ fn dispatch<E: Subcommand>(
             }
         }
         Command::Drop { glob, record_only } => {
-            for branch in store::drop(&repo, glob.as_deref(), record_only, kit.legacy.as_deref())? {
-                println!("deleted {branch}");
-            }
+            eprintln!("warning: drop is now prune, which says what it does: use prune");
+            prune(&repo, glob.as_deref(), record_only, kit)?;
         }
+        Command::Prune { glob, record_only } => prune(&repo, glob.as_deref(), record_only, kit)?,
         Command::Import { repos } => {
             for from in repos {
                 let report = store::import(&repo, &from, kit.legacy.as_deref())?;
@@ -551,6 +647,20 @@ fn dispatch<E: Subcommand>(
                 );
             }
         }
+    }
+    Ok(())
+}
+
+/// `prune`, and `drop` under its former name: the snapshot branches
+/// deleted, listed.
+fn prune(
+    repo: &gix::Repository,
+    glob: Option<&str>,
+    record_only: bool,
+    kit: &Kit,
+) -> Result<(), Error> {
+    for branch in store::prune(repo, glob, record_only, kit.legacy.as_deref())? {
+        println!("deleted {branch}");
     }
     Ok(())
 }
