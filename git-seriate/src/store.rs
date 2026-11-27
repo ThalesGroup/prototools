@@ -87,6 +87,33 @@ impl Sink<'_> {
         }
     }
 
+    /// A branch that `branch` can't sit beside: one whose name is a
+    /// directory of `branch`'s, or under it. Git keeps a ref and a
+    /// directory of refs apart (`a` and `a/b` can't both be branches).
+    fn clash(&self, branch: &str) -> Result<Option<String>, Error> {
+        let clashes = |other: &str| {
+            other != branch
+                && (branch.starts_with(&format!("{other}/"))
+                    || other.starts_with(&format!("{branch}/")))
+        };
+        match self {
+            Sink::Repo(repo) => {
+                let refs = repo.references().map_err(Error::git)?;
+                for r in refs.local_branches().map_err(Error::git)? {
+                    let name = r.map_err(Error::git)?.name().shorten().to_string();
+                    if clashes(&name) {
+                        return Ok(Some(name));
+                    }
+                }
+                Ok(None)
+            }
+            Sink::Archive(archive) => Ok(archive
+                .branch_names()
+                .find(|n| clashes(n))
+                .map(str::to_string)),
+        }
+    }
+
     fn tip(&self, branch: &str, ref_name: &gix::refs::FullName) -> Result<Option<ObjectId>, Error> {
         match self {
             Sink::Repo(repo) => tip(repo, ref_name),
@@ -158,6 +185,14 @@ pub fn add_to(sink: &mut Sink, snapshot: NewSnapshot) -> Result<Added, Error> {
         extra_headers: Vec::new(),
     };
     let id = commit_id(&commit)?;
+    // Before reading the branch's tip, which git can't even look up under a
+    // name that is a ref already.
+    if let Some(other) = sink.clash(&branch)? {
+        return Err(Error::Refused(format!(
+            "snapshot {branch:?} can't sit beside branch {other:?}: git keeps a ref and a \
+             directory of refs apart; give one of them another identity"
+        )));
+    }
     if let Some(existing) = sink.tip(&branch, &ref_name)? {
         return if existing == id {
             Ok(Added::Unchanged { branch })

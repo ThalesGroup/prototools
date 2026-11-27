@@ -56,6 +56,11 @@ impl Archive {
         self.branches.get(name).copied()
     }
 
+    /// The archive's branch names.
+    pub fn branch_names(&self) -> impl Iterator<Item = &str> {
+        self.branches.keys().map(String::as_str)
+    }
+
     pub fn set_branch(&mut self, name: &str, id: ObjectId) {
         self.branches.insert(name.to_string(), id);
     }

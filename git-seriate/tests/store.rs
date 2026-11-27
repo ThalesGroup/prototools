@@ -181,6 +181,49 @@ fn refused_paths_are_reported_and_the_tree_stays_valid() {
     assert_eq!(Block::read(&message).unwrap().unwrap().rejected.len(), 2);
 }
 
+/// An identity that is a directory of another's, or under it, can't be a
+/// branch beside it: refused before writing, naming both, in a repository
+/// and in an archive, whichever comes first.
+#[test]
+fn an_identity_clashing_with_another_as_a_ref_is_refused_naming_both() {
+    let snapshot = |id: &str| NewSnapshot {
+        source: Source {
+            identity: id.into(),
+            build_time: 1,
+            order_hint: None,
+            group: None,
+            metadata: Vec::new(),
+        },
+        items: vec![store::Item {
+            path: "f.txt".into(),
+            bytes: id.as_bytes().to_vec(),
+            record: Vec::new(),
+            origin: None,
+        }],
+        rejected: Vec::new(),
+        record: Vec::new(),
+    };
+    for (first, second) in [("tree.runfiles", "tree.runfiles/bin/x"), ("t/x", "t")] {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = gix::open(new_repo(tmp.path(), "repo.git")).unwrap();
+        store::add(&repo, snapshot(first)).unwrap();
+        let err = store::add(&repo, snapshot(second)).unwrap_err().to_string();
+        assert!(
+            err.contains(&format!("{second:?}")) && err.contains(&format!("{first:?}")),
+            "{err}"
+        );
+        assert!(err.contains("can't sit beside"), "{err}");
+
+        let mut archive = git_seriate::archive::Archive::new();
+        let mut sink = store::Sink::Archive(&mut archive);
+        store::add_to(&mut sink, snapshot(first)).unwrap();
+        let err = store::add_to(&mut sink, snapshot(second))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("can't sit beside"), "{err}");
+    }
+}
+
 #[test]
 fn drop_and_record_only_branches() {
     let tmp = tempfile::tempdir().unwrap();

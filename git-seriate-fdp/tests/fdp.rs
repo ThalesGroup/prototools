@@ -680,6 +680,57 @@ fn framed_sets_are_snapshots_of_their_own() {
     assert_eq!(whole[0].1, None);
 }
 
+/// Spec 0495 S2: two sets ending with the same file, the same bytes once
+/// cut, each read on past it: each set's record holds its own copy's
+/// `frame-cut` entry, told by its origin, though both copies share a path.
+#[test]
+fn each_set_keeps_its_own_copys_record_entries() {
+    let stock = stock_files();
+    let (a, b, c) = (&stock[0], &stock[1], &stock[2]);
+    let bundle = |first: &[u8], source: &[u8]| {
+        let mut m = field(1, first);
+        m.extend(field(1, b));
+        m.extend(field(3, source));
+        m
+    };
+    let (one, two) = (bundle(a, b"src/one.sdl"), bundle(c, b"src/two.sdl"));
+    let tmp = tempfile::tempdir().unwrap();
+    let file = executable(tmp.path(), "x", &[&one, &two], None);
+    let dir = tempfile::tempdir().unwrap();
+    let (_, r) = repo(dir.path());
+    let kit = kit(&r).unwrap();
+    extract_files(
+        &r,
+        &kit,
+        std::slice::from_ref(&file),
+        &ExtractOptions {
+            id: Some("x".into()),
+            build_time: Some(1_700_000_000),
+            ..ExtractOptions::default()
+        },
+        &mut Vec::new(),
+    )
+    .unwrap();
+    let listed = git_seriate::store::list_with(&r, None).unwrap();
+    assert_eq!(listed.len(), 2, "two sets, an empty rest");
+    for l in &listed {
+        let cuts: Vec<_> = l
+            .block
+            .record
+            .iter()
+            .filter(|(k, _)| k.starts_with("frame-cut "))
+            .collect();
+        assert_eq!(cuts.len(), 1, "{}: {:?}", l.branch, l.block.record);
+        // Its own copy's: the entry's range is the copy's origin.
+        assert_eq!(
+            cuts[0].1.split(", ").next(),
+            l.block.evidence.get(&item_path_of(b)).map(String::as_str),
+            "{}",
+            l.branch
+        );
+    }
+}
+
 /// Spec 0495 S2: an input with no set is one snapshot, as before; so is a
 /// single framed record.
 #[test]

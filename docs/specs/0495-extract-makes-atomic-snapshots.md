@@ -107,7 +107,15 @@ same each time; a split, once made, is redone only by extracting again
   after the chain of the member it lies in (`gzip@271!set@14811251`),
   and after the input's path in a group. The rest keeps the input's
   identity. A label is made a valid ref name as an input's path is (spec
-  0453 S5: what git refuses replaced by `_`).
+  0453 S5: what git refuses replaced by `_`). An identity that is a
+  directory of an existing branch's name, or under one (`t.runfiles` and
+  `t.runfiles/bin/x`), can't be a branch beside it: the store refuses it
+  before writing, naming both.
+- **S4a. Record entries:** an entry about one copy goes with that copy's
+  part, told by the copy's origin, which the entry's value starts with
+  (`frame-cut`, `order-cut`): copies of one path, the same bytes in
+  several sets, each keep their own entry. Failing an origin, by the path
+  the entry names; else with the rest.
 - **S5. A part's block:** its input's group, so that what to extract again
   stays known; `source.provenance` (0494 S3), then the part,
   `{part: container|set|rest, at: <chain or range>}`. Its build time: a
@@ -149,6 +157,11 @@ same each time; a split, once made, is redone only by extracting again
 4. `--as-one` over three single-file inputs: one snapshot, each copy's
    origin starting with its input's path; `--files-from` the same.
 5. A set inside a gzip member: its identity after the member's chain.
+5a. Two sets closing with the same file, each read on past it: each set
+   its own `frame-cut` entry (`each_set_keeps_its_own_copys_record_entries`).
+5b. An identity that is a directory of another's, either first, in a
+   repository and in an archive: refused, naming both
+   (`an_identity_clashing_with_another_as_a_ref_is_refused_naming_both`).
 6. S5's member times: with fdp-scan's containers (N5).
 
 ## Measured outcome

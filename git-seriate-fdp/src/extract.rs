@@ -259,8 +259,11 @@ struct Set {
 
 impl Parts {
     /// What `found` holds, rendered by `kit`: an item the renderer refuses
-    /// is a refusal. A record entry about one item (`<key> <path>`) goes
-    /// with that item's part; the others with the rest.
+    /// is a refusal. A record entry about one item goes with that item's
+    /// part: the entry's value starts with the item's origin (a `frame-cut`
+    /// or `order-cut` entry's does), which tells copies of one path apart
+    /// where several parts hold the same bytes; else, by the path its key
+    /// ends with (`<key> <path>`); the others go with the rest.
     fn of(kit: &Kit, found: Extracted, split: bool) -> Parts {
         let mut parts = Parts {
             rejected: found.rejected,
@@ -268,6 +271,8 @@ impl Parts {
         };
         let labels = found.sets.into_iter().chain(std::iter::repeat(None));
         let mut path_set: std::collections::HashMap<String, usize> = Default::default();
+        // Each item's origin, and its part: `None` for the rest.
+        let mut origin_part: std::collections::HashMap<String, Option<usize>> = Default::default();
         for (item, label) in found.items.into_iter().zip(labels) {
             let text = match kit.renderer.render(&item.path, &item.bytes) {
                 Ok(text) => text,
@@ -286,7 +291,12 @@ impl Parts {
                 origin: item.origin,
             };
             match label.filter(|_| split) {
-                None => parts.rest.push(rendered),
+                None => {
+                    if let Some(o) = &rendered.origin {
+                        origin_part.insert(o.clone(), None);
+                    }
+                    parts.rest.push(rendered);
+                }
                 Some(label) => {
                     let at = match parts.sets.iter().position(|set| set.label == label) {
                         Some(at) => at,
@@ -300,14 +310,24 @@ impl Parts {
                         }
                     };
                     path_set.insert(rendered.path.clone(), at);
+                    if let Some(o) = &rendered.origin {
+                        origin_part.insert(o.clone(), Some(at));
+                    }
                     parts.sets[at].items.push(rendered);
                 }
             }
         }
         for (key, value) in found.record {
-            let about = key.split_once(' ').and_then(|(_, path)| path_set.get(path));
+            let by_origin = value.split(", ").next().and_then(|o| origin_part.get(o));
+            let about = match by_origin {
+                Some(part) => *part,
+                None => key
+                    .split_once(' ')
+                    .and_then(|(_, path)| path_set.get(path))
+                    .copied(),
+            };
             match about {
-                Some(&at) => parts.sets[at].record.push((key, value)),
+                Some(at) => parts.sets[at].record.push((key, value)),
                 None => parts.record.push((key, value)),
             }
         }

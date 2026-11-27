@@ -72,6 +72,15 @@ executables are each one, or one build together.
 - **S2. Fallback:** a zip member found by its local header and claimed by
   no archive (a damaged or truncated archive, or a directory that doesn't
   verify) is read as today, and so marked.
+- **S2a. A gzip is an encoding, unless what it holds is a container:**
+  a gzip stream is an archive only when its content is itself one (a tar,
+  S3); otherwise it's an encoding, read as any buffer, however many
+  descriptors it holds, and is no container for 0495. Measured: on the
+  open-source corpus's Go executables, about 120,000 descriptor
+  occurrences sit in gzip streams each holding one descriptor, the old Go
+  generator's encoding; downstream, configuration files are each one
+  gzipped serialized message embedding many descriptors. Framed sets
+  inside such a stream split by 0495's rule as in any buffer.
 - **S3. A tar stream:** a buffer whose first block is a tar header (the
   `ustar` magic at offset 257, a checksum that verifies) is read as tar:
   each member's name and data range, regular files only; its members
