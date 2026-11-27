@@ -446,9 +446,10 @@ fn item_path_of(fdp: &[u8]) -> String {
     format!("{}.pb", name.strip_suffix(".proto").unwrap())
 }
 
-/// Spec 0480 S8: with `inflate`, a descriptor in a gzip member is an item
-/// with its origin recorded, a member skipped is recorded, and a descriptor
-/// in the clear records nothing; without, the member is not looked into.
+/// Spec 0480 S8, 0494 S1: with `inflate`, a descriptor in a gzip member is
+/// an item with its origin, a member skipped is recorded, and a descriptor
+/// in the clear has its range as origin; without, the member is not looked
+/// into.
 #[test]
 fn inflate_records_origins_and_skipped_members() {
     let stock = stock_files();
@@ -521,4 +522,65 @@ fn inflate_records_origins_and_skipped_members() {
     ];
     evidence.sort();
     assert_eq!(on.evidence.into_iter().collect::<Vec<_>>(), evidence);
+}
+
+/// `payload` as one length-delimited field-`number` record.
+fn field(number: u64, payload: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for mut v in [number << 3 | 2, payload.len() as u64] {
+        while v >= 0x80 {
+            out.push((v as u8) | 0x80);
+            v >>= 7;
+        }
+        out.push(v as u8);
+    }
+    out.extend_from_slice(payload);
+    out
+}
+
+/// Spec 0496: two descriptors framed in a larger message, followed by its
+/// field 3, which reads as `dependency`: the last one ends at its frame,
+/// its origin is the framed range, and the record says how far the walk
+/// would have read on.
+#[test]
+fn a_framed_descriptor_ends_at_its_frame() {
+    let stock = stock_files();
+    let (a, b) = (&stock[0], &stock[1]);
+    let mut message = field(1, a);
+    message.extend(field(1, b));
+    let b_end = message.len();
+    let b_start = b_end - b.len();
+    message.extend(field(3, b"src/a.sdl"));
+    message.extend(field(3, b"src/b.sdl"));
+
+    let tmp = tempfile::tempdir().unwrap();
+    let file = executable(tmp.path(), "x", &[&message], None);
+    let (_, r) = repo(tmp.path());
+    let kit = kit(&r).unwrap();
+    extract_files(
+        &r,
+        &kit,
+        std::slice::from_ref(&file),
+        &ExtractOptions {
+            id: Some("x".into()),
+            build_time: Some(1_700_000_000),
+            ..ExtractOptions::default()
+        },
+        &mut Vec::new(),
+    )
+    .unwrap();
+    let block = git_seriate::store::list_with(&r, None)
+        .unwrap()
+        .remove(0)
+        .block;
+    // `executable` puts 64 bytes before the message.
+    let (start, end) = (64 + b_start, 64 + b_end);
+    assert_eq!(block.evidence[&item_path_of(b)], format!("{start}..{end}"));
+    assert_eq!(
+        block.record,
+        [(
+            format!("frame-cut {}", item_path_of(b)),
+            format!("{start}..{end}, read on to {}", 64 + message.len())
+        )]
+    );
 }

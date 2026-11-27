@@ -99,6 +99,19 @@ fn collect(
                 format!("{range}, out of order at {}", c.at),
             ))
         }));
+    // A record its frame ended (spec 0496): where the walk would have read
+    // on to, past the frame, into the enclosing message's fields.
+    out.record
+        .extend(explained.frame_cuts.iter().filter_map(|c| {
+            Some((
+                format!("frame-cut {}", path_of(c.start)?),
+                format!(
+                    "{}, read on to {}",
+                    within.text(None, c.start, c.end),
+                    c.read_to
+                ),
+            ))
+        }));
 }
 
 /// The scanner's refusal reasons, as the block records them.

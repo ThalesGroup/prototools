@@ -81,6 +81,22 @@ pub struct Explained {
     /// scan without it ends them (spec 0449 S7), in order. Always empty unless
     /// [`ScanOptions::increasing_field_numbers`] is set.
     pub order_cuts: Vec<OrderCut>,
+    /// The records in `found` that their frame ended earlier than the walk
+    /// does (spec 0496), in order.
+    pub frame_cuts: Vec<FrameCut>,
+}
+
+/// A record its frame ended (spec 0496): the walk read on past the length
+/// the frame before it declares, into the enclosing message's fields. It is
+/// in [`Explained::found`] with the frame's end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameCut {
+    /// Where the record starts, as in `found`.
+    pub start: usize,
+    /// Where its frame ends it, as in `found`.
+    pub end: usize,
+    /// Where the walk without the frame ended it.
+    pub read_to: usize,
 }
 
 /// A record [`ScanOptions::increasing_field_numbers`] ended early. It is in
@@ -217,6 +233,9 @@ fn walk_candidates(
     let mut result = Explained::default();
     let data_len = data.len();
     let mut offset = 0;
+    // Where the last record found ends: a frame starting there chains the
+    // next record to it (spec 0496).
+    let mut chain_end: Option<usize> = None;
 
     while offset < data_len {
         if data[offset] == 0x0A {
@@ -244,11 +263,24 @@ fn walk_candidates(
                         };
                         match verdict {
                             Ok(Accepted {
-                                end: fdp_end,
+                                end: walked_end,
                                 order_break,
                             }) => {
+                                let fdp_end = framed_end(
+                                    data, offset, walked_end, chain_end, graph, root, options,
+                                );
+                                if fdp_end < walked_end {
+                                    result.frame_cuts.push(FrameCut {
+                                        start: offset,
+                                        end: fdp_end,
+                                        read_to: walked_end,
+                                    });
+                                }
+                                chain_end = Some(fdp_end);
                                 result.found.push((offset, fdp_end));
-                                if let Some(at) = order_break {
+                                // The frame's cut stands for what the order
+                                // check would have cut.
+                                if let Some(at) = order_break.filter(|_| fdp_end == walked_end) {
                                     result.order_cuts.push(OrderCut {
                                         start: offset,
                                         end: fdp_end,
@@ -369,6 +401,61 @@ fn score_candidate_with(
             .is_ok_and(|unordered| unordered.end > end)
     });
     Ok(Accepted { end, order_break })
+}
+
+/// The length a frame at `at` declares, if the bytes from `at` read as one
+/// ending at `start`: a tag of wire type 2 (length-delimited), then a varint
+/// length. Read forwards, from where the previous record ended: read
+/// backwards from `start`, a varint's continuation bytes (0x80 and above)
+/// can't be told from the bytes before it.
+fn frame_at(data: &[u8], at: usize, start: usize) -> Option<usize> {
+    let (tag, tag_len) = decode_varint(data.get(at..start)?)?;
+    let (length, length_len) = decode_varint(&data[at + tag_len..start])?;
+    (tag & 7 == 2 && tag >> 3 != 0 && at + tag_len + length_len == start)
+        .then(|| usize::try_from(length).ok())
+        .flatten()
+}
+
+/// Where a record the walk ended at `walked_end` really ends (spec 0496):
+/// at its frame's declared length when that frame holds up, else where the
+/// walk ended it. A record embedded in a larger message can be followed by
+/// that message's other fields, which parse as valid fields of a
+/// `FileDescriptorProto` (an enclosing field 3 reads as `dependency`), so
+/// parsing cleanly doesn't mark a record's end; a frame does.
+///
+/// The frame is trusted only when it holds up three ways:
+/// - **chained:** it starts exactly where the record found before ended,
+///   and ends where this record starts, as records of a set do; two stray
+///   bytes before a raw descriptor that happen to read as a frame aren't
+///   chained to anything;
+/// - **inside:** its declared length ends before the walk's end;
+/// - **whole:** the prefix of exactly that length is accepted as a record
+///   on its own, ending there.
+///
+/// A set's first record isn't chained, and needs no check: the next record
+/// ends it. So a set of one record read on past its end is not cut.
+fn framed_end(
+    data: &[u8],
+    start: usize,
+    walked_end: usize,
+    chain_end: Option<usize>,
+    graph: &LoadedGraph,
+    root: &str,
+    options: &ScanOptions,
+) -> usize {
+    let Some(length) = chain_end.and_then(|at| frame_at(data, at, start)) else {
+        return walked_end;
+    };
+    let Some(framed) = start.checked_add(length) else {
+        return walked_end;
+    };
+    if framed >= walked_end {
+        return walked_end;
+    }
+    match score_candidate_with(&data[..framed], start, graph, root, options) {
+        Ok(prefix) if prefix.end == framed => framed,
+        _ => walked_end,
+    }
 }
 
 /// A candidate [`score_candidate_with`] accepts.
@@ -862,6 +949,103 @@ mod tests {
         }
         buf.extend_from_slice(payload);
         buf
+    }
+
+    /// A set of descriptors as a larger message holds them (spec 0496):
+    /// each record framed as field 1, then the message's own field 3, two
+    /// strings, which read as a `FileDescriptorProto`'s `dependency`.
+    fn enclosing_message(records: &[&[u8]]) -> (Vec<u8>, Vec<(usize, usize)>) {
+        let mut buf = vec![0u8; 8];
+        let mut ranges = Vec::new();
+        for record in records {
+            let framed_record = framed(1, record);
+            let header = framed_record.len() - record.len();
+            ranges.push((buf.len() + header, buf.len() + framed_record.len()));
+            buf.extend_from_slice(&framed_record);
+        }
+        buf.extend_from_slice(&framed(3, b"src/a.sdl"));
+        buf.extend_from_slice(&framed(3, b"src/b.sdl"));
+        (buf, ranges)
+    }
+
+    #[test]
+    fn a_chained_frame_ends_the_last_record_of_a_set() {
+        let (a, b) = (
+            make_declaring_fdp("x/a.proto"),
+            make_declaring_fdp("x/b.proto"),
+        );
+        let (data, ranges) = enclosing_message(&[&a, &b]);
+        let explained = scan_explained(&data);
+        assert_eq!(
+            explained.found, ranges,
+            "the last record read on past its frame"
+        );
+        assert_eq!(
+            explained.frame_cuts,
+            [FrameCut {
+                start: ranges[1].0,
+                end: ranges[1].1,
+                read_to: data.len(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_set_of_one_record_is_not_cut() {
+        // Its frame is chained to nothing: as a stray pair of bytes would
+        // be (spec 0496's limit).
+        let a = make_declaring_fdp("x/a.proto");
+        let (data, ranges) = enclosing_message(&[&a]);
+        let explained = scan_explained(&data);
+        assert_eq!(explained.found, [(ranges[0].0, data.len())]);
+        assert!(explained.frame_cuts.is_empty());
+    }
+
+    #[test]
+    fn bytes_that_read_as_a_frame_before_a_raw_record_are_no_frame() {
+        // A raw record with an import, preceded by two bytes that read as a
+        // frame whose length ends right before the import: whole, inside,
+        // but chained to nothing. The record keeps its import.
+        let mut record = make_declaring_fdp("x/a.proto");
+        let prefix = record.len();
+        record.extend_from_slice(&framed(3, b"x/dep.proto"));
+        let mut data = vec![0u8; 8];
+        data.extend_from_slice(&[0x12, u8::try_from(prefix).unwrap()]);
+        let start = data.len();
+        data.extend_from_slice(&record);
+        let explained = scan_explained(&data);
+        assert_eq!(explained.found, [(start, data.len())]);
+        assert!(explained.frame_cuts.is_empty());
+    }
+
+    #[test]
+    fn a_set_its_frames_agree_with_reports_no_cut() {
+        let (a, b) = (
+            make_declaring_fdp("x/a.proto"),
+            make_declaring_fdp("x/b.proto"),
+        );
+        let mut data = vec![0u8; 8];
+        let mut ranges = Vec::new();
+        for record in [&a, &b] {
+            let framed_record = framed(1, record);
+            let header = framed_record.len() - record.len();
+            ranges.push((data.len() + header, data.len() + framed_record.len()));
+            data.extend_from_slice(&framed_record);
+        }
+        data.push(0); // a NUL after the set: no field to read on into
+        let explained = scan_explained(&data);
+        assert_eq!(explained.found, ranges);
+        assert!(explained.frame_cuts.is_empty());
+    }
+
+    #[test]
+    fn frame_at_reads_a_tag_and_a_length() {
+        let data = [0xff, 0x0a, 0x96, 0x01, 0x0a];
+        assert_eq!(frame_at(&data, 1, 4), Some(150));
+        // Not ending at the record, of another wire type, or no tag: no frame.
+        assert_eq!(frame_at(&data, 1, 3), None);
+        assert_eq!(frame_at(&[0x08, 0x05, 0x0a], 0, 2), None);
+        assert_eq!(frame_at(&[0x05, 0x0a], 0, 1), None);
     }
 
     /// A FileDescriptorProto carrying `messages` empty `message_type` entries
