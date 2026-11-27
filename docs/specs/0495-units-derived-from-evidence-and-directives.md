@@ -58,12 +58,10 @@ edits a snapshot or a history commit by hand.
 ## Non-goals
 
 - **N1.** Lineages: a later spec, deciding units' producers the same way.
-- **N2.** Splitting by contiguity in raw bytes (an embedded set without a
-  container or a registrant): after a measurement (Q1).
-- **N3.** Ref names for units: units live in history commits' blocks, not
+- **N2.** Ref names for units: units live in history commits' blocks, not
   in refs, so a member's name needs no escaping for git; snapshots keep
   their identities, as today.
-- **N4.** Restricting a unit's comparisons in phase 3: a unit split off is
+- **N3.** Restricting a unit's comparisons in phase 3: a unit split off is
   compared with every copy of its files, as a snapshot is; its relation to
   them (contained, equal, incomparable) is what phase 3, and later the
   lineages, work from.
@@ -78,6 +76,7 @@ edits a snapshot or a history commit by hand.
   | this directory is a unit of its own | the caller: `split` directive | paths it knows (`third_party/…`, a vendored package) |
   | this split is wrong | the caller: `keep` directive | its review, the sort's report |
   | these copies come from another source | the evidence | a copy's registrant (0494 S1): a Go module other than the build's own, a C++ library's Bazel repository other than the build's |
+  | these copies are a set embedded in raw bytes | the evidence | contiguity: adjacent ranges (0494 S1) whose copies the build's own don't explain; its rule from Q1's measurement |
   | what neither caught | `settle`, reported | the straddles left after the sort; phase 3's votes against build time |
 
 - **S2. The directives,** `units.yaml` in the history's record
@@ -94,12 +93,15 @@ edits a snapshot or a history commit by hand.
     reason: one runfiles tree, one build
   ```
 
-  A directive is identified by a short digest of its own text. A changed
+  A directive is identified by a short digest of its meaning: its kind,
+  patterns and name template, parsed, its reason left out, so that an
+  edited comment, reason or indentation changes nothing (S9). A changed
   directive is a new record; the next `settle` recomputes the units.
 - **S3. Deriving the units,** before the sort: group the snapshots
   `group` names; within each build, split off the copies whose registrant
-  names another source, then the paths `split` names, unless `keep`
-  says otherwise; the rest of a build, one unit.
+  names another source, then the sets embedded in raw bytes (contiguity),
+  then the paths `split` names, unless `keep` says otherwise; the rest of
+  a build, one unit.
 - **S4. A unit's identity and record:** a group's name, or a snapshot's
   identity, then `!<part>` for a part split off (a module, a repository, a
   path). Its history commit's block names its constituents: the snapshots,
@@ -124,10 +126,13 @@ edits a snapshot or a history commit by hand.
 
 ## Open questions
 
-- **Q1.** An embedded set in raw bytes, without a container or a
-  registrant: fdp-scan's order cuts (spec 0449) may mark its bounds; to
-  measure on a synthetic bundle in a synthetic executable, then on a real
-  one.
+- **Q1.** Contiguity's rule, the first split a downstream needs: its
+  embedded schema bundles sit in raw bytes, not in container members
+  (several bundles clustered within 3 MB of a 4 GB archive, each copy
+  once, the compiled copies recurring once per executable). To measure on
+  0494's ranges, there and on a synthetic bundle in a synthetic
+  executable: where each set starts and ends, and whether fdp-scan's
+  order cuts (spec 0449) fall at those bounds.
 - **Q2.** A unit's upper-bound time in phase 1: deferred until a
   measurement shows a need (phase 3's window already compares an
   embedded set with its input's neighbors).
