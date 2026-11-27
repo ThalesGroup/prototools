@@ -195,6 +195,48 @@ fn encrypted_zip_member(name: &str) -> Vec<u8> {
     b
 }
 
+/// `--max-member`: a member inflating past it is skipped, `member-limit`;
+/// under the default, the same member is read.
+#[test]
+fn max_member_bounds_what_a_member_may_inflate_to() {
+    let dir = scratch("max-member");
+    let bin = dir.join("big.bin");
+    let mut inflated = fdp("pkg/big.proto");
+    inflated.extend(vec![0u8; 2 << 20]);
+    let mut data = vec![0u8; 16];
+    data.extend(gzip(&inflated));
+    std::fs::write(&bin, &data).unwrap();
+
+    let read = protoscan(&[&bin, Path::new("--inflate")]);
+    assert!(read.status.success(), "{}", stderr(&read));
+    assert_eq!(stdout(&read), "pkg/big.proto\n");
+
+    let bounded = protoscan(&[
+        &bin,
+        Path::new("--inflate"),
+        Path::new("--max-member"),
+        Path::new("1"),
+    ]);
+    assert!(bounded.status.success(), "{}", stderr(&bounded));
+    assert_eq!(stdout(&bounded), "");
+    assert_eq!(stderr(&bounded), "skipped gzip@16: member-limit\n");
+}
+
+/// `--max-member` and `--max-total` bound --inflate, and need it.
+#[test]
+fn the_limits_require_inflate() {
+    let dir = scratch("limits-require-inflate");
+    let bin = dir.join("empty.bin");
+    std::fs::write(&bin, b"").unwrap();
+    for option in ["--max-member", "--max-total"] {
+        let out = protoscan(&[&bin, Path::new(option), Path::new("1")]);
+        assert!(
+            !out.status.success(),
+            "{option} without --inflate must be refused"
+        );
+    }
+}
+
 /// Spec 0480 S7: `--inflate` finds what a gzip member holds, `--origin`
 /// says where, skipped members go to stderr, and a second descriptor of
 /// one name is written `~2`.

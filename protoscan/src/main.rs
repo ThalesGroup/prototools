@@ -51,6 +51,18 @@ struct Cli {
     #[arg(long)]
     inflate: bool,
 
+    /// With --inflate, the most one member may inflate to, in MiB: a larger
+    /// one is skipped (`member-limit`). Memory follows it.
+    #[arg(long, value_name = "MIB", requires = "inflate",
+          default_value_t = InflateLimits::default().max_member >> 20)]
+    max_member: usize,
+
+    /// With --inflate, the most the input may inflate to in all, in MiB:
+    /// past it, members are skipped (`input-limit`). Time follows it.
+    #[arg(long, value_name = "MIB", requires = "inflate",
+          default_value_t = InflateLimits::default().max_total >> 20)]
+    max_total: usize,
+
     /// Print where each descriptor was found: NAME, a tab, its origin.
     ///
     /// The origin is its byte range, `START..END`, preceded with --inflate
@@ -123,7 +135,11 @@ fn scan(data: &[u8], cli: &Cli) -> Result<(), String> {
     fdp_scan::scan_inflating(
         data,
         &ScanOptions::default(),
-        &InflateLimits::default(),
+        &InflateLimits {
+            max_member: cli.max_member.saturating_mul(1 << 20),
+            max_total: cli.max_total.saturating_mul(1 << 20),
+            ..InflateLimits::default()
+        },
         |visit| {
             if result.is_err() {
                 return;
