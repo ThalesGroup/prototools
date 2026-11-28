@@ -59,8 +59,11 @@ already dates a file (0452 S6, level 1).
 
 ## Specification
 
-- **S1. What a commit holds:** its changes' paths; a snapshot commit's
-  also every path of its `contents`, its items. A record-only commit
+- **S1. What a commit holds:** its changes' paths, a deletion's
+  included: the commit deleting a path holds it, and owns it when it is
+  the last holder, a snapshot holding it before then owning nothing
+  there. A snapshot commit's also every path of its `contents`, its
+  items. A record-only commit
   (`contents` none) and a manual commit hold only their changes. An item
   needs no bytes compared: a snapshot commit writes its items over its
   parent's tree, so its tree holds each item's bytes at its path.
@@ -73,16 +76,21 @@ already dates a file (0452 S6, level 1).
   a snapshot that changes nothing but owns a path keeps its record.
 - **S4. The owner's rewrite:** a kept commit's changes are, in order, its
   own, and for each path it owns that the rebuilt tree lacks or holds
-  other bytes for, that path with its original tree's bytes. The tree at
-  the cutoff is then the old one, checked as today (nothing written
-  otherwise).
+  other bytes for, that path with its original tree's bytes. A deletion
+  is replayed only where the rebuilt tree holds the path: its writers
+  dropped, there is nothing to delete; a manual commit left with no
+  change is dropped, as level 1 drops one. The tree at the cutoff is
+  then the old one, checked as today (nothing written otherwise).
 - **S5. Level 3** removes from a kept snapshot commit the items it holds
   but doesn't own, changed or only held: `reduced: true`, `contents` and
   `evidence` without them. Manual commits are never reduced, as today.
-- **S6. The listing:** a drop for S3 says the commits that own its paths
-  (`drop 1a2b3c4d ('…'): every path it holds is held later, by
-  5e6f7a8b…`); a kept commit that gains changes by S4 says how many
-  (`own 5e6f7a8b ('…'): 18 items it held become its changes`).
+- **S6. The listing,** one line per commit: a drop for S3 says how many
+  commits own its paths, the first two named (`drop 1a2b3c4d ('…'):
+  every path it holds is held later, by 37 commits (5e6f7a8b, 9c0d1e2f,
+  …)`), all of them with `--verbose`; a kept commit that gains changes by
+  S4 says how many (`own 5e6f7a8b ('…'): 18 items it held become its
+  changes`); a manual commit dropped by S4, that its deletions have
+  nothing left to delete.
 
 ## Alternatives considered
 
@@ -111,9 +119,14 @@ already dates a file (0452 S6, level 1).
    the cutoff keeps its older owner.
 5. `level_3_removes_held_items`: a kept snapshot's item held identical
    later is removed, `reduced: true`, `contents` without it.
-6. `a_second_copy_owns_nothing`: a second copy dropped at level 1, last
+6. `a_deletion_owns_its_path`: a snapshot holds `a`, a manual commit
+   then deletes it: the manual commit owns `a` and is kept, the snapshot
+   dropped if it owns nothing else; with the path's writers all dropped,
+   a manual commit deleting only it is dropped, the tree at the cutoff
+   unchanged.
+7. `a_second_copy_owns_nothing`: a second copy dropped at level 1, last
    holder of a path; its first copy, or an older owner, keeps it.
-7. The listing's lines (S6), by `--dry-run`.
+8. The listing's lines (S6), by `--dry-run`, and with `--verbose`.
 
 ## Measured outcome
 
