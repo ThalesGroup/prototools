@@ -124,6 +124,20 @@ fn collect(
                 ),
             ))
         }));
+    // A record cut before a `syntax` no writer sets inside a frame declaring
+    // it longer (spec 0456 S5): the two disagree, the cut kept.
+    out.record
+        .extend(explained.syntax_conflicts.iter().filter_map(|c| {
+            Some((
+                format!("syntax-cut {}", path_of(c.start)?),
+                format!(
+                    "{}, inside a {} frame ending at {}",
+                    within.text(None, c.start, c.end),
+                    c.frame.name(),
+                    c.framed_to
+                ),
+            ))
+        }));
 }
 
 /// The framed sets among a buffer's `records` (spec 0495 S2), in order:
@@ -177,6 +191,7 @@ pub fn reason_code(reason: fdp_scan::Reason) -> &'static str {
         fdp_scan::Reason::Defect => "defect",
         fdp_scan::Reason::DanglingDependency => "dangling-dependency",
         fdp_scan::Reason::ImplausibleEdition => "implausible-edition",
+        fdp_scan::Reason::ImplausibleSyntax => "implausible-syntax",
         fdp_scan::Reason::DeclaresNothing => "declares-nothing",
     }
 }

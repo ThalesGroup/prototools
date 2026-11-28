@@ -40,6 +40,11 @@ const FDP_EDITION: u64 = 14;
 /// the schema's names, so that a later edition is accepted unchanged.
 const WRITTEN_EDITIONS: std::ops::RangeInclusive<u64> = 1000..=9999;
 
+/// The values a writer sets in `syntax` (spec 0456 S4): `descriptor.proto`
+/// documents these three, and protoc's descriptor builder rejects any
+/// other ("Unrecognized syntax"). A closed set, unlike `edition`'s.
+const WRITTEN_SYNTAXES: [&[u8]; 3] = [b"proto2", b"proto3", b"editions"];
+
 /// The only root a candidate is scored against (spec 0239 G3).
 ///
 /// One root, not two. `SCAN` against `FileDescriptorProto` alone already
@@ -84,6 +89,25 @@ pub struct Explained {
     /// The records in `found` that their frame ended earlier than the walk
     /// does (spec 0496), in order.
     pub frame_cuts: Vec<FrameCut>,
+    /// The records in `found` cut before a `syntax` no writer sets inside a
+    /// frame declaring them longer (spec 0456 S5), in order: the frame says
+    /// the bytes are the record's, the value says no record holds them.
+    pub syntax_conflicts: Vec<SyntaxConflict>,
+}
+
+/// A record cut before a `syntax` no writer sets, inside a frame that
+/// declares it longer (spec 0456 S5). It is in [`Explained::found`] with
+/// the cut's end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SyntaxConflict {
+    /// Where the record starts, as in `found`.
+    pub start: usize,
+    /// Where the cut ends it, as in `found`.
+    pub end: usize,
+    /// Where its frame says it ends.
+    pub framed_to: usize,
+    /// The frame.
+    pub frame: Frame,
 }
 
 /// A record its frame ended (spec 0496): the walk read on past the length
@@ -175,6 +199,9 @@ pub enum Reason {
     /// Cut before an `edition` no writer sets, the record holds its name
     /// only (spec 0456 S1).
     ImplausibleEdition,
+    /// Cut before a `syntax` no writer sets, the record holds its name only
+    /// (spec 0456 S4).
+    ImplausibleSyntax,
     /// The record declares nothing but its name, package and dependencies,
     /// and does not stand alone (spec 0483 S1).
     DeclaresNothing,
@@ -287,10 +314,28 @@ fn walk_candidates(
                             Ok(Accepted {
                                 end: walked_end,
                                 order_break,
+                                syntax_cut,
                             }) => {
                                 let (fdp_end, frame) = framed_end(
                                     data, offset, walked_end, chain_end, graph, root, options,
                                 );
+                                // A frame declaring the record longer than the
+                                // syntax cut leaves it: said, the cut kept.
+                                if syntax_cut {
+                                    let past = declared_frames(data, offset, chain_end)
+                                        .into_iter()
+                                        .find_map(|(to, frame)| {
+                                            to.filter(|&to| to > fdp_end).map(|to| (to, frame))
+                                        });
+                                    if let Some((framed_to, frame)) = past {
+                                        result.syntax_conflicts.push(SyntaxConflict {
+                                            start: offset,
+                                            end: fdp_end,
+                                            framed_to,
+                                            frame,
+                                        });
+                                    }
+                                }
                                 if let Some(frame) = frame {
                                     result.frame_cuts.push(FrameCut {
                                         start: offset,
@@ -397,6 +442,16 @@ fn score_candidate_with(
         }
         Some(cut) => start + cut,
     };
+    let before_syntax = end;
+    let end = match implausible_syntax_cut(&data[start..end]) {
+        None => end,
+        // As above: a name at most, which doesn't stand alone.
+        Some(cut) if !declares_more_than_a_name(&data[start..start + cut]) => {
+            return Err(Reason::ImplausibleSyntax);
+        }
+        Some(cut) => start + cut,
+    };
+    let syntax_cut = end < before_syntax;
     let end = match implausible_edition_cut(&data[start..end]) {
         None => end,
         // As above: a name at most, which doesn't stand alone.
@@ -423,7 +478,11 @@ fn score_candidate_with(
         score_candidate_with(data, start, graph, root, &without)
             .is_ok_and(|unordered| unordered.end > end)
     });
-    Ok(Accepted { end, order_break })
+    Ok(Accepted {
+        end,
+        order_break,
+        syntax_cut,
+    })
 }
 
 /// The length a frame at `at` declares, if the bytes from `at` read as one
@@ -475,15 +534,8 @@ fn framed_end(
     root: &str,
     options: &ScanOptions,
 ) -> (usize, Option<Frame>) {
-    let declared = [
-        (
-            chain_end.and_then(|at| frame_at(data, at, start)),
-            Frame::Protobuf,
-        ),
-        (marshal_length(data, start), Frame::Marshal),
-    ];
-    for (length, frame) in declared {
-        let Some(framed) = length.and_then(|l| start.checked_add(l)) else {
+    for (framed, frame) in declared_frames(data, start, chain_end) {
+        let Some(framed) = framed else {
             continue;
         };
         if framed >= walked_end {
@@ -496,6 +548,24 @@ fn framed_end(
         }
     }
     (walked_end, None)
+}
+
+/// Where each frame before `start` says the record ends: a protobuf frame
+/// chained at `chain_end` (S1, S2), a marshal header (S5). Their ends, not
+/// yet checked as [`framed_end`] checks them.
+fn declared_frames(
+    data: &[u8],
+    start: usize,
+    chain_end: Option<usize>,
+) -> [(Option<usize>, Frame); 2] {
+    let end = |length: Option<usize>| length.and_then(|l| start.checked_add(l));
+    [
+        (
+            end(chain_end.and_then(|at| frame_at(data, at, start))),
+            Frame::Protobuf,
+        ),
+        (end(marshal_length(data, start)), Frame::Marshal),
+    ]
 }
 
 /// The length a Python marshal bytes object's header right before `start`
@@ -518,6 +588,8 @@ struct Accepted {
     /// (spec 0449 S6), when it ended it earlier than the walk without the
     /// check does.
     order_break: Option<usize>,
+    /// Whether it was cut before a `syntax` no writer sets (spec 0456 S4).
+    syntax_cut: bool,
 }
 
 /// Whether a record that ended this way stands alone (spec 0448 S6): at the
@@ -709,6 +781,24 @@ fn implausible_edition_cut(record: &[u8]) -> Option<usize> {
             f.number == FDP_EDITION
                 && f.wire == 0
                 && !(editions_syntax && f.varint.is_some_and(|v| WRITTEN_EDITIONS.contains(&v)))
+        })
+        .map(|f| f.start)
+}
+
+/// Where `record` must end so that its `syntax` is one a writer sets
+/// ([`WRITTEN_SYNTAXES`]), or `None` if it is (spec 0456 S4). Field 12's tag
+/// is the byte `0x62`, `b`, as common after a record by chance as the
+/// edition's `p`: a record followed by text starting with `b` and a byte
+/// that frames the rest reads that text as its `syntax`. So this cuts, as
+/// [`implausible_edition_cut`] does: before the first `syntax` no writer
+/// sets.
+fn implausible_syntax_cut(record: &[u8]) -> Option<usize> {
+    top_level_fields(record)?
+        .iter()
+        .find(|f| {
+            f.number == FDP_SYNTAX
+                && f.wire == 2
+                && !WRITTEN_SYNTAXES.contains(&&record[f.payload.clone()])
         })
         .map(|f| f.start)
 }
@@ -1140,6 +1230,69 @@ mod tests {
         // No marshal header at all: the same.
         let (_, data) = compiled_module(&record, 0x00, record.len());
         assert!(scan_explained(&data).frame_cuts.is_empty());
+    }
+
+    /// A stylesheet after a record, as a Go binary stores them: its
+    /// first bytes, `b` (field 12, length-delimited) and `o` (111), read as
+    /// a `syntax` field (spec 0456 S4).
+    fn stylesheet() -> Vec<u8> {
+        let mut css = b"body {\n  font-family: sans-serif;\n}\n\n".to_vec();
+        css.extend(std::iter::repeat_n(b'.', 200));
+        css
+    }
+
+    #[test]
+    fn a_syntax_no_writer_sets_ends_the_record_before_it() {
+        let record = make_declaring_fdp("x/a.proto");
+        let mut data = record.clone();
+        data.extend_from_slice(&stylesheet());
+        let explained = scan_explained(&data);
+        assert_eq!(explained.found, [(0, record.len())]);
+        // No frame: cut silently, as the walk ends a record anywhere else.
+        assert!(explained.syntax_conflicts.is_empty());
+        assert!(explained.frame_cuts.is_empty());
+    }
+
+    #[test]
+    fn a_syntax_a_writer_sets_is_kept() {
+        for syntax in ["proto2", "proto3", "editions"] {
+            let mut record = make_declaring_fdp("x/a.proto");
+            record.extend_from_slice(&framed(12, syntax.as_bytes()));
+            let mut data = record.clone();
+            data.push(0);
+            assert_eq!(scan_explained(&data).found, [(0, record.len())], "{syntax}");
+        }
+    }
+
+    #[test]
+    fn a_name_left_alone_by_the_syntax_cut_is_refused() {
+        let mut data = name_field("x/a.proto");
+        data.extend_from_slice(&stylesheet());
+        let explained = scan_explained(&data);
+        assert!(explained.found.is_empty());
+        assert_eq!(explained.rejected[0].reason, Reason::ImplausibleSyntax);
+    }
+
+    #[test]
+    fn a_syntax_cut_inside_a_frame_is_a_conflict_reported() {
+        let a = make_declaring_fdp("x/a.proto");
+        let b = make_declaring_fdp("x/b.proto");
+        let mut damaged = b.clone();
+        damaged.extend_from_slice(&framed(12, b"nonsense"));
+        let (data, ranges) = enclosing_message(&[&a, &damaged]);
+        let explained = scan_explained(&data);
+        let (start, framed_to) = ranges[1];
+        // The cut kept: no writer sets that syntax.
+        assert_eq!(explained.found, [ranges[0], (start, start + b.len())]);
+        assert_eq!(
+            explained.syntax_conflicts,
+            [SyntaxConflict {
+                start,
+                end: start + b.len(),
+                framed_to,
+                frame: Frame::Protobuf,
+            }]
+        );
     }
 
     #[test]

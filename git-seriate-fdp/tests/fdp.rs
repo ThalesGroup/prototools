@@ -596,6 +596,60 @@ fn a_framed_descriptor_ends_at_its_frame() {
     );
 }
 
+/// A set's record holding a `syntax` no writer sets, inside its frame
+/// (spec 0456 S5): cut before it, and the conflict with the frame recorded.
+#[test]
+fn a_syntax_cut_inside_a_frame_is_recorded() {
+    let stock = stock_files();
+    let a = &stock[0];
+    // No `syntax` of its own, which the walk would stop at the second one
+    // of, singular, before any cut.
+    let b = &prototext_upb::text_format::parse_descriptor(
+        r#"name: "x/b.proto" package: "x" message_type { name: "M" }"#,
+        false,
+    )
+    .unwrap();
+    let mut damaged = b.clone();
+    damaged.extend(field(12, b"nonsense"));
+    let mut message = field(1, a);
+    message.extend(field(1, &damaged));
+    let framed_to = message.len();
+    let b_start = framed_to - damaged.len();
+
+    let tmp = tempfile::tempdir().unwrap();
+    let file = executable(tmp.path(), "x", &[&message], None);
+    let (_, r) = repo(tmp.path());
+    let kit = kit(&r).unwrap();
+    extract_files(
+        &r,
+        &kit,
+        std::slice::from_ref(&file),
+        &ExtractOptions {
+            id: Some("x".into()),
+            build_time: Some(1_700_000_000),
+            ..ExtractOptions::default()
+        },
+        &mut Vec::new(),
+    )
+    .unwrap();
+    let listed = git_seriate::store::list_with(&r, None).unwrap();
+    assert_eq!(listed.len(), 1, "one set");
+    let block = &listed[0].block;
+    // `executable` puts 64 bytes before the message.
+    let (start, end) = (64 + b_start, 64 + b_start + b.len());
+    assert_eq!(block.evidence[&item_path_of(b)], format!("{start}..{end}"));
+    assert_eq!(
+        block.record,
+        [(
+            format!("syntax-cut {}", item_path_of(b)),
+            format!(
+                "{start}..{end}, inside a protobuf frame ending at {}",
+                64 + framed_to
+            )
+        )]
+    );
+}
+
 /// The snapshots `options` makes of `files`, as (identity, group, paths),
 /// sorted by identity.
 fn snapshots_of(
