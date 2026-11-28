@@ -64,14 +64,25 @@ have.
 - **S1. Meeting a history commit.** A raw snapshot R meets the history
   commit H of its identity (in any lineage) when `add`, `import` or
   `settle` finds both. Their sources must be equal (identity, build time,
-  order hint, group, metadata); then, with C today's canonicalization:
+  order hint, group); then, with C today's canonicalization:
   - **H's stamp is today's rule sets:** R *is* H's snapshot when C(R)'s
     items are H's items; *is not* otherwise.
   - **H's stamp differs:** R *is* H's snapshot when C(R) equals C(H's
     items); *undecided* otherwise: C(C_old(raw)) need not equal C(raw),
     and a difference cannot be told from different bytes.
 
-  Sources differing: *is not*.
+  Sources differing: *is not*. Metadata, its labels, doesn't count: it
+  describes how a tool read the input, not what the input is, and it
+  changes with the tool (S1a).
+- **S1a. Labels differing are reported, in bulk:** one line per key,
+  `labels differ on N snapshot(s): + KEY, - KEY, ~ KEY` (added, removed,
+  changed), each snapshot listed with `--verbose`. R, accepted, carries
+  its own labels into the history only where a commit is rewritten
+  anyway: a commit the plan would keep is never rewritten for its labels
+  alone, since each rewrite of a shared history is a force-push. Old
+  commits may keep their old labels for good; nothing reads them as
+  anything but information. A label whose change means a different
+  snapshot belongs in the identity.
 - **S2. What follows:**
   - **is:** R is accepted, and preferred. It replaces in the store a copy
     rebuilt from the history, and later re-canonicalizations start from
@@ -118,21 +129,17 @@ have.
   snapshot" means. `import` and `add` take the kit's canonicalizer, as
   `settle` does.
 
-## Open questions
-
-- **Q1. Metadata in S1's source equality.** Metadata is shown, never
-  interpreted (0452), but it is part of the snapshot's commit: a front
-  end adding a metadata key over time turns every meeting into *is not*.
-  Proposed: metadata left out of the decision, a difference reported;
-  R, accepted, carries its own metadata into the next re-sort, noted.
-  To settle before implementing.
-
 ## Alternatives considered
 
 - **Refusing `prune` when raw forms differ:** the raw forms are lost
   anyway, by a clone; refusing one way of losing them protects nothing.
 - **A marker on rebuilt copies:** S1 and S4 decide from the contents and
   the stamp; a marker adds state that a clone, again, does not carry.
+- **Labels in S1's equality:** labels change with the tool, not with the
+  input. Measured downstream: three labels added to an extractor on one
+  date, and two front ends writing different label sets for one input;
+  of 47 snapshots of one lineage, 34 with 3 labels, 12 with 4, 1 with 6.
+  Each re-extracted by today's tool would have met as *is not*.
 - **Recording an `accept` in R's place in the store:** `prune` deletes
   it, and with it the only trace of why the history changed (S3a).
 - **Deciding an undecided meeting in favor of R:** it would replace a
@@ -155,6 +162,9 @@ have.
 3a. A downstream's bump of its own rule set dropping a rule, on its copy
    of a history: the meetings undecided where the rule removed something.
 4. `prune` counts the raw forms it loses (S5).
+5. S1a: the same snapshot re-extracted with one label more: *is*, the
+   difference reported in one line per key; a commit the plan keeps is
+   not rewritten for it; one the plan rewrites takes R's labels.
 
 ## Measured outcome
 
