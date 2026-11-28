@@ -875,3 +875,53 @@ fn the_listing_names_two_owners_and_all_with_verbose() {
         "{out}"
     );
 }
+
+/// A downstream's case (spec 0501 S4): a manual commit adding two files a
+/// later snapshot holds, and deleting a file a dropped commit wrote. Its
+/// deletion has nothing left to delete and owns nothing, so the commit
+/// goes in the same pass: a second pass drops nothing.
+#[test]
+fn one_pass_is_final_when_a_deletion_has_nothing_left() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = history(tmp.path(), &[&[("a.txt", "1\n"), ("b.txt", "2\n")]]);
+    let writer = manual(
+        &repo,
+        None,
+        &[("p.txt", "old\n")],
+        &[],
+        "Write p",
+        T0 - 2 * DAY,
+    );
+    let mixed = manual(
+        &repo,
+        Some(&writer),
+        &[("a.txt", "1\n"), ("b.txt", "2\n")],
+        &["p.txt"],
+        "Add a and b, delete p",
+        T0 - DAY,
+    );
+    on_a_manual_base(&repo, &mixed);
+    let tree = tree_of(&repo);
+    let out = compact(&repo, "2", &after_everything(), &[]);
+    assert!(
+        out.contains("('Write p'): every path it holds is held later"),
+        "{out}"
+    );
+    assert!(
+        out.contains(
+            "('Add a and b, delete p'): its deletions have nothing left to delete, and every \
+             other path it holds is held later, by 1 commit ("
+        ),
+        "{out}"
+    );
+    assert!(
+        out.contains("('Snapshot s0'): 2 items it held become its changes"),
+        "{out}"
+    );
+    assert!(out.contains("dropped 2, reduced 0"), "{out}");
+    assert_eq!(subjects(&repo), "Snapshot s0\n");
+    assert_eq!(tree_of(&repo), tree);
+
+    let again = compact(&repo, "2", &after_everything(), &[]);
+    assert!(again.contains("dropped 0, reduced 0"), "{again}");
+}

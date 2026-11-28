@@ -79,9 +79,12 @@ already dates a file (0452 S6, level 1).
   own, and for each path it owns that the rebuilt tree lacks or holds
   other bytes for, that path with its original tree's bytes. A deletion
   is replayed only where the rebuilt tree holds the path: its writers
-  dropped, there is nothing to delete; a manual commit left with no
-  change is dropped, as level 1 drops one. The tree at the cutoff is
+  dropped, there is nothing to delete, and the deletion owns nothing. A
+  commit whose only owned paths are such deletions is dropped, decided
+  before it is kept, so that one pass is final. The tree at the cutoff is
   then the old one, checked as today (nothing written otherwise).
+  *Amended 2026-11-28:* a downstream's second pass dropped a commit the
+  first had kept for a deletion it then didn't replay.
 - **S5. Level 3** removes from a kept snapshot commit the items it holds
   but doesn't own, changed or only held: `reduced: true`, `contents` and
   `evidence` without them. Manual commits are never reduced, as today.
@@ -91,7 +94,7 @@ already dates a file (0452 S6, level 1).
   …)`), all of them with `--verbose`; a kept commit that gains changes by
   S4 says how many (`own 5e6f7a8b ('…'): 18 items it held become its
   changes`); a manual commit dropped by S4, that its deletions have
-  nothing left to delete.
+  nothing left to delete, and the commits owning its other paths if any.
 
 ## Alternatives considered
 
@@ -128,6 +131,9 @@ already dates a file (0452 S6, level 1).
 7. `a_second_copy_owns_nothing`: a second copy dropped at level 1, last
    holder of a path; its first copy, or an older owner, keeps it.
 8. The listing's lines (S6), by `--dry-run`, and with `--verbose`.
+9. `one_pass_is_final_when_a_deletion_has_nothing_left`: a manual commit
+   adding files a later snapshot holds and deleting one a dropped commit
+   wrote is dropped in the same pass; a second pass drops nothing.
 
 ## Measured outcome
 

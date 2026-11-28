@@ -291,26 +291,47 @@ fn compact_branch(
             });
             continue;
         }
-        let owned: Vec<&str> = holds(c).filter(|p| owner[p] == i).collect();
+        // A deletion with nothing left to delete, its path's writers
+        // dropped, owns nothing (S4): decided here, before the commit is
+        // kept for it, so that one pass is final.
+        let idle = |p: &str| {
+            c.changes.iter().any(|ch| ch.path == p && ch.new.is_none()) && !rebuilt.contains_key(p)
+        };
+        let owned: Vec<&str> = holds(c).filter(|p| owner[p] == i && !idle(p)).collect();
         if owned.is_empty() {
+            let mut owners: Vec<usize> = holds(c)
+                .filter(|p| owner[p] != i)
+                .map(|p| owner[p])
+                .collect();
+            owners.sort_unstable();
+            owners.dedup();
+            let held_later = || {
+                named(
+                    &owners.iter().map(|&o| before[o].id).collect::<Vec<_>>(),
+                    options.verbose,
+                )
+            };
+            let deletions = holds(c).any(|p| owner[p] == i);
             report.actions.push(match &c.block {
                 Some(b) if c.changes.is_empty() => format!(
                     "drop {short} ('{}'): changes nothing; the only record of {:?} goes with it",
                     c.subject, b.source.identity
                 ),
-                _ => {
-                    let mut owners: Vec<usize> = holds(c).map(|p| owner[p]).collect();
-                    owners.sort_unstable();
-                    owners.dedup();
-                    format!(
-                        "drop {short} ('{}'): every path it holds is held later, by {}",
-                        c.subject,
-                        named(
-                            &owners.iter().map(|&o| before[o].id).collect::<Vec<_>>(),
-                            options.verbose
-                        )
-                    )
-                }
+                _ if deletions && owners.is_empty() => format!(
+                    "drop {short} ('{}'): its deletions have nothing left to delete",
+                    c.subject
+                ),
+                _ if deletions => format!(
+                    "drop {short} ('{}'): its deletions have nothing left to delete, and every \
+                     other path it holds is held later, by {}",
+                    c.subject,
+                    held_later()
+                ),
+                _ => format!(
+                    "drop {short} ('{}'): every path it holds is held later, by {}",
+                    c.subject,
+                    held_later()
+                ),
             });
             continue;
         }
@@ -361,13 +382,6 @@ fn compact_branch(
                 };
                 taken += 1;
             }
-        }
-        if changes.is_empty() && c.block.is_none() {
-            report.actions.push(format!(
-                "drop {short} ('{}'): its deletions have nothing left to delete",
-                c.subject
-            ));
-            continue;
         }
         if taken > 0 {
             report.actions.push(format!(
