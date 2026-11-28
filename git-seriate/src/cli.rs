@@ -26,6 +26,9 @@ pub struct Kit {
     /// The item pattern when the repository sets no `seriate.itemPattern`;
     /// every path when `None`.
     pub item_pattern: Option<String>,
+    /// `--verbose`: say more (each snapshot whose labels differ, spec 0500
+    /// S1a). Set from the command line, whatever the front end gives.
+    pub verbose: bool,
 }
 
 impl Kit {
@@ -38,6 +41,7 @@ impl Kit {
             comparator: Box::new(seriation::LinesChars),
             legacy: None,
             item_pattern: None,
+            verbose: false,
         }
     }
 }
@@ -52,6 +56,9 @@ struct Cli<E: Subcommand> {
     /// Run as if started in this directory.
     #[arg(short = 'C', global = true, value_name = "DIR")]
     directory: Option<PathBuf>,
+    /// Say more: each snapshot whose labels differ, not only each key.
+    #[arg(long, global = true)]
+    verbose: bool,
     #[command(subcommand)]
     command: Command<E>,
 }
@@ -186,6 +193,23 @@ enum Command<E: Subcommand> {
         /// The repositories to copy them from.
         #[arg(required = true)]
         repos: Vec<PathBuf>,
+    },
+    /// Take snapshots whose meeting with their history was undecided as
+    /// the history's own (spec 0500 S3): recorded, with the reason, under
+    /// refs/seriate/accepted.
+    Accept {
+        /// Why: kept with each decision.
+        #[arg(long, required = true)]
+        reason: String,
+        /// The decisions, as a refusal lists them, `<identity> <commit>`
+        /// per line (- for standard input).
+        #[arg(long, value_name = "FILE", conflicts_with = "identities")]
+        from: Option<PathBuf>,
+        /// Show what would be accepted, and write nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Identities of the store's undecided snapshots, or globs of them.
+        identities: Vec<String>,
     },
     /// State which producer's lineage snapshots belong to, after extracting
     /// them; `settle` sorts each lineage on its own.
@@ -429,7 +453,9 @@ fn dispatch<E: Subcommand>(
         }
         Err(e) => return Err(Error::Git(e.to_string())),
     };
-    let kit = &kit(&repo)?;
+    let mut kit = kit(&repo)?;
+    kit.verbose = cli.verbose;
+    let kit = &kit;
     // Every command but `migrate` and `import` reads or writes the store as
     // laid out since spec 0499: a repository of before it is refused.
     let former_ok = matches!(
@@ -479,9 +505,10 @@ fn dispatch<E: Subcommand>(
                 record: Vec::new(),
             };
             let mut archive = crate::archive::Archive::new();
+            let meeter = meeter(&repo, kit)?;
             let added = match &tar_out {
-                Some(_) => store::add_to(&mut store::Sink::Archive(&mut archive), snapshot)?,
-                None => store::add(&repo, snapshot)?,
+                Some(_) => store::add_to(&mut store::Sink::Archive(&mut archive), snapshot, None)?,
+                None => store::add_to(&mut store::Sink::Repo(&repo), snapshot, Some(&meeter))?,
             };
             if let Some(out) = &tar_out {
                 archive.write_to_path(out)?;
@@ -502,8 +529,13 @@ fn dispatch<E: Subcommand>(
                     say(format!("added {identity}"));
                 }
                 Added::Unchanged { identity } => say(format!("unchanged {identity}")),
+                Added::Replaced { identity } => say(format!(
+                    "replaced {identity}: the original of the copy rebuilt from its history"
+                )),
+                Added::Refused { .. } => {}
                 Added::Nothing => say(format!("nothing to add: {} holds no file", dir.display())),
             }
+            met(&meeter, kit)?;
         }
         Command::Settle {
             into,
@@ -541,6 +573,7 @@ fn dispatch<E: Subcommand>(
                     legacy: kit.legacy.as_deref(),
                 },
                 verify_canon,
+                verbose: kit.verbose,
             };
             let settled = history::settle(&repo, &options)?;
             for n in &settled.notes {
@@ -733,16 +766,32 @@ fn dispatch<E: Subcommand>(
         Command::Prune { glob, record_only } => prune(&repo, glob.as_deref(), record_only, kit)?,
         Command::Import { repos } => {
             for from in repos {
-                let report = store::import(&repo, &from, kit.legacy.as_deref())?;
+                let meeter = meeter(&repo, kit)?;
+                let report = store::import(&repo, &from, kit.legacy.as_deref(), Some(&meeter))?;
                 println!(
-                    "{}: copied {}, already here {}",
+                    "{}: copied {}, already here {}{}",
                     from.display(),
                     report.copied.len(),
-                    report.present.len()
+                    report.present.len(),
+                    if report.replaced.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            ", {} original(s) replacing copies rebuilt from the history",
+                            report.replaced.len()
+                        )
+                    }
                 );
+                met(&meeter, kit)?;
             }
         }
         Command::Lineage { action } => lineage(&repo, action, kit)?,
+        Command::Accept {
+            reason,
+            from,
+            dry_run,
+            identities,
+        } => accept(&repo, kit, &reason, from.as_deref(), dry_run, &identities)?,
         Command::Migrate {
             into,
             dry_run,
@@ -868,8 +917,134 @@ fn prune(
     record_only: bool,
     kit: &Kit,
 ) -> Result<(), Error> {
-    for identity in store::prune(repo, glob, record_only, kit.legacy.as_deref())? {
+    let legacy = kit.legacy.as_deref();
+    // Raw forms are lost by design (spec 0500 S5): said, not refused.
+    let lost = crate::meet::raw_forms_lost(
+        repo,
+        &store::to_prune(repo, glob, record_only, legacy)?,
+        legacy,
+    )?;
+    let deleted = store::prune(repo, glob, record_only, legacy)?;
+    for identity in &deleted {
         println!("deleted {identity}");
+    }
+    if lost > 0 {
+        println!(
+            "{lost} of the {} snapshot(s) deleted had a raw form their history doesn't hold: \
+             it rebuilds them as it holds them",
+            deleted.len()
+        );
+    }
+    Ok(())
+}
+
+/// The command's meetings with the histories (spec 0500), with the kit's
+/// plugins.
+pub fn meeter<'k>(repo: &gix::Repository, kit: &'k Kit) -> Result<crate::meet::Meeter<'k>, Error> {
+    crate::meet::Meeter::new(
+        repo,
+        kit.renderer.as_ref(),
+        kit.canonicalizer.as_ref(),
+        kit.legacy.as_deref(),
+    )
+}
+
+/// After a command's meetings: the labels that differed, on standard
+/// error, then the refusal of every snapshot refused, if any (spec 0500
+/// S1a, S2).
+pub fn met(meeter: &crate::meet::Meeter, kit: &Kit) -> Result<(), Error> {
+    for line in meeter.labels_report(kit.verbose) {
+        eprintln!("{line}");
+    }
+    match meeter.refusal() {
+        Some(refusal) => Err(refusal),
+        None => Ok(()),
+    }
+}
+
+/// `accept` (spec 0500 S3).
+fn accept(
+    repo: &gix::Repository,
+    kit: &Kit,
+    reason: &str,
+    from: Option<&Path>,
+    dry_run: bool,
+    identities: &[String],
+) -> Result<(), Error> {
+    let legacy = kit.legacy.as_deref();
+    let meeter = meeter(repo, kit)?;
+    let chosen: Vec<(String, gix::ObjectId)> = match from {
+        Some(file) => {
+            let text = if file.as_os_str() == "-" {
+                std::io::read_to_string(std::io::stdin())?
+            } else {
+                std::fs::read_to_string(file)?
+            };
+            let mut chosen = Vec::new();
+            for (n, line) in text.lines().enumerate() {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                let parsed = line.split_once(' ').and_then(|(i, c)| {
+                    gix::ObjectId::from_hex(c.trim().as_bytes())
+                        .ok()
+                        .map(|c| (i.to_string(), c))
+                });
+                match parsed {
+                    Some(entry) => chosen.push(entry),
+                    None => {
+                        return Err(Error::Refused(format!(
+                            "{}: line {}: expected `<identity> <commit>`: {line:?}",
+                            file.display(),
+                            n + 1
+                        )))
+                    }
+                }
+            }
+            chosen
+        }
+        None => {
+            if identities.is_empty() {
+                return Err(Error::Refused(
+                    "accept: give IDENTITY..., or --from FILE".into(),
+                ));
+            }
+            let undecided = crate::meet::undecided_in_store(repo, &meeter, legacy)?;
+            for p in identities {
+                if !undecided
+                    .iter()
+                    .any(|m| &m.identity == p || crate::plugins::glob_matches(p, &m.identity))
+                {
+                    return Err(Error::Refused(format!(
+                        "no undecided snapshot matches {p:?}: nothing accepted"
+                    )));
+                }
+            }
+            undecided
+                .into_iter()
+                .filter(|m| {
+                    identities
+                        .iter()
+                        .any(|p| p == &m.identity || crate::plugins::glob_matches(p, &m.identity))
+                })
+                .map(|m| (m.identity, m.commit))
+                .collect()
+        }
+    };
+    let lines = crate::meet::accept(repo, &meeter, &chosen, reason, dry_run, legacy)?;
+    let verb = if dry_run { "would accept" } else { "accepted" };
+    for line in &lines {
+        let mut fields = line.split('\t');
+        let identity = fields.next().unwrap_or("");
+        let commit = fields.next().unwrap_or("");
+        println!("{verb} {identity} ({})", &commit[..commit.len().min(8)]);
+    }
+    if !dry_run && !lines.is_empty() {
+        println!(
+            "recorded in {}; settle to re-canonicalize from them",
+            crate::meet::ACCEPTED
+        );
     }
     Ok(())
 }

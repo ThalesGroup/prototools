@@ -228,8 +228,12 @@ fn main() -> ExitCode {
                 Some(_) => git_seriate::store::Sink::Archive(&mut archive),
                 None => git_seriate::store::Sink::Repo(repo),
             };
+            // Into a repository, a snapshot a history holds is met with it
+            // (spec 0500); an archive meets none.
+            let meeter = git_seriate::cli::meeter(repo, kit)?;
+            let meets = tar_out.is_none().then_some(&meeter);
             let outcomes =
-                extract_files_into(repo, &mut sink, kit, &files, &options, &mut warnings)?;
+                extract_files_into(repo, &mut sink, meets, kit, &files, &options, &mut warnings)?;
             if let Some(out) = &tar_out {
                 archive.write_to_path(out)?;
             }
@@ -261,13 +265,17 @@ fn main() -> ExitCode {
                         say(format!("added {identity}"));
                     }
                     Added::Unchanged { identity } => say(format!("unchanged {identity}")),
+                    Added::Replaced { identity } => say(format!(
+                        "replaced {identity}: the original of the copy rebuilt from its history"
+                    )),
+                    Added::Refused { .. } => {}
                     Added::Nothing if !found.contains(&o.file) => {
                         say(format!("{}: no descriptor", o.file.display()));
                     }
                     Added::Nothing => {}
                 }
             }
-            Ok(())
+            git_seriate::cli::met(&meeter, kit)
         },
     )
 }

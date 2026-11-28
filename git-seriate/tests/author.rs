@@ -72,6 +72,7 @@ fn settle(repo: &gix::Repository) {
                 legacy: None,
             },
             verify_canon: false,
+            verbose: false,
         },
     )
     .unwrap();

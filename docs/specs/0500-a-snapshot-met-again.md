@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0500 — a snapshot met again: the original preferred, a conflict said
 
-Status: draft
+Status: implemented
+Implemented in: 2026-11-28
 App: git-seriate, git-seriate-fdp
 Refs: docs/specs/0452-git-seriate-the-store-and-the-history.md
         (the store, `import`, a snapshot rebuilt from the history),
@@ -168,4 +169,31 @@ have.
 
 ## Measured outcome
 
-Filled in at implementation.
+Implemented in `git-seriate/src/meet.rs` (the decision, `accept`, the
+record, `prune`'s count), wired into `add`, `import`, `settle` and
+git-seriate-fdp's `extract`; tested in `git-seriate-fdp/tests/met.rs`
+with the `fdp` rule set, whose R1 makes a raw form and its canonical one
+differ: test plan items 1 to 5, the undecided case being a history
+written under `fdp 1` met with no rule set.
+
+Decided at implementation:
+
+- **Where meetings are refused:** `add` and `extract` write the
+  snapshots that pass and refuse the others, one error listing them all;
+  `import` stays all-or-nothing, as before 0500.
+- **`settle` meets only the store's copies held by a commit written
+  under other rule sets or another renderer** (the only meetings that can
+  be undecided); the others were met entering the store. It costs
+  nothing while the stamps hold.
+- **The record's parents are each accepted R the repository holds:** an
+  original `import` or `extract` will bring isn't here yet; its line is
+  recorded all the same, its stamps and paths as `?`.
+- **A commit `compact` reduced** is compared on its own paths only.
+- **Two copies that are both the history's** (an original and the same
+  with other labels): the store's is kept; only a rebuilt copy is
+  replaced.
+- **`--verbose`** is a global flag, carried by the kit to a front end's
+  own commands.
+
+The downstream bump of its rule set (item 3a) is the downstream's, to
+come.

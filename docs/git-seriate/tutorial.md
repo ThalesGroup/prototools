@@ -279,8 +279,18 @@ deleted rack-d
 ```
 
 `prune --glob 'rack-*'` deletes only those matching. Pruning removes no
-snapshot: the history still holds them. (`prune` was once called `drop`,
-which still works, and warns.)
+snapshot: the history still holds them, in canonical form; it says how
+many raw forms it loses, which the history can't give back. (`prune` was
+once called `drop`, which still works, and warns.)
+
+When an original comes back, imported or extracted again, git-seriate
+meets it with the history: the history's own snapshot is taken, and
+preferred to a copy rebuilt from the history; another snapshot under
+the same identity is refused, naming `forget`. If the history was
+written under other rule sets than today's, a difference can't be told
+from other bytes: the refusal lists each such snapshot, and `git seriate
+accept --reason TEXT --from FILE` takes that list once you've checked it,
+recording the decision under `refs/seriate/accepted`.
 
 To take a snapshot out of the history, say one extracted by a scanner
 since fixed, forget it, saying why, then add its replacement the normal

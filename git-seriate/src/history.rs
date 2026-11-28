@@ -57,6 +57,9 @@ pub struct Options<'a> {
     /// Canonicalize every item, trusting no history commit, and report each
     /// one a commit's marker wrongly claims canonical (spec 0464 S4).
     pub verify_canon: bool,
+    /// List each snapshot whose labels differ, not only each key (spec
+    /// 0500 S1a).
+    pub verbose: bool,
 }
 
 /// What `settle` did, or would do with `dry_run`.
@@ -767,6 +770,26 @@ pub fn settle(repo: &gix::Repository, options: &Options) -> Result<Settled, Erro
             .push(identity);
     }
 
+    // The store's copies a history commit written under other rule sets
+    // holds: met before anything is written (spec 0500 S6), every one
+    // decided, a refusal listing them all. The others were met entering
+    // the store.
+    let meeter = crate::meet::Meeter::new(
+        repo,
+        options.plugins.renderer,
+        options.plugins.canonicalizer,
+        legacy,
+    )?;
+    for l in &listed {
+        if l.block.contents.is_some() && meeter.stale(&l.identity) {
+            meeter.meet_commit(repo, l.commit, &l.block)?;
+        }
+    }
+    if let Some(refusal) = meeter.refusal() {
+        return Err(refusal);
+    }
+    out.notes.extend(meeter.labels_report(options.verbose));
+
     // The lineages left: rewritten without what moved out, or emptied.
     let no_forget = HashSet::new();
     let mut tips = history.tips.clone();
@@ -820,6 +843,7 @@ pub fn settle(repo: &gix::Repository, options: &Options) -> Result<Settled, Erro
                 sort: options.sort.clone(),
                 plugins: copy_plugins(&options.plugins),
                 verify_canon: false,
+                verbose: false,
             },
             &[],
             &set,
@@ -1104,6 +1128,7 @@ pub fn forget(repo: &gix::Repository, options: &ForgetOptions) -> Result<Forgott
                 sort: options.sort.clone(),
                 plugins: copy_plugins(&options.plugins),
                 verify_canon: false,
+                verbose: false,
             },
             &[],
             &set,

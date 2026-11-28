@@ -117,6 +117,7 @@ fn options<'a>(item_paths: &'a Pattern, legacy: &'a Old) -> Options<'a> {
             legacy: Some(legacy),
         },
         verify_canon: false,
+        verbose: false,
     }
 }
 
@@ -243,7 +244,7 @@ fn old_snapshot_branches_are_listed_imported_and_dropped() {
     assert_eq!(listed[0].identity, "pkg/v1/0/bin");
 
     let ours = gix::init_bare(tmp.path().join("ours.git")).unwrap();
-    let imported = store::import(&ours, &tmp.path().join("theirs.git"), Some(&Old)).unwrap();
+    let imported = store::import(&ours, &tmp.path().join("theirs.git"), Some(&Old), None).unwrap();
     assert_eq!(imported.copied, ["pkg/v1/0/bin"]);
     assert_eq!(
         store::tip(

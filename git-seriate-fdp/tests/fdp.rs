@@ -232,6 +232,7 @@ fn settle(repo: &gix::Repository, kit: &Kit, canonicalizer: &dyn Canonicalizer) 
                 legacy: None,
             },
             verify_canon: false,
+            verbose: false,
         },
     )
     .unwrap();

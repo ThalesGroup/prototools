@@ -56,8 +56,15 @@ pub enum Added {
         identity: String,
         rejected: Vec<Rejection>,
     },
-    /// The store already holds this very commit.
+    /// The store already holds this very commit, or the same snapshot of
+    /// the history's (spec 0500 S2), kept.
     Unchanged { identity: String },
+    /// The original of a copy the store held, rebuilt from the history:
+    /// the copy replaced (spec 0500 S2, S4).
+    Replaced { identity: String },
+    /// Met its history and refused (spec 0500 S2): kept, with the others,
+    /// by the [`crate::meet::Meeter`] given, which says why.
+    Refused { identity: String },
     /// No item and no record: nothing to keep.
     Nothing,
 }
@@ -138,13 +145,18 @@ impl Sink<'_> {
 }
 
 /// Add a snapshot, at `refs/seriate/snapshots/<identity>` (spec 0452 S3,
-/// 0499 S2).
+/// 0499 S2), meeting no history: for a snapshot rebuilt from one.
 pub fn add(repo: &gix::Repository, snapshot: NewSnapshot) -> Result<Added, Error> {
-    add_to(&mut Sink::Repo(repo), snapshot)
+    add_to(&mut Sink::Repo(repo), snapshot, None)
 }
 
-/// [`add`], into a repository or an archive.
-pub fn add_to(sink: &mut Sink, snapshot: NewSnapshot) -> Result<Added, Error> {
+/// [`add`], into a repository or an archive; a snapshot a history holds met
+/// with it by `meeter` (spec 0500), in a repository.
+pub fn add_to(
+    sink: &mut Sink,
+    snapshot: NewSnapshot,
+    meeter: Option<&crate::meet::Meeter>,
+) -> Result<Added, Error> {
     let identity = snapshot.source.identity.clone();
     let ref_name = snapshot_ref(&identity)?;
     let mut rejected = snapshot.rejected;
@@ -194,15 +206,54 @@ pub fn add_to(sink: &mut Sink, snapshot: NewSnapshot) -> Result<Added, Error> {
              directory of refs apart; give one of them another identity"
         )));
     }
-    if let Some(existing) = sink.tip(&identity, &ref_name)? {
-        return if existing == id {
-            Ok(Added::Unchanged { identity })
-        } else {
-            Err(Error::Refused(format!(
-                "snapshot {identity:?} exists with another commit ({existing}); this snapshot \
-                 would be {id}"
-            )))
-        };
+    let existing = sink.tip(&identity, &ref_name)?;
+    if existing == Some(id) {
+        return Ok(Added::Unchanged { identity });
+    }
+    // A snapshot a history holds, met with it (spec 0500).
+    if let (Some(meeter), Sink::Repo(repo)) = (meeter, &*sink) {
+        if meeter.holds(&identity) {
+            let items: Vec<(String, Vec<u8>)> = placed.clone();
+            let meeting = meeter.meet(repo, id, &block, &items)?;
+            if meeting.verdict != crate::meet::Verdict::Is {
+                return Ok(Added::Refused { identity });
+            }
+            if let Some(old) = existing {
+                // The original replaces a copy rebuilt from the history,
+                // whose items are the history's (S4); else the store's
+                // copy is kept, the same snapshot.
+                let old_items =
+                    crate::history::files(repo, crate::history::commit_tree(repo, old)?, "")?;
+                let mine: Vec<(String, ObjectId)> =
+                    blobs.iter().map(|(p, b)| (p.to_string(), *b)).collect();
+                if !meeter.is_rebuilt(repo, &identity, &old_items)?
+                    || meeter.is_rebuilt(repo, &identity, &mine)?
+                {
+                    return Ok(Added::Unchanged { identity });
+                }
+                let written = sink.write(&commit)?;
+                debug_assert_eq!(written, id);
+                if let Sink::Repo(repo) = &*sink {
+                    set_ref(
+                        repo,
+                        &ref_name,
+                        PreviousValue::MustExistAndMatch(Target::Object(old)),
+                        written,
+                    )?;
+                }
+                return Ok(Added::Replaced { identity });
+            }
+            let written = sink.write(&commit)?;
+            debug_assert_eq!(written, id);
+            sink.set_snapshot(&identity, &ref_name, written)?;
+            return Ok(Added::Written { identity, rejected });
+        }
+    }
+    if let Some(existing) = existing {
+        return Err(Error::Refused(format!(
+            "snapshot {identity:?} exists with another commit ({existing}); this snapshot \
+             would be {id}"
+        )));
     }
     let written = sink.write(&commit)?;
     debug_assert_eq!(written, id);
@@ -311,17 +362,25 @@ pub fn prune(
     legacy: Option<&dyn crate::plugins::LegacyReader>,
 ) -> Result<Vec<String>, Error> {
     let mut deleted = Vec::new();
-    for listed in list_with(repo, legacy)? {
-        if listed.block.contents.is_none() != record_only {
-            continue;
-        }
-        if glob.is_some_and(|g| !crate::plugins::glob_matches(g, &listed.identity)) {
-            continue;
-        }
+    for listed in to_prune(repo, glob, record_only, legacy)? {
         delete_snapshot(repo, &listed.identity, listed.commit)?;
         deleted.push(listed.identity);
     }
     Ok(deleted)
+}
+
+/// What [`prune`] would delete.
+pub fn to_prune(
+    repo: &gix::Repository,
+    glob: Option<&str>,
+    record_only: bool,
+    legacy: Option<&dyn crate::plugins::LegacyReader>,
+) -> Result<Vec<Listed>, Error> {
+    Ok(list_with(repo, legacy)?
+        .into_iter()
+        .filter(|l| l.block.contents.is_none() == record_only)
+        .filter(|l| glob.is_none_or(|g| crate::plugins::glob_matches(g, &l.identity)))
+        .collect())
 }
 
 /// Delete the snapshot `identity`, whose ref must point at `commit`.
@@ -358,8 +417,11 @@ pub(crate) fn delete_ref(
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Imported {
     pub copied: Vec<String>,
-    /// Already here, as the same commit.
+    /// Already here, as the same commit, or as the same snapshot (spec
+    /// 0500 S2).
     pub present: Vec<String>,
+    /// Originals replacing copies rebuilt from the history (spec 0500 S4).
+    pub replaced: Vec<String>,
 }
 
 /// Copy the snapshots and record-only ones of the repository at `from`
@@ -370,6 +432,7 @@ pub fn import(
     repo: &gix::Repository,
     from: &Path,
     legacy: Option<&dyn crate::plugins::LegacyReader>,
+    meeter: Option<&crate::meet::Meeter>,
 ) -> Result<Imported, Error> {
     let source = gix::open(from).map_err(Error::git)?;
     let mut theirs = list_with(&source, legacy)?;
@@ -378,21 +441,61 @@ pub fn import(
     let mut todo = Vec::new();
     for listed in theirs {
         let ref_name = snapshot_ref(&listed.identity)?;
-        match tip(repo, &ref_name)? {
-            Some(ours) if ours == listed.commit => report.present.push(listed.identity),
+        let ours = tip(repo, &ref_name)?;
+        if ours == Some(listed.commit) {
+            report.present.push(listed.identity);
+            continue;
+        }
+        // A snapshot a history here holds, met with it (spec 0500); every
+        // one decided before anything is copied.
+        if let Some(meeter) = meeter.filter(|m| m.holds(&listed.identity)) {
+            let items = crate::meet::snapshot_items(&source, listed.commit)?;
+            let meeting = meeter.meet(repo, listed.commit, &listed.block, &items)?;
+            if meeting.verdict != crate::meet::Verdict::Is {
+                continue;
+            }
+            match ours {
+                None => todo.push((listed, ref_name, None)),
+                Some(old) => {
+                    let old_items =
+                        crate::history::files(repo, crate::history::commit_tree(repo, old)?, "")?;
+                    let tree = crate::history::commit_tree(&source, listed.commit)?;
+                    let mine = crate::history::files(&source, tree, "")?;
+                    if meeter.is_rebuilt(repo, &listed.identity, &old_items)?
+                        && !meeter.is_rebuilt(repo, &listed.identity, &mine)?
+                    {
+                        todo.push((listed, ref_name, Some(old)));
+                    } else {
+                        report.present.push(listed.identity);
+                    }
+                }
+            }
+            continue;
+        }
+        match ours {
             Some(ours) => {
                 return Err(Error::Refused(format!(
                     "snapshot {:?} exists here as {ours}, there as {}",
                     listed.identity, listed.commit
                 )))
             }
-            None => todo.push((listed, ref_name)),
+            None => todo.push((listed, ref_name, None)),
         }
     }
-    for (listed, ref_name) in todo {
+    if let Some(refusal) = meeter.and_then(|m| m.refusal()) {
+        return Err(refusal);
+    }
+    for (listed, ref_name, replacing) in todo {
         copy_object(&source, repo, listed.commit)?;
-        set_ref(repo, &ref_name, PreviousValue::MustNotExist, listed.commit)?;
-        report.copied.push(listed.identity);
+        let expected = match replacing {
+            Some(old) => PreviousValue::MustExistAndMatch(Target::Object(old)),
+            None => PreviousValue::MustNotExist,
+        };
+        set_ref(repo, &ref_name, expected, listed.commit)?;
+        match replacing {
+            Some(_) => report.replaced.push(listed.identity),
+            None => report.copied.push(listed.identity),
+        }
     }
     Ok(report)
 }

@@ -9,6 +9,7 @@ use std::path::{Component, Path, PathBuf};
 
 use git_seriate::cli::Kit;
 use git_seriate::format::{Rejection, Source};
+use git_seriate::meet::Meeter;
 use git_seriate::plugins::{Extracted, Extractor};
 use git_seriate::store::{self, Added, Item, NewSnapshot};
 use git_seriate::Error;
@@ -389,6 +390,7 @@ impl Parts {
     fn write(
         self,
         sink: &mut store::Sink,
+        meeter: Option<&Meeter>,
         identity: &str,
         build_time: i64,
         options: &Options,
@@ -421,6 +423,7 @@ impl Parts {
                     rejected: self.rejected,
                     record,
                 },
+                meeter,
             )?,
         }];
         for Set {
@@ -440,6 +443,7 @@ impl Parts {
                         rejected: Vec::new(),
                         record,
                     },
+                    meeter,
                 )?,
             });
         }
@@ -458,7 +462,8 @@ fn input_label(file: &Path) -> String {
 }
 
 /// Extract each of `files` as a snapshot (spec 0453 S5). Warnings go to
-/// `warnings`.
+/// `warnings`. A snapshot a history holds is met with it (spec 0500): any
+/// refused, the error lists them all, the others written.
 pub fn extract_files(
     repo: &gix::Repository,
     kit: &Kit,
@@ -466,14 +471,20 @@ pub fn extract_files(
     options: &Options,
     warnings: &mut Vec<String>,
 ) -> Result<Vec<Outcome>, Error> {
-    extract_files_into(
+    let meeter = git_seriate::cli::meeter(repo, kit)?;
+    let outcomes = extract_files_into(
         repo,
         &mut store::Sink::Repo(repo),
+        Some(&meeter),
         kit,
         files,
         options,
         warnings,
-    )
+    )?;
+    match meeter.refusal() {
+        Some(refusal) => Err(refusal),
+        None => Ok(outcomes),
+    }
 }
 
 /// [`extract_files`], the snapshots written into `sink`: `repo`'s, or an
@@ -481,6 +492,7 @@ pub fn extract_files(
 pub fn extract_files_into(
     repo: &gix::Repository,
     sink: &mut store::Sink,
+    meeter: Option<&Meeter>,
     kit: &Kit,
     files: &[PathBuf],
     options: &Options,
@@ -539,7 +551,7 @@ pub fn extract_files_into(
                     None => identity_of(file),
                 };
                 let build_time = options.build_time.unwrap_or(time);
-                outcomes.extend(parts.write(sink, &identity, build_time, options, file)?);
+                outcomes.extend(parts.write(sink, meeter, &identity, build_time, options, file)?);
             }
         }
     }
@@ -549,7 +561,14 @@ pub fn extract_files_into(
             .build_time
             .or_else(|| times.iter().copied().max())
             .unwrap_or(0);
-        outcomes.extend(group.write(sink, identity, build_time, options, Path::new(identity))?);
+        outcomes.extend(group.write(
+            sink,
+            meeter,
+            identity,
+            build_time,
+            options,
+            Path::new(identity),
+        )?);
     }
     Ok(outcomes)
 }

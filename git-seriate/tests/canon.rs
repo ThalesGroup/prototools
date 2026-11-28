@@ -120,6 +120,7 @@ fn settle(repo: &gix::Repository, renderer: &Counting, dry_run: bool, verify: bo
                 legacy: None,
             },
             verify_canon: verify,
+            verbose: false,
         },
     )
     .unwrap()

@@ -163,5 +163,6 @@ pub fn kit(repo: &gix::Repository) -> Result<Kit, Error> {
         comparator: Box::new(seriation::LinesChars),
         legacy: None,
         item_pattern: Some("*.pb".into()),
+        verbose: false,
     })
 }

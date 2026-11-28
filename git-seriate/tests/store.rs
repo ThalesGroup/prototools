@@ -243,8 +243,8 @@ fn an_identity_clashing_with_another_as_a_ref_is_refused_naming_both() {
 
         let mut archive = git_seriate::archive::Archive::new();
         let mut sink = store::Sink::Archive(&mut archive);
-        store::add_to(&mut sink, snapshot(first)).unwrap();
-        let err = store::add_to(&mut sink, snapshot(second))
+        store::add_to(&mut sink, snapshot(first), None).unwrap();
+        let err = store::add_to(&mut sink, snapshot(second), None)
             .unwrap_err()
             .to_string();
         assert!(err.contains("can't sit beside"), "{err}");
