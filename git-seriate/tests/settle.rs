@@ -487,6 +487,18 @@ fn signs_like_ssh_keygen_with_a_key_file() {
         assert_eq!(sig, ssh_keygen_signs(&key, &payload, &[]), "commit {id}");
     }
     verify_all(&repo, "main/default", &key.with_extension("pub"));
+    // The records too, signed as history commits are (spec 0499 S5a): the
+    // history's, reaching the history's commits, and the statements'.
+    let (ok, _, err) = git_seriate_env(&repo, &["lineage", "set", "other", "s1"], &[("PATH", "")]);
+    assert!(ok, "{err}");
+    let (ok, _, err) = git_seriate_env(&repo, &["settle", "--into", "main"], &[("PATH", "")]);
+    assert!(ok, "{err}");
+    verify_all(
+        &repo,
+        "refs/seriate/histories/main",
+        &key.with_extension("pub"),
+    );
+    verify_all(&repo, "refs/seriate/lineages", &key.with_extension("pub"));
 }
 
 /// An `ssh-agent` of the test's, stopped when dropped.

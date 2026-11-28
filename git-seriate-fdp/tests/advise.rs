@@ -477,3 +477,174 @@ fn strict_names_what_was_not_foreseen() {
     );
     assert!(refused.is_err());
 }
+
+// ── What the contents suggest of producers (spec 0499 S6) ────────────────────
+
+const FULL: &str = r#"name: "e.proto" package: "p" message_type { name: "M" field { name: "x" number: 1 label: LABEL_OPTIONAL type: TYPE_INT32 options { deprecated: true } } }"#;
+/// FULL without its options, a json_name of its own.
+const STRIPPED: &str = r#"name: "e.proto" package: "p" message_type { name: "M" field { name: "x" number: 1 label: LABEL_OPTIONAL type: TYPE_INT32 json_name: "xx" } }"#;
+
+/// A file of `fields` fields. With e.pb, g.pb and h.pb as the test lays
+/// them out, every order of the three snapshots straddles one file: as the
+/// other files of a bundle do, they forbid the order that would spare
+/// e.pb, and the build times keep the set between the executables.
+fn growing(file: &str, fields: usize) -> String {
+    let fields: String = (1..=fields)
+        .map(|n| {
+            format!(
+                r#" field {{ name: "f{n}" number: {n} label: LABEL_OPTIONAL type: TYPE_INT32 }}"#
+            )
+        })
+        .collect();
+    let message = file.to_uppercase();
+    format!(r#"name: "{file}.proto" package: "p" message_type {{ name: "{message}"{fields} }}"#)
+}
+
+#[test]
+fn a_straddled_copy_equal_but_for_its_options_is_reported_not_moved() {
+    let tmp = tempfile::tempdir().unwrap();
+    let r = gix::init_bare(tmp.path().join("repo.git")).unwrap();
+    let kit = kit(&r).unwrap();
+    let g = |n| growing("g", n);
+    let h = |n| growing("h", n);
+    add(
+        &r,
+        &kit,
+        "exe0",
+        0,
+        &[("e.pb", FULL), ("g.pb", &g(1)), ("h.pb", &h(1))],
+    );
+    add(
+        &r,
+        &kit,
+        "set",
+        2,
+        &[("e.pb", STRIPPED), ("g.pb", &g(1)), ("h.pb", &h(2))],
+    );
+    add(
+        &r,
+        &kit,
+        "exe4",
+        4,
+        &[("e.pb", FULL), ("g.pb", &g(2)), ("h.pb", &h(2))],
+    );
+    settle(&r, &kit, &[]);
+    let before =
+        git_seriate::store::tip(&r, &git_seriate::store::branch_ref("main/default").unwrap())
+            .unwrap();
+
+    let (_, text) = advise_text(&r, &kit, &into_main());
+    let order = Command::new("git")
+        .args([
+            "-C",
+            tmp.path().join("repo.git").to_str().unwrap(),
+            "log",
+            "--format=%s %cd",
+            "--date=short",
+            "main/default",
+        ])
+        .output()
+        .unwrap();
+    let order = String::from_utf8_lossy(&order.stdout).into_owned();
+    assert!(
+        text.contains("Lineages (what the contents suggest; nothing is moved):"),
+        "{order}\n{text}"
+    );
+    assert!(
+        text.contains(
+            "- set: straddled in main/default by copies it equals but for options and json_names"
+        ),
+        "{text}"
+    );
+    assert!(text.contains("1 path(s): e.pb"), "{text}");
+    assert!(
+        text.contains("git seriate lineage set NAME 'set', then settle"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("- exe0:") && !text.contains("- exe4:"),
+        "{text}"
+    );
+    // Reported, nothing moved.
+    assert_eq!(
+        git_seriate::store::tip(&r, &git_seriate::store::branch_ref("main/default").unwrap())
+            .unwrap(),
+        before
+    );
+    let (_, json) = advise_text(
+        &r,
+        &kit,
+        &advise::Options {
+            json: true,
+            ..into_main()
+        },
+    );
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(v["lineages"][0]["identity"], "set", "{json}");
+
+    // Stated, then settled: the set on a line of its own, nothing to report
+    // on either; `--into main` asks which lineage.
+    git_seriate::lineage::state(
+        &r,
+        &[("set".into(), "bundler".into())],
+        "set bundler",
+        false,
+        None,
+    )
+    .unwrap();
+    settle(&r, &kit, &[]);
+    for lineage in ["main/default", "main/bundler"] {
+        let (_, text) = advise_text(
+            &r,
+            &kit,
+            &advise::Options {
+                into: Some(lineage.into()),
+                ..advise::Options::default()
+            },
+        );
+        assert!(!text.contains("Lineages ("), "{lineage}: {text}");
+    }
+    let mut out = String::new();
+    let err = advise::run(&r, &kit, &Generic, &into_main(), &mut out).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("main has 2 lineages: give --into main/<lineage>, one of bundler, default"),
+        "{err}"
+    );
+
+    // A stated lineage's snapshot every copy of which is one of default's.
+    // (exe4's copies are exe0's but for g.pb: a stated snapshot
+    // holding default's copies only is exe0's twin, `twin`.)
+    add(
+        &r,
+        &kit,
+        "twin",
+        5,
+        &[("e.pb", FULL), ("g.pb", &g(2)), ("h.pb", &h(2))],
+    );
+    git_seriate::lineage::state(
+        &r,
+        &[("twin".into(), "bundler".into())],
+        "set bundler",
+        false,
+        None,
+    )
+    .unwrap();
+    settle(&r, &kit, &[]);
+    let (_, text) = advise_text(
+        &r,
+        &kit,
+        &advise::Options {
+            into: Some("main/bundler".into()),
+            ..advise::Options::default()
+        },
+    );
+    assert!(
+        text.contains("- twin: in main/bundler, every copy one of main/default's"),
+        "{text}"
+    );
+    assert!(
+        text.contains("git seriate lineage unset 'twin', then settle"),
+        "{text}"
+    );
+}

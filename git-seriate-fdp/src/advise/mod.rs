@@ -16,6 +16,7 @@ pub mod fdp_info;
 pub mod fixups;
 pub mod output;
 pub mod problems;
+pub mod producers;
 pub mod report;
 pub mod status;
 
@@ -192,6 +193,10 @@ pub fn run(
     };
     let result =
         output::advise(&input, report.as_ref(), &wording.command()).map_err(Error::Refused)?;
+    // What the contents suggest of producers (spec 0499 S6): reported only.
+    let history = git_seriate::history::resolve_history(repo, options.into.as_deref())?;
+    let branch = git_seriate::history::resolve_lineage_branch(repo, options.into.as_deref())?;
+    let suspects = producers::suspects(repo, kit, &history, &branch)?;
     if let Some(dir) = &options.out {
         std::fs::create_dir_all(dir)?;
         std::fs::write(
@@ -211,10 +216,39 @@ pub fn run(
         if options.strict {
             actions["not_foreseen"] = Value::Array(not_foreseen(&result));
         }
+        if !suspects.is_empty() {
+            actions["lineages"] = suspects
+                .iter()
+                .map(|s| {
+                    serde_json::json!({
+                        "identity": s.identity,
+                        "reason": s.reason,
+                        "remedy": s.remedy,
+                        "paths": s.paths,
+                    })
+                })
+                .collect();
+        }
         out.push_str(&serde_json::to_string_pretty(&actions).unwrap());
         out.push('\n');
     } else {
         out.push_str(&actions_text(&result, wording));
+        if !suspects.is_empty() {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str("Lineages (what the contents suggest; nothing is moved):\n");
+            for s in &suspects {
+                out.push_str(&format!(
+                    "   - {}: {}\n       {} path(s): {}\n       {}\n",
+                    s.identity,
+                    s.reason,
+                    s.paths.len(),
+                    s.paths.join(", "),
+                    s.remedy
+                ));
+            }
+        }
         if options.strict {
             let unforeseen = not_foreseen(&result);
             if !unforeseen.is_empty() {

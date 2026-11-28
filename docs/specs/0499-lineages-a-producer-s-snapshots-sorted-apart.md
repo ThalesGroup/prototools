@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0499 — lineages: a producer's snapshots, sorted apart
 
-Status: draft
+Status: implemented
+Implemented in: 2026-11-28
 App: git-seriate, git-seriate-fdp
 Refs: docs/specs/0495-extract-makes-atomic-snapshots.md
         (the atomic snapshots a lineage is a property of),
@@ -226,4 +227,30 @@ line, the bundler's.
 
 ## Measured outcome
 
-Filled in at implementation.
+Implemented in four steps, each its tests: the layout and `migrate` of
+snapshots; `lineage set`, `unset`, `list` and their record; histories as
+a branch per lineage, their record, the moves (S3a), `migrate` of
+histories in place and `--into`; `advise`'s report (S6) and invariant
+0002 (`docs/invariants/0002-pushed-histories-carry-no-snapshot.md`),
+with its regression test.
+
+Decided at implementation, beyond the text above:
+
+- **HEAD, unborn and naming the history** (a fresh `git init -b main`),
+  is pointed at the lineage `settle` writes: git holds no `H` beside
+  `H/default`, so HEAD would name a branch that can never be.
+- **A lineage every snapshot of which moves out, or is forgotten,** is
+  emptied: its branch deleted, its tip saved as `H/L-N`, gone from the
+  record. Forgetting every snapshot of the history stays refused.
+- **`--into H/L`** names the history `H`; `advise` reads one lineage,
+  `H` when it has one, else `H/L`, the refusal naming them.
+- **One signer per command:** an encrypted key's passphrase is asked
+  once, the records signed with the history commits.
+- **On the toy histories, the sort spares a straddle when it can:** a
+  stripped copy is moved out of the full copy's span unless other files
+  forbid it, as a bundle's other files do. S6's test needed three files
+  making every order straddle one.
+
+The downstream measurement of the test plan's item 5 (the 375 straddles
+inside the bundles gone, the 35 elsewhere unchanged) is the
+downstream's, to come.

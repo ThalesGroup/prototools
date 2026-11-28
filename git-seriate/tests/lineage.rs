@@ -500,3 +500,69 @@ fn forgetting_a_lineages_only_snapshot_empties_it() {
         format!("default {default}")
     );
 }
+
+/// Invariant 0002: the histories and the two records, pushed, carry no
+/// snapshot commit (spec 0499 S5a), whatever the history went through: a
+/// settle per lineage, a move, a forget. `refs/seriate/forgotten/` does,
+/// and stays local.
+#[test]
+fn pushing_the_histories_and_records_carries_no_snapshot() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = toy(tmp.path());
+    let (ok, _, err) = git_seriate(&repo, &["settle", "--into", "main"]);
+    assert!(ok, "{err}");
+    let (ok, _, err) = git_seriate(&repo, &["lineage", "set", "bundler", "exe2!set@100"]);
+    assert!(ok, "{err}");
+    let (ok, _, err) = git_seriate(&repo, &["settle", "--into", "main"]);
+    assert!(ok, "{err}");
+    let (ok, _, err) = git_seriate(
+        &repo,
+        &["forget", "--into", "main", "--reason", "x", "exe1"],
+    );
+    assert!(ok, "{err}");
+    // Every snapshot commit there is: in the store, and forgotten.
+    let mut snapshots: Vec<String> = git(
+        &repo,
+        &[
+            "for-each-ref",
+            "--format=%(objectname)",
+            "refs/seriate/snapshots/",
+        ],
+    )
+    .lines()
+    .map(str::to_string)
+    .collect();
+    snapshots.extend(
+        git(
+            &repo,
+            &["log", "-1", "--format=%P", "refs/seriate/forgotten/1"],
+        )
+        .split_whitespace()
+        .map(str::to_string),
+    );
+    assert_eq!(snapshots.len(), 5, "{snapshots:?}");
+
+    let remote = tmp.path().join("remote.git");
+    gix::init_bare(&remote).unwrap();
+    git(
+        &repo,
+        &[
+            "push",
+            "-q",
+            remote.to_str().unwrap(),
+            "refs/heads/main/default:refs/heads/main/default",
+            "refs/heads/main/bundler:refs/heads/main/bundler",
+            "refs/seriate/histories/main:refs/seriate/histories/main",
+            "refs/seriate/lineages:refs/seriate/lineages",
+        ],
+    );
+    for id in &snapshots {
+        let there = Command::new("git")
+            .args(["-C", remote.to_str().unwrap(), "cat-file", "-e", id])
+            .status()
+            .unwrap();
+        assert!(!there.success(), "snapshot commit {id} was pushed");
+    }
+    // And the remote is whole: what was pushed reaches nothing missing.
+    git(&remote, &["fsck", "--full", "--strict", "--no-dangling"]);
+}
