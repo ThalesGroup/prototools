@@ -265,6 +265,12 @@ fn compact_branch(
         reduced: bool,
     }
     let mut kept: Vec<Kept> = Vec::new();
+    // The commits kept, by position, and the drop lines naming later
+    // holders, written once the pass knows which of them it keeps: a line
+    // names only kept commits (S6). Each: the line's index in the actions,
+    // its head, the paths it speaks of, their owners.
+    let mut kept_at: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    let mut pending: Vec<(usize, String, &str, Vec<usize>)> = Vec::new();
     // The rebuilt tree, path by path, as the kept commits leave it.
     let mut rebuilt: HashMap<String, (EntryKind, ObjectId)> = HashMap::new();
     for (i, c) in before.iter().enumerate() {
@@ -283,6 +289,7 @@ fn compact_branch(
         if options.level == 1 {
             // Lossless: a snapshot changing nothing is its source's only
             // record, and stays.
+            kept_at.insert(i);
             kept.push(Kept {
                 commit: c,
                 changes: c.changes.clone(),
@@ -305,34 +312,35 @@ fn compact_branch(
                 .collect();
             owners.sort_unstable();
             owners.dedup();
-            let held_later = || {
-                named(
-                    &owners.iter().map(|&o| before[o].id).collect::<Vec<_>>(),
-                    options.verbose,
-                )
-            };
             let deletions = holds(c).any(|p| owner[p] == i);
-            report.actions.push(match &c.block {
-                Some(b) if c.changes.is_empty() => format!(
+            match &c.block {
+                Some(b) if c.changes.is_empty() => report.actions.push(format!(
                     "drop {short} ('{}'): changes nothing; the only record of {:?} goes with it",
                     c.subject, b.source.identity
-                ),
-                _ if deletions && owners.is_empty() => format!(
+                )),
+                _ if deletions && owners.is_empty() => report.actions.push(format!(
                     "drop {short} ('{}'): its deletions have nothing left to delete",
                     c.subject
-                ),
-                _ if deletions => format!(
-                    "drop {short} ('{}'): its deletions have nothing left to delete, and every \
-                     other path it holds is held later, by {}",
-                    c.subject,
-                    held_later()
-                ),
-                _ => format!(
-                    "drop {short} ('{}'): every path it holds is held later, by {}",
-                    c.subject,
-                    held_later()
-                ),
-            });
+                )),
+                _ => {
+                    let (head, noun) = if deletions {
+                        (
+                            format!(
+                                "drop {short} ('{}'): its deletions have nothing left to delete, and ",
+                                c.subject
+                            ),
+                            "every other path it holds",
+                        )
+                    } else {
+                        (
+                            format!("drop {short} ('{}'): ", c.subject),
+                            "every path it holds",
+                        )
+                    };
+                    pending.push((report.actions.len(), head, noun, owners));
+                    report.actions.push(String::new());
+                }
+            }
             continue;
         }
         // Its changes, those it doesn't own left out at level 3, and a
@@ -399,12 +407,32 @@ fn compact_branch(
             ));
         }
         rebuilt = state;
+        kept_at.insert(i);
         kept.push(Kept {
             commit: c,
             changes,
             removed,
             reduced,
         });
+    }
+    // The drop lines naming later holders: the kept ones; a holder dropped
+    // too can only be a deletion with nothing left to delete (S4), so its
+    // paths are deleted later.
+    for (at, head, noun, owners) in pending {
+        let (held, deleted): (Vec<usize>, Vec<usize>) =
+            owners.iter().partition(|o| kept_at.contains(o));
+        let ids: Vec<ObjectId> = held.iter().map(|&o| before[o].id).collect();
+        report.actions[at] = match (held.is_empty(), deleted.is_empty()) {
+            (false, true) => format!(
+                "{head}{noun} is held later, by {}",
+                named(&ids, options.verbose)
+            ),
+            (false, false) => format!(
+                "{head}{noun} is held later, by {}, or deleted later",
+                named(&ids, options.verbose)
+            ),
+            (true, _) => format!("{head}{noun} is deleted later"),
+        };
     }
     report.dropped = before.len() - kept.len();
     report.reduced = kept.iter().filter(|k| k.reduced).count();

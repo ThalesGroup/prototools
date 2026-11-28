@@ -91,7 +91,11 @@ already dates a file (0452 S6, level 1).
 - **S6. The listing,** one line per commit: a drop for S3 says how many
   commits own its paths, the first two named (`drop 1a2b3c4d ('…'):
   every path it holds is held later, by 37 commits (5e6f7a8b, 9c0d1e2f,
-  …)`), all of them with `--verbose`; a kept commit that gains changes by
+  …)`), all of them with `--verbose`. It names only commits kept: a later
+  holder dropped too is a deletion with nothing left to delete, its path
+  said `deleted later` (`… held later, by 1 commit (5e6f7a8b), or deleted
+  later`; `every path it holds is deleted later`). *Amended 2026-11-28,*
+  a downstream having found a line naming a commit the same pass dropped; a kept commit that gains changes by
   S4 says how many (`own 5e6f7a8b ('…'): 18 items it held become its
   changes`); a manual commit dropped by S4, that its deletions have
   nothing left to delete, and the commits owning its other paths if any.
@@ -134,6 +138,9 @@ already dates a file (0452 S6, level 1).
 9. `one_pass_is_final_when_a_deletion_has_nothing_left`: a manual commit
    adding files a later snapshot holds and deleting one a dropped commit
    wrote is dropped in the same pass; a second pass drops nothing.
+10. `a_drop_line_names_only_kept_commits`: a writer's paths held later
+    by a kept snapshot and by a deletion dropped too: the snapshot named,
+    the other path `deleted later`.
 
 ## Measured outcome
 

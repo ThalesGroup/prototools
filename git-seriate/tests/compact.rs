@@ -805,7 +805,7 @@ fn a_deletion_owns_its_path() {
     let tree = tree_of(&repo);
     let out = compact(&repo, "2", &after_everything(), &[]);
     assert!(
-        out.contains("('Write a'): every path it holds is held later"),
+        out.contains("('Write a'): every path it holds is deleted later"),
         "{out}"
     );
     assert!(
@@ -904,7 +904,7 @@ fn one_pass_is_final_when_a_deletion_has_nothing_left() {
     let tree = tree_of(&repo);
     let out = compact(&repo, "2", &after_everything(), &[]);
     assert!(
-        out.contains("('Write p'): every path it holds is held later"),
+        out.contains("('Write p'): every path it holds is deleted later"),
         "{out}"
     );
     assert!(
@@ -924,4 +924,52 @@ fn one_pass_is_final_when_a_deletion_has_nothing_left() {
 
     let again = compact(&repo, "2", &after_everything(), &[]);
     assert!(again.contains("dropped 0, reduced 0"), "{again}");
+}
+
+/// Spec 0501 S6: a drop line names only kept commits. A writer's paths
+/// held later, one by a snapshot kept, one by a deletion dropped too (it
+/// has nothing left to delete): the snapshot named, the other path
+/// "deleted later".
+#[test]
+fn a_drop_line_names_only_kept_commits() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = history(tmp.path(), &[&[("a.txt", "1\n"), ("q.txt", "2\n")]]);
+    let writer = manual(
+        &repo,
+        None,
+        &[("p.txt", "old\n"), ("q.txt", "2\n")],
+        &[],
+        "Write p and q",
+        T0 - 2 * DAY,
+    );
+    let mixed = manual(
+        &repo,
+        Some(&writer),
+        &[("a.txt", "1\n")],
+        &["p.txt"],
+        "Add a, delete p",
+        T0 - DAY,
+    );
+    on_a_manual_base(&repo, &mixed);
+    let snapshot = git(&repo, &["rev-parse", "main/default"]);
+    let tree = tree_of(&repo);
+    let out = compact(&repo, "2", &after_everything(), &["--dry-run"]);
+    let mixed_short = &mixed[..8];
+    assert!(
+        out.contains(&format!(
+            "('Write p and q'): every path it holds is held later, by 1 commit ({}), or deleted later",
+            &snapshot[..8]
+        )),
+        "{out}"
+    );
+    assert!(
+        !out.contains(&format!("by 1 commit ({mixed_short})")),
+        "{out}"
+    );
+    assert!(
+        out.contains("('Add a, delete p'): its deletions have nothing left to delete, and every"),
+        "{out}"
+    );
+    assert!(out.contains("dropped 2, reduced 0"), "{out}");
+    assert_eq!(tree_of(&repo), tree);
 }
