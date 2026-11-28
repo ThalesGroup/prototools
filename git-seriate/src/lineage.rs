@@ -80,8 +80,10 @@ pub struct Stated {
 /// State lineages (`lineage set`, `lineage unset`, S1): each identity to
 /// its lineage, `default` for `unset`. An identity that is no snapshot of
 /// the repository, in the store or in a history, is refused, naming it,
-/// with nothing written: a statement cannot silently miss. One record
-/// commit for the whole command, none when nothing changes.
+/// with nothing written: a statement cannot silently miss. Statements
+/// outlive their snapshots, so `unset` also takes an identity a statement
+/// names, its snapshot gone or not. One record commit for the whole
+/// command, none when nothing changes.
 pub fn state(
     repo: &gix::Repository,
     statements: &[(String, String)],
@@ -95,24 +97,34 @@ pub fn state(
         }
     }
     let known = known_identities(repo, legacy)?;
+    let current = read(repo)?;
+    // Back to default, a stated identity is taken: its statement may have
+    // outlived its snapshot, and would otherwise stay for good.
     let unknown: Vec<&str> = statements
         .iter()
+        .filter(|(i, lineage)| {
+            !(known.contains(i) || (lineage == DEFAULT_LINEAGE && current.lineages.contains_key(i)))
+        })
         .map(|(i, _)| i.as_str())
-        .filter(|i| !known.contains(*i))
         .collect();
     if let Some(first) = unknown.first() {
+        let unsetting = statements.iter().all(|(_, l)| l == DEFAULT_LINEAGE);
         return Err(Error::Refused(format!(
-            "{} identit{} no snapshot of this repository ({first}{}): nothing stated",
+            "{} identit{} no snapshot of this repository{} ({first}{}): nothing stated",
             unknown.len(),
             if unknown.len() == 1 {
                 "y is"
             } else {
                 "ies are"
             },
+            if unsetting {
+                ", nor named by a statement"
+            } else {
+                ""
+            },
             if unknown.len() > 1 { ", …" } else { "" }
         )));
     }
-    let current = read(repo)?;
     let mut lineages = current.lineages.clone();
     let mut out = Stated::default();
     for (identity, lineage) in statements {

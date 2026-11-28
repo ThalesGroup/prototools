@@ -207,7 +207,11 @@ fn a_statement_that_would_miss_is_refused_and_nothing_written() {
         "",
         "give NAME and IDENTITY..., or --from FILE",
     );
-    refused(&["lineage", "unset", "nope"], "", "is no snapshot");
+    refused(
+        &["lineage", "unset", "nope"],
+        "",
+        "is no snapshot of this repository, nor named by a statement (nope)",
+    );
 
     // --dry-run: said, not written.
     let (ok, out, err) = git_seriate(&repo, &["lineage", "set", "--dry-run", "bundler", "s0"]);
@@ -576,4 +580,36 @@ fn pushing_the_histories_and_records_carries_no_snapshot() {
     }
     // And the remote is whole: what was pushed reaches nothing missing.
     git(&remote, &["fsck", "--full", "--strict", "--no-dangling"]);
+}
+
+/// A statement outlives its snapshot (spec 0499 S1): the snapshot gone
+/// from the store and from every history, `lineage list` still names it,
+/// `set` refuses it, and `unset` removes it; then `unset` refuses it too,
+/// nothing left to remove.
+#[test]
+fn a_statement_whose_snapshot_is_gone_can_be_unset() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = repo(tmp.path());
+    let (ok, _, err) = git_seriate(&repo, &["lineage", "set", "bundler", "s0"]);
+    assert!(ok, "{err}");
+    git(&repo, &["update-ref", "-d", "refs/seriate/snapshots/s0"]);
+
+    let (ok, out, err) = git_seriate(&repo, &["lineage", "list"]);
+    assert!(ok, "{err}");
+    assert!(out.contains("s0 bundler"), "{out}");
+    let (ok, _, err) = git_seriate(&repo, &["lineage", "set", "other", "s0"]);
+    assert!(!ok);
+    assert!(
+        err.contains("is no snapshot of this repository (s0)"),
+        "{err}"
+    );
+
+    let (ok, out, err) = git_seriate(&repo, &["lineage", "unset", "s0"]);
+    assert!(ok, "{err}");
+    assert!(out.contains("moved s0: bundler -> default"), "{out}");
+    assert!(!record_file(&repo).contains("s0"), "{}", record_file(&repo));
+
+    let (ok, _, err) = git_seriate(&repo, &["lineage", "unset", "s0"]);
+    assert!(!ok);
+    assert!(err.contains("nor named by a statement (s0)"), "{err}");
 }

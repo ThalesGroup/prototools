@@ -94,7 +94,10 @@ line, the bundler's.
     nor any branch's history holds (a backup such as `H/L-N` included) is
     refused, naming it, nothing written, so that a statement cannot
     silently miss;
-  - **`lineage unset IDENTITY…`:** back to `default`;
+  - **`lineage unset IDENTITY…`:** back to `default`. It also takes an
+    identity a statement names whose snapshot is gone (below), which
+    would otherwise keep its statement for good; one neither a snapshot
+    nor named by a statement is refused, as by `set`;
   - **`lineage list [NAME]`:** the statements in force;
   - **nothing stated:** `default`.
   - **Statements outlive their snapshots:** only `lineage` changes them.
@@ -215,8 +218,11 @@ line, the bundler's.
 2a. A bundler whose later version keeps every option: its copies stay in
    `bundler`, by the statement, whatever their contents.
 2b. `lineage set` naming an identity neither the store nor a history
-   holds: refused, naming it, nothing written; `lineage set default …`: refused; `unset`: back
-   to `default`, moved at the next settle.
+   holds: refused, naming it, nothing written; `lineage set default …`:
+   refused; `unset`: back to `default`, moved at the next settle; `unset`
+   of a statement whose snapshot is gone everywhere: removed, `set` of it
+   refused; `unset` of an identity neither a snapshot nor stated:
+   refused.
 2c. The statements' record: one commit per command, the whole mapping in
    its tree, the previous record its parent.
 3. `migrate` on a history of today's layout: the same commits under the
