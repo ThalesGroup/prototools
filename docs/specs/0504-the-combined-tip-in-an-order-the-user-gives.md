@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # 0504 — the combined tip, in an order the user gives
 
-Status: draft (for the downstream's review)
+Status: draft (reviewed by the downstream, 2026-11-28)
 App: git-seriate, git-seriate-fdp
 Refs: docs/specs/0499-lineages-a-producer-s-snapshots-sorted-apart.md
         (G5: no merged tree; N3: the combined tip, the consumer's; S5:
@@ -73,13 +73,18 @@ builder. Without it, every consumer writes its own layout script, and
   `DIR/<lineage>/`, for each lineage named, holding its tip's items (the
   item pattern's paths, as in the tree), and on standard output the
   roots in order, one `-I DIR/<lineage>` per line. `DIR` new or empty,
-  else refused: roots of two runs never mix. In `git-seriate-fdp` as in
-  `git-seriate`.
+  else refused: roots of two runs never mix. A command of
+  `git_seriate::cli::run`, so of every front end built on it, as
+  `lineage` is.
 - **S5. The build and `advise` agree:** protoback takes a path several
   `-I` roots hold from the first, and warns of each shadowed file (W7),
   as protoc does; so a build from S4's roots, in S4's order, reads S2's
   combined tip, and `advise` over it (0503) speaks of the files the
-  build used.
+  build used, with one caveat: protoback shadows by descriptor name,
+  S2 combines by path, and a `~N` copy (`a/b~2.pb`, named `a/b.proto`)
+  has another path than its name's. One lineage's `~2` and another's
+  `a/b.pb` both reach the build, which keeps the first root's and warns
+  W7; `advise` counts them as an overlap of their name (0503 S4).
 
 ## Alternatives considered
 

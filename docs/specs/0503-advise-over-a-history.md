@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # 0503 — advise over a history: the lineages read as the consumer combines them
 
-Status: draft (questions for the downstream below)
+Status: draft (reviewed by the downstream, 2026-11-28)
 App: git-seriate-fdp
 Refs: docs/specs/0499-lineages-a-producer-s-snapshots-sorted-apart.md
         (G5: no merged tree; N3: the combined tip, the consumer's, one
@@ -61,28 +61,39 @@ Read per lineage, those combine without writing anything.
   lineage named holding it, with that lineage's writer (0504 S2); the
   sources of all, each with its lineage. Then `advise` as today over that
   reading.
-- **S3. Each problem's lineage:** every fixup, candidate and status line
-  about a path names the lineage it was taken from (`[bundler]`), and
-  `--json` gives it as `lineage`.
-- **S4. Paths held by several lineages:** a section, `Held by several
-  lineages`, one line per path: the winner, the others, and either
-  `same once canonical`, or `differ`, with whether the winner's version
-  is the newest (its writer's build time against the others').
-  `--json`: `overlaps`, each `{path, winner, others, same, winner_newest}`.
+- **S3. Each problem's lineage:** every candidate and status line about
+  a path names the lineage it was taken from (`[bundler]`), and `--json`
+  gives it as `lineage`. In `fixups.yaml`, which protoback reads, the
+  lineage only in a comment, never in a key or a pattern.
+- **S4. Paths held by several lineages:** a path, or a descriptor's
+  name, several named lineages hold, a `~N` copy counted under its name
+  (as protoback shadows by name, 0504 S5). A section, `Held by several
+  lineages`:
+  - those that differ once canonical, one line each: the winner, the
+    others, and whether the winner's version is the newest;
+  - those the same once canonical, counted, one line per pair of
+    lineages (`bundler and default: 312 the same once canonical`): a
+    bundler's copies, its hosts' minus options, may be many and say
+    nothing.
+
+  `--json`: `overlaps`, every one, `{path, winner, others, same,
+  winner_newest}`.
+- **S4a. "Newest":** the newest source holding the version, as `advise`
+  dates a file (0454): the commit that last wrote a path may be a manual
+  one (a fix, a rendering, a replay after `compact`), which its own time
+  would make the newest of all. A version no source holds is dated by
+  its writer's time, said as such.
 
 ## Questions for the downstream
 
-- *Answered:* the order's home, given per run in the consumer's own
-  commands, recorded nowhere (0504 N1).
-- **Q2. Paths the same once canonical:** reported (S4 proposes yes, for
-  a complete list), or left out, being harmless?
-- **Q3. "Newest":** the build time of the commit that last wrote the
-  path in each lineage (S4)? Or the newest source holding that version,
-  as `advise` dates a file?
-- **Q4. The other sections over a combination:** candidates and `--report`
-  (0455) read per path, so they combine as S2 does. Does anything of
-  yours read `advise`'s output per lineage, which S3's naming would
-  change?
+Answered by the downstream, 2026-11-28:
+- the order's home: given per run in the consumer's own commands,
+  recorded nowhere (0504 N1);
+- paths the same once canonical: counted per pair of lineages in the
+  text, every one in `--json` (S4);
+- "newest": the newest source holding the version (S4a);
+- nothing of theirs reads `advise` per lineage; `fixups.yaml`, read by
+  protoback, carries the lineage only in comments (S3).
 
 ## Alternatives considered
 
@@ -104,7 +115,13 @@ Read per lineage, those combine without writing anything.
    different contents: the first's version advised, its lineage named;
    the overlap reported `differ`, the winner newest or not.
 3. `the_same_once_canonical`: two lineages' versions differing only by
-   what canonicalization drops: reported `same once canonical`.
+   what canonicalization drops: counted for that pair in the text,
+   listed `same: true` in `--json`.
+3a. `a_tilde_copy_overlaps_its_name`: one lineage's `a/b~2.pb` and
+   another's `a/b.pb`, one descriptor name: an overlap.
+3b. `newest_by_source`: a winner last written by a manual commit, newer
+   than every source: not newest by its source's date; a version no
+   source holds dated by its writer, said as such.
 4. `one_lineage_as_today`: `--into H/L` and a history of one lineage,
    output unchanged.
 
