@@ -290,6 +290,7 @@ fn a_rewrite_re_authors_only_the_authorless() {
             cutoff: T0 + 10 * DAY,
             level: 1,
             dry_run: false,
+            verbose: false,
         },
         &compact::Plugins {
             legacy: None,

@@ -11,12 +11,14 @@
 //!    a snapshot stored twice (same identity, same block), which changes
 //!    nothing, are dropped. A snapshot commit that changes nothing but is
 //!    its source's only record stays: `advise` dates files by it;
-//! 2. also the snapshot commits that change nothing, their sources' records
-//!    with them, and the commits whose every change a later commit before
-//!    the cutoff changes again: the tree at the cutoff is unchanged, what
-//!    is lost is when a version appeared, and which sources held it;
-//! 3. from the snapshot commits kept, the items a later commit changes
-//!    again are removed, and the commit says so (`reduced: true`).
+//! 2. also the commits that own no path, their sources' records with them:
+//!    a path's owner is the last commit before the cutoff holding it, by a
+//!    change or as an item of its snapshot (spec 0501). An owner is kept,
+//!    and rewritten to make the changes the rebuilt tree lacks. The tree at
+//!    the cutoff is unchanged; what is lost is when a version appeared, and
+//!    which sources held it;
+//! 3. from the snapshot commits kept, the paths they hold but don't own are
+//!    removed, and the commit says so (`reduced: true`).
 //!
 //! Commits at and after the cutoff are kept, their trees unchanged; only
 //! their parents change.
@@ -24,6 +26,7 @@
 use std::collections::HashMap;
 
 use gix::bstr::ByteSlice;
+use gix::object::tree::EntryKind;
 use gix::refs::transaction::PreviousValue;
 use gix::ObjectId;
 
@@ -46,6 +49,8 @@ pub struct Options {
     /// 1, 2 or 3.
     pub level: u8,
     pub dry_run: bool,
+    /// Every commit named in the listing, not the first two (spec 0501 S6).
+    pub verbose: bool,
 }
 
 /// The plugins `compact` uses.
@@ -82,6 +87,7 @@ pub struct Report {
 /// One commit of the history, oldest first.
 struct Commit {
     id: ObjectId,
+    tree: ObjectId,
     /// `None` for a manual commit.
     block: Option<Block>,
     time: i64,
@@ -182,6 +188,7 @@ fn compact_branch(
         };
         chain.push(Commit {
             id,
+            tree: decoded.tree(),
             block,
             time,
             changes,
@@ -206,37 +213,21 @@ fn compact_branch(
         None => ObjectId::empty_tree(repo.object_hash()),
     };
 
-    // For each path, the last commit before the cutoff that changes it.
-    let mut last_change: HashMap<&str, usize> = HashMap::new();
-    for (i, c) in before.iter().enumerate() {
-        for change in &c.changes {
-            last_change.insert(&change.path, i);
-        }
-    }
-    let overwritten = |i: usize, change: &Change| last_change[change.path.as_str()] > i;
-
-    // What each commit keeps.
-    struct Kept<'a> {
-        commit: &'a Commit,
-        changes: Vec<&'a Change>,
-        reduced: bool,
-    }
-    let mut kept: Vec<Kept> = Vec::new();
-    // Each identity's first snapshot commit, with its block.
+    // A first pass: the second copies, refused when they contradict their
+    // first, and what level 1 drops (a manual commit or a second copy that
+    // changes nothing).
     let mut first: HashMap<&str, &Commit> = HashMap::new();
-    for (i, c) in before.iter().enumerate() {
-        let short = c.id.to_hex_with_len(8);
-        // A second copy: equal blocks are one record, which the first copy
-        // keeps; different ones under one identity are refused, as by
-        // settle.
-        let copy_of = match &c.block {
+    let mut copy_of: Vec<Option<&Commit>> = Vec::with_capacity(before.len());
+    for c in before {
+        let copy = match &c.block {
             Some(b) => match first.get(b.source.identity.as_str()) {
                 Some(f) if f.block.as_ref() == Some(b) => Some(*f),
                 Some(f) => {
                     return Err(Error::Refused(format!(
-                        "the history holds {:?} twice, at {} and {short}, with different blocks",
+                        "the history holds {:?} twice, at {} and {}, with different blocks",
                         b.source.identity,
-                        f.id.to_hex_with_len(8)
+                        f.id.to_hex_with_len(8),
+                        c.id.to_hex_with_len(8)
                     )))
                 }
                 None => {
@@ -246,53 +237,158 @@ fn compact_branch(
             },
             None => None,
         };
-        if c.changes.is_empty() {
-            match (&c.block, copy_of) {
-                (None, _) => report
-                    .actions
-                    .push(format!("drop {short} ('{}'): changes nothing", c.subject)),
-                (Some(_), Some(f)) => report.actions.push(format!(
+        copy_of.push(copy);
+    }
+    let level_1_drops = |i: usize| {
+        let c = &before[i];
+        c.changes.is_empty() && (c.block.is_none() || copy_of[i].is_some())
+    };
+
+    // Each path's owner (spec 0501 S1, S2): the last commit before the
+    // cutoff holding it, by a change, a deletion's included, or as an item
+    // of its snapshot, among those level 1 keeps.
+    let mut owner: HashMap<&str, usize> = HashMap::new();
+    for (i, c) in before.iter().enumerate() {
+        if !level_1_drops(i) {
+            for path in holds(c) {
+                owner.insert(path, i);
+            }
+        }
+    }
+
+    // What each commit keeps: its changes, as the rebuild replays them, and
+    // the items a reduction removes from its block.
+    struct Kept<'a> {
+        commit: &'a Commit,
+        changes: Vec<Change>,
+        removed: Vec<String>,
+        reduced: bool,
+    }
+    let mut kept: Vec<Kept> = Vec::new();
+    // The rebuilt tree, path by path, as the kept commits leave it.
+    let mut rebuilt: HashMap<String, (EntryKind, ObjectId)> = HashMap::new();
+    for (i, c) in before.iter().enumerate() {
+        let short = c.id.to_hex_with_len(8);
+        if level_1_drops(i) {
+            report.actions.push(match copy_of[i] {
+                Some(f) => format!(
                     "drop {short} ('{}'): changes nothing, a second copy of {}",
                     c.subject,
                     f.id.to_hex_with_len(8)
-                )),
-                (Some(b), None) if options.level >= 2 => report.actions.push(format!(
-                    "drop {short} ('{}'): changes nothing; the only record of {:?} goes with it",
-                    c.subject, b.source.identity
-                )),
-                // The only record of its source: kept at level 1.
-                (Some(_), None) => kept.push(Kept {
-                    commit: c,
-                    changes: Vec::new(),
-                    reduced: false,
-                }),
-            }
+                ),
+                None => format!("drop {short} ('{}'): changes nothing", c.subject),
+            });
             continue;
         }
-        if options.level >= 2 && c.changes.iter().all(|ch| overwritten(i, ch)) {
+        if options.level == 1 {
+            // Lossless: a snapshot changing nothing is its source's only
+            // record, and stays.
+            kept.push(Kept {
+                commit: c,
+                changes: c.changes.clone(),
+                removed: Vec::new(),
+                reduced: false,
+            });
+            continue;
+        }
+        let owned: Vec<&str> = holds(c).filter(|p| owner[p] == i).collect();
+        if owned.is_empty() {
+            report.actions.push(match &c.block {
+                Some(b) if c.changes.is_empty() => format!(
+                    "drop {short} ('{}'): changes nothing; the only record of {:?} goes with it",
+                    c.subject, b.source.identity
+                ),
+                _ => {
+                    let mut owners: Vec<usize> = holds(c).map(|p| owner[p]).collect();
+                    owners.sort_unstable();
+                    owners.dedup();
+                    format!(
+                        "drop {short} ('{}'): every path it holds is held later, by {}",
+                        c.subject,
+                        named(
+                            &owners.iter().map(|&o| before[o].id).collect::<Vec<_>>(),
+                            options.verbose
+                        )
+                    )
+                }
+            });
+            continue;
+        }
+        // Its changes, those it doesn't own left out at level 3, and a
+        // deletion only where the rebuilt tree holds the path (S4, S5).
+        let reducing = options.level >= 3 && c.block.is_some();
+        let mut changes: Vec<Change> = Vec::new();
+        for ch in &c.changes {
+            if reducing && owner[ch.path.as_str()] != i {
+                continue;
+            }
+            if ch.new.is_none() && !rebuilt.contains_key(&ch.path) {
+                continue;
+            }
+            changes.push(ch.clone());
+        }
+        let removed: Vec<String> = if reducing {
+            holds(c)
+                .filter(|p| owner[p] != i)
+                .map(str::to_string)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let mut state = rebuilt.clone();
+        for ch in &changes {
+            match ch.new {
+                Some(entry) => state.insert(ch.path.clone(), entry),
+                None => state.remove(&ch.path),
+            };
+        }
+        // Each path it owns as it held it, added where the rebuilt tree has
+        // something else (S4): an item becomes a change of its owner.
+        let mut taken = 0;
+        for path in &owned {
+            let held = match c.changes.iter().find(|ch| ch.path == *path) {
+                Some(ch) => ch.new,
+                None => entry_at(repo, c.tree, path)?,
+            };
+            if state.get(*path).copied() != held {
+                changes.push(Change {
+                    path: path.to_string(),
+                    new: held,
+                });
+                match held {
+                    Some(entry) => state.insert(path.to_string(), entry),
+                    None => state.remove(*path),
+                };
+                taken += 1;
+            }
+        }
+        if changes.is_empty() && c.block.is_none() {
             report.actions.push(format!(
-                "drop {short} ('{}'): every change it makes is made again later",
+                "drop {short} ('{}'): its deletions have nothing left to delete",
                 c.subject
             ));
             continue;
         }
-        let mut changes: Vec<&Change> = c.changes.iter().collect();
-        let mut reduced = false;
-        if options.level >= 3 && c.block.is_some() {
-            let before_len = changes.len();
-            changes.retain(|ch| !overwritten(i, ch));
-            if changes.len() < before_len {
-                reduced = true;
-                report.actions.push(format!(
-                    "reduce {short} ('{}'): {} of its {before_len} changes are made again later",
-                    c.subject,
-                    before_len - changes.len()
-                ));
-            }
+        if taken > 0 {
+            report.actions.push(format!(
+                "own {short} ('{}'): {taken} items it held become its changes",
+                c.subject
+            ));
         }
+        let reduced = !removed.is_empty();
+        if reduced {
+            report.actions.push(format!(
+                "reduce {short} ('{}'): {} of the {} paths it holds are held later",
+                c.subject,
+                removed.len(),
+                holds(c).count()
+            ));
+        }
+        rebuilt = state;
         kept.push(Kept {
             commit: c,
             changes,
+            removed,
             reduced,
         });
     }
@@ -406,8 +502,7 @@ fn compact_branch(
         Ok(target.write_object(&commit).map_err(Error::git)?.detach())
     };
     for k in &kept {
-        let changes: Vec<Change> = k.changes.iter().map(|c| (*c).clone()).collect();
-        tree = apply(&target, tree, &changes)?;
+        tree = apply(&target, tree, &k.changes)?;
         let message = match (
             &k.commit.block,
             k.reduced || k.commit.legacy || k.commit.mark,
@@ -417,17 +512,10 @@ fn compact_branch(
                 if k.commit.mark {
                     block.renderer = renderer.clone();
                 }
-                let removed: Vec<&str> = k
-                    .commit
-                    .changes
-                    .iter()
-                    .filter(|c| !k.changes.iter().any(|kc| kc.path == c.path))
-                    .map(|c| c.path.as_str())
-                    .collect();
                 if let Some(contents) = &mut block.contents {
-                    contents.retain(|p| !removed.contains(&p.as_str()));
+                    contents.retain(|p| !k.removed.contains(p));
                 }
-                block.evidence.retain(|p, _| !removed.contains(&p.as_str()));
+                block.evidence.retain(|p, _| !k.removed.contains(p));
                 block.reduced |= k.reduced;
                 Some(block.message())
             }
@@ -514,4 +602,48 @@ fn unmarked_and_canonical(
         }
     }
     Ok(true)
+}
+
+/// The paths a commit holds (spec 0501 S1): those it changes, a deletion's
+/// included, and a snapshot commit's items.
+fn holds(c: &Commit) -> impl Iterator<Item = &str> {
+    let mut paths: Vec<&str> = c.changes.iter().map(|ch| ch.path.as_str()).collect();
+    if let Some(contents) = c.block.as_ref().and_then(|b| b.contents.as_ref()) {
+        paths.extend(contents.iter().map(String::as_str));
+    }
+    paths.sort_unstable();
+    paths.dedup();
+    paths.into_iter()
+}
+
+/// The blob at `path` in `tree`, if any.
+fn entry_at(
+    repo: &gix::Repository,
+    tree: ObjectId,
+    path: &str,
+) -> Result<Option<(EntryKind, ObjectId)>, Error> {
+    let tree = repo.find_tree(tree).map_err(Error::git)?;
+    Ok(tree
+        .lookup_entry_by_path(path)
+        .map_err(Error::git)?
+        .map(|e| (e.mode().kind(), e.object_id()))
+        .filter(|(kind, _)| *kind != EntryKind::Tree))
+}
+
+/// `commits`, counted, the first two named, or all of them with `verbose`
+/// (spec 0501 S6).
+fn named(commits: &[ObjectId], verbose: bool) -> String {
+    let short: Vec<String> = commits
+        .iter()
+        .map(|c| c.to_hex_with_len(8).to_string())
+        .collect();
+    let shown = if verbose || short.len() <= 2 {
+        short.join(", ")
+    } else {
+        format!("{}, …", short[..2].join(", "))
+    };
+    match short.len() {
+        1 => format!("1 commit ({shown})"),
+        n => format!("{n} commits ({shown})"),
+    }
 }

@@ -290,6 +290,7 @@ fn a_manual_files_age_survives_a_rewrite() {
             cutoff: T0 + 3 * DAY,
             level: 2,
             dry_run: false,
+            verbose: false,
         },
         &git_seriate::compact::Plugins {
             legacy: None,

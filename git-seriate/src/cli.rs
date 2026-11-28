@@ -720,6 +720,7 @@ fn dispatch<E: Subcommand>(
                 cutoff: parse_date(&cutoff)?,
                 level,
                 dry_run,
+                verbose: kit.verbose,
             };
             let plugins = crate::compact::Plugins {
                 legacy: kit.legacy.as_deref(),

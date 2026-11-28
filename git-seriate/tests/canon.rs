@@ -283,6 +283,7 @@ fn legacy_histories_are_canonicalized_and_compact_marks_them() {
             cutoff: T0,
             level: 1,
             dry_run: false,
+            verbose: false,
         },
         &compact::Plugins {
             legacy: None,

@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0501 — compact: an item held again is made again
 
-Status: draft
+Status: implemented
+Implemented in: 2026-11-28
 App: git-seriate
 Refs: docs/specs/0452-git-seriate-the-store-and-the-history.md (S6,
         `compact`'s levels, which this amends),
@@ -130,4 +131,16 @@ already dates a file (0452 S6, level 1).
 
 ## Measured outcome
 
-Filled in at implementation.
+2026-11-28. `git-seriate/tests/compact.rs`: the eight tests of the plan
+pass, beside the eleven of before. One of those changed, as S3 says it
+would: `an_anchor_on_a_snapshot_no_longer_held_is_warned_about` relied
+on level 2 dropping a snapshot that changes nothing (s2), which now owns
+its path and stays; the anchor moved to s1, which 0501 drops.
+
+The case S4 names, a deletion left with nothing to delete, could already
+arise at today's level 2, its writer dropped for the deletion making its
+change again. It is now handled as S4 says, and tested; what the code
+before did with it was not checked.
+
+The downstream's measurement, its base's commits kept before and after,
+is to come.

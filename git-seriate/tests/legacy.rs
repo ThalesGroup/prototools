@@ -185,6 +185,7 @@ fn an_old_history_is_settled_and_converted() {
             cutoff: 1_700_000_000 + 10 * 86_400,
             level: 1,
             dry_run: false,
+            verbose: false,
         },
         &compact::Plugins {
             legacy: Some(&Old),

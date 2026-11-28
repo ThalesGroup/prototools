@@ -495,9 +495,10 @@ fn an_anchor_on_a_snapshot_still_held_is_not_warned_about() {
 #[test]
 fn an_anchor_on_a_snapshot_no_longer_held_is_warned_about() {
     let tmp = tempfile::tempdir().unwrap();
-    // s2 changes nothing, and no other commit holds it: level 2 drops it.
+    // s1 holds only f.txt, which s2 holds again: level 2 drops s1 (spec
+    // 0501), and keeps s2, f.txt's owner, though it changes nothing.
     let repo = history(tmp.path(), &GROWING[..3]);
-    anchored_commit(&repo, "h.txt", "s2");
+    anchored_commit(&repo, "h.txt", "s1");
 
     let out = git_seriate(
         &repo,
@@ -513,7 +514,364 @@ fn an_anchor_on_a_snapshot_no_longer_held_is_warned_about() {
         ],
     );
     assert!(
-        out.contains("is anchored to s2, which compact drops"),
+        out.contains("is anchored to s1, which compact drops"),
+        "{out}"
+    );
+}
+
+/// Runs git with an index of its own, at `time` for a commit it writes.
+fn plumbing(repo: &Path, index: &Path, time: i64, args: &[&str], stdin: Option<&[u8]>) -> String {
+    let mut command = Command::new("git");
+    isolated(&mut command, repo);
+    let date = format!("@{time} +0000");
+    command
+        .env("GIT_INDEX_FILE", index)
+        .env("GIT_COMMITTER_DATE", &date)
+        .env("GIT_AUTHOR_DATE", &date)
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = command.spawn().unwrap();
+    {
+        use std::io::Write;
+        let mut input = child.stdin.take().unwrap();
+        if let Some(bytes) = stdin {
+            input.write_all(bytes).unwrap();
+        }
+    }
+    let out = child.wait_with_output().unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// A manual commit on `parent` (none: a root) at `time`, writing `set` and
+/// deleting `remove`; its id.
+fn manual(
+    repo: &Path,
+    parent: Option<&str>,
+    set: &[(&str, &str)],
+    remove: &[&str],
+    message: &str,
+    time: i64,
+) -> String {
+    let index = repo.join("manual-index");
+    let _ = std::fs::remove_file(&index);
+    let git = |args: &[&str], stdin: Option<&[u8]>| plumbing(repo, &index, time, args, stdin);
+    if let Some(parent) = parent {
+        git(&["read-tree", parent], None);
+    }
+    for (path, text) in set {
+        let blob = git(&["hash-object", "-w", "--stdin"], Some(text.as_bytes()));
+        git(
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("100644,{blob},{path}"),
+            ],
+            None,
+        );
+    }
+    // Mode 0 removes an entry, with no work tree (the repository is bare).
+    for path in remove {
+        let line = format!("0 {}\t{path}\n", "0".repeat(40));
+        git(&["update-index", "--index-info"], Some(line.as_bytes()));
+    }
+    let tree = git(&["write-tree"], None);
+    let mut args = vec!["commit-tree", tree.as_str(), "-m", message];
+    if let Some(parent) = parent {
+        args.extend(["-p", parent]);
+    }
+    git(&args, None)
+}
+
+/// `main/default`'s commits put back on `base`, oldest first, each tree its
+/// new parent's with the commit's files written over it, as a snapshot
+/// commit writes its items; the branch moved to the last.
+fn on_a_manual_base(repo: &Path, base: &str) {
+    let index = repo.join("manual-index");
+    let commits = git(repo, &["rev-list", "--reverse", "main/default"]);
+    let mut parent = base.to_string();
+    for commit in commits.lines() {
+        let _ = std::fs::remove_file(&index);
+        let g = |args: &[&str]| plumbing(repo, &index, T0, args, None);
+        g(&["read-tree", &parent]);
+        for line in git(repo, &["ls-tree", "-r", commit]).lines() {
+            let (meta, path) = line.split_once('\t').unwrap();
+            let fields: Vec<&str> = meta.split_whitespace().collect();
+            g(&[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("{},{},{path}", fields[0], fields[2]),
+            ]);
+        }
+        let tree = g(&["write-tree"]);
+        let message = git(repo, &["log", "-1", "--format=%B", commit]);
+        parent = g(&[
+            "commit-tree",
+            &tree,
+            "-p",
+            &parent,
+            "-m",
+            message.trim_end(),
+        ]);
+    }
+    git(repo, &["update-ref", "refs/heads/main/default", &parent]);
+}
+
+fn compact(repo: &Path, level: &str, cutoff: &str, extra: &[&str]) -> String {
+    let mut args = vec![
+        "compact", "--into", "main", "--cutoff", cutoff, "--level", level,
+    ];
+    args.extend(extra);
+    git_seriate(repo, &args)
+}
+
+fn tree_of(repo: &Path) -> String {
+    git(repo, &["rev-parse", "main/default^{tree}"])
+}
+
+/// Spec 0501 test 1: a manual base commit whose every file a later snapshot
+/// holds is dropped; the snapshot, which changed nothing, takes the files
+/// as its changes; the tree at the cutoff unchanged.
+#[test]
+fn a_base_commit_held_by_a_later_snapshot_is_dropped() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = history(tmp.path(), &[&[("a.txt", "1\n"), ("b.txt", "2\n")]]);
+    let base = manual(
+        &repo,
+        None,
+        &[("a.txt", "1\n"), ("b.txt", "2\n")],
+        &[],
+        "Base",
+        T0 - DAY,
+    );
+    on_a_manual_base(&repo, &base);
+    let tree = tree_of(&repo);
+    let out = compact(&repo, "2", &after_everything(), &[]);
+    assert!(
+        out.contains("('Base'): every path it holds is held later, by 1 commit ("),
+        "{out}"
+    );
+    assert!(
+        out.contains("('Snapshot s0'): 2 items it held become its changes"),
+        "{out}"
+    );
+    assert!(out.contains("dropped 1, reduced 0"), "{out}");
+    assert_eq!(subjects(&repo), "Snapshot s0\n");
+    assert_eq!(tree_of(&repo), tree);
+    git(&repo, &["fsck", "--full", "--strict", "--no-dangling"]);
+}
+
+/// Test 2: a base commit with one file no snapshot holds is kept, at level
+/// 2 as at level 3 (a manual commit is never reduced).
+#[test]
+fn a_partly_held_commit_is_kept() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = history(tmp.path(), &[&[("a.txt", "1\n")]]);
+    let base = manual(
+        &repo,
+        None,
+        &[("a.txt", "1\n"), ("c.txt", "3\n")],
+        &[],
+        "Base",
+        T0 - DAY,
+    );
+    on_a_manual_base(&repo, &base);
+    let tree = tree_of(&repo);
+    for level in ["2", "3"] {
+        let out = compact(&repo, level, &after_everything(), &["--dry-run"]);
+        assert!(out.contains("dropped 0, reduced 0"), "level {level}: {out}");
+    }
+    assert_eq!(tree_of(&repo), tree);
+}
+
+/// Test 3: a snapshot that changes nothing but owns its path is kept, and
+/// the older one that wrote it dropped; before 0501, level 2 dropped the
+/// one changing nothing.
+#[test]
+fn no_cycle() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = history(tmp.path(), &[&[("f.txt", "a\n")], &[("f.txt", "a\n")]]);
+    let tree = tree_of(&repo);
+    let out = compact(&repo, "2", &after_everything(), &[]);
+    assert!(
+        out.contains("('Snapshot s0'): every path it holds is held later"),
+        "{out}"
+    );
+    assert!(
+        out.contains("('Snapshot s1'): 1 items it held become its changes"),
+        "{out}"
+    );
+    assert_eq!(subjects(&repo), "Snapshot s1\n");
+    assert_eq!(tree_of(&repo), tree);
+}
+
+/// Test 4: a path held again only after the cutoff keeps its older owner.
+#[test]
+fn held_after_the_cutoff_counts_for_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = history(tmp.path(), &[&[("a.txt", "1\n")]]);
+    let base = manual(&repo, None, &[("a.txt", "1\n")], &[], "Base", T0 - DAY);
+    on_a_manual_base(&repo, &base);
+    let before = git(&repo, &["rev-parse", "main/default"]);
+    let out = compact(&repo, "2", &(T0 - DAY / 2).to_string(), &[]);
+    assert!(out.contains("dropped 0, reduced 0"), "{out}");
+    assert_eq!(git(&repo, &["rev-parse", "main/default"]), before);
+}
+
+/// Test 5: at level 3, a kept snapshot's item held identical later is
+/// removed from it; the later snapshot takes it as its change.
+#[test]
+fn level_3_removes_held_items() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = history(
+        tmp.path(),
+        &[&[("f.txt", "a\n"), ("g.txt", "1\n")], &[("f.txt", "a\n")]],
+    );
+    let tree = tree_of(&repo);
+    let out = compact(&repo, "3", &after_everything(), &[]);
+    assert!(
+        out.contains("('Snapshot s0'): 1 of the 2 paths it holds are held later"),
+        "{out}"
+    );
+    assert!(out.contains("dropped 0, reduced 1"), "{out}");
+    assert_eq!(tree_of(&repo), tree);
+    let first = git(&repo, &["rev-list", "--max-parents=0", "main/default"]);
+    let block = Block::read(&git(&repo, &["log", "-1", "--format=%B", first.trim()]))
+        .unwrap()
+        .unwrap();
+    assert!(block.reduced);
+    assert_eq!(block.contents.unwrap(), ["g.txt"]);
+    assert_eq!(
+        git(&repo, &["ls-tree", "--name-only", first.trim()]),
+        "g.txt\n"
+    );
+}
+
+/// Test 6: the commit deleting a path owns it. Kept while there is
+/// something to delete; dropped once the path's writers are, the tree at
+/// the cutoff unchanged either way.
+#[test]
+fn a_deletion_owns_its_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = history(tmp.path(), &[&[("a.txt", "1\n"), ("b.txt", "2\n")]]);
+    let tip = git(&repo, &["rev-parse", "main/default"]);
+    let deletion = manual(
+        &repo,
+        Some(tip.trim()),
+        &[],
+        &["a.txt"],
+        "Delete a",
+        T0 + DAY,
+    );
+    git(&repo, &["update-ref", "refs/heads/main/default", &deletion]);
+    let tree = tree_of(&repo);
+    // Level 2: s0 owns b.txt and keeps writing a.txt; the deletion stays.
+    let out = compact(&repo, "2", &after_everything(), &["--dry-run"]);
+    assert!(out.contains("dropped 0, reduced 0"), "{out}");
+    // Level 3: s0 no longer writes a.txt; nothing is left to delete.
+    let out = compact(&repo, "3", &after_everything(), &[]);
+    assert!(
+        out.contains("('Delete a'): its deletions have nothing left to delete"),
+        "{out}"
+    );
+    assert!(out.contains("dropped 1, reduced 1"), "{out}");
+    assert_eq!(subjects(&repo), "Snapshot s0\n");
+    assert_eq!(tree_of(&repo), tree);
+
+    // A manual writer, then the deletion, then a snapshot: at level 2 the
+    // writer owns nothing, and the deletion then deletes nothing.
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = history(tmp.path(), &[&[("b.txt", "2\n")]]);
+    let writer = manual(
+        &repo,
+        None,
+        &[("a.txt", "1\n")],
+        &[],
+        "Write a",
+        T0 - 2 * DAY,
+    );
+    let deletion = manual(&repo, Some(&writer), &[], &["a.txt"], "Delete a", T0 - DAY);
+    on_a_manual_base(&repo, &deletion);
+    let tree = tree_of(&repo);
+    let out = compact(&repo, "2", &after_everything(), &[]);
+    assert!(
+        out.contains("('Write a'): every path it holds is held later"),
+        "{out}"
+    );
+    assert!(
+        out.contains("('Delete a'): its deletions have nothing left to delete"),
+        "{out}"
+    );
+    assert_eq!(subjects(&repo), "Snapshot s0\n");
+    assert_eq!(tree_of(&repo), tree);
+}
+
+/// Test 7: a second copy, dropped at level 1, owns nothing, though it is
+/// the last to hold its paths: its first copy keeps them.
+#[test]
+fn a_second_copy_owns_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = history(tmp.path(), &GROWING[..2]);
+    repeat_tip(&repo);
+    let tree = tree_of(&repo);
+    let out = compact(&repo, "2", &after_everything(), &[]);
+    assert!(out.contains("changes nothing, a second copy of"), "{out}");
+    assert!(out.contains("dropped 1, reduced 0"), "{out}");
+    assert_eq!(subjects(&repo), "Snapshot s0\nSnapshot s1\n");
+    assert_eq!(tree_of(&repo), tree);
+}
+
+/// Test 8: a dropped commit names the first two of the commits owning its
+/// paths, and all of them with `--verbose`.
+#[test]
+fn the_listing_names_two_owners_and_all_with_verbose() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = history(
+        tmp.path(),
+        &[
+            &[("a.txt", "1\n")],
+            &[("b.txt", "2\n")],
+            &[("c.txt", "3\n")],
+        ],
+    );
+    let base = manual(
+        &repo,
+        None,
+        &[("a.txt", "1\n"), ("b.txt", "2\n"), ("c.txt", "3\n")],
+        &[],
+        "Base",
+        T0 - DAY,
+    );
+    on_a_manual_base(&repo, &base);
+    let owners: Vec<String> = git(&repo, &["rev-list", "--reverse", "main/default"])
+        .lines()
+        .skip(1)
+        .map(|c| c[..8].to_string())
+        .collect();
+    let out = compact(&repo, "2", &after_everything(), &["--dry-run"]);
+    assert!(
+        out.contains(&format!("by 3 commits ({}, {}, …)", owners[0], owners[1])),
+        "{out}"
+    );
+    let mut args = vec!["--verbose", "compact", "--into", "main", "--cutoff"];
+    let cutoff = after_everything();
+    args.extend([cutoff.as_str(), "--level", "2", "--dry-run"]);
+    let out = git_seriate(&repo, &args);
+    assert!(
+        out.contains(&format!(
+            "by 3 commits ({}, {}, {})",
+            owners[0], owners[1], owners[2]
+        )),
         "{out}"
     );
 }
