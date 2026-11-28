@@ -90,12 +90,19 @@ line, the bundler's.
 - **S1. Lineage statements, `git seriate lineage`:**
   - **`lineage set NAME IDENTITY…`**, and **`--from FILE`**, one
     `<identity> <lineage>` per line (`-` for standard input): the
-    snapshots named go to lineage `NAME`. An identity that is no snapshot
-    of the repository is refused, naming it, nothing written, so that a
-    statement cannot silently miss;
+    snapshots named go to lineage `NAME`. An identity neither the store
+    nor any branch's history holds (a backup such as `H/L-N` included) is
+    refused, naming it, nothing written, so that a statement cannot
+    silently miss;
   - **`lineage unset IDENTITY…`:** back to `default`;
   - **`lineage list [NAME]`:** the statements in force;
   - **nothing stated:** `default`.
+  - **Statements outlive their snapshots:** only `lineage` changes them.
+    `prune`, `forget` and `compact` leave the statement of a snapshot they
+    remove, a fact about its producer: the input extracted again goes back
+    to its lineage. `lineage list` shows such a statement as any other.
+    *Amended 2026-11-28,* from a downstream's `compact` (0501) dropping a
+    set whose statement stayed.
 
   The caller decides from what it knows of the producer, reading the
   snapshots as extracted (each set's identity and range are in its
@@ -207,8 +214,8 @@ line, the bundler's.
    it, the straddles gone.
 2a. A bundler whose later version keeps every option: its copies stay in
    `bundler`, by the statement, whatever their contents.
-2b. `lineage set` naming an identity that is no snapshot: refused, naming
-   it, nothing written; `lineage set default …`: refused; `unset`: back
+2b. `lineage set` naming an identity neither the store nor a history
+   holds: refused, naming it, nothing written; `lineage set default …`: refused; `unset`: back
    to `default`, moved at the next settle.
 2c. The statements' record: one commit per command, the whole mapping in
    its tree, the previous record its parent.
