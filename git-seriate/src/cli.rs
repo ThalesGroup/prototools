@@ -801,11 +801,10 @@ fn lineage(repo: &gix::Repository, action: LineageAction, kit: &Kit) -> Result<(
             if let Some((_, l)) = statements.iter().find(|(_, l)| l == DEFAULT_LINEAGE) {
                 crate::layout::check_lineage_name(l)?;
             }
-            (
-                statements,
-                format!("set --from {}", file.display()),
-                dry_run,
-            )
+            // The record is shared: no local path in its message, only
+            // whether the statements came from a file or standard input.
+            let from = if file.as_os_str() == "-" { "-" } else { "FILE" };
+            (statements, format!("set --from {from}"), dry_run)
         }
         LineageAction::Set {
             from: None,

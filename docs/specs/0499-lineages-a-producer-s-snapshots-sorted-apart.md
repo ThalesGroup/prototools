@@ -251,6 +251,22 @@ Decided at implementation, beyond the text above:
   forbid it, as a bundle's other files do. S6's test needed three files
   making every order straddle one.
 
-The downstream measurement of the test plan's item 5 (the 375 straddles
-inside the bundles gone, the 35 elsewhere unchanged) is the
-downstream's, to come.
+Measured downstream (test plan item 5), on a copy of a history of 59
+snapshots migrated with `--into`, the nine bundle sets stated by hand:
+
+| | snapshots | files | straddles |
+|---|---|---|---|
+| before, one lineage | 59 | 18,315 | 410 (375 in the bundle sets, 35 elsewhere) |
+| `default` | 50 | 18,291 | 17, on 6 files |
+| `bundler` | 9 | 330 | 0 |
+
+The 375 are gone, the nine sets mutually consistent. Elsewhere fell from
+35 to 17: copies of one executable that had sat among the bundles' no
+longer straddle. Before anything was stated, `advise` (S6) named all
+nine bundle sets (15 to 51 paths each) and 14 other snapshots (1 to 3
+paths each); after the move, nothing on `bundler`, 13 on `default`, not
+yet looked at downstream.
+
+Changed from the downstream's review: the statements' record's message
+names `--from FILE` or `--from -`, never the file's path, since the
+record is shared.

@@ -151,10 +151,21 @@ fn statements_from_a_file_or_standard_input() {
     assert!(out.contains("moved s0: default -> bundler"), "{out}");
     assert!(out.contains("moved pkg/s2: default -> other"), "{out}");
     assert_eq!(record_file(&repo), "pkg/s2 other\ns0 bundler");
+    // The record is shared: no local path in its message.
+    let subject = git(
+        &repo,
+        &["log", "-1", "--format=%s", "refs/seriate/lineages"],
+    );
+    assert_eq!(subject, "Lineages: set --from FILE, 2 snapshot(s)");
 
     let (ok, out, err) = git_seriate_in(&repo, &["lineage", "set", "--from", "-"], "s1 other\n");
     assert!(ok, "{err}");
     assert!(out.contains("moved s1: default -> other"), "{out}");
+    let subject = git(
+        &repo,
+        &["log", "-1", "--format=%s", "refs/seriate/lineages"],
+    );
+    assert_eq!(subject, "Lineages: set --from -, 1 snapshot(s)");
     let (_, out, _) = git_seriate(&repo, &["lineage", "list", "other"]);
     assert_eq!(out, "pkg/s2 other\ns1 other\n");
 }
