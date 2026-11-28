@@ -80,11 +80,29 @@ have.
     (`forget`, then `extract` again).
   - **undecided:** refused, naming the identity, the two stamps, and the
     paths that differ, and how to decide (S3).
+
+  A command meeting several snapshots decides them all before refusing,
+  and its refusal lists every undecided one, `<identity> <R's commit>`
+  per line, the input `accept --from` takes (S3): an undecided meeting
+  comes in bulk (a rule set dropping a rule makes undecided every
+  original that still holds what the rule removed).
 - **S3. The user decides an undecided meeting:** `git seriate accept
-  IDENTITY... [--reason TEXT]` takes R as H's snapshot, stored, the
-  decision recorded in R's place in the store, as `lineage` records a
-  statement; or `forget`, as for *is not*. The next `settle` reaching H
-  re-canonicalizes from R, under today's rule sets.
+  --reason TEXT IDENTITY...`, identities or globs of them as `forget`
+  takes, or `--from FILE` (`-` for standard input) in the form a refusal
+  lists them; `--dry-run` says what it would accept. It takes each R as
+  H's snapshot, R stored; or `forget`, as for *is not*. The next `settle`
+  reaching H re-canonicalizes from R, under today's rule sets.
+- **S3a. The decisions' record, `refs/seriate/accepted`:** a commit per
+  call, its parents the previous record and each R accepted (keeping
+  them, as `refs/seriate/forgotten/` keeps the forgotten), its tree a
+  file `accepted` listing each identity, R's commit, H's stamp and
+  today's, the differing paths, and its message the reason. Not in the
+  store, which `prune` deletes: after the next `settle`, H's items are
+  C(R), and the record is the only trace of why the history changed under
+  that identity. **Local,** as `refs/seriate/forgotten/` is: it reaches
+  raw forms, which invariant 0002 keeps unpushed; snapshot commits being
+  deterministic, a colleague meeting the same original computes the same
+  R.
 - **S4. A rebuilt copy, told apart without a marker:** of two copies of
   one source in the store, a rebuilt one is its own canonical form under
   H's stamp. When H's stamp is today's: C(copy) = copy. A copy rebuilt
@@ -100,12 +118,23 @@ have.
   snapshot" means. `import` and `add` take the kit's canonicalizer, as
   `settle` does.
 
+## Open questions
+
+- **Q1. Metadata in S1's source equality.** Metadata is shown, never
+  interpreted (0452), but it is part of the snapshot's commit: a front
+  end adding a metadata key over time turns every meeting into *is not*.
+  Proposed: metadata left out of the decision, a difference reported;
+  R, accepted, carries its own metadata into the next re-sort, noted.
+  To settle before implementing.
+
 ## Alternatives considered
 
 - **Refusing `prune` when raw forms differ:** the raw forms are lost
   anyway, by a clone; refusing one way of losing them protects nothing.
 - **A marker on rebuilt copies:** S1 and S4 decide from the contents and
   the stamp; a marker adds state that a clone, again, does not carry.
+- **Recording an `accept` in R's place in the store:** `prune` deletes
+  it, and with it the only trace of why the history changed (S3a).
 - **Deciding an undecided meeting in favor of R:** it would replace a
   history's content by other bytes under the same identity whenever a
   rule set changed. That is G3's failure, silently.
@@ -118,9 +147,13 @@ have.
 2. A different snapshot under the same identity, imported or extracted:
    refused, naming `forget` (*is not*).
 3. The history written under rule set A, today's B, not commuting with
-   A on the snapshot: `import` refused as *undecided*, naming both
-   stamps; `accept` then takes it, and the next `settle` re-canonicalizes
-   from it (S3).
+   A on the snapshot: `import` refused as *undecided*, every undecided
+   identity listed, naming both stamps; `accept --from` the list then
+   takes them, `refs/seriate/accepted` recording each, and the next
+   `settle` re-canonicalizes from them (S3, S3a). `accept --dry-run`
+   writes nothing.
+3a. A downstream's bump of its own rule set dropping a rule, on its copy
+   of a history: the meetings undecided where the rule removed something.
 4. `prune` counts the raw forms it loses (S5).
 
 ## Measured outcome
