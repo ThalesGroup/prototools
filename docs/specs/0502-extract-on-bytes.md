@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 
 # 0502 — extract on bytes: the front end's split, for a caller's inputs
 
-Status: draft (reviewed by the downstream, 2026-11-28)
+Status: implemented
+Implemented in: 2026-11-28
 App: git-seriate-fdp
 Refs: docs/specs/0495-extract-makes-atomic-snapshots.md (the parts of
         an input, S2; grouping, S3; their identities and record entries,
@@ -111,4 +112,11 @@ on bytes, so that it can call it rather than copy it.
 
 ## Measured outcome
 
-Filled in at implementation.
+2026-11-28. `git-seriate-fdp/tests/fdp.rs`: test plan 1 to 4 pass
+(`inputs_on_bytes_equal_files`, `an_outcome_names_its_identity`,
+`bytes_borrowed_or_owned`, `a_groups_labels`), the snapshots on bytes
+and on files equal in commit tree and message, alone (a rest and two
+sets) and grouped; the existing `extract` tests unchanged through
+`extract_files_into`, which now reads each file when its turn comes and
+hands it on as an `Input`. The command line's messages name an input by
+`Outcome.input`, a file's path as before.

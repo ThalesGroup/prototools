@@ -878,3 +878,219 @@ fn a_set_in_a_member_is_named_after_its_chain() {
         [format!("x!gzip@64!set@{at}")]
     );
 }
+
+/// Each snapshot of `r`: identity, its commit's tree, its message, sorted.
+fn snapshots_in(r: &gix::Repository) -> Vec<(String, String, String)> {
+    let mut out: Vec<_> = git_seriate::store::list_with(r, None)
+        .unwrap()
+        .into_iter()
+        .map(|l| {
+            let commit = r.find_commit(l.commit).unwrap();
+            let message = commit.message_raw().unwrap().to_string();
+            (l.identity, commit.tree_id().unwrap().to_string(), message)
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// `inputs` extracted on bytes into a new repository: its snapshots, and the
+/// outcomes.
+fn on_bytes(
+    inputs: Vec<git_seriate_fdp::extract::Input<'_>>,
+    options: &ExtractOptions,
+) -> (
+    Vec<(String, String, String)>,
+    Vec<git_seriate_fdp::extract::Outcome>,
+) {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_, r) = repo(tmp.path());
+    let kit = kit(&r).unwrap();
+    let schema = Schema::of(&r).unwrap();
+    let extractor = git_seriate_fdp::extract::FdpExtractor {
+        schema: &schema,
+        options: fdp_scan::ScanOptions::default(),
+        inflate: None,
+    };
+    let outcomes = git_seriate_fdp::extract::extract_inputs_into(
+        &mut git_seriate::store::Sink::Repo(&r),
+        None,
+        &kit,
+        &extractor,
+        inputs,
+        options,
+    )
+    .unwrap();
+    (snapshots_in(&r), outcomes)
+}
+
+fn on_files(files: &[PathBuf], options: &ExtractOptions) -> Vec<(String, String, String)> {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_, r) = repo(tmp.path());
+    let kit = kit(&r).unwrap();
+    extract_files(&r, &kit, files, options, &mut Vec::new()).unwrap();
+    snapshots_in(&r)
+}
+
+fn input<'a>(
+    file: &Path,
+    identity: &str,
+    bytes: std::borrow::Cow<'a, [u8]>,
+) -> git_seriate_fdp::extract::Input<'a> {
+    git_seriate_fdp::extract::Input {
+        label: file.display().to_string(),
+        identity: identity.into(),
+        bytes,
+        build_time: 1_700_000_000,
+        metadata: Vec::new(),
+    }
+}
+
+/// Two framed sets and a rest in `x`, a plain `y`.
+fn sets_and_plain(dir: &Path) -> (PathBuf, PathBuf) {
+    let stock = stock_files();
+    let mut first = field(1, &stock[0]);
+    first.extend(field(1, &stock[1]));
+    let mut second = field(1, &stock[2]);
+    second.extend(field(1, &stock[3]));
+    (
+        executable(dir, "x", &[&first, &second, &stock[4]], None),
+        executable(dir, "y", &[&stock[5]], None),
+    )
+}
+
+/// Spec 0502 test 1: inputs on bytes and the same bytes as files give the
+/// same snapshots, commit tree and message for each: an input with framed
+/// sets, one without, and `as_one` over the two.
+#[test]
+fn inputs_on_bytes_equal_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (x, y) = sets_and_plain(tmp.path());
+    let (bx, by) = (std::fs::read(&x).unwrap(), std::fs::read(&y).unwrap());
+    let alone = ExtractOptions {
+        id: Some("x".into()),
+        build_time: Some(1_700_000_000),
+        ..ExtractOptions::default()
+    };
+    let (snapshots, _) = on_bytes(vec![input(&x, "x", bx.as_slice().into())], &alone);
+    assert_eq!(snapshots.len(), 3, "a rest and two sets");
+    assert_eq!(snapshots, on_files(std::slice::from_ref(&x), &alone));
+
+    let grouped = ExtractOptions {
+        as_one: Some("g".into()),
+        build_time: Some(1_700_000_000),
+        ..ExtractOptions::default()
+    };
+    let (snapshots, _) = on_bytes(
+        vec![
+            input(&x, "ignored", bx.as_slice().into()),
+            input(&y, "ignored", by.as_slice().into()),
+        ],
+        &grouped,
+    );
+    assert_eq!(snapshots, on_files(&[x, y], &grouped));
+}
+
+/// Test 2: each outcome names its identity and its set, in a group after
+/// the input's label; an input holding nothing writes nothing and names
+/// the identity it would have had.
+#[test]
+fn an_outcome_names_its_identity() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (x, y) = sets_and_plain(tmp.path());
+    let bx = std::fs::read(&x).unwrap();
+    let empty = vec![0u8; 64];
+    let (_, outcomes) = on_bytes(
+        vec![
+            input(&x, "x", bx.as_slice().into()),
+            input(Path::new("nothing"), "nothing", empty.as_slice().into()),
+        ],
+        &ExtractOptions::default(),
+    );
+    let named: Vec<(&str, Option<&str>)> = outcomes
+        .iter()
+        .map(|o| (o.identity.as_str(), o.set.as_deref()))
+        .collect();
+    assert_eq!(named[0], ("x", None));
+    let set = named[1].1.unwrap();
+    assert!(set.starts_with("set@"), "{set}");
+    assert_eq!(named[1].0, format!("x!{set}"));
+    let last = outcomes.last().unwrap();
+    assert_eq!(
+        (last.identity.as_str(), last.set.as_deref()),
+        ("nothing", None)
+    );
+    assert_eq!(last.added, git_seriate::store::Added::Nothing);
+
+    let by = std::fs::read(&y).unwrap();
+    let (_, outcomes) = on_bytes(
+        vec![
+            input(&x, "x", bx.as_slice().into()),
+            input(&y, "y", by.as_slice().into()),
+        ],
+        &ExtractOptions {
+            as_one: Some("g".into()),
+            ..ExtractOptions::default()
+        },
+    );
+    let set = outcomes[1].set.as_deref().unwrap();
+    assert!(
+        set.starts_with(&format!("{}!set@", x.display())),
+        "a grouped set after its input's label: {set}"
+    );
+    assert_eq!(outcomes[0].input, "g");
+}
+
+/// Test 3: borrowed or owned, one snapshot.
+#[test]
+fn bytes_borrowed_or_owned() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (x, _) = sets_and_plain(tmp.path());
+    let bx = std::fs::read(&x).unwrap();
+    let options = ExtractOptions::default();
+    let (borrowed, _) = on_bytes(vec![input(&x, "x", bx.as_slice().into())], &options);
+    let (owned, _) = on_bytes(vec![input(&x, "x", bx.clone().into())], &options);
+    assert_eq!(borrowed, owned);
+}
+
+/// Test 4: a group's labels are `options.metadata`, its inputs' unused.
+#[test]
+fn a_groups_labels() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (x, y) = sets_and_plain(tmp.path());
+    let (bx, by) = (std::fs::read(&x).unwrap(), std::fs::read(&y).unwrap());
+    let mut ix = input(&x, "x", bx.as_slice().into());
+    ix.metadata = vec![("k".into(), "an input's".into())];
+    let iy = input(&y, "y", by.as_slice().into());
+    let tmp2 = tempfile::tempdir().unwrap();
+    let (_, r) = repo(tmp2.path());
+    let kit = kit(&r).unwrap();
+    let schema = Schema::of(&r).unwrap();
+    let extractor = git_seriate_fdp::extract::FdpExtractor {
+        schema: &schema,
+        options: fdp_scan::ScanOptions::default(),
+        inflate: None,
+    };
+    git_seriate_fdp::extract::extract_inputs_into(
+        &mut git_seriate::store::Sink::Repo(&r),
+        None,
+        &kit,
+        &extractor,
+        vec![ix, iy],
+        &ExtractOptions {
+            as_one: Some("g".into()),
+            metadata: vec![("k".into(), "the group's".into())],
+            ..ExtractOptions::default()
+        },
+    )
+    .unwrap();
+    let g = git_seriate::store::list_with(&r, None)
+        .unwrap()
+        .into_iter()
+        .find(|l| l.identity == "g")
+        .unwrap();
+    assert_eq!(
+        g.block.source.metadata,
+        [("k".to_string(), "the group's".to_string())]
+    );
+}

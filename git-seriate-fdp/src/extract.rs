@@ -5,6 +5,7 @@
 //! `extract`: executables as snapshots of the descriptors they embed (spec
 //! 0453 S2, S5).
 
+use std::borrow::Cow;
 use std::path::{Component, Path, PathBuf};
 
 use git_seriate::cli::Kit;
@@ -247,11 +248,33 @@ pub struct Options {
 }
 
 /// What extracting did: one per snapshot written, an input's rest and its
-/// sets each one.
+/// sets each one (spec 0502 S3).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outcome {
-    pub file: PathBuf,
+    /// The input's label: a file's path, for [`extract_files_into`].
+    pub input: String,
+    /// The snapshot's identity, written or that would have been: a rest's,
+    /// or a set's `<identity>!<label>`.
+    pub identity: String,
+    /// `None` for a rest; a set's label, `set@<start>` after the chain of
+    /// the member it lies in, and after its input's label in a group.
+    pub set: Option<String>,
     pub added: Added,
+}
+
+/// An input held in memory (spec 0502 S1).
+#[derive(Debug, Clone)]
+pub struct Input<'a> {
+    /// Its name in records and, in a group, the prefix of its origins,
+    /// escaped as fdp-scan escapes a member's name.
+    pub label: String,
+    /// Its snapshot's identity, unless grouped.
+    pub identity: String,
+    /// Borrowed from a caller's map, or owned when the caller copied it.
+    pub bytes: Cow<'a, [u8]>,
+    pub build_time: i64,
+    /// Its snapshot's labels, unless grouped.
+    pub metadata: Vec<(String, String)>,
 }
 
 /// An input's rendered items, by part (spec 0495 S2): the rest, and each
@@ -391,11 +414,15 @@ impl Parts {
         self,
         sink: &mut store::Sink,
         meeter: Option<&Meeter>,
-        identity: &str,
-        build_time: i64,
+        written: Written<'_>,
         options: &Options,
-        file: &Path,
     ) -> Result<Vec<Outcome>, Error> {
+        let Written {
+            input,
+            identity,
+            build_time,
+            metadata,
+        } = written;
         let group = if self.sets.is_empty() {
             options.group.clone()
         } else {
@@ -406,7 +433,7 @@ impl Parts {
             build_time,
             order_hint: options.order_hint,
             group: group.clone(),
-            metadata: options.metadata.clone(),
+            metadata: metadata.to_vec(),
         };
         // Refusals alone are kept, as a record-only snapshot.
         let mut record = self.record;
@@ -414,7 +441,9 @@ impl Parts {
             record.push(("refused".into(), self.rejected.len().to_string()));
         }
         let mut outcomes = vec![Outcome {
-            file: file.to_path_buf(),
+            input: input.to_string(),
+            identity: identity.to_string(),
+            set: None,
             added: store::add_to(
                 sink,
                 NewSnapshot {
@@ -432,13 +461,16 @@ impl Parts {
             record,
         } in self.sets
         {
-            let label: Vec<String> = label.split('/').map(ref_component).collect();
+            let component: Vec<String> = label.split('/').map(ref_component).collect();
+            let set_identity = format!("{identity}!{}", component.join("/"));
             outcomes.push(Outcome {
-                file: file.to_path_buf(),
+                input: input.to_string(),
+                identity: set_identity.clone(),
+                set: Some(label),
                 added: store::add_to(
                     sink,
                     NewSnapshot {
-                        source: source(format!("{identity}!{}", label.join("/"))),
+                        source: source(set_identity),
                         items,
                         rejected: Vec::new(),
                         record,
@@ -451,14 +483,111 @@ impl Parts {
     }
 }
 
-/// A file's path as it prefixes origins in a group: `%`, `!` and `;`
+/// Where and as what an input's parts are written.
+struct Written<'a> {
+    input: &'a str,
+    identity: &'a str,
+    build_time: i64,
+    metadata: &'a [(String, String)],
+}
+
+/// An input's label as it prefixes origins in a group: `%`, `!` and `;`
 /// escaped, as fdp-scan escapes a member's name (spec 0480 S6).
-fn input_label(file: &Path) -> String {
-    file.display()
-        .to_string()
+fn escaped(label: &str) -> String {
+    label
         .replace('%', "%25")
         .replace('!', "%21")
         .replace(';', "%3B")
+}
+
+/// One extraction under way (spec 0502): each input's parts written, or
+/// with `as_one` gathered, then written once.
+struct Extraction<'o> {
+    options: &'o Options,
+    group: Option<Parts>,
+    latest: Option<i64>,
+    outcomes: Vec<Outcome>,
+}
+
+impl<'o> Extraction<'o> {
+    fn new(options: &'o Options) -> Extraction<'o> {
+        Extraction {
+            options,
+            group: options.as_one.as_ref().map(|_| Parts::default()),
+            latest: None,
+            outcomes: Vec::new(),
+        }
+    }
+
+    fn add(
+        &mut self,
+        sink: &mut store::Sink,
+        meeter: Option<&Meeter>,
+        kit: &Kit,
+        extractor: &FdpExtractor,
+        input: Input<'_>,
+    ) -> Result<(), Error> {
+        let parts = Parts::of(kit, extractor.extract(&input.bytes), !self.options.no_split);
+        match &mut self.group {
+            Some(group) => {
+                group.absorb(parts.within(&escaped(&input.label)));
+                self.latest = Some(
+                    self.latest
+                        .map_or(input.build_time, |t| t.max(input.build_time)),
+                );
+            }
+            None => {
+                let written = Written {
+                    input: &input.label,
+                    identity: &input.identity,
+                    build_time: input.build_time,
+                    metadata: &input.metadata,
+                };
+                self.outcomes
+                    .extend(parts.write(sink, meeter, written, self.options)?);
+            }
+        }
+        Ok(())
+    }
+
+    /// With `as_one`, the group written: its time `build_time`, else the
+    /// latest of its inputs'; its labels `metadata` (spec 0502 S2).
+    fn finish(
+        mut self,
+        sink: &mut store::Sink,
+        meeter: Option<&Meeter>,
+    ) -> Result<Vec<Outcome>, Error> {
+        if let (Some(group), Some(identity)) = (self.group.take(), &self.options.as_one) {
+            let written = Written {
+                input: identity,
+                identity,
+                build_time: self.options.build_time.or(self.latest).unwrap_or(0),
+                metadata: &self.options.metadata,
+            };
+            self.outcomes
+                .extend(group.write(sink, meeter, written, self.options)?);
+        }
+        Ok(self.outcomes)
+    }
+}
+
+/// Extract each of `inputs` as a snapshot, its parts each one (spec 0495
+/// S2), or with `options.as_one` all of them as one (S3), into `sink`
+/// (spec 0502 S2). `options.id` is the caller's to put in an input's
+/// identity.
+pub fn extract_inputs_into<'a>(
+    sink: &mut store::Sink,
+    meeter: Option<&Meeter>,
+    kit: &Kit,
+    extractor: &FdpExtractor,
+    inputs: impl IntoIterator<Item = Input<'a>>,
+    options: &Options,
+) -> Result<Vec<Outcome>, Error> {
+    let mut extraction = Extraction::new(options);
+    for input in inputs {
+        extraction.add(sink, meeter, kit, extractor, input)?;
+    }
+    extraction.finish(sink, meeter)
 }
 
 /// Extract each of `files` as a snapshot (spec 0453 S5). Warnings go to
@@ -537,40 +666,24 @@ pub fn extract_files_into(
             ));
         }
     }
-    let mut outcomes = Vec::new();
-    // `--as-one`: every input's parts gathered, written once (spec 0495 S3).
-    let mut group = options.as_one.as_ref().map(|_| Parts::default());
+    // Each file read when its turn comes, as an input (spec 0502 S4).
+    let mut extraction = Extraction::new(options);
     for (file, &time) in files.iter().zip(&times) {
         let bytes = std::fs::read(file)?;
-        let parts = Parts::of(kit, extractor.extract(&bytes), !options.no_split);
-        match &mut group {
-            Some(group) => group.absorb(parts.within(&input_label(file))),
-            None => {
-                let identity = match &options.id {
-                    Some(id) => id.clone(),
-                    None => identity_of(file),
-                };
-                let build_time = options.build_time.unwrap_or(time);
-                outcomes.extend(parts.write(sink, meeter, &identity, build_time, options, file)?);
-            }
-        }
-    }
-    if let (Some(group), Some(identity)) = (group, &options.as_one) {
-        // One build: its time the latest of its inputs', unless given.
-        let build_time = options
-            .build_time
-            .or_else(|| times.iter().copied().max())
-            .unwrap_or(0);
-        outcomes.extend(group.write(
-            sink,
-            meeter,
+        let identity = match &options.id {
+            Some(id) => id.clone(),
+            None => identity_of(file),
+        };
+        let input = Input {
+            label: file.display().to_string(),
             identity,
-            build_time,
-            options,
-            Path::new(identity),
-        )?);
+            bytes: Cow::Owned(bytes),
+            build_time: options.build_time.unwrap_or(time),
+            metadata: options.metadata.clone(),
+        };
+        extraction.add(sink, meeter, kit, &extractor, input)?;
     }
-    Ok(outcomes)
+    extraction.finish(sink, meeter)
 }
 
 /// A file's path as an identity, made a valid branch name (spec 0453 S5):

@@ -251,16 +251,16 @@ fn main() -> ExitCode {
             // An input's parts (spec 0495): its rest may hold nothing while
             // its sets were written, so "no descriptor" only for an input
             // none of whose parts was.
-            let found: std::collections::HashSet<std::path::PathBuf> = outcomes
+            let found: std::collections::HashSet<String> = outcomes
                 .iter()
                 .filter(|o| !matches!(o.added, Added::Nothing))
-                .map(|o| o.file.clone())
+                .map(|o| o.input.clone())
                 .collect();
             for o in outcomes {
                 match o.added {
                     Added::Written { identity, rejected } => {
                         for r in &rejected {
-                            eprintln!("{}: refused {} ({})", o.file.display(), r.name, r.reason);
+                            eprintln!("{}: refused {} ({})", o.input, r.name, r.reason);
                         }
                         say(format!("added {identity}"));
                     }
@@ -269,8 +269,8 @@ fn main() -> ExitCode {
                         "replaced {identity}: the original of the copy rebuilt from its history"
                     )),
                     Added::Refused { .. } => {}
-                    Added::Nothing if !found.contains(&o.file) => {
-                        say(format!("{}: no descriptor", o.file.display()));
+                    Added::Nothing if !found.contains(&o.input) => {
+                        say(format!("{}: no descriptor", o.input));
                     }
                     Added::Nothing => {}
                 }
