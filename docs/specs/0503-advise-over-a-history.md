@@ -13,7 +13,9 @@ Refs: docs/specs/0499-lineages-a-producer-s-snapshots-sorted-apart.md
         include root per lineage, the order as precedence; S5: `advise`
         reads one lineage),
       docs/specs/0454-advise-what-a-history-of-descriptors-cannot-hold.md
-        (what `advise` reads, S2, and reports)
+        (what `advise` reads, S2, and reports),
+      docs/specs/0504-the-combined-tip-in-an-order-the-user-gives.md
+        (the order, `--lineage`, and the combined tip)
 
 ## Background
 
@@ -32,7 +34,7 @@ Read per lineage, those combine without writing anything.
 ## Goals
 
 - **G1.** `advise` over a history, its lineages read as the consumer
-  combines them, by a precedence the consumer gives.
+  combines them, in the order it gives (0504).
 - **G2.** Each problem named with its lineage.
 - **G3.** The paths several lineages hold reported: which one wins,
   whether the others' versions differ once canonical, and, if they do,
@@ -42,8 +44,9 @@ Read per lineage, those combine without writing anything.
 
 ## Non-goals
 
-- **N1. No precedence inferred** from contents, dates or names: given,
-  or `advise` refuses a history of several lineages.
+- **N1. No order inferred** from contents, dates or names: 0504's, given
+  with `--lineage`; none given, `default` alone (0504 G2), the others
+  said left out.
 - **N2. No combined tree written,** in the history or elsewhere: the
   consumer's include roots stay the build (0499 N3).
 - **N3. One lineage unchanged:** `--into H/L`, and a history of one
@@ -51,15 +54,13 @@ Read per lineage, those combine without writing anything.
 
 ## Specification
 
-- **S1. The precedence:** `--precedence L1,L2,…`, else git config
-  `seriate.precedence` (the same list); every lineage of the history
-  named once, else refused, naming those missing or unknown. A history of
-  one lineage needs none.
-- **S2. The combined reading:** each lineage read as today (its tip's
-  files, their writers, its sources); a path taken from the first
-  lineage of the precedence holding it, with that lineage's writer; the
-  sources of all, each with its lineage. Then `advise` as today over
-  that reading.
+- **S1. The order:** `advise --into H --lineage NAME…`, 0504 S1; the
+  lineages left out said, 0504 S3.
+- **S2. The combined reading:** each lineage named read as today (its
+  tip's files, their writers, its sources); a path taken from the first
+  lineage named holding it, with that lineage's writer (0504 S2); the
+  sources of all, each with its lineage. Then `advise` as today over that
+  reading.
 - **S3. Each problem's lineage:** every fixup, candidate and status line
   about a path names the lineage it was taken from (`[bundler]`), and
   `--json` gives it as `lineage`.
@@ -71,10 +72,8 @@ Read per lineage, those combine without writing anything.
 
 ## Questions for the downstream
 
-- **Q1. The precedence's home:** an option, git config, or both (S1
-  proposes both, the option winning)? A history pushed and cloned keeps
-  no config: does the precedence travel with the build's own files
-  instead?
+- *Answered:* the order's home, given per run in the consumer's own
+  commands, recorded nowhere (0504 N1).
 - **Q2. Paths the same once canonical:** reported (S4 proposes yes, for
   a complete list), or left out, being harmless?
 - **Q3. "Newest":** the build time of the commit that last wrote the
@@ -87,6 +86,9 @@ Read per lineage, those combine without writing anything.
 
 ## Alternatives considered
 
+- **A precedence required, from an option or git config:** this draft's
+  first form; the downstream preferred an order given per run, `default`
+  alone without one (0504).
 - **A combined branch written by `settle`:** what 0499 G5 rules out; a
   merged tree in the history would be an inference git-seriate doesn't
   make.
@@ -96,9 +98,8 @@ Read per lineage, those combine without writing anything.
 
 ## Test plan
 
-1. `precedence_required_and_checked`: a history of two lineages refused
-   without one; a precedence missing a lineage, or naming an unknown
-   one, refused, naming them.
+1. `the_order_from_0504`: no `--lineage`, `default` alone and the others
+   said left out; an unknown lineage refused.
 2. `a_path_taken_from_the_first_lineage`: a path two lineages hold, with
    different contents: the first's version advised, its lineage named;
    the overlap reported `differ`, the winner newest or not.
